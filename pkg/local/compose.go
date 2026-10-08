@@ -1,5 +1,5 @@
 // Package local runs agents on this machine: one Docker Compose project per agent (OrbStack,
-// Docker Desktop or plain Docker Engine), the twin of the ECS task: same three containers, same
+// Docker Desktop or Docker Engine on Linux), the twin of the ECS task: same three containers, same
 // dependency and stop order (rehydrate → nap → agent). Differences from ECS, on purpose:
 //   - the sidecars run the engine's sidecar image with the instance's files (stormo.yaml, units,
 //     this agent, its baseline) bind-mounted read-only, so a manifest or skill edit needs no image
@@ -125,7 +125,7 @@ func ComposeCommand() ([]string, error) {
 	if _, err := exec.LookPath("docker-compose"); err == nil {
 		return []string{"docker-compose"}, nil
 	}
-	return nil, errors.New("docker compose not found: install OrbStack or Docker (compose v2)")
+	return nil, errors.New("docker compose not found: install Docker with compose v2 (OrbStack, Docker Desktop or Docker Engine)")
 }
 
 // Port is the agent's stable host port, kept in .swarm/ports.json: an agent keeps its port once it

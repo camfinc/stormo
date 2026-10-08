@@ -125,7 +125,7 @@ on one bot token fight.
 `stormo` (one Go binary; README, Install) is the single entry point (`swarm` works as a second name). Every lifecycle verb works on
 **local** containers by default and on **ECS** with `--remote` / `SWARM_TARGET=remote`:
 
-| | local (OrbStack / Docker compose) | remote (ECS) |
+| | local (Docker compose: OrbStack, Docker Desktop, Docker Engine on Linux) | remote (ECS) |
 |---|---|---|
 | `swarm` | compose state + health, API port, last nap in `.swarm/store` | `describe-services`, last nap in S3 |
 | `start` | build baseline, render compose, up | `update-service --desired-count 1` |

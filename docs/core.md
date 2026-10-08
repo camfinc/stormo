@@ -25,7 +25,7 @@ tools, with more permissions (fleet-wide reads, nap triggers). Build the service
 ## Local topology
 
 ```
- host (macOS, OrbStack)                                            gitignored
+ host (macOS with OrbStack / Docker Desktop, or Linux)             gitignored
  ┌──────────────────────────────────────────────┐
  │ swarm-core  (go,  127.0.0.1:18600)           │  .swarm/core/  core.db, auth/chatgpt.json,
  │  /v1/*      LLM gateway (ChatGPT plan)       │                agent-keys, core.log, pid
@@ -34,7 +34,7 @@ tools, with more permissions (fleet-wide reads, nap triggers). Build the service
  │  /api/*     UI + CLI JSON API, /events SSE   │
  │  /          web UI                           │
  └───────▲──────────────────────────────────────┘
-         │ http://host.docker.internal:18600   (verified from the Hermes image under OrbStack)
+         │ http://host.docker.internal:18600   (on Linux via the docker0 bridge listener)
  ┌───────┴─────────────┐  ┌─────────────────────┐
  │ swarm-atlas         │  │ swarm-<agent> …     │   one compose project per agent (unchanged)
  │  agent  :8642 → 18642│  │                     │   + /workdir bind mount
@@ -46,9 +46,15 @@ Why a host process and not a container:
 - it drives the local lifecycle exactly like the `swarm` CLI does (`pkg/ops`: compose, `NapNow`,
   `learn`), with no Docker socket mounted into anything;
 - it reads `secrets.local.yaml` directly, so per-agent keys need no rendered copy;
-- containers already reach a loopback-bound host port through `host.docker.internal` on OrbStack
-  and Docker Desktop. A plain Linux Docker host needs `extra_hosts: host.docker.internal:host-gateway`
-  in the agent compose file and a non-loopback bind; out of scope until someone runs that.
+- containers reach a loopback-bound host port through `host.docker.internal` on OrbStack and
+  Docker Desktop. Docker Engine on Linux resolves that name (the agent's
+  `extra_hosts: host.docker.internal:host-gateway`) to the docker0 bridge address, which loopback
+  never sees, so on Linux the core also listens on docker0's IPv4, same port (`pkg/core/bridge.go`).
+  That bridge listener serves only `/v1/*` (each call keyed by `SWARM_CORE_KEY`) and `/health`; the
+  office, `/api/*` and avatars stay on loopback. `SWARM_CORE_BIND` overrides the addresses
+  (comma-separated, e.g. a custom `host-gateway-ip` in daemon.json or a rootless setup) and `none`
+  turns the listener off. A host firewall (ufw, firewalld) must let the Docker networks reach
+  that port.
 
 **Lifecycle rule.** Core starts, stops, restarts and moves agents only through `pkg/ops`
 (`start`, `stop`, `restart`, `handoff`), never raw `docker compose up` or ECS `update-service`.

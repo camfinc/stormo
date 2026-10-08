@@ -183,11 +183,15 @@ func status(inst *instance.Instance) error {
 }
 
 func serve(inst *instance.Instance) error {
-	c, err := StartCore(CoreOptions{Inst: inst, Port: CorePort()})
+	c, err := StartCore(CoreOptions{Inst: inst, Port: CorePort(), Bridge: BridgeHosts()})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s swarm core listening on http://%s\n", time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), c.Addr)
+	at := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	fmt.Printf("%s swarm core listening on http://%s\n", at, c.Addr)
+	for _, b := range c.Bridges {
+		fmt.Printf("%s swarm core bridge for containers on http://%s (model gateway and /health only)\n", at, b)
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	<-sig

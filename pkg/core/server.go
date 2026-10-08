@@ -22,7 +22,7 @@ import (
 )
 
 // The core service (docs/core.md). A host process on loopback; agent containers reach it as
-// host.docker.internal:18600. It serves the LLM gateway and the office UI over the fleet registry;
+// host.docker.internal:18600 (on Linux through a bridge listener, bridge.go). It serves the LLM gateway and the office UI over the fleet registry;
 // activity, workdir and comms routes land here in later phases.
 
 // Port is the core's default port.
@@ -69,6 +69,9 @@ type CoreOptions struct {
 	Inst *instance.Instance
 	// Port to listen on (127.0.0.1); 0 picks a free one.
 	Port int
+	// Bridge are extra hosts to listen on, same port, for agent containers (BridgeHosts); they
+	// serve only the model gateway and /health.
+	Bridge []string
 	// Gateway options; Auth and Keys default to the instance's sign-in and core keys.
 	Gateway llm.GatewayOptions
 	// Fleet registry for the UI; nil starts one unless NoFleet (tests skip the compose poller).
@@ -80,6 +83,8 @@ type CoreOptions struct {
 type Core struct {
 	Server  *http.Server
 	Addr    *net.TCPAddr
+	Bridges []*net.TCPAddr
+	bridge  []*http.Server
 	Gateway *llm.Gateway
 	Fleet   *Fleet
 	Office  *Office
@@ -90,9 +95,12 @@ type Core struct {
 // StopOffice stops the office timer (and the fleet's timers if the core started them).
 func (c *Core) StopOffice() { c.once.Do(func() { close(c.stop) }) }
 
-// Close stops the office and the HTTP server.
+// Close stops the office and the HTTP servers.
 func (c *Core) Close() error {
 	c.StopOffice()
+	for _, b := range c.bridge {
+		_ = b.Close()
+	}
 	return c.Server.Close()
 }
 
@@ -140,7 +148,7 @@ type fleetView struct {
 	Gateway  gatewayView      `json:"gateway"`
 }
 
-// StartCore listens on 127.0.0.1 and serves until Close.
+// StartCore listens on 127.0.0.1 (and o.Bridge) and serves until Close.
 func StartCore(o CoreOptions) (*Core, error) {
 	inst := o.Inst
 	g := o.Gateway
@@ -228,7 +236,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 			writeJSONBody(w, 200, map[string]any{"status": "ok", "service": "swarm-core", "login": s.Login, "planLimitedUntil": s.PlanLimitedUntil})
 			return
 		case get && path == "/api/gateway":
-			// Loopback only (the server binds 127.0.0.1); no secrets in it.
+			// Loopback only (bridge listeners never route /api); no secrets in it.
 			writeJSONBody(w, 200, gateway.Status())
 			return
 		case get && path == "/":
@@ -284,13 +292,39 @@ func StartCore(o CoreOptions) (*Core, error) {
 		c.StopOffice()
 		return nil, err
 	}
+	c.Addr = ln.Addr().(*net.TCPAddr)
+	bridged := func(w http.ResponseWriter, r *http.Request) {
+		if !bridgeRoute(r.URL.Path) {
+			writeJSONBody(w, 404, errBody("not_found", r.Method+" "+r.URL.Path))
+			return
+		}
+		handler(w, r)
+	}
+	bridges := []net.Listener{}
+	for _, h := range o.Bridge {
+		bl, err := net.Listen("tcp", net.JoinHostPort(h, strconv.Itoa(c.Addr.Port)))
+		if err != nil {
+			for _, l := range append(bridges, ln) {
+				l.Close()
+			}
+			c.StopOffice()
+			return nil, fmt.Errorf("core bridge listener %s (SWARM_CORE_BIND): %w", h, err)
+		}
+		bridges = append(bridges, bl)
+		c.Bridges = append(c.Bridges, bl.Addr().(*net.TCPAddr))
+	}
 	// Streams can sit silent while the model thinks; the gateway enforces its own timeouts.
 	c.Server = &http.Server{Handler: http.HandlerFunc(handler), ReadHeaderTimeout: 30 * time.Second}
-	c.Addr = ln.Addr().(*net.TCPAddr)
-	go func() {
-		if err := c.Server.Serve(ln); err != nil && err != http.ErrServerClosed {
+	serve := func(s *http.Server, l net.Listener) {
+		if err := s.Serve(l); err != nil && err != http.ErrServerClosed {
 			log.Printf("core server: %v", err)
 		}
-	}()
+	}
+	go serve(c.Server, ln)
+	for _, bl := range bridges {
+		b := &http.Server{Handler: http.HandlerFunc(bridged), ReadHeaderTimeout: 30 * time.Second}
+		c.bridge = append(c.bridge, b)
+		go serve(b, bl)
+	}
 	return c, nil
 }

@@ -1,7 +1,7 @@
 // Package review is `stormo review`: a read-only health sweep of the local fleet, the evidence an
-// architecture review turns into findings. It only reads: docker inspect/logs/exec cat, the nap
-// store, the learnings, the core's /api/fleet. Raw output (it can quote log lines) goes to
-// .swarm/review/, never into git.
+// architecture review turns into findings. It only reads: compose ps, docker inspect/logs/exec
+// cat, the nap store, the learnings, the core's /api/fleet. Raw output (it can quote log lines)
+// goes to .swarm/review/, never into git.
 package review
 
 import (
@@ -20,6 +20,7 @@ import (
 	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
+	"github.com/camfinc/stormo/pkg/local"
 	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
@@ -212,7 +213,28 @@ type Container struct {
 	NapInterval   *int    `json:"napInterval,omitempty"`
 }
 
+// containerID asks compose for one service's container in the agent's project, "" if it has none.
+// The name differs by compose flavour (swarm-x-agent-1 in v2, swarm-x_agent_1 in v1), so never
+// build it by hand.
+func containerID(compose []string, id, service string) string {
+	if compose == nil {
+		return ""
+	}
+	argv := append(append([]string{}, compose...), "-p", "swarm-"+id, "ps", "--all", "-q", service)
+	ok, out := sh(false, argv...)
+	if !ok {
+		return ""
+	}
+	if f := strings.Fields(out); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
+
 func inspect(name string) *Container {
+	if name == "" {
+		return nil
+	}
 	ok, out := sh(false, "docker", "inspect", name)
 	if !ok {
 		return nil
@@ -304,13 +326,15 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 	}
 	now := time.Now()
 	r := &Report{At: loop.IsoMillis(now), Since: since, Agents: []AgentReport{}}
+	compose, _ := local.ComposeCommand() // nil: no compose, every agent reads as not running
 	for _, id := range ids {
 		m, err := manifest.Load(inst.Root, id, inst.Names.Secret)
 		if err != nil {
 			return nil, err
 		}
-		agent := inspect("swarm-" + id + "-agent-1")
-		nap := inspect("swarm-" + id + "-nap-1")
+		agentID := containerID(compose, id, "agent")
+		agent := inspect(agentID)
+		nap := inspect(containerID(compose, id, "nap"))
 		naps := []string{}
 		dir := filepath.Join(inst.Root, ".swarm", "store", id, "naps")
 		entries, _ := os.ReadDir(dir)
@@ -327,13 +351,13 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 		}
 		cron := []CronIssue{}
 		if agent != nil && agent.State == "running" {
-			if ok, out := sh(false, "docker", "exec", "swarm-"+id+"-agent-1", "cat", "/opt/data/cron/jobs.json"); ok {
+			if ok, out := sh(false, "docker", "exec", agentID, "cat", "/opt/data/cron/jobs.json"); ok {
 				cron = AnalyzeCron(out, now)
 			}
 		}
 		logs := ""
 		if agent != nil {
-			_, logs = sh(true, "docker", "logs", "--since", since, "swarm-"+id+"-agent-1")
+			_, logs = sh(true, "docker", "logs", "--since", since, agentID)
 		}
 		ledger, _ := learning.LoadLedger(inst.Root, id)
 		proposed := 0
