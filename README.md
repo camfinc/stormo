@@ -72,6 +72,20 @@ Stormo finds the instance from the current directory (or `--instance <dir>`, or
 `STORMO_INSTANCE`). Vendoring the engine inside the instance as a git submodule keeps both in step
 ([docs/instances.md](docs/instances.md)).
 
+## Use it from Claude Code or Codex
+
+Stormo can install itself as an agent skill, so Claude Code and Codex know how to operate an
+instance: what is safe to run, what needs your go, and every command.
+
+```sh
+stormo skill install                    # for you: ~/.claude/skills/stormo and ~/.agents/skills/stormo
+stormo skill install --scope project    # for one instance or repo: its .claude/skills and .agents/skills
+stormo skill install --for codex        # one tool only; `stormo skill uninstall` and `skill show` too
+```
+
+Running sessions pick the skill up without a restart. Reinstalling after an upgrade refreshes it;
+a skill named `stormo` that Stormo did not write is left alone unless you pass `--force`.
+
 ## How it fits together
 
 ```
@@ -105,6 +119,7 @@ The design in depth: [ARCHITECTURE.md](ARCHITECTURE.md). The core and the office
 | `stormo bench <agent>` | scenario checks, mocked or against the real engine image |
 | `stormo review` | a read-only health sweep of the local fleet |
 | `stormo core up` · `status` · `login` | the office, the model gateway, the ChatGPT sign-in |
+| `stormo skill install` | teach Claude Code and Codex to operate Stormo |
 
 `stormo --help` lists everything; `swarm` works as a second name for the binary.
 

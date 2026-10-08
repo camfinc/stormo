@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -29,6 +30,7 @@ import (
 	"github.com/camfinc/stormo/pkg/place"
 	"github.com/camfinc/stormo/pkg/review"
 	"github.com/camfinc/stormo/pkg/secrets"
+	"github.com/camfinc/stormo/pkg/skill"
 	"github.com/camfinc/stormo/pkg/slack"
 	"github.com/camfinc/stormo/pkg/version"
 	"github.com/spf13/pflag"
@@ -81,6 +83,10 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   rehydrate                              build the engine home from baseline + latest nap
   nap [--loop]                           snapshot the engine home to the store
 
+  agent skill (teaches Claude Code and Codex to operate stormo):
+  skill install [--for claude,codex] [--scope user|project] [--force]   user: ~/.claude/skills, ~/.agents/skills
+  skill uninstall [--for …] [--scope …] · skill show                   project: the instance's .claude/ and .agents/
+
   version                                print the engine version
 `
 
@@ -111,6 +117,7 @@ var (
 	fFrom        = fs.String("from", "", "")
 	fSince       = fs.String("since", "", "")
 	fForce       = fs.Bool("force", false, "")
+	fFor         = fs.String("for", "claude,codex", "")
 	fHelp        = fs.BoolP("help", "h", false, "")
 	errUsage     = errors.New("usage")
 )
@@ -161,6 +168,9 @@ func run(args []string) error {
 	if cmd == "version" {
 		fmt.Println(version.String())
 		return nil
+	}
+	if cmd == "skill" {
+		return skillCmd(sub)
 	}
 	inst, err := instance.Current()
 	if err != nil {
@@ -921,4 +931,74 @@ func instanceID() string {
 		return "local"
 	}
 	return h[:min(24, len(h))]
+}
+
+// skillCmd installs, removes or prints the agent skill. It needs no instance for the user scope.
+func skillCmd(sub string) error {
+	commands := fmt.Sprintf(usage, "an instance's", "found from the working directory", coreUsage())
+	files := skill.Files(version.String(), commands)
+	if sub == "show" {
+		fmt.Print(files["SKILL.md"])
+		return nil
+	}
+	if sub != "install" && sub != "uninstall" {
+		return errUsage
+	}
+	scope := skill.Scope(*fScope)
+	if scope == "" {
+		scope = skill.User
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	root := ""
+	if scope == skill.Project {
+		if root, err = projectRoot(); err != nil {
+			return err
+		}
+	}
+	for _, name := range strings.Split(*fFor, ",") {
+		tool := skill.Tool(strings.TrimSpace(name))
+		dir, err := skill.Dir(tool, scope, home, root)
+		if err != nil {
+			return err
+		}
+		if sub == "uninstall" {
+			removed, err := skill.Uninstall(dir, *fForce)
+			if err != nil {
+				return err
+			}
+			if removed {
+				fmt.Printf("%-6s removed %s\n", tool, dir)
+			} else {
+				fmt.Printf("%-6s nothing at %s\n", tool, dir)
+			}
+			continue
+		}
+		if err := skill.Install(dir, files, *fForce); err != nil {
+			return err
+		}
+		fmt.Printf("%-6s installed %s\n", tool, dir)
+	}
+	if sub == "install" {
+		fmt.Println("Claude Code and Codex pick it up in running sessions (in Claude Code, /reload-skills if its skills folder is new).")
+	}
+	return nil
+}
+
+// projectRoot is the instance found from the working directory (or --instance / STORMO_INSTANCE;
+// never the one the binary happens to live in), else the git repository, else the directory itself.
+func projectRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if root := instance.Find(cwd, os.Getenv, "", os.Args[1:]); root != "" {
+		return root, nil
+	}
+	if out, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	return cwd, nil
 }
