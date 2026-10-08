@@ -41,6 +41,11 @@ agent's task.
 
 ## Quick start
 
+Download the archive for your platform from [Releases](https://github.com/camfinc/stormo/releases)
+(Linux and macOS, amd64 and arm64), check it against `SHA256SUMS`, and put `stormo` on your PATH.
+A released binary pulls its matching sidecar image, `ghcr.io/camfinc/stormo-sidecar:<version>`, the
+first time it starts an agent. Or build from source:
+
 ```sh
 git clone https://github.com/camfinc/stormo.git && cd stormo
 go build -o bin/stormo ./cmd/stormo          # Go 1.26
@@ -48,6 +53,8 @@ ln -s "$PWD/bin/stormo" ~/.local/bin/stormo  # anywhere on your PATH
 
 go run ./examples/office-demo                # the office above, at http://127.0.0.1:18700/
 ```
+
+A source build makes its own sidecar image from `docker/sidecar.Dockerfile` when it first needs one.
 
 Then make it yours. Copy the example instance, describe your organisation and its first agent,
 and start it:
@@ -125,6 +132,8 @@ examples/minimal/    a complete example instance: the template and the test fixt
 examples/office-demo the office with simulated activity (the screenshot above)
 docs/                instances, the core and the office; docs/brand: the logo
 tools/brandgen/      generates the logo files
+scripts/             release builds
+.github/workflows/   CI and releases
 ```
 
 ## Develop
@@ -133,5 +142,15 @@ tools/brandgen/      generates the logo files
 gofmt -l . && go vet ./... && go test ./...
 go build -o bin/stormo ./cmd/stormo && bin/stormo --instance examples/minimal check
 ```
+
+CI runs the same checks on every push and pull request. To release, tag a commit on `main`:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The release workflow tests the tag, attaches `stormo_<version>_<os>_<arch>.tar.gz` for each platform
+with `SHA256SUMS` (built by `scripts/release-build.sh`, which also runs locally), and publishes the
+multi-arch sidecar image. A tag with a suffix (`v0.2.0-rc.1`) becomes a pre-release.
 
 Contributor notes, including how dependencies are pinned: [CLAUDE.md](CLAUDE.md).

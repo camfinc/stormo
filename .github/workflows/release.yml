@@ -1,0 +1,71 @@
+# Pushing a tag v* releases it: the tag must point at a commit that passes the checks. A release is
+#   - stormo_<tag>_<os>_<arch>.tar.gz for linux and darwin, amd64 and arm64, plus SHA256SUMS;
+#   - ghcr.io/<owner>/stormo-sidecar:<tag> for linux/amd64 and linux/arm64, the image a released
+#     binary pulls on `stormo start` (its version is the tag).
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release
+  packages: write # push the sidecar image
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/stormo-sidecar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: check
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+
+      - name: binaries
+        run: scripts/release-build.sh "$VERSION"
+
+      - name: sidecar image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name stormo
+          # The Go stage cross-compiles on the runner, so no emulation is needed.
+          docker buildx build --push -f docker/sidecar.Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.version="$VERSION" \
+            -t "$IMAGE:$VERSION" .
+
+      - name: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          cat > notes.md <<NOTES
+          Install: download the archive for your platform, check it against \`SHA256SUMS\`, and put
+          \`stormo\` on your PATH (\`stormo version\` prints \`$VERSION\`).
+
+          Sidecar image: \`$IMAGE:$VERSION\` (linux/amd64, linux/arm64), pulled by \`stormo start\`.
+          NOTES
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$VERSION" dist/*.tar.gz dist/SHA256SUMS \
+            --title "$VERSION" --notes-file notes.md --generate-notes $prerelease
