@@ -1,0 +1,11 @@
+id: echo
+name: Echo
+unit: support
+role: Help-desk triage
+persona:
+  path: personas/echo
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

@@ -1,0 +1,11 @@
+id: atlas
+name: Atlas
+unit: sales
+role: Deals & renewals
+persona:
+  path: personas/atlas
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

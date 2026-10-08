@@ -1,0 +1,11 @@
+id: byte
+name: Byte
+unit: product
+role: Engineering
+persona:
+  path: personas/byte
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

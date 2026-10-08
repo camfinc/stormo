@@ -1,0 +1,11 @@
+id: scout
+name: Scout
+unit: sales
+role: Lead qualification
+persona:
+  path: personas/scout
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

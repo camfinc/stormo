@@ -1,0 +1,11 @@
+id: sage
+name: Sage
+unit: research
+role: Market research
+persona:
+  path: personas/sage
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

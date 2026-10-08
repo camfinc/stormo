@@ -1,0 +1,11 @@
+id: nova
+name: Nova
+unit: support
+role: Customer onboarding
+persona:
+  path: personas/nova
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna

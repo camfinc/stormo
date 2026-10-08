@@ -56,6 +56,7 @@ pkg/
 docker/sidecar.Dockerfile      the engine's sidecar image (rehydrate + nap), one per engine version
 docker/instance.Dockerfile     one agent's ECS sidecar: that image + the instance's files
 examples/minimal/              example instance (Acme): the test fixture and the template for new ones
+examples/office-demo/          the office UI with simulated activity (`go run ./examples/office-demo`)
 testdata/                      expected snapshot classes for representative runtime paths
 ```
 

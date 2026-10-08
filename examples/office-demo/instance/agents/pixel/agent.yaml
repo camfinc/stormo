@@ -1,0 +1,11 @@
+id: pixel
+name: Pixel
+unit: product
+role: Product design
+persona:
+  path: personas/pixel
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna
