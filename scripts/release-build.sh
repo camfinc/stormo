@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Cross-compiles the stormo binary for every released platform into dist/:
-#   dist/stormo_<version>_<os>_<arch>.tar.gz   (stormo, README.md)
+#   dist/stormo_<version>_<os>_<arch>.tar.gz   (stormo, README.md, LICENSE, NOTICE)
 #   dist/SHA256SUMS
 # Used by .github/workflows/release.yml; runs the same locally: scripts/release-build.sh v0.1.0
 set -eu
@@ -14,7 +14,7 @@ for p in $PLATFORMS; do
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
     -ldflags "-s -w -X github.com/camfinc/stormo/pkg/version.Version=${VERSION}" \
     -o "dist/$name/stormo" ./cmd/stormo
-  cp README.md "dist/$name/"
+  cp README.md LICENSE NOTICE "dist/$name/"
   tar -C dist -czf "dist/$name.tar.gz" "$name"
   rm -rf "dist/$name"
   echo "built dist/$name.tar.gz"

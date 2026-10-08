@@ -169,3 +169,7 @@ with `SHA256SUMS` (built by `scripts/release-build.sh`, which also runs locally)
 multi-arch sidecar image. A tag with a suffix (`v0.2.0-rc.1`) becomes a pre-release.
 
 Contributor notes, including how dependencies are pinned: [CLAUDE.md](CLAUDE.md).
+
+## License
+
+Apache License 2.0: [LICENSE](LICENSE). Copyright 2026 CAMF Solutions Inc. ([NOTICE](NOTICE)).
