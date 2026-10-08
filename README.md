@@ -1,4 +1,9 @@
-# Stormo
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.svg">
+    <img src="docs/brand/logo-light.svg" alt="Stormo" width="340">
+  </picture>
+</p>
 
 **Run a team of AI agents like a small company.** Stormo takes your organisation's agents, defined
 as plain files in git, runs them on your laptop or on AWS, watches them work, and turns what they
@@ -118,7 +123,8 @@ pkg/                 the engine (instance, manifests, build, learning loop, core
 docker/              the sidecar image and the per-agent ECS layer
 examples/minimal/    a complete example instance: the template and the test fixture
 examples/office-demo the office with simulated activity (the screenshot above)
-docs/                instances, the core and the office
+docs/                instances, the core and the office; docs/brand: the logo
+tools/brandgen/      generates the logo files
 ```
 
 ## Develop
