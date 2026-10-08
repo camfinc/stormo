@@ -1,0 +1,17 @@
+# Acme's bridge actions (stormo.yaml `bridge.actions`). Schema: docs/instances.md.
+- name: sales.crm.deals.list
+  description: List Acme deals from the CRM (read-only).
+  inputSchema:
+    type: object
+    properties:
+      dateFrom: {type: string, description: "ISO date; earliest close date"}
+      dateTo: {type: string, description: "ISO date; latest close date"}
+      search: {type: string, description: "deal, contact or company"}
+    additionalProperties: false
+  secrets: [CRM_API_TOKEN]
+  mutates: false
+  http:
+    method: GET
+    url: https://crm.example.com/api/deals
+    auth: {bearer_secret: CRM_API_TOKEN}
+    query: from_input

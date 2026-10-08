@@ -1,0 +1,287 @@
+{
+ "stateDir": "acme-state",
+ "cases": [
+  {
+   "path": "memories/MEMORY.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md",
+   "sqlite": false
+  },
+  {
+   "path": "memories/USER.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md",
+   "sqlite": false
+  },
+  {
+   "path": "memories/OTHER.md",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "memories/.MEMORY.md",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "skills/.usage.json",
+   "class": "learning",
+   "glob": "skills/.{usage.json,curator_ledger.jsonl,curator_state,bundled_manifest}",
+   "sqlite": false
+  },
+  {
+   "path": "skills/.curator_ledger.jsonl",
+   "class": "learning",
+   "glob": "skills/.{usage.json,curator_ledger.jsonl,curator_state,bundled_manifest}",
+   "sqlite": false
+  },
+  {
+   "path": "skills/.curator_state",
+   "class": "learning",
+   "glob": "skills/.{usage.json,curator_ledger.jsonl,curator_state,bundled_manifest}",
+   "sqlite": false
+  },
+  {
+   "path": "skills/.bundled_manifest",
+   "class": "learning",
+   "glob": "skills/.{usage.json,curator_ledger.jsonl,curator_state,bundled_manifest}",
+   "sqlite": false
+  },
+  {
+   "path": "skills/.hidden",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "skills/.archive/old/SKILL.md",
+   "class": "learning",
+   "glob": "skills/.archive/**",
+   "sqlite": false
+  },
+  {
+   "path": "skills/.archive/x",
+   "class": "learning",
+   "glob": "skills/.archive/**",
+   "sqlite": false
+  },
+  {
+   "path": "skills/crm/crm-api/SKILL.md",
+   "class": "learning",
+   "glob": "skills/[!.]*/**",
+   "sqlite": false
+  },
+  {
+   "path": "skills/crm/crm-api/.secret",
+   "class": "learning",
+   "glob": "skills/[!.]*/**",
+   "sqlite": false
+  },
+  {
+   "path": "skills/a/b/c/d.py",
+   "class": "learning",
+   "glob": "skills/[!.]*/**",
+   "sqlite": false
+  },
+  {
+   "path": "skills/README.md",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "skills/.git/config",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "skills/Notes/X.md",
+   "class": "learning",
+   "glob": "skills/[!.]*/**",
+   "sqlite": false
+  },
+  {
+   "path": "cron/jobs.json",
+   "class": "learning",
+   "glob": "cron/jobs.json",
+   "sqlite": false
+  },
+  {
+   "path": "cron/executions.db",
+   "class": "state",
+   "glob": "cron/executions.db",
+   "sqlite": true
+  },
+  {
+   "path": "cron/other.json",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "acme-state/news-radar/news_radar.db",
+   "class": "state",
+   "glob": "acme-state/**/*.{db,sqlite}",
+   "sqlite": true
+  },
+  {
+   "path": "acme-state/news-radar/news_radar.sqlite",
+   "class": "state",
+   "glob": "acme-state/**/*.{db,sqlite}",
+   "sqlite": true
+  },
+  {
+   "path": "acme-state/news-radar/data.json",
+   "class": "state",
+   "glob": "acme-state/**",
+   "sqlite": false
+  },
+  {
+   "path": "acme-state/x",
+   "class": "state",
+   "glob": "acme-state/**",
+   "sqlite": false
+  },
+  {
+   "path": "acme-state/news-radar/.hidden",
+   "class": "state",
+   "glob": "acme-state/**",
+   "sqlite": false
+  },
+  {
+   "path": "other-state/x.db",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "local/a/b",
+   "class": "state",
+   "glob": "local/**",
+   "sqlite": false
+  },
+  {
+   "path": "local/.x",
+   "class": "state",
+   "glob": "local/**",
+   "sqlite": false
+  },
+  {
+   "path": "gateway_voice_mode.json",
+   "class": "state",
+   "glob": "gateway_voice_mode.json",
+   "sqlite": false
+  },
+  {
+   "path": "platforms/pairing/slack.json",
+   "class": "state",
+   "glob": "platforms/pairing/**",
+   "sqlite": false
+  },
+  {
+   "path": "platforms/pairing/.x/y",
+   "class": "state",
+   "glob": "platforms/pairing/**",
+   "sqlite": false
+  },
+  {
+   "path": "platforms/other/z",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "pairing/a.json",
+   "class": "state",
+   "glob": "pairing/**",
+   "sqlite": false
+  },
+  {
+   "path": "channel_directory.json",
+   "class": "state",
+   "glob": "{channel_directory,discord_threads}.json",
+   "sqlite": false
+  },
+  {
+   "path": "discord_threads.json",
+   "class": "state",
+   "glob": "{channel_directory,discord_threads}.json",
+   "sqlite": false
+  },
+  {
+   "path": "kanban.db",
+   "class": "state",
+   "glob": "kanban.db",
+   "sqlite": true
+  },
+  {
+   "path": "state.db",
+   "class": "raw",
+   "glob": "state.db",
+   "sqlite": true
+  },
+  {
+   "path": "response_store.db",
+   "class": "raw",
+   "glob": "response_store.db",
+   "sqlite": true
+  },
+  {
+   "path": "sessions/2026/abc.jsonl",
+   "class": "raw",
+   "glob": "sessions/**",
+   "sqlite": false
+  },
+  {
+   "path": "sessions/.x",
+   "class": "raw",
+   "glob": "sessions/**",
+   "sqlite": false
+  },
+  {
+   "path": "logs/agent.log",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "config.yaml",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "SOUL.md",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": ".env",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "auth.json",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "state/x",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "memories/MEMORY.md.bak",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  }
+ ]
+}

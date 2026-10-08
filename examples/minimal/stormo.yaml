@@ -1,0 +1,31 @@
+# Example Stormo instance: a made-up organisation (Acme) with two units and three agents. It is the
+# engine's test fixture and the template for a new instance (docs/instances.md). No real ids.
+name: Acme Swarm
+org: Acme
+slug: acme
+# names: default to acme-stormo, acme/stormo, acme-state, acme-knowledge, acme-shared-docs
+
+scrub:
+  token_prefixes: [acme]        # Acme CRM tokens look like acme_…
+  rules:                        # Acme's own PII, on top of the engine's (tokens, email, card, phone)
+    - kind: order-id
+      pattern: '\b[A-Z]{2}[0-9A-Z]{6}\b'
+      require: ['\d', '[A-Z]']   # each must also match: 8 alphanumerics with digits and letters
+
+bridge:
+  actions: bridge/actions.yaml
+
+office:
+  clocks:
+    - { city: New York, tz: America/New_York }
+    - { city: Lisbon, tz: Europe/Lisbon }
+
+deploy:
+  aws:
+    account: "123456789012"
+    region: us-east-2
+    cluster: acme-ecs
+    bucket: acme-stormo-naps
+    registry: ghcr.io/acme
+    execution_role_arn: arn:aws:iam::123456789012:role/ecsTaskExecutionRole
+    task_role_arn: arn:aws:iam::123456789012:role/acme-stormo-task

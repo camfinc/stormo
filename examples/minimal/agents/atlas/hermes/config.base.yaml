@@ -1,0 +1,15 @@
+model:
+  default: openai/gpt-6-luna
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  api_mode: chat_completions
+fallback_providers: []
+toolsets:
+  - hermes-cli
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+timezone: America/New_York
+cron:
+  # Cron output is the Slack post itself; the default wrapper adds "Cronjob Response: …" around it.
+  wrap_response: false

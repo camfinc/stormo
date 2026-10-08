@@ -1,0 +1,67 @@
+# Atlas: deals & operations for Acme Sales. Exercises every manifest feature the engine supports.
+id: atlas
+name: Atlas
+unit: sales
+role: Deals & operations. Internal back-office by default.
+
+persona:
+  path: personas/atlas
+
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+  model: openai/gpt-6-luna
+  provider: openrouter
+  local:
+    via: core
+    model: gpt-5.6-luna
+
+channels:
+  - kind: slack
+    allow_bots: mentions
+    slash_commands: true
+    allowed_users: [U0000000001]
+    home_channel: C0000000001
+  # Telegram runs only when TELEGRAM_BOT_TOKEN has a value (optional_secrets below).
+  - kind: telegram
+    # allowed_users: [123456789]
+
+secrets:
+  - OPENROUTER_API_KEY
+  - SLACK_BOT_TOKEN
+  - SLACK_APP_TOKEN
+  - APIFY_API_TOKEN
+  - ELEVENLABS_API_KEY
+  - API_SERVER_KEY
+
+optional_secrets:
+  - name: CRM_API_TOKEN
+    skills:
+      - crm/crm-api
+      - crm/crm-documents-api
+      - crm/crm-quote-api
+      - crm/hourly_deal_monitor
+    actions:
+      - sales.crm.deals.list
+  - name: TELEGRAM_BOT_TOKEN
+
+actions:
+  - sales.crm.deals.list
+
+state:
+  - name: news-radar
+    env: NEWS_RADAR_HOME
+
+learning:
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  seed_fill: 0.6
+  nap_interval_seconds: 900
+
+deploy:
+  launch: fargate
+  registry: ghcr
+  cpu: 1024
+  memory: 3072
+  ephemeral_storage_gib: 30

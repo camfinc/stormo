@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{name}} HQ</title>
+  <meta name="description" content="Live top-down view of {{name}}: every agent at its desk, the core in the commons.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d141c'/%3E%3Crect x='6' y='8' width='20' height='12' rx='2' fill='%232dd4bf'/%3E%3Ccircle cx='16' cy='24' r='4' fill='%23e8eef5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <header class="hud" aria-label="Fleet overview">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">{{name}} <b>HQ</b></span>
+    </div>
+    <ul class="meters" id="meters"></ul>
+    <div class="clock" id="clock" aria-label="Local time"></div>
+  </header>
+
+  <main class="stage">
+    <div class="floor" id="floor" aria-label="Office floor"></div>
+    <svg class="links" id="links" aria-hidden="true"></svg>
+    <aside class="feed" aria-label="Activity" aria-live="polite"><ol id="feed"></ol></aside>
+  </main>
+
+  <aside class="inspector" id="inspector" aria-label="Details" hidden>
+    <button class="close" id="close" aria-label="Close details">×</button>
+    <div id="inspector-body"></div>
+  </aside>
+
+  <div class="welcome" id="welcome" role="status">
+    <p class="welcome-kicker">Welcome to</p>
+    <h1>{{name}} HQ</h1>
+    <p class="welcome-sub" id="welcome-sub">Opening the office…</p>
+  </div>
+
+  <div class="toast" id="toast" role="alert" hidden></div>
+
+  <script>window.STORMO = {{instance}};</script>
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>

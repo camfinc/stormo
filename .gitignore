@@ -1,0 +1,17 @@
+node_modules/
+dist/
+# Local nap store + scratch. Raw session snapshots (PII) can land here; never commit.
+.swarm/
+# All agent secrets (pkg/secrets). Never commit.
+secrets.local.yaml
+*.secrets.yaml
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+__pycache__/
+*.py[co]
+
+# go build -o bin/stormo ./cmd/stormo
+bin/
