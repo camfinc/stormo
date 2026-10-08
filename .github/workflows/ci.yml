@@ -24,3 +24,5 @@ jobs:
         run: go test ./...
       - name: build every released platform
         run: PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" scripts/release-build.sh "ci-${GITHUB_SHA::7}"
+      - name: sidecar image builds
+        run: docker build -q -f docker/sidecar.Dockerfile --build-arg VERSION="ci-${GITHUB_SHA::7}" -t stormo-sidecar:ci .

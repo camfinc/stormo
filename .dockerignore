@@ -2,5 +2,6 @@
 bin
 examples
 docs
+!docs/instances.md
 testdata
 **/*_test.go
