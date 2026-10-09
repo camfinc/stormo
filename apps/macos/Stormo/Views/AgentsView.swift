@@ -23,6 +23,7 @@ struct AgentsView: View {
     @State private var exporting: ExportTarget?
     @State private var choosingImport = false
     @State private var importing: ImportTarget?
+    @State private var creating = false
 
     private var agents: [FleetAgent] { model.fleet.fleet?.agents ?? [] }
 
@@ -40,8 +41,13 @@ struct AgentsView: View {
             if !model.core.state.isRunning {
                 CoreNotRunningView()
             } else if agents.isEmpty {
-                ContentUnavailableView("No agents yet", systemImage: "person.3",
-                                       description: Text("Agents appear here once the core has polled the fleet."))
+                ContentUnavailableView {
+                    Label("No agents yet", systemImage: "person.3")
+                } description: {
+                    Text("Agents appear here once the core has polled the fleet.")
+                } actions: {
+                    Button("New Agent…") { creating = true }.disabled(model.cli == nil)
+                }
             } else {
                 Table(agents, selection: $selection) {
                     TableColumn("Agent") { a in
@@ -94,6 +100,7 @@ struct AgentsView: View {
         }
         .navigationTitle("Agents")
         .sheet(item: $exporting) { ExportAgentSheet(agentID: $0.id) }
+        .sheet(isPresented: $creating) { NewAgentWizard(open: edit) }
         .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.zip]) { result in
             if case .success(let url) = result { importing = ImportTarget(url: url) }
         }
@@ -106,9 +113,16 @@ struct AgentsView: View {
             // STORMO_SNAPSHOT, a visual check).
             if let id = ProcessInfo.processInfo.environment["STORMO_EDIT"] { edit(id) }
             if let id = ProcessInfo.processInfo.environment["STORMO_EXPORT"] { exporting = ExportTarget(id: id) }
+            if ProcessInfo.processInfo.environment["STORMO_NEW_AGENT"] != nil { creating = true }
         }
         #endif
         .toolbar {
+            ToolbarItem {
+                Button("New Agent…", systemImage: "plus") { creating = true }
+                    .help("Create an agent step by step")
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(model.cli == nil)
+            }
             ToolbarItem {
                 Button("Import Agent…", systemImage: "square.and.arrow.down") { choosingImport = true }
                     .help("Import an agent exported from an instance (stormo export)")
