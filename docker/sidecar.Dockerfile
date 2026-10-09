@@ -13,6 +13,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY embed.go ./
 COPY docs/instances.md ./docs/
+COPY examples/minimal ./examples/minimal
 COPY cmd ./cmd
 COPY pkg ./pkg
 ARG VERSION=dev

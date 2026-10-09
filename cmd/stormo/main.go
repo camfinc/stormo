@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/camfinc/stormo"
 	"github.com/camfinc/stormo/pkg/bench"
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
@@ -30,6 +31,7 @@ import (
 	"github.com/camfinc/stormo/pkg/ops"
 	"github.com/camfinc/stormo/pkg/place"
 	"github.com/camfinc/stormo/pkg/review"
+	"github.com/camfinc/stormo/pkg/scaffold"
 	"github.com/camfinc/stormo/pkg/secrets"
 	"github.com/camfinc/stormo/pkg/skill"
 	"github.com/camfinc/stormo/pkg/slack"
@@ -88,6 +90,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   skill install [--for claude,codex] [--scope user|project] [--force]   user: ~/.claude/skills, ~/.agents/skills
   skill uninstall [--for …] [--scope …] · skill show                   project: the instance's .claude/ and .agents/
 
+  new instance <dir> --name "Acme Swarm" [--slug acme] [--org Acme] [--template empty|example] [--no-git]
+                                         create an instance (empty: stormo.yaml and the group unit;
+                                         example: the Acme demo under the new name); git init unless --no-git
   instance                               the instance in use: name, slug, directory
   version                                print the engine version
 
@@ -125,6 +130,11 @@ var (
 	fHelp        = fs.BoolP("help", "h", false, "")
 	fJSON        = fs.Bool("json", false, "")
 	fNoOpen      = fs.Bool("no-open", false, "")
+	fName        = fs.String("name", "", "")
+	fOrg         = fs.String("org", "", "")
+	fSlug        = fs.String("slug", "", "")
+	fTemplate    = fs.String("template", "", "")
+	fNoGit       = fs.Bool("no-git", false, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -201,6 +211,25 @@ func run(args []string) error {
 	}
 	if cmd == "skill" {
 		return skillCmd(sub)
+	}
+	if cmd == "new" && sub == "instance" {
+		// Before any instance is looked for: it makes one.
+		dir, err := need(strings.Join(rest, " "), "directory")
+		if err != nil {
+			return err
+		}
+		r, err := scaffold.NewInstance(dir, scaffold.Options{Name: *fName, Org: *fOrg, Slug: *fSlug, Template: *fTemplate, Git: !*fNoGit}, stormo.Example())
+		if err != nil {
+			return withCode("usage", err)
+		}
+		result(r, func(w io.Writer) {
+			fmt.Fprintf(w, "%s (%s) created at %s from the %s template", r.Name, r.Slug, r.Root, r.Template)
+			if r.Git {
+				fmt.Fprint(w, ", git initialised")
+			}
+			fmt.Fprintf(w, "\nnext: cd %q && stormo secrets init && stormo check\n", r.Root)
+		})
+		return nil
 	}
 	inst, err := instance.Current()
 	if err != nil {

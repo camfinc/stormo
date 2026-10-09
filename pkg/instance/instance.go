@@ -115,6 +115,10 @@ func (e *Error) Error() string { return e.Msg }
 
 var slugRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// ValidSlug reports whether s can be an instance slug: lowercase letters, digits and hyphens,
+// starting with a letter.
+func ValidSlug(s string) bool { return slugRe.MatchString(s) }
+
 type rawFile struct {
 	Name   string `yaml:"name"`
 	Org    string `yaml:"org"`

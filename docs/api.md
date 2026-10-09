@@ -47,6 +47,7 @@ into an `error` event.
 | command | `result.data` |
 |---|---|
 | `version` | `version`, `api`, `released` (a tagged release, whose sidecar image is published), `exe` |
+| `new instance <dir>` | `root`, `name`, `org`, `slug`, `template` (`empty` \| `example`), `git` (initialised). Runs outside any instance; a folder that exists must be empty |
 | `instance` | `root`, `name`, `org`, `slug` of the instance this invocation found (`--instance`, `STORMO_INSTANCE`, the working directory, the binary's directory, in that order) |
 | `status` (`ps`) | one row per agent: `agent`, `unit`, `where`, `state` (running \| stopped \| starting \| missing \| unknown), `health`, `endpoint`, `lastNap`, `pendingLearnings`, `pendingSkills`, `detail` |
 | `start`, `stop`, `restart`, `nap-now` | `action`, `where`, `agents` (in the order handled); progress as `step` events |

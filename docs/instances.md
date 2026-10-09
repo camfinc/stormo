@@ -161,6 +161,14 @@ for ECS, `docker/instance.Dockerfile` adds them as one layer per agent.
 ## Starting a new instance
 
 ```sh
+stormo new instance ~/acme --name "Acme Swarm"           # stormo.yaml, the group unit, .gitignore, git init
+stormo new instance ~/demo --name "Demo" --template example   # the Acme example under the new name
+```
+
+The macOS app does the same from File › New Instance…, in `~/Library/Application Support/Stormo/Instances/`
+by default. By hand, from a checkout of the engine:
+
+```sh
 cp -R stormo/examples/minimal ~/acme && cd ~/acme && git init
 $EDITOR stormo.yaml units/ agents/        # your org, units and first agent
 git submodule add https://github.com/camfinc/stormo.git stormo

@@ -1,6 +1,7 @@
 .git
 bin
 examples
+!examples/minimal
 docs
 !docs/instances.md
 testdata
