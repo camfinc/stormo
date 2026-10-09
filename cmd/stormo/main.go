@@ -111,6 +111,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   skill uninstall [--for …] [--scope …] · skill show                   project: the instance's .claude/ and .agents/
 
   new instance <dir> --name "Acme Swarm" [--slug acme] [--org Acme] [--template empty|example] [--no-git]
+  new agent < spec.json         create agents/<id>/ from a JSON spec (docs/api.md); --options: the choices and defaults
                                          create an instance (empty: stormo.yaml and the group unit;
                                          example: the Acme demo under the new name); git init unless --no-git
   instance                               the instance in use: name, slug, directory
@@ -167,6 +168,7 @@ var (
 	fAgent       = fs.String("agent", "", "")
 	fBaseURL     = fs.String("base-url", "", "")
 	fKey         = fs.String("key", "", "")
+	fOptions     = fs.Bool("options", false, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -266,6 +268,32 @@ func run(args []string) error {
 	inst, err := instance.Current()
 	if err != nil {
 		return withCode("instance", err)
+	}
+	if cmd == "new" && sub == "agent" {
+		if *fOptions {
+			o := scaffold.NewAgentOptions(inst)
+			result(o, func(w io.Writer) {
+				d, unit := o.Defaults, o.Defaults.Unit
+				if unit == "" {
+					unit = "none (create one)"
+				}
+				fmt.Fprintf(w, "unit %s, engine %s %s, model %s via %s\n", unit, d.Engine.Kind, d.Engine.Version, d.Model.Name, d.Model.Provider)
+			})
+			return nil
+		}
+		var spec scaffold.AgentSpec
+		if err := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20)).Decode(&spec); err != nil {
+			return withCode("usage", fmt.Errorf("new agent: a JSON spec on stdin (docs/api.md): %w", err))
+		}
+		r, err := scaffold.NewAgent(inst, spec)
+		if err != nil {
+			return withCode("invalid", err)
+		}
+		result(r, func(w io.Writer) {
+			fmt.Fprintf(w, "%s (%s) created in unit %s: %s\nnext: stormo secrets set %s NAME for %s; stormo check %s\n",
+				r.Name, r.ID, r.Unit, strings.Join(r.Files, ", "), r.ID, strings.Join(r.Secrets, ", "), r.ID)
+		})
+		return nil
 	}
 	if cmd == "instance" {
 		result(map[string]string{"root": inst.Root, "name": inst.Name, "org": inst.Org, "slug": inst.Slug},

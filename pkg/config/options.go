@@ -133,3 +133,7 @@ func options(inst *instance.Instance, agent string) *Options {
 	slices.Sort(o.Secrets)
 	return o
 }
+
+// OptionsFor is the form choices for agent's file; an agent that does not exist yet gets the
+// instance-wide ones (`stormo new agent --options`).
+func OptionsFor(inst *instance.Instance, agent string) *Options { return options(inst, agent) }
