@@ -4,8 +4,9 @@ Status: local first. **Phase 1 (the LLM gateway, on Sign in with ChatGPT) is bui
 `stormo core up|down|status|serve|login|logout`). **The office UI over a polled fleet registry is
 built** (`pkg/core/fleet.go`, `pkg/core/ui/`, part of phase 2), and so is `core.db`
 (`pkg/core/db.go`). **Phase 3 (activity ingest) is built** (`pkg/core/monitor.go`), and so is
-**phase 5 (the message bus over the core's MCP server)** (`pkg/core/bus.go`, `mcp.go`) and **phase 4
-(the shared workdir: attribution and locks)** (`pkg/core/workdir.go`). The Phases table
+**phase 5 (the message bus over the core's MCP server)** (`pkg/core/bus.go`, `mcp.go`), **phase 4
+(the shared workdir: attribution and locks)** (`pkg/core/workdir.go`) and **phase 6 (the learning
+cycle)** (`pkg/core/learn.go`). The Phases table
 says what each phase has; everything not marked built is design.
 AWS comes later and is sketched only where it changes a local decision.
 
@@ -406,6 +407,29 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   fleet are staggered.
 - Core never commits; the dream already writes the working tree only.
 
+**Built (phase 6).**
+- *Schedule*: `core.learning` in `stormo.yaml` (`at` "HH:MM", `timezone`, `stagger_minutes`
+  default 2, `quiet_wait_minutes` default 30, `agents` default all; docs/instances.md). Off unless
+  `at` is set: an unprompted write into `agents/*/learnings` of a checkout someone works in is a
+  surprise, so the owner opts in. A missed time (core down) still starts within 6 hours, once a
+  day.
+- *Cycle* (`pkg/core/learn.go`), agent by agent: a running agent that is busy (a turn, job, tool
+  call or model call in flight) is looked at every 30 s for up to `quiet_wait_minutes`, then
+  dreamed without a fresh nap; a quiet one is napped (`local.NapNow`, the `stormo nap-now` path,
+  which starts nothing); a stopped one is dreamed on its stored naps. Then `loop.Dream` folds its
+  naps into `agents/<id>/learnings` (working tree only) and the core counts the lessons and skill
+  proposals waiting for review. Scheduled cycles wait `stagger_minutes` between agents; manual
+  ones run straight through. One cycle at a time; a cycle a stopped core left running is marked
+  `interrupted`.
+- *Digest*: `.swarm/core/digests/<date>-cycle-<id>.md` (0600): per agent, nap or why not, naps
+  folded, new lessons, lessons seen again, skill and cron proposals, what waits for review, and
+  the `stormo learn list|skills <agent>` commands. Counts only, never lesson text. Slack delivery
+  waits for the core agent (phase 8).
+- *Reads and triggers*: `GET /api/learning` (schedule, next start, running cycle, last 10 cycles;
+  counts only, no key), `POST /api/learn` `{agents, force}` (owner token; 202 with the cycle id,
+  409 while one runs), `stormo core learn [agent…] [--force]` (follows the cycle to its end),
+  `stormo core learning`. The office's core panel shows the schedule and the last cycle.
+
 ## 7. Compliance validation
 
 Rule-based checks in the service, LLM-judged checks in the core agent. Each produces a finding
@@ -449,7 +473,9 @@ Findings never trigger restarts. Severity `high` alerts the owner; everything sh
 ## Data (core.db, SQLite, `.swarm/core/`)
 
 `agents` (last state), `state_events`, `activity` (7-day retention), `llm_usage`, `messages`,
-`deliveries`, `files`, `file_events`, `locks`, `findings`, `learn_runs`. `auth/chatgpt.json` stays a
+`deliveries`, `files`, `file_events`, `locks`, `findings`, `learn_runs`. Built so far (schema
+version 4): `activity`, `messages`, `deliveries`, `findings`, `files`, `file_events`, `locks`,
+`learn_cycles`, `learn_runs`. `auth/chatgpt.json` stays a
 separate 0600 file and is never in the database.
 
 ## HTTP surface
@@ -465,6 +491,8 @@ separate 0600 file and is never in the database.
 | `GET /api/agents/<id>/timeline` (built) | loopback | the agent's newest hook events: event, tool, time |
 | `GET /api/agents/<id>/activity` (built) | owner token, or that agent's key | the same with sessions and previews |
 | `GET /api/messages`, `GET /api/findings`, `GET /api/workdir` (built) | owner token | bus threads in full; findings; workdir locks and changes |
+| `GET /api/learning` (built) | loopback | learning schedule and cycles, counts only |
+| `POST /api/learn` (built) | owner token | start a learning cycle |
 | `GET /avatars/<agent>.png` (built) | loopback | the agent's persona portrait, read in place |
 | `/`, `/ui/app.js`, `/ui/style.css` (built) | loopback browser | the office UI |
 
@@ -484,7 +512,7 @@ pkg/core/
   workdir.go           scan, attribution, locks, fs_* tools (built)
   bus.go               messages, delivery, loop guards (built)
   wake.go              wake runs (Hermes /v1/runs) and the urgent Slack mirror (built)
-  learn.go             nap triggers, learning cycle
+  learn.go             learning cycle: schedule, nap, dream, digest (built)
   compliance.go        rule checks → findings
   mcp.go               MCP server (built: msg_*, fs_*)
   ui/                  index.html, app.js, style.css: the office (built)
@@ -520,7 +548,7 @@ which another session owns right now:
 | 3 | activity ingest + agent page | UI shows the current tool of a busy agent in real time. **Built**: signed ingest, live tool per agent on `/api/fleet` and in the office, agent timeline, `stormo core activity`; the UI polls (2.5 s), no SSE yet |
 | 4 | workdir mount, watcher, attribution, locks, `fs_*` MCP tools, workdir skill | two agents contend for a file: the second sees the lock and holder; a terminal write is attributed. **Built** (tested against the scan and a recorded timeline; not yet run with live agents) |
 | 5 | comms bus (`msg_*`), wake delivery, loop guards | agent A asks agent B a question and gets an answer with no human in the loop, with no Slack noise. **Built** (tested with a fake agent API; not yet run between two live agents) |
-| 6 | learning cycle, nap trigger, schedule, digest | nightly cycle produces proposals and a summary without manual steps |
+| 6 | learning cycle, nap trigger, schedule, digest | nightly cycle produces proposals and a summary without manual steps. **Built**, opt-in per instance (`core.learning.at`); tested with fake nap and dream |
 | 7 | rule-based compliance + findings page | each rule has a test fixture that raises it |
 | 8 | `core` Hermes agent (persona, Slack app, cron, MCP scope) | daily digest in Slack; compliance samples judged locally |
 | 9 | AWS (later) | core as an ECS service, workdir on EFS as a group access point, Service Connect, gateway disabled |
@@ -532,8 +560,9 @@ which another session owns right now:
 2. ~~**Workdir and the unit rule.**~~ Decided as planned and built (phase 4): `workdir/group` for
    everyone, `workdir/<unit>` for that unit only, replacing `.swarm/shared` locally; containers keep
    the `/shared/<layer>` paths.
-3. **Who may trigger naps and learning cycles**: core on a schedule by default; whether the core
-   agent may trigger them on its own or only suggest.
+3. **Who may trigger naps and learning cycles**: built as the core on the instance's opt-in
+   schedule, plus the owner (`stormo core learn`). Still open: whether the core agent (phase 8)
+   may trigger them on its own or only suggest.
 4. **Alert channel**: a `#swarm-ops` Slack channel through the core agent's app vs. a plain webhook
    from the service (works before the core agent exists).
 5. **ChatGPT plan usage: eligibility and allocation.** The program is documented for open-source,

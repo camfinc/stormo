@@ -103,6 +103,33 @@ var migrations = []string{
 		expires INTEGER NOT NULL,
 		UNIQUE (owner, pattern)
 	);`,
+	// 4: learning cycles (phase 6): one row per cycle, one per agent in it. Counts only.
+	`CREATE TABLE learn_cycles (
+		id       INTEGER PRIMARY KEY,
+		trigger  TEXT NOT NULL,
+		started  INTEGER NOT NULL,
+		finished INTEGER,
+		status   TEXT NOT NULL,
+		digest   TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE learn_runs (
+		id                INTEGER PRIMARY KEY,
+		cycle             INTEGER NOT NULL REFERENCES learn_cycles(id) ON DELETE CASCADE,
+		agent             TEXT NOT NULL,
+		started           INTEGER NOT NULL,
+		finished          INTEGER NOT NULL,
+		napped            INTEGER NOT NULL,
+		nap_note          TEXT NOT NULL DEFAULT '',
+		naps              INTEGER NOT NULL DEFAULT 0,
+		new_learnings     INTEGER NOT NULL DEFAULT 0,
+		resighted         INTEGER NOT NULL DEFAULT 0,
+		skill_proposals   INTEGER NOT NULL DEFAULT 0,
+		cron_proposal     INTEGER NOT NULL DEFAULT 0,
+		pending_learnings INTEGER NOT NULL DEFAULT 0,
+		pending_skills    INTEGER NOT NULL DEFAULT 0,
+		error             TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX learn_runs_cycle ON learn_runs(cycle);`,
 }
 
 // DB is core.db.

@@ -27,6 +27,8 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /api/messages` | `threads` [{`thread`, `subject`, `updated`, `messages` [{`id`, `thread`, `from`, `to`, `subject`, `body`, `priority`, `attach`, `hop`, `sent`, `recipients` [{`agent`, `read`, `acked`, `woken`}]}]}], newest thread first; `?agent=`, `?limit=` (default 30). Owner token |
 | `GET /api/findings` | `findings` [{`id`, `agent`, `rule`, `severity`, `evidence`, `firstSeen`, `lastSeen`, `count`, `status`}]; `?all=1` adds resolved ones. Owner token |
 | `GET /api/workdir` | `locks` [{`owner`, `path`, `kind`, `reason`, `created`, `expires`}], `changes` [{`path`, `at`, `kind`, `agent`, `how`, `violation`}] newest first (`?limit=`, default 50), `layers` {layer: files}. Owner token |
+| `GET /api/learning` | `at`, `timezone`, `next` (the schedule, empty when off), `running` (cycle id or null), `cycles` [{`id`, `trigger`, `started`, `finished`, `status`, `digest`, `runs` [{`agent`, `started`, `finished`, `napped`, `napNote`, `naps`, `newLearnings`, `resighted`, `skillProposals`, `cronProposal`, `pendingLearnings`, `pendingSkills`, `error`}]}], newest first. Counts only |
+| `POST /api/learn` | body `{agents, force}`; 202 `{cycle}`, 409 while a cycle runs. Owner token |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models`, per-agent `usage` and `active` |
 | `GET /avatars/<id>.png` | the agent's newest portrait, 404 when it has none |
@@ -72,6 +74,8 @@ into an `error` event.
 | `core messages [agent] [n]` | `threads` (as `/api/messages`) |
 | `core findings [all]` | `findings` (as `/api/findings`) |
 | `core workdir [n]` | as `/api/workdir` |
+| `core learn [agent…] [--force]` | the finished cycle (as in `/api/learning`); a `step` per agent while it runs |
+| `core learning` | as `/api/learning` |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
 | `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |

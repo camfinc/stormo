@@ -4,7 +4,9 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -98,6 +100,8 @@ type CoreOptions struct {
 	NoMirror bool
 	// WorkdirRoot is the shared space the core tracks; "" is the instance's workdir/.
 	WorkdirRoot string
+	// LearnDeps are the learning cycle's nap, dream and counts; zero values take the real ones.
+	LearnDeps LearnDeps
 }
 
 // Core is a running core service.
@@ -113,6 +117,7 @@ type Core struct {
 	Monitor *Monitor
 	Bus     *Bus
 	Workdir *Workdir
+	Learner *Learner
 	MCP     *MCP
 	keys    *AgentKeys
 	owner   string
@@ -314,10 +319,12 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
-	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, MCP: mcp,
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: o.LearnDeps})
+	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
 		keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
+	go learner.Run(c.stop, time.Minute)
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -414,6 +421,40 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case path == "/mcp":
 			mcp.Handle(w, r)
+			return
+		case get && path == "/api/learning":
+			// Schedule and counts per agent: no lesson text, so no key.
+			v, err := learner.View(10)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read learning cycles"))
+				return
+			}
+			writeJSONBody(w, 200, v)
+			return
+		case r.Method == http.MethodPost && path == "/api/learn":
+			// Writes agents' learnings in the working tree: the owner only.
+			if !c.caller(r).Owner {
+				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+				return
+			}
+			var req struct {
+				Agents []string `json:"agents"`
+				Force  bool     `json:"force"`
+			}
+			if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil && err != io.EOF {
+				writeJSONBody(w, 400, errBody("bad_request", "body is {agents, force}"))
+				return
+			}
+			id, err := learner.Start("manual", req.Agents, req.Force)
+			if errors.Is(err, ErrCycleRunning) {
+				writeJSONBody(w, 409, errBody("conflict", err.Error()))
+				return
+			}
+			if err != nil {
+				writeJSONBody(w, 400, errBody("bad_request", err.Error()))
+				return
+			}
+			writeJSONBody(w, 202, map[string]any{"cycle": id})
 			return
 		case get && path == "/api/workdir":
 			// File names can name clients: the owner only.

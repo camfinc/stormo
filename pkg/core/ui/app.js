@@ -1088,9 +1088,38 @@ function corePanel() {
       ${rows.map(([id, u]) => `<tr><td>${esc(name(id))}</td><td>${u.requests}</td><td>${u.rateLimited}</td><td>${compact(u.inputTokens + u.outputTokens)}</td><td>${ago(u.lastAt)}</td></tr>`).join("")}</table>`
       : '<p class="note">No model calls yet.</p>'}
     ${gw.manageUsageUrl && gw.login === "ok" ? `<a class="usage-link${limited ? " primary" : ""}" href="${esc(gw.manageUsageUrl)}" target="_blank" rel="noopener noreferrer">Manage usage <span aria-hidden="true">↗</span></a>` : ""}
+    ${learningHTML()}
     <h3>Commands</h3>
-    <div class="cmds">${gw.login !== "ok" ? cmdButton("swarm core login", "sign in") : ""}${cmdButton("swarm core status", "usage")}</div>
+    <div class="cmds">${gw.login !== "ok" ? cmdButton("swarm core login", "sign in") : ""}${cmdButton("swarm core status", "usage")}${cmdButton("swarm core learn", "run a learning cycle")}</div>
   </div>`;
+}
+
+// The learning cycle (counts only), fetched while the core panel is open.
+let learning = null;
+
+async function fetchLearning() {
+  try {
+    const r = await fetch("/api/learning", { cache: "no-store" });
+    if (r.ok) learning = await r.json();
+  } catch {
+    /* keep the last one */
+  }
+}
+
+function learningHTML() {
+  if (!learning) return "";
+  const last = learning.cycles?.[0];
+  const next = learning.next ? `; next ${esc(new Date(learning.next).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }))}` : "";
+  const sched = learning.at ? `daily at ${esc(learning.at)} <small>(${esc(learning.timezone)}${next})</small>` : "<small>off: set <code>core.learning.at</code> in stormo.yaml</small>";
+  const sum = (k) => last?.runs?.reduce((n, r) => n + (r[k] ?? 0), 0) ?? 0;
+  return `<h3>Learning</h3>
+    <dl class="stats">
+      <dt>Schedule</dt><dd>${sched}</dd>
+      ${learning.running ? `<dt>Now</dt><dd>cycle ${learning.running} running</dd>` : ""}
+      ${last ? `<dt>Last cycle</dt><dd>${ago(last.started)} <small>(${esc(last.trigger)}, ${esc(last.status)})</small></dd>
+      <dt>Result</dt><dd>${sum("newLearnings")} new lessons · ${sum("skillProposals")} skill proposals <small>over ${last.runs.length} agent${last.runs.length === 1 ? "" : "s"}</small></dd>
+      <dt>To review</dt><dd${sum("pendingLearnings") + sum("pendingSkills") ? ' class="warn"' : ""}>${sum("pendingLearnings")} lessons · ${sum("pendingSkills")} skills <small>(swarm learn list &lt;agent&gt;)</small></dd>` : `<dt>Last cycle</dt><dd><small>none yet</small></dd>`}
+    </dl>`;
 }
 
 function vacantPanel(unit) {
@@ -1158,6 +1187,7 @@ async function poll() {
     const key = JSON.stringify([next.units.map((u) => u.id), next.agents.map((a) => [a.id, a.unit, a.name, a.avatar]), !!next.robot]);
     snap = next;
     if (selected?.kind === "agent") await fetchTimeline(selected.id);
+    if (selected?.kind === "core") await fetchLearning();
     if (key !== rosterKey) {
       rosterKey = key;
       build();

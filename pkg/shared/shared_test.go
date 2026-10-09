@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/instance"
@@ -143,6 +144,7 @@ func TestLocalSkillAddsTheWorkdirHelper(t *testing.T) {
 	}
 
 	// Run the helper against a fake core.
+	var mu sync.Mutex
 	var got []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-core-key-0123456789" {
@@ -151,7 +153,9 @@ func TestLocalSkillAddsTheWorkdirHelper(t *testing.T) {
 		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
 		got = append(got, req)
+		mu.Unlock()
 		params := req["params"].(map[string]any)
 		var res map[string]any
 		switch params["name"] {
@@ -186,9 +190,12 @@ func TestLocalSkillAddsTheWorkdirHelper(t *testing.T) {
 	if err != nil || !strings.Contains(out, "locked /shared/sales/q4.md (hard)") || !strings.Contains(out, "note: nova holds a soft lock") {
 		t.Fatalf("lock: %v\n%s", err, out)
 	}
-	args := got[0]["params"].(map[string]any)["arguments"].(map[string]any)
-	if got[0]["method"] != "tools/call" || args["path"] != "/shared/sales/q4.md" || args["reason"] != "drafting" || args["kind"] != "hard" {
-		t.Errorf("request %v", got[0])
+	mu.Lock()
+	first := got[0]
+	mu.Unlock()
+	args := first["params"].(map[string]any)["arguments"].(map[string]any)
+	if first["method"] != "tools/call" || args["path"] != "/shared/sales/q4.md" || args["reason"] != "drafting" || args["kind"] != "hard" {
+		t.Errorf("request %v", first)
 	}
 	if out, err := run("unlock", "/shared/sales/q4.md"); err == nil || !strings.Contains(out, "locked: atlas holds") {
 		t.Errorf("a refusal exits 1 with the reason: %v\n%s", err, out)

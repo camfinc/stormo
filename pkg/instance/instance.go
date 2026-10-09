@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -83,6 +84,22 @@ type Clock struct {
 	TZ   string `json:"tz" yaml:"tz"`
 }
 
+// CoreLearning is when the swarm core runs the learning cycle on its own (stormo.yaml
+// core.learning): each agent napped, then dreamed into its working tree, one after another. Off
+// unless At is set; accepting, rejecting and promoting stay human (`stormo learn`).
+type CoreLearning struct {
+	// Daily start time "HH:MM" in Timezone; "" never starts on its own.
+	At string `json:"at,omitempty"`
+	// IANA zone for At; "" is the host's.
+	Timezone string `json:"timezone,omitempty"`
+	// Minutes between two agents' turns in a scheduled cycle (default 2).
+	StaggerMinutes int `json:"staggerMinutes"`
+	// How long to wait for a busy agent to go quiet before dreaming without a fresh nap (default 30).
+	QuietWaitMinutes int `json:"quietWaitMinutes"`
+	// The agents a scheduled cycle covers; empty is every agent.
+	Agents []string `json:"agents,omitempty"`
+}
+
 // Instance is a loaded stormo.yaml.
 type Instance struct {
 	// Absolute path of the instance directory.
@@ -105,7 +122,9 @@ type Instance struct {
 	Clocks        []Clock `json:"clocks"`
 	// Office UI look per unit id (stormo.yaml office.units).
 	OfficeUnits map[string]OfficeUnit `json:"officeUnits"`
-	Aws         AwsTarget             `json:"aws"`
+	// The core's own learning schedule (stormo.yaml core.learning).
+	CoreLearning CoreLearning `json:"coreLearning"`
+	Aws          AwsTarget    `json:"aws"`
 }
 
 // Error is a problem with an instance's stormo.yaml or with finding one.
@@ -113,7 +132,10 @@ type Error struct{ Msg string }
 
 func (e *Error) Error() string { return e.Msg }
 
-var slugRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var (
+	slugRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	atRe   = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+)
 
 // ValidSlug reports whether s can be an instance slug: lowercase letters, digits and hyphens,
 // starting with a letter.
@@ -142,6 +164,15 @@ type rawFile struct {
 		Clocks []Clock               `yaml:"clocks"`
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
+	Core struct {
+		Learning struct {
+			At               string   `yaml:"at"`
+			Timezone         string   `yaml:"timezone"`
+			StaggerMinutes   *int     `yaml:"stagger_minutes"`
+			QuietWaitMinutes *int     `yaml:"quiet_wait_minutes"`
+			Agents           []string `yaml:"agents"`
+		} `yaml:"learning"`
+	} `yaml:"core"`
 	Deploy struct {
 		Aws struct {
 			Account          any    `yaml:"account"`
@@ -206,6 +237,27 @@ func Load(root string) (*Instance, error) {
 			}
 		}
 	}
+	cl := raw.Core.Learning
+	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents}
+	if cl.At != "" && !atRe.MatchString(cl.At) {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.at must be a 24-hour time like \"03:00\", got %q", path, cl.At)}
+	}
+	if cl.Timezone != "" {
+		if _, err := time.LoadLocation(cl.Timezone); err != nil {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.timezone: %v", path, err)}
+		}
+	}
+	for name, v := range map[string]*int{"stagger_minutes": cl.StaggerMinutes, "quiet_wait_minutes": cl.QuietWaitMinutes} {
+		if v != nil && (*v < 0 || *v > 24*60) {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.%s must be 0 to 1440", path, name)}
+		}
+	}
+	if cl.StaggerMinutes != nil {
+		learning.StaggerMinutes = *cl.StaggerMinutes
+	}
+	if cl.QuietWaitMinutes != nil {
+		learning.QuietWaitMinutes = *cl.QuietWaitMinutes
+	}
 	rules := raw.Scrub.Rules
 	if rules == nil {
 		rules = []ScrubRule{}
@@ -232,6 +284,7 @@ func Load(root string) (*Instance, error) {
 		BridgeActions:      raw.Bridge.Actions,
 		Clocks:             raw.Office.Clocks,
 		OfficeUnits:        orUnits(raw.Office.Units),
+		CoreLearning:       learning,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

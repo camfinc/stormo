@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,5 +67,26 @@ func TestDefaultsAndPins(t *testing.T) {
 		if _, err := Load(mk(t, filepath.Join(tmp, "bad"), bad)); err == nil || !strings.Contains(err.Error(), "slug is required") {
 			t.Errorf("%q: %v", bad, err)
 		}
+	}
+}
+
+func TestCoreLearning(t *testing.T) {
+	tmp := t.TempDir()
+	off, err := Load(mk(t, filepath.Join(tmp, "off"), "slug: acme\n"))
+	if err != nil || off.CoreLearning.At != "" || off.CoreLearning.StaggerMinutes != 2 || off.CoreLearning.QuietWaitMinutes != 30 {
+		t.Fatalf("defaults: no schedule, stagger 2, quiet wait 30: %+v %v", off.CoreLearning, err)
+	}
+	on, err := Load(mk(t, filepath.Join(tmp, "on"), "slug: acme\ncore:\n  learning:\n    at: \"03:30\"\n    timezone: Europe/Lisbon\n    stagger_minutes: 0\n    agents: [atlas]\n"))
+	if err != nil || on.CoreLearning.At != "03:30" || on.CoreLearning.Timezone != "Europe/Lisbon" || on.CoreLearning.StaggerMinutes != 0 || strings.Join(on.CoreLearning.Agents, ",") != "atlas" {
+		t.Fatalf("%+v %v", on.CoreLearning, err)
+	}
+	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1"} {
+		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", i)), "slug: acme\ncore:\n  learning:\n    "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.learning") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	ex, err := Load("../../examples/minimal")
+	if err != nil || ex.CoreLearning.At != "03:00" {
+		t.Errorf("the example runs the cycle at 03:00: %+v %v", ex.CoreLearning, err)
 	}
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,7 +33,9 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core activity <agent> [n]              the agent's last n hook events with previews (files, commands; default 40)
   core messages [agent] [n]              the newest n threads of the agents' message bus, in full (default 20)
   core findings [all]                    rule breaches the core saw (loop guards, unit boundary, locks); all adds resolved
-  core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)`
+  core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)
+  core learn [agent…] [--force]          run a learning cycle now (nap + dream per agent, waits for busy agents unless --force)
+  core learning                          the learning schedule (stormo.yaml core.learning) and the last cycles`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -247,6 +250,8 @@ type CommandOptions struct {
 	Out *out.Writer
 	// NoOpen: login reports the sign-in page (an auth_url event) instead of opening a browser.
 	NoOpen bool
+	// Force: `core learn` naps busy agents too.
+	Force bool
 }
 
 // LoginResult is `core login` and `core logout`'s outcome.
@@ -457,6 +462,83 @@ func workdirCmd(inst *instance.Instance, args []string, o *out.Writer) error {
 	return nil
 }
 
+func printCycle(w io.Writer, c Cycle) {
+	fmt.Fprintf(w, "cycle %d (%s), started %s: %s\n", c.ID, c.Trigger, c.Started, c.Status)
+	for _, r := range c.Runs {
+		nap := "napped"
+		if !r.Napped {
+			nap = r.NapNote
+		}
+		line := fmt.Sprintf("  %-12s %d naps folded, %d new lessons, %d skill proposals; waiting for review: %d lessons, %d skills (%s)",
+			r.Agent, r.Naps, r.NewLearnings, r.SkillProposals, r.PendingLearnings, r.PendingSkills, nap)
+		if r.Error != "" {
+			line = fmt.Sprintf("  %-12s dream failed: %s (%s)", r.Agent, r.Error, nap)
+		}
+		fmt.Fprintln(w, line)
+	}
+	if c.Digest != "" {
+		fmt.Fprintf(w, "digest: %s\n", c.Digest)
+	}
+}
+
+func learn(inst *instance.Instance, args []string, force bool, o *out.Writer) error {
+	body, _ := json.Marshal(map[string]any{"agents": args, "force": force})
+	var started struct {
+		Cycle int64 `json:"cycle"`
+	}
+	if err := ownerJSON(inst.Root, http.MethodPost, "/api/learn", bytes.NewReader(body), &started); err != nil {
+		return err
+	}
+	o.Step("learning cycle %d started; following it (Ctrl-C leaves it running in the core)", started.Cycle)
+	seen := 0
+	for {
+		time.Sleep(2 * time.Second)
+		var v LearningView
+		if err := ownerJSON(inst.Root, http.MethodGet, "/api/learning", nil, &v); err != nil {
+			return err
+		}
+		var c *Cycle
+		for i := range v.Cycles {
+			if v.Cycles[i].ID == started.Cycle {
+				c = &v.Cycles[i]
+			}
+		}
+		if c == nil {
+			return fmt.Errorf("cycle %d is gone from the core", started.Cycle)
+		}
+		for ; seen < len(c.Runs); seen++ {
+			r := c.Runs[seen]
+			o.Step("%s: %d new lessons, %d skill proposals", r.Agent, r.NewLearnings, r.SkillProposals)
+		}
+		if c.Status != "running" {
+			o.Result(c, func(w io.Writer) { printCycle(w, *c) })
+			return nil
+		}
+	}
+}
+
+func learningCmd(inst *instance.Instance, o *out.Writer) error {
+	var v LearningView
+	if err := ownerJSON(inst.Root, http.MethodGet, "/api/learning", nil, &v); err != nil {
+		return err
+	}
+	o.Result(v, func(w io.Writer) {
+		if v.At == "" {
+			fmt.Fprintln(w, "schedule: off (set core.learning.at in stormo.yaml; `stormo core learn` runs one now)")
+		} else {
+			fmt.Fprintf(w, "schedule: daily at %s %s, next %s\n", v.At, v.Timezone, v.Next)
+		}
+		if v.Running != nil {
+			fmt.Fprintf(w, "running: cycle %d\n", *v.Running)
+		}
+		for _, c := range v.Cycles {
+			fmt.Fprintln(w)
+			printCycle(w, c)
+		}
+	})
+	return nil
+}
+
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
 	o := opts.Out
@@ -480,6 +562,10 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return findings(inst, args, o)
 	case "workdir":
 		return workdirCmd(inst, args, o)
+	case "learn":
+		return learn(inst, args, opts.Force, o)
+	case "learning":
+		return learningCmd(inst, o)
 	case "login":
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {

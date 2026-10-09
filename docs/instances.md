@@ -61,6 +61,14 @@ office:
   clocks:                         # lobby wall of the office UI
     - { city: Lisbon, tz: Europe/Lisbon }
 
+core:
+  learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`
+    at: "03:00"                   # daily start, 24-hour time; each agent is napped, then dreamed
+    timezone: Europe/Lisbon       # for `at` (default: the host's)
+    stagger_minutes: 2            # between agents in a scheduled cycle (default 2)
+    quiet_wait_minutes: 30        # wait this long for a busy agent, then dream without a fresh nap (default 30)
+    agents: [atlas]               # default: every agent
+
 deploy:
   aws:                            # unset fields render as <unset> and `deploy render` reports them
     account: "123456789012"
