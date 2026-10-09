@@ -14,7 +14,8 @@ on `examples/minimal` only.
   `bridge/actions.yaml`. Tests use the example instance (Acme), never a real one.
 - **Persisted formats are contracts**: the nap store layout and manifests (the local store lives in
   `agents/<id>/data/store`; its layout did not change), ledger lines, watermarks, baseline.json skill
-  hashes, `.swarm/ports.json`, the core's auth files, the secrets files (`secrets.local.yaml` and each
+  hashes, `.swarm/ports.json`, the core's auth files (`.swarm/core/auth/chatgpt.json` is the default
+  ChatGPT connection's, `auth/<name>/` another's, `registration.json` shared), stormo.yaml `connections:`, the secrets files (`secrets.local.yaml` and each
   agent's `data/secrets.yaml`, read as its `agents.<id>` layer), agent.yaml's `format` (format 0 still
   loads; `stormo migrate agent` moves it to 1) and the `stormo export` zip (`stormo-agent/1`). Change
   one only with a migration; testdata/classify.json pins the snapshot rules.
