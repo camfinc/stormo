@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"github.com/camfinc/stormo/pkg/secrets"
 )
 
 // AgentSpec is a new agent as `stormo new agent` takes it (JSON on stdin; docs/api.md). Only Name
@@ -131,6 +132,9 @@ type AgentResult struct {
 	Files []string `json:"files"`
 	// Secrets are the declared names; values go in with `stormo secrets set <id> NAME`.
 	Secrets []string `json:"secrets"`
+	// Missing are the declared names with no local value yet, but for the engine's API key, which
+	// `stormo secrets init` mints.
+	Missing []string `json:"missing"`
 }
 
 // NewAgent writes agents/<id>/ (agent.yaml at the current format, SOUL.md) and, when asked, the
@@ -240,6 +244,14 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 		Files: []string{"agents/" + s.ID + "/agent.yaml", "agents/" + s.ID + "/SOUL.md"}}
 	if unitFile != "" {
 		r.Files = append(r.Files, "units/"+s.Unit+"/unit.yaml")
+	}
+	r.Missing = []string{}
+	file, _ := secrets.Load(secrets.Path(inst.Root))
+	values := secrets.Resolve(file, a, manifest.Local).Values
+	for _, n := range declared {
+		if v, _ := values.Get(n); v == "" && n != eng.Runtime().APIKeyName() {
+			r.Missing = append(r.Missing, n)
+		}
 	}
 	return r, nil
 }

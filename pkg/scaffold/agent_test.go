@@ -56,6 +56,9 @@ func TestNewAgentFromDefaults(t *testing.T) {
 			t.Errorf("secrets %v lack %s", r.Secrets, n)
 		}
 	}
+	if !slices.Contains(r.Missing, "SLACK_BOT_TOKEN") || slices.Contains(r.Missing, "API_SERVER_KEY") {
+		t.Errorf("missing %v: want the channel's tokens, not the engine key secrets init mints", r.Missing)
+	}
 	a := checkAgent(t, inst, "front-desk")
 	if a.Format != manifest.Format || a.Engine.Version != d.Engine.Version || a.Role != "Greets visitors." {
 		t.Errorf("%+v", a)
