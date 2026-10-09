@@ -15,3 +15,10 @@ __pycache__/
 
 # go build -o bin/stormo ./cmd/stormo
 bin/
+
+# apps/macos: SwiftPM and Xcode build output, per-user Xcode state
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
