@@ -26,6 +26,7 @@ import (
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"github.com/camfinc/stormo/pkg/yamlfmt"
 )
 
 // File is one configuration file as an editor sees it.
@@ -170,7 +171,7 @@ func Apply(inst *instance.Instance, rel string, patch []byte, ifHash string) (*F
 		return nil, refuse("invalid", "%s does not parse as a YAML mapping; fix it as text first", t.rel)
 	}
 	applyPatch(doc.Content[0], p.Content[0])
-	body, err := encode(&doc, old)
+	body, err := yamlfmt.Encode(&doc, old)
 	if err != nil {
 		return nil, err
 	}

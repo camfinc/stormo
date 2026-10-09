@@ -22,15 +22,19 @@ units/<unit>/unit.yaml         the org's units, plus group
 units/<unit>/knowledge/*.md    human-authored policy for that layer (compiled into agents)
 personas/<slug>/               persona look: avatar lock, baked avatar + provenance
                                (runtime documents agents exchange live on EFS: /shared/group, /shared/<unit>)
-agents/<id>/
-  agent.yaml                   manifest: unit, engine, model, channels, secret NAMES, non-secret env, actions, state, learning, deploy
+agents/<id>/                   one folder is the whole agent (docs/agent-standard.md)
+  agent.yaml                   manifest, format 1: unit, engine, model, channels, secret NAMES, non-secret env,
+                               actions, schedules, state, memory, limits, learning, deploy
   SOUL.md                      behavior (the persona's look lives in personas/<slug>/)
-  skills/ plugins/             engine-format skills and plugins
-  scripts/                     no-agent cron scripts (Hermes runs them only from $HERMES_HOME/scripts/)
-  hermes/config.base.yaml      engine-specific base config (ported verbatim; overrides applied at build)
-  hermes/cron.jobs.json        scheduled jobs (optional)
+  skills/                      Agent Skills (SKILL.md); $AGENT_HOME is the agent's home at runtime
+  scripts/                     scripts schedules and skills run ($AGENT_HOME/scripts/)
+  engine/<kind>/               what only that engine reads: engine/hermes/config.yaml (Hermes' config,
+                               agent.yaml settings applied over it at build), engine/hermes/plugins/
   bench/*.yaml                 bench scenarios
   learnings/                   dream output: ledger.jsonl, proposals/, watermark.json, DREAM.md
+  data/                        never in git: store/ (local naps), secrets.yaml (its own values), agent.env
+                               (format 0 kept hermes/config.base.yaml, hermes/cron.jobs.json and plugins/;
+                               `stormo migrate agent` moves them)
 bridge/actions.yaml            the instance's bridge actions
 dist/ .swarm/ secrets.local.yaml   generated / local runtime (gitignored)
 ```
@@ -157,9 +161,9 @@ build; `stormo start` builds the sidecar image itself when this engine version h
 `workdir/<layer>` (gitignored; tracked by the core, docs/core.md §4), API on `127.0.0.1:18642+`. Environment comes from `secrets.local.yaml` with its
 `local:` overlay. `start` refuses to run on a production bot/app token.
 
-### Local subscription model (`engine.local`)
+### Local subscription model (`model.local`)
 
-`engine.local: {via: core, model}` makes a local run use the swarm core's model gateway first: the
+`model.local: {via: core, name}` (format 0: `engine.local: {via: core, model}`) makes a local run use the swarm core's model gateway first: the
 core holds the one ChatGPT sign-in (ChatGPT plan usage) and serves an OpenAI-compatible
 `/v1/chat/completions` to every local agent. The AWS model stays as `fallback_providers[0]`.
 Hermes switches to it on a 401 (core not logged in), a 429 (plan limit, held until the reported
@@ -322,7 +326,8 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   (provenance and corroboration).
 - Changed or new skills in the newest nap become scrubbed copies under
   `learnings/proposals/skills/` (a skill already decided at that content hash is not re-proposed).
-  Cron changes become `learnings/proposals/cron/jobs.json`. Skill telemetry is kept in
+  Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
+  form; format 0, or a job agent.yaml cannot express: `learnings/proposals/cron/jobs.json`). Skill telemetry is kept in
   `learnings/skill-usage.json`.
 - It writes the working tree only. It never commits, branches or pushes.
 

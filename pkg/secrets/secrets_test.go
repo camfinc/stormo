@@ -170,8 +170,13 @@ func TestInitKeepsValuesMintsKeysAndIsPrivate(t *testing.T) {
 	if info.Mode().Perm() != 0o600 || !strings.HasPrefix(string(raw), "# acme-stormo secrets. NEVER COMMIT") {
 		t.Errorf("mode %v, header %q", info.Mode().Perm(), strings.SplitN(string(raw), "\n", 2)[0])
 	}
-	if !(strings.Index(string(raw), "\nshared:") < strings.Index(string(raw), "\nagents:")) {
-		t.Error("layer order changed")
+	// A format-1 agent's own values live in its folder, not in secrets.local.yaml.
+	own, err := os.ReadFile(AgentFile(root, "atlas"))
+	if strings.Contains(string(raw), "\nagents:") || err != nil || !strings.Contains(string(own), `APIFY_API_TOKEN: "0123"`) {
+		t.Errorf("secrets.local.yaml:\n%s\natlas's own file:\n%s", raw, own)
+	}
+	if info, _ := os.Stat(AgentFile(root, "atlas")); info.Mode().Perm() != 0o600 {
+		t.Errorf("atlas's own file mode %v", info.Mode().Perm())
 	}
 	if _, again, _ := Init(inst); len(again) != 0 {
 		t.Errorf("second init added %v", again)

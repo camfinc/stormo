@@ -166,11 +166,11 @@ func TestApplyKeepsTheFileAsWritten(t *testing.T) {
 		want        []string
 	}{
 		{"nothing", `{}`, []string{}},
-		{"same values", `{"name":"Atlas","learning":{"seed_fill":0.6,"memory_char_limit":2200}}`, []string{}},
-		{"one scalar keeps its comment", `{"engine":{"model":"openai/gpt-7"}}`,
-			[]string{"-  model: openai/gpt-6-luna    # the cloud model", "+  model: openai/gpt-7 # the cloud model"}},
-		{"an integer stays an integer", `{"learning":{"memory_char_limit":3000}}`,
-			[]string{"-  memory_char_limit: 2200", "+  memory_char_limit: 3000"}},
+		{"same values", `{"name":"Atlas","learning":{"seed_fill":0.6},"memory":{"agent":2200}}`, []string{}},
+		{"one scalar keeps its comment", `{"model":{"name":"openai/gpt-7"}}`,
+			[]string{"-  name: openai/gpt-6-luna    # the cloud model", "+  name: openai/gpt-7 # the cloud model"}},
+		{"an integer stays an integer", `{"memory":{"agent":3000}}`,
+			[]string{"-  agent: 2200", "+  agent: 3000"}},
 		{"null deletes", `{"learning":{"seed_fill":null}}`, []string{"-  seed_fill: 0.6"}},
 		{"a list loses one item", `{"secrets":["OPENROUTER_API_KEY","SLACK_BOT_TOKEN","SLACK_APP_TOKEN","ELEVENLABS_API_KEY","API_SERVER_KEY"]}`,
 			[]string{"-  - APIFY_API_TOKEN"}},
@@ -230,7 +230,7 @@ func TestShowOffersTheFormsChoices(t *testing.T) {
 	}
 	doc := f.Doc.(map[string]any)
 	o := f.Options
-	if doc["unit"] != "sales" || doc["learning"].(map[string]any)["memory_char_limit"] != 2200 {
+	if doc["unit"] != "sales" || doc["memory"].(map[string]any)["agent"] != 2200 {
 		t.Errorf("doc = %v", doc)
 	}
 	units := []string{}

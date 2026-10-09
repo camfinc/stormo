@@ -84,7 +84,7 @@ stored under `local.agents.<id>.SWARM_CORE_KEY` in `secrets.local.yaml`; core ma
 each request (reloading the file when it changes), so the caller's identity comes from the key, never
 from a field the agent fills in. One key covers the gateway, MCP, ingest and API.
 
-- `stormo secrets init` mints it for every agent with `engine.local.via: core` (`LocalOnlySecrets` in
+- `stormo secrets init` mints it for every agent with `model.local.via: core` (format 0: `engine.local`) (`LocalOnlySecrets` in
   `pkg/manifest`); the core reloads `secrets.local.yaml` when it changes, so no restart is needed.
 - The key is **local-only**: it must never be pushed to Secrets Manager. The manifest needs a
   local-only secret notion (agent-side work, see Handoffs).
@@ -157,7 +157,7 @@ Derived state per agent: `down`, `starting`, `idle`, `busy` (current tool and si
 `stale` (no nap within 2× its interval). Transitions are events: stored, streamed to the UI and,
 when they matter (down, degraded > 5 min, stale), raised as findings.
 
-**Activity ingest (built).** For an agent on the core (`engine.local.via: core`), a local build adds
+**Activity ingest (built).** For an agent on the core (`model.local.via: core`), a local build adds
 the core to its Hermes config as an outbound hook target (`hooks.outbound`, name `swarm-core`,
 `pkg/engine/hermes`): `on_session_start|end`, `pre|post_tool_call`, `pre_approval_request`,
 `post_approval_response`. Hermes posts each one from a background queue (best effort, never

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -598,4 +599,34 @@ func Learn(where place.Where, id string, d *Deps) (*loop.DreamReport, error) {
 		d.Log(fmt.Sprintf("  then:   stormo learn accept|reject %s <id…> · stormo restart %s%s", id, id, remote))
 	}
 	return r, nil
+}
+
+// MigrateAgentData moves agent id's data into its folder (docs/agent-standard.md): the local nap
+// store from .swarm/store/<id>, its own secret values from secrets.local.yaml (which is rewritten,
+// losing its comments), and drops format 0's rendered env. The agent must be stopped. moved is
+// false when everything was already there.
+func MigrateAgentData(inst *instance.Instance, id string) (changes []string, moved bool, err error) {
+	if ok, err := loop.MigrateLocalStore(inst.Root, id); err != nil {
+		return nil, false, err
+	} else if ok {
+		changes, moved = append(changes, "naps: .swarm/store/"+id+" → agents/"+id+"/data/store"), true
+	}
+	f, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return nil, false, err
+	}
+	if !f.InFolder(id) {
+		f.MoveToFolder(id)
+		if err := secrets.Save(secrets.Path(inst.Root), inst.Names.Resource, f); err != nil {
+			return nil, false, err
+		}
+		changes, moved = append(changes, "secret values: agents."+id+" in secrets.local.yaml → agents/"+id+"/data/secrets.yaml"), true
+	}
+	if err := os.Remove(filepath.Join(inst.Root, ".swarm", "env", id+".env")); err == nil {
+		changes = append(changes, "removed .swarm/env/"+id+".env (rendered into the agent's folder on its next start)")
+	}
+	if _, err := manifest.EnsureDataDir(inst.Root, id); err != nil {
+		return nil, false, err
+	}
+	return changes, moved, nil
 }

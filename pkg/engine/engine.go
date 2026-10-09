@@ -145,6 +145,26 @@ type LogNoise struct {
 	Why string
 }
 
+// FormatZero is an engine whose format-0 agents kept files that agent.yaml format 1 replaces
+// (docs/agent-standard.md); `stormo migrate agent` asks it what they become.
+type FormatZero interface {
+	MigrateFormatZero(agentDir string) (*Migration, error)
+}
+
+// Migration is what an agent's format-0 engine files become: files to write and directories to
+// move (relative to the agent's directory), files and directories to remove afterwards, and the
+// settings lifted into agent.yaml.
+type Migration struct {
+	Write  map[string][]byte
+	Rename map[string]string
+	Remove []string
+	Limits manifest.Limits
+	// Comments are the engine file's comments on a lifted limit, by limits key.
+	Comments map[string]string
+	// Schedules from the engine's own schedules file; nil when it had none.
+	Schedules []manifest.Schedule
+}
+
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.
 type Engine interface {
 	Kind() string

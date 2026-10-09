@@ -95,7 +95,7 @@ func TestManifestRejections(t *testing.T) {
 		}, "is not a Member ID"},
 		{func(s string) string { return strings.Replace(s, "unit: sales", "unit: nowhere", 1) }, `unknown unit "nowhere"`},
 		{func(s string) string {
-			return strings.Replace(s, "  - sales.crm.deals.list\n\nstate", "  - support.x.y.z\n\nstate", 1)
+			return strings.Replace(s, "actions:\n  - sales.crm.deals.list\n", "actions:\n  - support.x.y.z\n", 1)
 		}, "belongs to unit"},
 	} {
 		os.WriteFile(yamlPath, []byte(c.edit(string(original))), 0o644)

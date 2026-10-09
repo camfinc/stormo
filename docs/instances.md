@@ -129,7 +129,9 @@ instance: inside a sidecar it is the agent's engine home.
 - **Personas.** `persona: {path: personas/<slug>}` resolves inside the instance; add
   `repo: <dir>` for a persona kept in a sibling repo (resolved against `SWARM_REPOS_DIR`, default
   the instance's parent).
-- **Engines.** Agents pick `engine.kind`; engine-specific files live in `agents/<id>/<engine>/`.
+- **Engines.** Agents pick `engine.kind`; what only that engine reads lives in `agents/<id>/engine/<kind>/`
+  (format 0: `agents/<id>/<engine>/`). agent.yaml itself is engine-neutral (format 1,
+  docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there.
 
 ## Tests
 

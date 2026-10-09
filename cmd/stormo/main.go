@@ -68,6 +68,8 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
+  migrate agent [agent...]               bring agents to agent.yaml format 1 (docs/agent-standard.md);
+                                         a stopped agent's data moves into agents/<id>/data too
   build <agent>                          compile dist/<agent>/baseline (also a Hermes distribution)
   inspect <agent> [--target aws|local]   everything the engine computes for the agent, as JSON
   bench <agent> [--runner mock|docker] [--env-file f] [--tag t]   docker: env from secrets.local.yaml
@@ -295,6 +297,52 @@ func run(args []string) error {
 
 	case "config":
 		return configCmd(inst, sub, rest)
+
+	case "migrate":
+		if sub != "agent" {
+			return errUsage
+		}
+		ids := rest
+		if len(ids) == 0 {
+			ids = manifest.AgentIDs(inst.Root)
+		}
+		compose, composeErr := local.ComposeCommand()
+		reports := []*config.MigrateReport{}
+		for _, id := range ids {
+			running := false
+			if composeErr == nil {
+				st := place.LocalStateOf(id, func() ([]string, error) { return compose, nil })
+				running = st.State == "running" || st.State == "starting" || st.State == "restarting"
+			}
+			r, err := config.MigrateAgent(inst, id)
+			if err != nil {
+				return err
+			}
+			if running {
+				r.Data = "running"
+			} else {
+				changes, moved, err := ops.MigrateAgentData(inst, id)
+				if err != nil {
+					return err
+				}
+				r.Changes, r.Data = append(r.Changes, changes...), "in-place"
+				if moved {
+					r.Data = "moved"
+				}
+			}
+			for _, c := range r.Changes {
+				step("%s: %s", id, c)
+			}
+			if r.Data == "running" {
+				step("%s: running, so its data stays where it is; `stormo stop %s && stormo migrate agent %s` moves it", id, id, id)
+			}
+			reports = append(reports, r)
+		}
+		if err := check(inst, ids); err != nil {
+			return fmt.Errorf("migrated, but check fails: %w", err)
+		}
+		result(reports, func(io.Writer) {})
+		return nil
 
 	case "build":
 		id, err := need(sub, "agent")
