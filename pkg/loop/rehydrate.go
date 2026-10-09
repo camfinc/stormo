@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -64,120 +63,6 @@ func readBaseline(dir string) (map[string][]byte, *build.Info, error) {
 	}
 	var info build.Info
 	return files, &info, json.Unmarshal(body, &info)
-}
-
-// MergeCron: baseline jobs win by id (the repo is the source of truth); jobs the agent created at
-// runtime are kept. Works on raw JSON so every job keeps its own key order.
-func MergeCron(baseline, live string) (string, error) {
-	if strings.TrimSpace(live) == "" {
-		return baseline, nil
-	}
-	if strings.TrimSpace(baseline) == "" {
-		return live, nil
-	}
-	type job = json.RawMessage
-	jobsOf := func(s string) ([]job, []string, map[string]json.RawMessage, bool, error) {
-		var arr []job
-		if json.Unmarshal([]byte(s), &arr) == nil {
-			return arr, nil, nil, true, nil
-		}
-		keys, obj, err := orderedObject([]byte(s))
-		if err != nil {
-			return nil, nil, nil, false, err
-		}
-		if raw, ok := obj["jobs"]; ok {
-			if err := json.Unmarshal(raw, &arr); err != nil {
-				return nil, nil, nil, false, err
-			}
-		}
-		return arr, keys, obj, false, nil
-	}
-	bJobs, bKeys, bObj, bArr, err := jobsOf(baseline)
-	if err != nil {
-		return "", err
-	}
-	lJobs, _, _, _, err := jobsOf(live)
-	if err != nil {
-		return "", err
-	}
-	idOf := func(j job) string {
-		var x struct {
-			ID any `json:"id"`
-		}
-		_ = json.Unmarshal(j, &x)
-		b, _ := json.Marshal(x.ID)
-		return string(b)
-	}
-	ids := map[string]bool{}
-	for _, j := range bJobs {
-		ids[idOf(j)] = true
-	}
-	merged := append([]job{}, bJobs...)
-	for _, j := range lJobs {
-		if !ids[idOf(j)] {
-			merged = append(merged, j)
-		}
-	}
-	var mb bytes.Buffer
-	enc := json.NewEncoder(&mb)
-	enc.SetEscapeHTML(false) // keep "<" in prompts as written
-	if err := enc.Encode(merged); err != nil {
-		return "", err
-	}
-	mergedRaw := bytes.TrimSpace(mb.Bytes())
-	var out []byte
-	if bArr {
-		out = mergedRaw
-	} else {
-		if _, ok := bObj["jobs"]; !ok {
-			bKeys = append(bKeys, "jobs")
-		}
-		bObj["jobs"] = mergedRaw
-		var b bytes.Buffer
-		b.WriteByte('{')
-		for i, k := range bKeys {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			kb, _ := json.Marshal(k)
-			b.Write(kb)
-			b.WriteByte(':')
-			b.Write(bObj[k])
-		}
-		b.WriteByte('}')
-		out = b.Bytes()
-	}
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, out, "", "  "); err != nil {
-		return "", err
-	}
-	return pretty.String(), nil
-}
-
-// orderedObject decodes a JSON object keeping its key order.
-func orderedObject(data []byte) ([]string, map[string]json.RawMessage, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-		return nil, nil, errors.New("cron jobs file is neither a list nor an object")
-	}
-	keys := []string{}
-	obj := map[string]json.RawMessage{}
-	for dec.More() {
-		kt, err := dec.Token()
-		if err != nil {
-			return nil, nil, err
-		}
-		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
-			return nil, nil, err
-		}
-		k := kt.(string)
-		if _, seen := obj[k]; !seen {
-			keys = append(keys, k)
-		}
-		obj[k] = v
-	}
-	return keys, obj, nil
 }
 
 // ChownTree hands dir to uid:gid recursively (symlinks themselves, never their targets).
@@ -342,13 +227,13 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
-	// 4. Cron: merge baseline and runtime-created jobs.
-	if c, ok := live["cron/jobs.json"]; ok {
-		merged, err := MergeCron(string(base["cron/jobs.json"]), string(c.body))
+	// 4. Schedules: merge baseline and runtime-created jobs.
+	if c, ok := live[L.Schedules]; ok && L.Schedules != "" {
+		merged, err := o.Engine.MergeSchedules(base[L.Schedules], c.body)
 		if err != nil {
 			return nil, err
 		}
-		out["cron/jobs.json"] = []byte(merged)
+		out[L.Schedules] = merged
 	}
 
 	// 5. State and raw history come back verbatim.

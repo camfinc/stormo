@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/pkg/core"
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/local"
@@ -37,55 +39,33 @@ func clip(s string, n int) string {
 	return s
 }
 
-// AnalyzeCron finds problems in a Hermes cron/jobs.json: failures, delivery errors, overdue runs.
-func AnalyzeCron(jobsJSON string, now time.Time) []CronIssue {
-	var file struct {
-		Jobs []map[string]any `json:"jobs"`
-	}
-	if err := json.Unmarshal([]byte(jobsJSON), &file); err != nil {
-		return []CronIssue{{"(jobs.json)", "unreadable"}}
-	}
+// AnalyzeSchedules finds problems in an agent's scheduled jobs (as its engine reads its schedules
+// file): failed runs, failure streaks, delivery errors, overdue runs. Paused jobs are skipped.
+func AnalyzeSchedules(jobs []engine.ScheduleStatus, now time.Time) []CronIssue {
 	out := []CronIssue{}
-	for _, j := range file.Jobs {
-		if en, _ := j["enabled"].(bool); !en {
+	for _, j := range jobs {
+		if !j.Enabled {
 			continue
 		}
-		name, _ := j["name"].(string)
-		if name == "" {
-			name = fmt.Sprint(j["id"])
+		if j.Failed {
+			out = append(out, CronIssue{j.Name, "last run " + j.LastStatus + ": " + clip(j.LastError, 160)})
 		}
-		str := func(k string) string {
-			if v, ok := j[k]; ok && v != nil {
-				return fmt.Sprint(v)
-			}
-			return ""
+		if j.FailureStreak > 0 {
+			out = append(out, CronIssue{j.Name, fmt.Sprintf("failure streak %d", j.FailureStreak)})
 		}
-		if st := str("last_status"); st != "" && st != "ok" && st != "silent" && st != "no_change" {
-			out = append(out, CronIssue{name, "last run " + st + ": " + clip(str("last_error"), 160)})
+		if j.DeliveryError != "" {
+			out = append(out, CronIssue{j.Name, "delivery error: " + clip(j.DeliveryError, 160)})
 		}
-		if n, _ := j["failure_streak"].(float64); n > 0 {
-			out = append(out, CronIssue{name, fmt.Sprintf("failure streak %v", n)})
-		}
-		if e := str("last_delivery_error"); e != "" {
-			out = append(out, CronIssue{name, "delivery error: " + clip(e, 160)})
-		}
-		if next, err := time.Parse(time.RFC3339Nano, str("next_run_at")); err == nil && now.Sub(next) > 15*time.Minute {
-			out = append(out, CronIssue{name, "overdue since " + str("next_run_at")})
+		if !j.NextRunAt.IsZero() && now.Sub(j.NextRunAt) > 15*time.Minute {
+			out = append(out, CronIssue{j.Name, "overdue since " + j.NextRunAt.UTC().Format(time.RFC3339)})
 		}
 	}
 	return out
 }
 
-// KnownNoise is log noise already understood (tracked in an instance's findings or harmless).
-var KnownNoise = []struct {
-	Re  *regexp.Regexp
-	Why string
-}{
-	{regexp.MustCompile(`platform '(teams|google_chat)' has no valid toolsets`), "unused platform toolsets in the ported config"},
-	{regexp.MustCompile(`API server is network-accessible .* terminal backend is 'local'`), "by design: the task is the sandbox"},
-	{regexp.MustCompile(`journal_mode was delete and has been switched to WAL`), "Hermes state.db on task-local disk (wal is the swarm override)"},
-	{regexp.MustCompile("As you gave `client` as well, `token` will be unused"), "slack_bolt notice"},
-	{regexp.MustCompile(`PID 1 with no init above it`), "entrypoint override in one-off docker runs"},
+// knownNoise is log noise from Stormo's own side (the engine adds its own, Engine.LogNoise).
+var knownNoise = []engine.LogNoise{
+	{Re: regexp.MustCompile(`PID 1 with no init above it`), Why: "entrypoint override in one-off docker runs"},
 }
 
 type LogGroup struct {
@@ -111,8 +91,10 @@ var (
 	wsRe      = regexp.MustCompile(`\s+`)
 )
 
-// SummarizeLogs groups error/warning lines by a normalized pattern (timestamps, numbers, ids stripped).
-func SummarizeLogs(text string) LogSummary {
+// SummarizeLogs groups error/warning lines by a normalized pattern (timestamps, numbers, ids
+// stripped); lines matching noise (Stormo's and the engine's) are marked known.
+func SummarizeLogs(text string, noise ...engine.LogNoise) LogSummary {
+	noise = append(append([]engine.LogNoise{}, knownNoise...), noise...)
 	groups := map[string]*LogGroup{}
 	order := []string{}
 	s := LogSummary{Top: []LogGroup{}}
@@ -137,7 +119,7 @@ func SummarizeLogs(text string) LogSummary {
 		g, ok := groups[p]
 		if !ok {
 			g = &LogGroup{Level: level, Pattern: p}
-			for _, k := range KnownNoise {
+			for _, k := range noise {
 				if k.Re.MatchString(line) {
 					g.Known = k.Why
 					break
@@ -332,6 +314,10 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 		if err != nil {
 			return nil, err
 		}
+		eng, err := engines.Get(m.Engine.Kind, inst)
+		if err != nil {
+			return nil, err
+		}
 		agentID := containerID(compose, id, "agent")
 		agent := inspect(agentID)
 		nap := inspect(containerID(compose, id, "nap"))
@@ -351,8 +337,14 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 		}
 		cron := []CronIssue{}
 		if agent != nil && agent.State == "running" {
-			if ok, out := sh(false, "docker", "exec", agentID, "cat", "/opt/data/cron/jobs.json"); ok {
-				cron = AnalyzeCron(out, now)
+			if L := eng.Layout(); L.Schedules != "" {
+				if ok, out := sh(false, "docker", "exec", agentID, "cat", L.Home+"/"+L.Schedules); ok {
+					if jobs, err := eng.Schedules([]byte(out)); err != nil {
+						cron = []CronIssue{{"(" + L.Schedules + ")", "unreadable"}}
+					} else {
+						cron = AnalyzeSchedules(jobs, now)
+					}
+				}
 			}
 		}
 		logs := ""
@@ -374,7 +366,7 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 		fresh := Freshness(naps, interval, now)
 		fresh.Count = len(naps)
 		a := AgentReport{ID: id, Unit: m.Unit, Model: m.Engine.Model, Container: agent, NapSidecar: nap, Platforms: json.RawMessage("null"),
-			Cron: cron, Naps: fresh, Logs: SummarizeLogs(logs), Learnings: Learnings{proposed, len(props)}}
+			Cron: cron, Naps: fresh, Logs: SummarizeLogs(logs, eng.LogNoise()...), Learnings: Learnings{proposed, len(props)}}
 		if m.Engine.Local != nil {
 			a.LocalModel = m.Engine.Local.Model
 		}

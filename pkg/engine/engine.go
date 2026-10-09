@@ -3,7 +3,9 @@
 package engine
 
 import (
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/camfinc/stormo/pkg/env"
@@ -54,6 +56,10 @@ type Layout struct {
 	NotRestored []string `json:"notRestored,omitempty"`
 	// Placeholders are files rehydrate creates empty (0600) when missing, before the engine starts.
 	Placeholders []string `json:"placeholders,omitempty"`
+	// Schedules is the engine's scheduled-jobs file relative to home, ScheduleSource the file in the
+	// agent's directory Compile builds it from; empty when the engine has none.
+	Schedules      string `json:"schedules,omitempty"`
+	ScheduleSource string `json:"scheduleSource,omitempty"`
 	// Root for manifest `state:` entries relative to home; each gets <StateRoot>/<name>.
 	StateRoot string `json:"stateRoot"`
 	// uid/gid the engine runs as; rehydrate (root) hands the home to it so the agent can write.
@@ -117,6 +123,27 @@ type Delimited string
 func (d Delimited) Entries(raw string) []string  { return strings.Split(raw, string(d)) }
 func (d Delimited) File(entries []string) string { return strings.Join(entries, string(d)) }
 
+// ScheduleStatus is one scheduled job as the engine's schedules file records it.
+type ScheduleStatus struct {
+	ID, Name string
+	Enabled  bool
+	// LastStatus is the engine's word for the last run ("" before the first); Failed when it was not
+	// a success.
+	LastStatus    string
+	Failed        bool
+	LastError     string
+	DeliveryError string
+	FailureStreak int
+	// NextRunAt is zero when unknown.
+	NextRunAt time.Time
+}
+
+// LogNoise is engine log output already understood, which a review counts but does not flag.
+type LogNoise struct {
+	Re  *regexp.Regexp
+	Why string
+}
+
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.
 type Engine interface {
 	Kind() string
@@ -136,6 +163,12 @@ type Engine interface {
 	// home records them; read returns a home file's content (path relative to the home) or nil.
 	// Naps keep them, but rehydrate and the dream leave them to the image.
 	EngineOwnedSkills(read func(path string) []byte) map[string]bool
+	// MergeSchedules is the schedules file rehydrate writes: the baseline's jobs (the repo is the
+	// source of truth) and the jobs the agent made at runtime (live, from the nap).
+	MergeSchedules(baseline, live []byte) ([]byte, error)
+	// Schedules reads the engine's schedules file.
+	Schedules(body []byte) ([]ScheduleStatus, error)
+	LogNoise() []LogNoise
 	// BenchArgv is one bench turn executed inside the agent image; ParseBench reads its output.
 	BenchArgv(prompt string) []string
 	ParseBench(stdout string, exitCode int) BenchRun

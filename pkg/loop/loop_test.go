@@ -301,17 +301,6 @@ func TestLearningLoop(t *testing.T) {
 	})
 }
 
-func TestMergeCron(t *testing.T) {
-	got, err := MergeCron(`{"jobs":[{"id":"a","prompt":"repo"}]}`, `{"jobs":[{"id":"a","prompt":"stale"},{"id":"b","prompt":"agent-made <x>"}]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "{\n  \"jobs\": [\n    {\n      \"id\": \"a\",\n      \"prompt\": \"repo\"\n    },\n    {\n      \"id\": \"b\",\n      \"prompt\": \"agent-made <x>\"\n    }\n  ]\n}"
-	if got != want {
-		t.Errorf("got %s", got)
-	}
-}
-
 func TestChownTree(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "memories/MEMORY.md"), "x")

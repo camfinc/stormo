@@ -78,6 +78,7 @@ func New(inst *instance.Instance) *Hermes {
 	// Secrets arrive as container env. An existing (empty) .env stops the image from seeding its
 	// example file, whose defaults (e.g. TERMINAL_TIMEOUT=60) would override config.yaml.
 	l.Placeholders = []string{".env"}
+	l.Schedules, l.ScheduleSource = "cron/jobs.json", "hermes/cron.jobs.json"
 	return &Hermes{inst: inst, layout: l}
 }
 

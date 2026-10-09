@@ -258,11 +258,14 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			report.SkillProposals = append(report.SkillProposals, SkillProposalReport{dir, status, piiList})
 		}
 
-		cron, err := learningBlob(s, agentID, last, "cron/jobs.json")
-		if err != nil {
-			return nil, err
+		var cron *string
+		var repoCron []byte
+		if L.Schedules != "" {
+			if cron, err = learningBlob(s, agentID, last, L.Schedules); err != nil {
+				return nil, err
+			}
+			repoCron, _ = os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), filepath.FromSlash(L.ScheduleSource)))
 		}
-		repoCron, _ := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "hermes", "cron.jobs.json"))
 		if cron != nil && learning.Trim(*cron) != learning.Trim(string(repoCron)) {
 			if err := os.MkdirAll(filepath.Join(proposals, "cron"), 0o755); err != nil {
 				return nil, err

@@ -5,9 +5,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/instance"
 )
 
-func TestAnalyzeCron(t *testing.T) {
+// Through the Hermes adapter's reading of cron/jobs.json.
+func TestAnalyzeSchedules(t *testing.T) {
+	h := hermes.New(&instance.Instance{})
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	jobs := `{"jobs":[
 	 {"name":"ok","enabled":true,"last_status":"ok","next_run_at":"2026-10-07T12:05:00Z"},
@@ -16,7 +21,11 @@ func TestAnalyzeCron(t *testing.T) {
 	 {"name":"late","enabled":true,"next_run_at":"2026-10-07T11:00:00Z"},
 	 {"name":"paused","enabled":false,"last_status":"error"}]}`
 	issues := []string{}
-	for _, i := range AnalyzeCron(jobs, now) {
+	read, err := h.Schedules([]byte(jobs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range AnalyzeSchedules(read, now) {
 		issues = append(issues, i.Job+": "+i.Problem)
 	}
 	for _, want := range []string{"broken: last run error: Script exited with code 2", "broken: failure streak 3", "undelivered: delivery error: channel_not_found"} {
@@ -30,7 +39,7 @@ func TestAnalyzeCron(t *testing.T) {
 	if slices.ContainsFunc(issues, func(s string) bool { return strings.HasPrefix(s, "ok") || strings.HasPrefix(s, "paused") }) {
 		t.Errorf("false positives: %v", issues)
 	}
-	if AnalyzeCron("not json", now)[0].Problem != "unreadable" {
+	if _, err := h.Schedules([]byte("not json")); err == nil {
 		t.Error("unreadable not reported")
 	}
 }
@@ -43,7 +52,7 @@ func TestSummarizeLogs(t *testing.T) {
 		"2026-10-07 15:22:00,4 ERROR cron.scheduler: job 5f3c216ed926 failed",
 		"2026-10-07 15:22:00,5 INFO all good",
 	}, "\n")
-	s := SummarizeLogs(log)
+	s := SummarizeLogs(log, hermes.New(&instance.Instance{}).LogNoise()...)
 	if s.Errors != 1 || s.Warnings != 3 || s.Top[0].Count != 2 || !strings.Contains(s.Top[0].Pattern, "rejected invalid API key") {
 		t.Errorf("summary = %+v", s)
 	}
