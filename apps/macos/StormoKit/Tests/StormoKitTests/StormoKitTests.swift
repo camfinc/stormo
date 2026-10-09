@@ -207,6 +207,10 @@ final class Steps: @unchecked Sendable {
         old.version = nil
         #expect(CoreState.classify(health: old, core: nil, instanceRoot: nil) == .incompatible(version: nil, api: nil))
     }
+
+    @Test func slowCoreIsUnknownNotOld() {
+        #expect(CoreState.classify(health: health, core: nil, instanceRoot: nil) == .unknown)
+    }
 }
 
 /// Against the engine built in this checkout (go build -o bin/stormo ./cmd/stormo), when present.

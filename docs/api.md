@@ -34,7 +34,9 @@ Any command takes `--json`: stdout becomes one JSON object per line, each with a
 {"event":"error","msg":"…","code":"…"}   why it failed: the last line on failure
 ```
 
-With `--json`, stdout carries only events: anything else the command or the tools it runs print
+`--json` is recognised anywhere on the command line, also as a message or `--text` value, so pass
+such values through a file or stdin when they could be the literal `--json`. With `--json`, stdout
+carries only events: anything else the command or the tools it runs print
 (compose, docker, the text it would otherwise show) goes to stderr, which a caller can keep as a log.
 
 Exit status: 0 success, 1 failure, 2 usage. Error codes: `usage` (bad flags or arguments),

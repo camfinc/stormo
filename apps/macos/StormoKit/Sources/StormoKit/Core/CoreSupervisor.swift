@@ -13,15 +13,18 @@ public enum CoreState: Sendable, Equatable {
     case running(CoreInfo)
     /// A core for another instance holds the port (one core per machine).
     case otherInstance(CoreInfo)
-    /// A core this app cannot read: older than API 1 (no /api/core) or outside the supported range.
+    /// A core this app cannot read: older than API 1 or outside the supported range.
     case incompatible(version: String?, api: Int?)
 
     /// Classifies what the port answered. `core` is nil when /api/core does not exist.
     public static func classify(health: Health?, core: CoreInfo?, instanceRoot: URL?) -> CoreState {
         guard let health else { return .down }
-        guard let api = health.api, StormoAPI.supported.contains(api), let core else {
+        guard let api = health.api, StormoAPI.supported.contains(api) else {
             return .incompatible(version: health.version, api: health.api)
         }
+        // Every core that speaks a supported API serves /api/core: a miss is a slow or restarting
+        // core, not an old one.
+        guard let core else { return .unknown }
         if let instanceRoot, samePath(core.instance.root, instanceRoot.path) {
             return .running(core)
         }
