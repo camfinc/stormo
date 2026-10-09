@@ -16,6 +16,8 @@ final class AppModel {
     }
     let core: CoreSupervisor
     let fleet: FleetStore
+    /// The Chat section's conversations (in memory only: they hold client data).
+    let chat = ChatStore()
 
     /// The environment every stormo command gets (ShellEnvironment), nil until captured.
     private(set) var environment: [String: String]?
