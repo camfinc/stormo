@@ -13,8 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/pkg/place"
 )
 
 const (
@@ -294,5 +297,66 @@ func TestActivityRoutesNeedOwnerOrSelf(t *testing.T) {
 	}
 	if code, body := get("/api/fleet", ""); code != 200 || !strings.Contains(body, `"agents"`) {
 		t.Errorf("fleet %d %s", code, body)
+	}
+}
+
+func TestLiveStateSurvivesAStalePollAndGoesWhenTheAgentStops(t *testing.T) {
+	dir, inst := fixture(t)
+	var mu sync.Mutex
+	state := "stopped" // the last compose poll has not seen it start yet
+	f := NewFleet(FleetOptions{Inst: inst, ReposDir: dir, Ps: func(id string) (place.LocalState, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if id == "atlas" {
+			return place.LocalState{State: state}, nil
+		}
+		return place.LocalState{State: "stopped"}, nil
+	}})
+	f.Refresh()
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, Fleet: f, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	b := hook("pre_tool_call", "terminal", map[string]any{"command": "ls"}, map[string]any{"tool_call_id": "c1"}, time.Now())
+	if code := post(t, c.Monitor, b, sign(atlasKey, b)); code != 204 {
+		t.Fatal(code)
+	}
+	fleetLive := func() *Live {
+		r, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/fleet", c.Addr.Port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var v struct {
+			Agents []struct {
+				ID   string `json:"id"`
+				Live *Live  `json:"live"`
+			} `json:"agents"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		for _, a := range v.Agents {
+			if a.ID == "atlas" {
+				return a.Live
+			}
+		}
+		return nil
+	}
+	if l := fleetLive(); l == nil || l.Tool != "terminal" {
+		t.Fatalf("a hook before the poll saw the agent start is kept: %+v", l)
+	}
+	mu.Lock()
+	state = "running"
+	mu.Unlock()
+	f.Refresh()
+	if l := fleetLive(); l == nil || l.Tool != "terminal" {
+		t.Fatalf("running: %+v", l)
+	}
+	mu.Lock()
+	state = "exited"
+	mu.Unlock()
+	f.Refresh()
+	if l := fleetLive(); l != nil {
+		t.Errorf("stopped: its open calls are dropped: %+v", l)
 	}
 }

@@ -270,6 +270,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	// The office simulation runs here, once, so every viewer plays back the same thing.
 	office := NewOffice(nil)
+	var wasUp sync.Map // agent id → it was running or starting at the last tick
 	officeTick := func() {
 		if fleet == nil {
 			return
@@ -279,8 +280,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 		agents := []OfficeAgent{}
 		for _, a := range fleet.Snapshot().Agents {
-			if a.State != "running" && a.State != "starting" {
-				monitor.Forget(a.ID) // its open tool calls will never finish
+			up := a.State == "running" || a.State == "starting"
+			if prev, ok := wasUp.Swap(a.ID, up); ok && prev.(bool) && !up {
+				monitor.Forget(a.ID) // it stopped: its open tool calls will never finish
 			}
 			live := monitor.Live(a.ID)
 			agents = append(agents, OfficeAgent{ID: a.ID, State: a.State, Activity: a.Activity, Busy: live != nil && live.Running > 0})
