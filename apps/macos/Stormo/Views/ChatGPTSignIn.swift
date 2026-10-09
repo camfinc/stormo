@@ -88,6 +88,8 @@ struct ChatGPTSection: View {
 struct ChatGPTSignInSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// The ChatGPT connection to sign in to; nil is the core's default one.
+    var connection: String?
     @State private var url: URL?
     @State private var task: Task<Void, Never>?
     @State private var result: LoginResult?
@@ -95,7 +97,7 @@ struct ChatGPTSignInSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Sign in with ChatGPT").font(.title3).fontWeight(.semibold)
+            Text(connection.map { "Sign in with ChatGPT (\($0))" } ?? "Sign in with ChatGPT").font(.title3).fontWeight(.semibold)
             if let result {
                 Label("You're using your ChatGPT plan" + (result.account.map { " (\($0))" } ?? ""), systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
@@ -135,7 +137,8 @@ struct ChatGPTSignInSheet: View {
         guard let cli = model.cli, task == nil else { return }
         task = Task {
             do {
-                let r = try await cli.run(["core", "login", "--no-open"], as: LoginResult.self) { event in
+                let args = ["core", "login", "--no-open"] + (connection.map { ["--connection", $0] } ?? [])
+                let r = try await cli.run(args, as: LoginResult.self) { event in
                     if case .authURL(let s) = event, let u = URL(string: s) {
                         Task { @MainActor in
                             url = u

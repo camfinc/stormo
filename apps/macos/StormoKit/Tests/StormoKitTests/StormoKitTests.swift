@@ -420,3 +420,25 @@ final class Steps: @unchecked Sendable {
         #expect(yaml.contains("id: orion"))
     }
 }
+
+/// Connections and a shared key through this checkout's bin/stormo, as the Providers page runs them.
+@Suite struct Providers {
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    func addAConnectionAndItsKey() async throws {
+        let s = try Scratch()
+        let root = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: root)
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: root)
+        let kinds = try await cli.run(["connections", "kinds"], as: [ConnectionKindInfo].self)
+        #expect(kinds.contains { $0.kind == "openai" && $0.key == "OPENAI_API_KEY" && $0.api })
+        let before = try await cli.run(["connections"], as: [ConnectionRow].self)
+        #expect(before.map(\.name) == ["openrouter", "chatgpt"] && before[0].usedBy.contains("atlas"))
+        let rows = try await cli.run(["connections", "add", "openai", "--kind", "openai"], as: [ConnectionRow].self)
+        #expect(rows.first?.name == "openai" && rows.first?.keySet == false)
+        _ = try await cli.run(["secrets", "set", "shared", "OPENAI_API_KEY"], as: [String: String].self, stdin: Data("sk-test".utf8))
+        let after = try await cli.run(["connections"], as: [ConnectionRow].self)
+        #expect(after.first { $0.name == "openai" }?.keySet == true)
+        await #expect(throws: CLIError.self) { _ = try await cli.run(["connections", "remove", "openrouter"], as: [ConnectionRow].self) }
+    }
+}

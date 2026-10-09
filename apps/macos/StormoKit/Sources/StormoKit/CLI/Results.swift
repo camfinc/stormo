@@ -67,6 +67,8 @@ public struct CoreDownResult: Codable, Sendable, Equatable {
 /// `core login` / `core logout`.
 public struct LoginResult: Codable, Sendable, Equatable {
     public var login: String
+    /// The ChatGPT connection (absent from an older stormo).
+    public var connection: String?
     public var account: String?
     public var changed: Bool
 }
@@ -139,6 +141,45 @@ public struct AgentOptions: Codable, Sendable, Equatable {
     /// an older stormo.
     public var scripts: [String]?
     public var reasoning: [String]?
+    /// Connections the agent may use (absent from an older stormo).
+    public var connections: [Connection]?
+
+    public struct Connection: Codable, Sendable, Equatable, Identifiable {
+        public var name: String
+        public var kind: String
+        public var label: String
+        public var api: Bool
+        /// The secret an agent using it declares.
+        public var key: String?
+        public var id: String { name }
+    }
+}
+
+/// `connections kinds`: what a connection can be.
+public struct ConnectionKindInfo: Codable, Sendable, Equatable, Identifiable {
+    public var kind: String
+    public var label: String
+    public var baseUrl: String?
+    public var key: String?
+    public var api: Bool
+    public var id: String { kind }
+}
+
+/// One row of `connections`.
+public struct ConnectionRow: Codable, Sendable, Equatable, Identifiable {
+    public var name: String
+    public var kind: String
+    public var label: String
+    public var api: Bool
+    public var baseUrl: String?
+    public var key: String?
+    /// Not written in stormo.yaml: one of the two every instance has.
+    public var implicit: Bool?
+    /// A shared value is set for the key; agentKeys have their own.
+    public var keySet: Bool
+    public var agentKeys: [String]
+    public var usedBy: [String]
+    public var id: String { name }
 }
 
 /// One agent `stormo migrate agent` went through.

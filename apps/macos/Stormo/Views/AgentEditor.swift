@@ -287,9 +287,22 @@ private struct AgentForm: View {
             TextField("Version", text: text(["engine", "version"], keepEmpty: true))
             TextField("Image tag", text: text(["engine", "image_tag"]), prompt: Text("the pinned engine image"))
             TextField("Model", text: text(modelPath + [modelNameKey], keepEmpty: true), prompt: Text("provider/model"))
-            TextField("Provider", text: text(modelPath + ["provider"]), prompt: Text("openrouter"))
-            Toggle("Use the core's model gateway when running locally", isOn: local)
+            if let conns = options.connections {
+                Picker("Provider", selection: provider) {
+                    ForEach(choices(conns.filter(\.api).map(\.name), current: get(modelPath + ["provider"])?.string), id: \.self) { n in
+                        Text(conns.first { $0.name == n }.map { "\($0.name) (\($0.label))" } ?? n).tag(n)
+                    }
+                }
+            } else {
+                TextField("Provider", text: text(modelPath + ["provider"]), prompt: Text("openrouter"))
+            }
+            Toggle("Use a ChatGPT account on the core when running locally", isOn: local)
             if get(modelPath + ["local"]) != nil {
+                if format >= 1, let conns = options.connections?.filter({ !$0.api }), conns.count > 1 {
+                    Picker("ChatGPT account", selection: text(["model", "local", "connection"])) {
+                        ForEach(conns) { c in Text(c.name).tag(c.name == "chatgpt" ? "" : c.name) }
+                    }
+                }
                 TextField("Local model", text: text(modelPath + ["local", localNameKey], keepEmpty: true), prompt: Text("the gateway's name for it"))
             }
         } header: {
@@ -641,6 +654,22 @@ private struct AgentForm: View {
             get(["persona", "path"])?.string ?? ""
         } set: { p in
             if p.isEmpty { set(["persona"], nil) } else { set(["persona", "path"], .string(p)) }
+        }
+    }
+
+    /// The agent's API connection; choosing one adds its key's name to secrets: (the manifest
+    /// must declare it).
+    private var provider: Binding<String> {
+        Binding {
+            get(modelPath + ["provider"])?.string ?? "openrouter"
+        } set: { name in
+            set(modelPath + ["provider"], .string(name))
+            if let key = options.connections?.first(where: { $0.name == name })?.key {
+                let list = strings(["secrets"])
+                if !list.wrappedValue.contains(key) && !(get(["optional_secrets"])?.array ?? []).contains(where: { $0[["name"]]?.string == key }) {
+                    list.wrappedValue.append(key)
+                }
+            }
         }
     }
 

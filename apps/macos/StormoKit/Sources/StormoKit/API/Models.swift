@@ -222,6 +222,28 @@ public struct Fleet: Codable, Sendable, Equatable {
 }
 
 /// `GET /api/gateway`.
+/// One ChatGPT connection's sign-in in `/api/gateway` (`connections`).
+public struct GatewayConnection: Codable, Sendable, Equatable, Identifiable {
+    public var name: String
+    public var login: String
+    public var account: String?
+    public var planLimitedUntil: String?
+    public var inflight: Int
+    public var queued: Int
+    public var concurrency: Int
+    public var id: String { name }
+
+    public init(name: String, login: String, account: String?, planLimitedUntil: String?, inflight: Int, queued: Int, concurrency: Int) {
+        self.name = name
+        self.login = login
+        self.account = account
+        self.planLimitedUntil = planLimitedUntil
+        self.inflight = inflight
+        self.queued = queued
+        self.concurrency = concurrency
+    }
+}
+
 public struct GatewayStatus: Codable, Sendable, Equatable {
     public struct Model: Codable, Sendable, Equatable {
         public var id: String
@@ -236,6 +258,8 @@ public struct GatewayStatus: Codable, Sendable, Equatable {
     }
     public var login: String
     public var account: String?
+    /// Every ChatGPT connection the core serves (absent from an older core).
+    public var connections: [GatewayConnection]?
     public var manageUsageUrl: String?
     public var planLimitedUntil: String?
     public var inflight: Int
