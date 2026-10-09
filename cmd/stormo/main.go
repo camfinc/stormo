@@ -34,6 +34,7 @@ import (
 	"github.com/camfinc/stormo/pkg/review"
 	"github.com/camfinc/stormo/pkg/scaffold"
 	"github.com/camfinc/stormo/pkg/secrets"
+	"github.com/camfinc/stormo/pkg/shared"
 	"github.com/camfinc/stormo/pkg/skill"
 	"github.com/camfinc/stormo/pkg/slack"
 	"github.com/camfinc/stormo/pkg/version"
@@ -72,7 +73,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   bench <agent> [--runner mock|docker] [--env-file f] [--tag t]   docker: env from secrets.local.yaml
   deploy render <agent> [--sidecar-tag t] write dist/<agent>/{taskdef,task-policy}.json, print aws commands
   deploy render-shared                   print the one-time EFS setup for the shared document space
-  shared [--dir .swarm/shared]           create the local shared space used by the docker bench
+  shared [--dir workdir]                 create the local shared space (workdir/<layer>, moved from .swarm/shared)
 
   slack manifest <agent> [--dev]         generate the agent's Slack app manifest (+ setup steps)
 
@@ -336,7 +337,17 @@ func run(args []string) error {
 	case "shared":
 		dir := *fDir
 		if dir == "" {
-			dir = filepath.Join(inst.Root, ".swarm", "shared")
+			dir = shared.LocalDir(inst.Root)
+			moved, conflicts, err := shared.MigrateLocal(inst.Root)
+			if err != nil {
+				return err
+			}
+			for _, l := range moved {
+				fmt.Printf("moved .swarm/shared/%s to workdir/%s\n", l, l)
+			}
+			for _, l := range conflicts {
+				fmt.Printf("WARNING: .swarm/shared/%s and workdir/%s both exist; merge the old one by hand\n", l, l)
+			}
 		}
 		units := manifest.UnitIDs(inst.Root)
 		for _, u := range units {
@@ -664,7 +675,7 @@ func runBench(inst *instance.Instance, sub string) error {
 		}
 		dir := *fDir
 		if dir == "" {
-			dir = filepath.Join(inst.Root, ".swarm", "shared")
+			dir = shared.LocalDir(inst.Root)
 		}
 		runner = bench.DockerRunner(a, eng, r.Out, envFile, dir)
 	}

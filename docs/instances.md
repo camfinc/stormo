@@ -28,7 +28,8 @@ three agents). It is the engine's test fixture and the template for a new one.
 
   # generated, gitignored, never leave the machine
   dist/                          compiled baselines, task definitions, Slack manifests
-  .swarm/                        local runtime: nap store, compose, env files, core auth (PII)
+  .swarm/                        local runtime: nap store, compose, env files, core auth and core.db (PII)
+  workdir/                       local shared space: workdir/group, workdir/<unit> (agents' documents, can hold client data)
   secrets.local.yaml             every secret value, 0600
 ```
 
@@ -176,5 +177,5 @@ git submodule add https://github.com/camfinc/stormo.git stormo
 stormo/bin/stormo check && stormo/bin/stormo secrets init   # then fill secrets.local.yaml (gitignored)
 ```
 
-Add `dist/`, `.swarm/` and `secrets.local.yaml` to the instance's `.gitignore`
+Add `dist/`, `.swarm/`, `workdir/` and `secrets.local.yaml` to the instance's `.gitignore`
 before the first build.

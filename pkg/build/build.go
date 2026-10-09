@@ -18,6 +18,7 @@ import (
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/secrets"
+	"github.com/camfinc/stormo/pkg/shared"
 )
 
 // InfoPath is where the baseline records what it is, relative to the baseline dir.
@@ -163,6 +164,12 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 	}
 	ctx.Target = o.Target
 	ctx.SkipSkills = eff.SkipSkills
+	if o.Target == manifest.Local && eff.Agent.Engine.Local != nil {
+		// On the swarm core the shared space is coordinated by it: locks, attribution, workdir.py.
+		for k, v := range shared.LocalSkill(inst, eff.Agent) {
+			ctx.Knowledge[k] = v
+		}
+	}
 	files, err := eng.Compile(eff.Agent, ctx)
 	if err != nil {
 		return nil, err

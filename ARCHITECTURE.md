@@ -154,7 +154,7 @@ The local project is a twin of the ECS task (`pkg/local`): same three containers
 order, sidecars on the engine's `stormo-sidecar:<version>` image with the instance's files and the
 baseline mounted read-only (so `stormo restart` after a manifest or skill edit needs no image
 build; `stormo start` builds the sidecar image itself when this engine version has none), naps in `.swarm/store`, shared space in
-`.swarm/shared`, API on `127.0.0.1:18642+`. Environment comes from `secrets.local.yaml` with its
+`workdir/<layer>` (gitignored; tracked by the core, docs/core.md §4), API on `127.0.0.1:18642+`. Environment comes from `secrets.local.yaml` with its
 `local:` overlay. `start` refuses to run on a production bot/app token.
 
 ### Local subscription model (`engine.local`)
@@ -259,8 +259,10 @@ Agents share and read documents through one EFS file system mounted into every a
   memory and review.
 - Setup: `stormo deploy render-shared` prints the file system and per-layer access point
   commands; record the ids in the instance's `stormo.yaml` (`deploy.aws.efs`). `deploy render`
-  warns while they are placeholders. Locally, the docker bench mounts `.swarm/shared/<layer>` with
-  the same layout (`stormo shared` creates it).
+  warns while they are placeholders. Locally, agents and the docker bench mount
+  `workdir/<layer>` (gitignored) at the same `/shared/<layer>` paths, only group and their own unit;
+  `stormo start` and `stormo shared` move an older `.swarm/shared/<layer>` there once. On the
+  swarm core, agents also get locks and change attribution through it (docs/core.md §4).
 
 ## The learning system (nap / dream)
 

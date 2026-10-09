@@ -1010,6 +1010,7 @@ function agentPanel(a) {
       ${a.detail ? `<dt>Note</dt><dd class="warn">${esc(a.detail)}</dd>` : ""}
       <dt>Last nap</dt><dd${stale ? ' class="warn"' : ""}>${ago(a.lastNap)}${stale ? " · overdue" : ""} <small>every ${Math.round(a.napIntervalSeconds / 60)} min</small></dd>
       <dt>Learnings</dt><dd>${a.pendingLearnings} proposed · ${a.pendingSkills} skill${a.pendingSkills === 1 ? "" : "s"}</dd>
+      ${a.locks ? `<dt>Locks</dt><dd>${a.locks} in the shared space <small>(swarm core workdir)</small></dd>` : ""}
       <dt>Messages</dt><dd${a.messages?.unread ? ' class="warn"' : ""}>${a.messages?.unread ?? 0} unread <small>· ${a.messages?.received ?? 0} in, ${a.messages?.sent ?? 0} out today (agent bus)</small></dd>
       <dt>API</dt><dd>${esc(a.endpoint)}</dd>
       <dt>Channels</dt><dd>${a.channels.map((c) => (a.optionalChannels?.includes(c) ? `${esc(c)} <small>(only with its token)</small>` : esc(c))).join(", ") || "none"}</dd>

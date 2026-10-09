@@ -20,13 +20,14 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /health` | `status`, `service` (`swarm-core`), `login` (`ok` \| `missing` \| `relogin_required`), `planLimitedUntil`, `version`, `api`. Also on bridge listeners: no host paths |
 | `GET /api/core` | the running core: `service`, `version`, `api`, `pid`, `exe` (symlinks resolved), `port`, `startedAt` (RFC 3339), `instance` {`root`, `name`, `org`, `slug`}. Tells a client which binary and which instance it would attach to |
 | `GET /api/instance` | the instance's look: `name`, `org`, `slug`, `clocks` [{`city`, `tz`}], `units` {unit: {`hue`, `wall`, `floor`, `desk`}} (the web office's `window.STORMO`) |
-| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline, `live`: the tool it runs now, from its hooks, or null, and `messages`: `unread`, `received`, `sent` today), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
+| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline, `live`: the tool it runs now, from its hooks, or null, `messages`: `unread`, `received`, `sent` today, and `locks`: shared-space locks it holds), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
 | `GET /api/agents/<id>/timeline` | `agent`, `live`, `entries` [{`at`, `event`, `tool`}], newest first; `?limit=` (≤ 500, default 100) |
 | `GET /api/agents/<id>/activity` | the same with each entry's `session` and `preview`. Owner token or that agent's key |
 | `POST /ingest/hermes` | Hermes' outbound hook deliveries, signed with the agent's core key (docs/core.md §2) |
 | `GET /api/messages` | `threads` [{`thread`, `subject`, `updated`, `messages` [{`id`, `thread`, `from`, `to`, `subject`, `body`, `priority`, `attach`, `hop`, `sent`, `recipients` [{`agent`, `read`, `acked`, `woken`}]}]}], newest thread first; `?agent=`, `?limit=` (default 30). Owner token |
 | `GET /api/findings` | `findings` [{`id`, `agent`, `rule`, `severity`, `evidence`, `firstSeen`, `lastSeen`, `count`, `status`}]; `?all=1` adds resolved ones. Owner token |
-| `POST /mcp` | the agents' MCP server (docs/core.md §5), each agent with its own core key |
+| `GET /api/workdir` | `locks` [{`owner`, `path`, `kind`, `reason`, `created`, `expires`}], `changes` [{`path`, `at`, `kind`, `agent`, `how`, `violation`}] newest first (`?limit=`, default 50), `layers` {layer: files}. Owner token |
+| `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models`, per-agent `usage` and `active` |
 | `GET /avatars/<id>.png` | the agent's newest portrait, 404 when it has none |
 | `/v1/*` | the OpenAI-compatible model gateway, `Authorization: Bearer <SWARM_CORE_KEY>` |
@@ -70,6 +71,7 @@ into an `error` event.
 | `core activity <agent> [n]` | `agent`, `live`, `entries` (as `/api/agents/<id>/activity`, newest first) |
 | `core messages [agent] [n]` | `threads` (as `/api/messages`) |
 | `core findings [all]` | `findings` (as `/api/findings`) |
+| `core workdir [n]` | as `/api/workdir` |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
 | `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |

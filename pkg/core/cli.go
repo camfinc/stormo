@@ -31,7 +31,8 @@ const Usage = `  core (the core service on this machine, docs/core.md):
                                          login --no-open: print the sign-in page, do not open a browser
   core activity <agent> [n]              the agent's last n hook events with previews (files, commands; default 40)
   core messages [agent] [n]              the newest n threads of the agents' message bus, in full (default 20)
-  core findings [all]                    rule breaches the core saw (loop guards, unit boundary, locks); all adds resolved`
+  core findings [all]                    rule breaches the core saw (loop guards, unit boundary, locks); all adds resolved
+  core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -419,6 +420,43 @@ func findings(inst *instance.Instance, args []string, o *out.Writer) error {
 	return nil
 }
 
+func workdirCmd(inst *instance.Instance, args []string, o *out.Writer) error {
+	n := 30
+	if len(args) > 0 {
+		v, err := strconv.Atoi(args[0])
+		if err != nil || v <= 0 {
+			return fmt.Errorf("n must be a positive number, got %q", args[0])
+		}
+		n = v
+	}
+	var v OwnerView
+	if err := ownerJSON(inst.Root, http.MethodGet, fmt.Sprintf("/api/workdir?limit=%d", n), nil, &v); err != nil {
+		return err
+	}
+	o.Result(v, func(w io.Writer) {
+		layers := []string{}
+		for l, c := range v.Layers {
+			layers = append(layers, fmt.Sprintf("%s %d", l, c))
+		}
+		sort.Strings(layers)
+		fmt.Fprintf(w, "files: %s\n", strings.Join(layers, ", "))
+		fmt.Fprintf(w, "\nlocks (%d):\n", len(v.Locks))
+		for _, l := range v.Locks {
+			fmt.Fprintf(w, "  %-40s %-10s %-5s until %s  %s\n", l.Path, l.Owner, l.Kind, l.Expires, l.Reason)
+		}
+		fmt.Fprintf(w, "\nchanges (newest last):\n")
+		for i := len(v.Changes) - 1; i >= 0; i-- {
+			c := v.Changes[i]
+			viol := ""
+			if c.Violation != "" {
+				viol = "  !! under " + c.Violation + "'s lock"
+			}
+			fmt.Fprintf(w, "  %s %-8s %-40s %-10s %s%s\n", c.At, c.Kind, c.Path, c.Agent, c.How, viol)
+		}
+	})
+	return nil
+}
+
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
 	o := opts.Out
@@ -440,6 +478,8 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return messages(inst, args, o)
 	case "findings":
 		return findings(inst, args, o)
+	case "workdir":
+		return workdirCmd(inst, args, o)
 	case "login":
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/env"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"go.yaml.in/yaml/v3"
 )
@@ -78,5 +79,30 @@ func TestCoreMCPServerOnlyLocallyOnTheCore(t *testing.T) {
 		if getPath(cfg, "mcp_servers.core") != nil {
 			t.Errorf("%s: core MCP server present", name)
 		}
+	}
+}
+
+func TestWorkdirHelperEnvOnlyLocallyOnTheCore(t *testing.T) {
+	h := &Hermes{}
+	a := &manifest.Agent{ID: "atlas", Unit: "sales", Env: env.New()}
+	a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-6-luna"}
+	if v, _ := h.Env(a, manifest.Local).Get("SWARM_CORE_URL"); v != manifest.Core.URL {
+		t.Errorf("local SWARM_CORE_URL %q", v)
+	}
+	if _, ok := h.Env(a, manifest.AWS).Get("SWARM_CORE_URL"); ok {
+		t.Error("AWS tasks never reach the core")
+	}
+	pass := func(cfg *yaml.Node) string {
+		out := []string{}
+		for _, n := range getPath(cfg, "terminal.env_passthrough").Content {
+			out = append(out, n.Value)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := pass(overridden(t, "{}", true, manifest.Local)); !strings.Contains(got, "SWARM_CORE_KEY") || !strings.Contains(got, "SWARM_CORE_URL") {
+		t.Errorf("local passthrough %s", got)
+	}
+	if got := pass(overridden(t, "{}", true, manifest.AWS)); strings.Contains(got, "SWARM_CORE") {
+		t.Errorf("AWS passthrough %s", got)
 	}
 }

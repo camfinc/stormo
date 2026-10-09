@@ -70,6 +70,39 @@ var migrations = []string{
 		status     TEXT NOT NULL DEFAULT 'open',
 		UNIQUE (agent, rule, evidence)
 	);`,
+	// 3: the shared workdir (phase 4): what is in it, who changed what, and locks. Paths are
+	// "<layer>/<relative path>" under workdir/; agents see them as /shared/<layer>/….
+	`CREATE TABLE files (
+		path    TEXT PRIMARY KEY,
+		size    INTEGER NOT NULL,
+		mtime   INTEGER NOT NULL,
+		sha256  TEXT NOT NULL DEFAULT '',
+		creator TEXT NOT NULL DEFAULT '',
+		created INTEGER NOT NULL,
+		writer  TEXT NOT NULL DEFAULT '',
+		how     TEXT NOT NULL DEFAULT '',
+		changed INTEGER NOT NULL
+	);
+	CREATE TABLE file_events (
+		id        INTEGER PRIMARY KEY,
+		path      TEXT NOT NULL,
+		at        INTEGER NOT NULL,
+		kind      TEXT NOT NULL,
+		agent     TEXT NOT NULL,
+		how       TEXT NOT NULL,
+		violation TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX file_events_path ON file_events(path, at);
+	CREATE TABLE locks (
+		id      INTEGER PRIMARY KEY,
+		owner   TEXT NOT NULL,
+		pattern TEXT NOT NULL,
+		kind    TEXT NOT NULL,
+		reason  TEXT NOT NULL DEFAULT '',
+		created INTEGER NOT NULL,
+		expires INTEGER NOT NULL,
+		UNIQUE (owner, pattern)
+	);`,
 }
 
 // DB is core.db.

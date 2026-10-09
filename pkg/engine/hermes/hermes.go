@@ -163,6 +163,10 @@ func (h *Hermes) Env(a *manifest.Agent, target manifest.Target) *env.Env {
 	e.Set("SWARM_AGENT", a.ID)
 	e.Set("SWARM_UNIT", a.Unit)
 	e.Set("SWARM_SHARED_DIR", shared.Root)
+	if onCore(a, target) {
+		// The core, for the workdir helper (workdir.py) in the shared-docs skill.
+		e.Set("SWARM_CORE_URL", manifest.Core.URL)
+	}
 	// Hermes file tools refuse writes outside these roots (os.pathsep list, agent/file_safety.py).
 	e.Set("HERMES_WRITE_SAFE_ROOT", home+":"+shared.Root)
 	for _, s := range a.State {
@@ -181,7 +185,7 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 	if err := set("model.provider", a.Engine.Provider); err != nil {
 		return err
 	}
-	if target == manifest.Local && a.Engine.Local != nil {
+	if onCore(a, target) {
 		// Locally the swarm core's gateway serves the model on the ChatGPT subscription; the agent
 		// only holds its own core key. Hermes falls back to the AWS model on a 401, a 429 or a dead
 		// core, and retries the core every turn.
@@ -242,6 +246,14 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 			pass = append(pass, s.Env)
 		}
 	}
+	if onCore(a, target) {
+		// workdir.py runs from the terminal and calls the core as this agent.
+		for _, n := range []string{manifest.Core.KeyEnv, "SWARM_CORE_URL"} {
+			if !slices.Contains(pass, n) {
+				pass = append(pass, n)
+			}
+		}
+	}
 	if err := set("terminal.env_passthrough", pass); err != nil {
 		return err
 	}
@@ -261,6 +273,12 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 		return err
 	}
 	return set("memory.user_char_limit", a.Learning.UserCharLimit)
+}
+
+// onCore: a local run of an agent routed through the swarm core (engine.local), which gets the
+// core's gateway, hooks, MCP server and workdir helper.
+func onCore(a *manifest.Agent, target manifest.Target) bool {
+	return target == manifest.Local && a.Engine.Local != nil
 }
 
 // CoreHookName names the outbound hook target that posts an agent's activity to the swarm core.

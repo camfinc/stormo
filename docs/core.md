@@ -4,7 +4,8 @@ Status: local first. **Phase 1 (the LLM gateway, on Sign in with ChatGPT) is bui
 `stormo core up|down|status|serve|login|logout`). **The office UI over a polled fleet registry is
 built** (`pkg/core/fleet.go`, `pkg/core/ui/`, part of phase 2), and so is `core.db`
 (`pkg/core/db.go`). **Phase 3 (activity ingest) is built** (`pkg/core/monitor.go`), and so is
-**phase 5 (the message bus over the core's MCP server)** (`pkg/core/bus.go`, `mcp.go`). The Phases table
+**phase 5 (the message bus over the core's MCP server)** (`pkg/core/bus.go`, `mcp.go`) and **phase 4
+(the shared workdir: attribution and locks)** (`pkg/core/workdir.go`). The Phases table
 says what each phase has; everything not marked built is design.
 AWS comes later and is sketched only where it changes a local decision.
 
@@ -306,6 +307,40 @@ Stored in `core.db` (`files`, `file_events`) and mirrored read-only for plain `l
 Locks expire on their own, are released when the owner goes `down` (after a short grace period),
 and are visible as `workdir/.swarm/locks/<path>.lock.json` so a terminal `ls` shows them too.
 
+**Built (phase 4).** Open decision 2 went the planned way, with one change: the container paths
+stay `/shared/<layer>`, the same as EFS on AWS, so the shared-docs skill and every document path
+work alike in both places; there is no separate `/workdir` mount.
+- *Layout*: `workdir/group` and `workdir/<unit>` at the instance root (gitignored; `stormo new
+  instance` adds it), bind-mounted as `/shared/group` and `/shared/<unit>`, only group and the
+  agent's own unit (`shared.LocalDir`). `stormo start` and `stormo shared` move an older
+  `.swarm/shared/<layer>` there once and leave a symlink behind, so an agent still running on the
+  old mount writes into the same directory until it restarts; a layer present in both places is
+  left alone with a warning.
+- *Tools* (`mcp_servers.core`): `fs_lock(path, kind, reason, minutes)`, `fs_unlock`, `fs_renew`,
+  `fs_locks(path?)`, `fs_info(path)` (creator, last writer and how it is known, last 10 changes,
+  locks), `fs_ls(dir)`, `fs_write(path, content, mode)` (overwrite, create or append, ≤ 1 MB,
+  written atomically), `fs_note(path, action)`. Paths are `/shared/<layer>/…` as the agent sees
+  them; a layer the agent does not mount is refused. A lock is on a file, a directory (everything
+  under it) or a glob (`**` allowed); two locks conflict when they can name a common file.
+- *Helper*: local builds of agents on the core add `workdir.py` (stdlib Python: `lock`, `unlock`,
+  `renew`, `locks`, `info`, `ls`, `note`) and a coordination section to the shared-docs skill; it
+  calls `/mcp` with `SWARM_CORE_KEY` and `SWARM_CORE_URL`, which the build passes to terminal
+  commands (`terminal.env_passthrough`). AWS builds are unchanged.
+- *Attribution*: a scan every 5 s (stat, then SHA-256 only when size or mtime moved; a touch is
+  not a change) records created, modified and deleted files. The writer is, in order: `fs_write`
+  (exact); a file tool's `post_tool_call` naming the path (`tool:write_file`, within 2 min of the
+  change); `fs_note`; the one agent that mounts that layer and had a `terminal`, `execute_code` or
+  `process` call running at the file's mtime (`terminal (inferred)`, from the activity timeline);
+  else `unknown`, which a later `fs_note` claims. The first scan of an empty table only takes
+  stock. Locks are released when they expire and 5 minutes after their owner stops; a change by
+  anyone else under a `hard` or `temp` lock is marked on the event and raises a `high`
+  `lock_violation` finding.
+- *Not built*: the `workdir/.swarm/meta` and `.swarm/locks` mirror files. A mirror inside a
+  writable mount could be edited by any agent, so `fs_info`, `fs_ls` and `workdir.py` are the
+  read paths instead. No fs-event watcher either (no new dependency): the 5 s scan is the watcher.
+- *Owner*: `GET /api/workdir` (owner token: live locks, newest changes with paths, files per layer)
+  and `stormo core workdir [n]`; the office shows each agent's lock count only.
+
 ## 5. Comms between agents
 
 Slack stays the channel for people (and for @mention handoffs people should see). Core adds an
@@ -429,7 +464,7 @@ separate 0600 file and is never in the database.
 | `GET /api/fleet` (built) | loopback, no key yet | roster, cached compose state, review counts, gateway state, each agent's `live` tool; no secrets, no account email |
 | `GET /api/agents/<id>/timeline` (built) | loopback | the agent's newest hook events: event, tool, time |
 | `GET /api/agents/<id>/activity` (built) | owner token, or that agent's key | the same with sessions and previews |
-| `GET /api/messages`, `GET /api/findings` (built) | owner token | bus threads in full; findings |
+| `GET /api/messages`, `GET /api/findings`, `GET /api/workdir` (built) | owner token | bus threads in full; findings; workdir locks and changes |
 | `GET /avatars/<agent>.png` (built) | loopback | the agent's persona portrait, read in place |
 | `/`, `/ui/app.js`, `/ui/style.css` (built) | loopback browser | the office UI |
 
@@ -446,12 +481,12 @@ pkg/core/
   llm/gateway.go       /v1 routes, concurrency, usage, timeouts, error mapping (built)
   fleet.go             roster from manifests, async compose poller, cached snapshot, avatars (built)
   monitor.go           activity ingest, live state, timeline (built)
-  workdir.go           watcher, attribution, locks
+  workdir.go           scan, attribution, locks, fs_* tools (built)
   bus.go               messages, delivery, loop guards (built)
   wake.go              wake runs (Hermes /v1/runs) and the urgent Slack mirror (built)
   learn.go             nap triggers, learning cycle
   compliance.go        rule checks → findings
-  mcp.go               MCP server (built; bus tools so far)
+  mcp.go               MCP server (built: msg_*, fs_*)
   ui/                  index.html, app.js, style.css: the office (built)
 docs/core.md           this plan
 ```
@@ -468,7 +503,9 @@ which another session owns right now:
    {Authorization: "Bearer ${SWARM_CORE_KEY}"}, timeout: 60, connect_timeout: 15}`.
 4. ~~`hooks.outbound` to `/ingest/hermes`~~ **Done** (phase 3): session, tool and approval events,
    signed with the agent's `SWARM_CORE_KEY`; outbound targets need no `hooks_auto_accept`.
-5. `/workdir` bind mount, `HERMES_WRITE_SAFE_ROOT` += `/workdir`, `SWARM_WORKDIR=/workdir`.
+5. ~~`/workdir` bind mount~~ **Done differently** (phase 4): the local shared space moved to
+   `workdir/<layer>`, still mounted at `/shared/<layer>` (already in `HERMES_WRITE_SAFE_ROOT`);
+   `SWARM_CORE_URL` is set for the helper.
 6. `extra_hosts: host.docker.internal:host-gateway` on the agent service (harmless on OrbStack,
    needed on Linux).
 7. Drop `API_SERVER_ENABLED` from the engine env: Hermes 0.21.5 never reads it (a ≥16-char
@@ -481,7 +518,7 @@ which another session owns right now:
 | 1 | LLM gateway + `stormo core up/down/serve/login/logout/status` | an agent streams a tool-calling turn through core; plan limit falls back to OpenRouter; tests cover translation, refresh single-flight, error mapping |
 | 2 | server skeleton, `core.db`, registry, pollers, fleet page | UI shows every local agent's state live; stopping an agent flips its card within 30 s. **Built**: office UI, registry, compose poller, `core.db` (migrations by `user_version`) |
 | 3 | activity ingest + agent page | UI shows the current tool of a busy agent in real time. **Built**: signed ingest, live tool per agent on `/api/fleet` and in the office, agent timeline, `stormo core activity`; the UI polls (2.5 s), no SSE yet |
-| 4 | workdir mount, watcher, attribution, locks, `fs_*` MCP tools, workdir skill | two agents contend for a file: the second sees the lock and holder; a terminal write is attributed |
+| 4 | workdir mount, watcher, attribution, locks, `fs_*` MCP tools, workdir skill | two agents contend for a file: the second sees the lock and holder; a terminal write is attributed. **Built** (tested against the scan and a recorded timeline; not yet run with live agents) |
 | 5 | comms bus (`msg_*`), wake delivery, loop guards | agent A asks agent B a question and gets an answer with no human in the loop, with no Slack noise. **Built** (tested with a fake agent API; not yet run between two live agents) |
 | 6 | learning cycle, nap trigger, schedule, digest | nightly cycle produces proposals and a summary without manual steps |
 | 7 | rule-based compliance + findings page | each rule has a test fixture that raises it |
@@ -492,9 +529,9 @@ which another session owns right now:
 
 1. **Host process vs container for core.** Planned: host process (simplest lifecycle control, no
    Docker socket). Revisit if core should run on a shared machine.
-2. **Workdir and the unit rule.** Planned: `workdir/group` free-for-all, `workdir/<unit>` private
-   per unit, replacing `.swarm/shared` locally. Alternative: one flat free-for-all `workdir/`, which
-   would mean amending the CLAUDE.md shared-documents rule.
+2. ~~**Workdir and the unit rule.**~~ Decided as planned and built (phase 4): `workdir/group` for
+   everyone, `workdir/<unit>` for that unit only, replacing `.swarm/shared` locally; containers keep
+   the `/shared/<layer>` paths.
 3. **Who may trigger naps and learning cycles**: core on a schedule by default; whether the core
    agent may trigger them on its own or only suggest.
 4. **Alert channel**: a `#swarm-ops` Slack channel through the core agent's app vs. a plain webhook

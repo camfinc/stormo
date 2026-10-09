@@ -5,7 +5,7 @@
 //     this agent, its baseline) bind-mounted read-only, so a manifest or skill edit needs no image
 //     build, only `stormo restart`;
 //   - naps go to .swarm/store (a directory store), also the dream's default local store;
-//   - the shared space is .swarm/shared/<layer>;
+//   - the shared space is workdir/<layer> (shared.LocalDir; moved from .swarm/shared once);
 //   - secrets come from .swarm/env/<agent>.env, rendered from secrets.local.yaml with the `local`
 //     overlay; the sidecars never see it;
 //   - the baseline is the `local` build (.swarm/local/<agent>/baseline: `engine.local` model first);

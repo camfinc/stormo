@@ -20,6 +20,7 @@ import (
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/secrets"
+	"github.com/camfinc/stormo/pkg/shared"
 	"github.com/camfinc/stormo/pkg/version"
 )
 
@@ -95,6 +96,8 @@ type CoreOptions struct {
 	Wake     WakeFn
 	Mirror   MirrorFn
 	NoMirror bool
+	// WorkdirRoot is the shared space the core tracks; "" is the instance's workdir/.
+	WorkdirRoot string
 }
 
 // Core is a running core service.
@@ -109,6 +112,7 @@ type Core struct {
 	DB      *DB
 	Monitor *Monitor
 	Bus     *Bus
+	Workdir *Workdir
 	MCP     *MCP
 	keys    *AgentKeys
 	owner   string
@@ -162,6 +166,8 @@ type fleetAgentView struct {
 	Live *Live `json:"live"`
 	// Its swarm messages: unread, and received and sent in the last day. Counts only.
 	Messages BusCounts `json:"messages"`
+	// Shared-space locks it holds (count only: paths can name clients).
+	Locks int `json:"locks"`
 }
 
 type gatewayView struct {
@@ -302,9 +308,16 @@ func StartCore(o CoreOptions) (*Core, error) {
 		bo.Mirror = SlackMirror(inst, nil)
 	}
 	bus := NewBus(bo)
-	mcp := NewMCP(keys, BusTools(bus))
-	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, MCP: mcp, keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+	wroot := o.WorkdirRoot
+	if wroot == "" {
+		wroot = shared.LocalDir(inst.Root)
+	}
+	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
+	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
+	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, MCP: mcp,
+		keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
+	go workdir.Run(c.stop, 5*time.Second)
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -390,8 +403,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 			view := fleetView{PolledAt: fs.PolledAt, Units: fs.Units, Agents: []fleetAgentView{}, Now: time.Now().UnixMilli(), Robot: office.Robot(),
 				Gateway: gatewayView{s.Login, s.PlanLimitedUntil, s.ManageUsageURL, s.Inflight, s.Queued, s.Concurrency, s.Usage, s.Active}}
 			counts, _ := bus.Counts()
+			locks := workdir.LockCounts()
 			for _, a := range fs.Agents {
-				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID), monitor.Live(a.ID), counts[a.ID]})
+				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID), monitor.Live(a.ID), counts[a.ID], locks[a.ID]})
 			}
 			writeJSONBody(w, 200, view)
 			return
@@ -400,6 +414,20 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case path == "/mcp":
 			mcp.Handle(w, r)
+			return
+		case get && path == "/api/workdir":
+			// File names can name clients: the owner only.
+			if !c.caller(r).Owner {
+				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+				return
+			}
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			v, err := workdir.Owner(limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read the workdir"))
+				return
+			}
+			writeJSONBody(w, 200, v)
 			return
 		case get && (path == "/api/messages" || path == "/api/findings"):
 			// Bodies, subjects and evidence can hold client data: the owner only.

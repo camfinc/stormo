@@ -103,7 +103,19 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 		return 0, nil, err
 	}
 	storeDir := filepath.Join(root, ".swarm", "store")
-	sharedDir := filepath.Join(root, ".swarm", "shared")
+	sharedDir := shared.LocalDir(root)
+	moved, conflicts, err := shared.MigrateLocal(root)
+	if err != nil {
+		return 0, nil, fmt.Errorf("moving .swarm/shared to workdir/: %w", err)
+	}
+	{
+		for _, l := range moved {
+			o.Log(fmt.Sprintf("shared space: moved .swarm/shared/%s to workdir/%s", l, l))
+		}
+		for _, l := range conflicts {
+			o.Log(fmt.Sprintf("WARNING: .swarm/shared/%s and workdir/%s both exist; agents now mount workdir/%s, merge the old one by hand", l, l, l))
+		}
+	}
 	if err := os.MkdirAll(storeDir, 0o755); err != nil {
 		return 0, nil, err
 	}
