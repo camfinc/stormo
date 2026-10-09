@@ -36,18 +36,7 @@ struct CoreView: View {
                     }
                 }
             }
-            if let g = model.fleet.fleet?.gateway {
-                Section("ChatGPT plan") {
-                    LabeledContent("Sign-in", value: g.login == "ok" ? "Using ChatGPT plan" : g.login.replacingOccurrences(of: "_", with: " "))
-                    if let until = g.planLimitedUntil.flatMap(Date.init(isoString:)) {
-                        LabeledContent("Plan limit") { Text("until \(until, format: .dateTime.hour().minute())") }
-                    }
-                    LabeledContent("Model calls", value: "\(g.inflight)/\(g.concurrency) in flight, \(g.queued) queued")
-                    if let url = g.manageUsageUrl.flatMap(URL.init(string:)) {
-                        Link("Manage usage", destination: url)
-                    }
-                }
-            }
+            ChatGPTSection()
             Section("Command line") {
                 if let p = model.pinned, let info = p.info {
                     LabeledContent("Pinned binary") { PathText(path: p.resolved.path) }

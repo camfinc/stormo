@@ -803,7 +803,7 @@ private struct ScheduleRows: View {
 }
 
 /// A section's title with a line on what it is for.
-private struct SectionTitle: View {
+struct SectionTitle: View {
     let title: String
     let note: String
     init(_ title: String, note: String) {
