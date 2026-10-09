@@ -117,7 +117,7 @@ final class MenuActions: NSObject {
     @objc func run(_ sender: NSMenuItem) { (sender.representedObject as? () -> Void)?() }
 }
 
-/// The SpriteKit view, with trackpad zoom and pan and a pointing hand over things that click.
+/// The SpriteKit view, with scroll/pinch zoom, drag to pan and a pointing hand over things that click.
 struct OfficeSpriteView: NSViewRepresentable {
     let scene: OfficeScene
 
@@ -137,15 +137,17 @@ struct OfficeSpriteView: NSViewRepresentable {
 final class OfficeSKView: SKView {
     private var office: OfficeScene? { scene as? OfficeScene }
 
+    /// Scrolling zooms around the pointer; dragging open floor pans (OfficeScene).
     override func scrollWheel(with e: NSEvent) {
-        if e.modifierFlags.contains(.command) {
-            office?.zoom(by: 1 + e.scrollingDeltaY / 200)
-        } else {
-            office?.pan(dx: e.scrollingDeltaX, dy: e.scrollingDeltaY)
-        }
+        guard let office else { return }
+        let step: CGFloat = e.hasPreciseScrollingDeltas ? 0.005 : 0.08
+        office.zoom(by: exp(e.scrollingDeltaY * step), at: e.location(in: office))
     }
 
-    override func magnify(with e: NSEvent) { office?.zoom(by: 1 + e.magnification) }
+    override func magnify(with e: NSEvent) {
+        guard let office else { return }
+        office.zoom(by: 1 + e.magnification, at: e.location(in: office))
+    }
     override func smartMagnify(with e: NSEvent) { office?.resetZoom() }
 
     override func updateTrackingAreas() {
@@ -157,7 +159,7 @@ final class OfficeSKView: SKView {
     override func mouseMoved(with e: NSEvent) {
         guard let office else { return }
         let p = e.location(in: office)
-        (office.hit(at: p) == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+        (office.hit(at: p) == nil ? NSCursor.openHand : NSCursor.pointingHand).set()
     }
 
     /// Debug snapshots: the whole floor as the scene draws it.

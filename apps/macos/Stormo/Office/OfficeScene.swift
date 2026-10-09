@@ -561,7 +561,30 @@ final class OfficeScene: SKScene {
         return nil
     }
 
+    /// Set while a press that began on open floor drags it around.
+    private var dragging = false
+    private var pressOnFloor = false
+
+    override func mouseDown(with event: NSEvent) {
+        dragging = false
+        pressOnFloor = hit(at: event.location(in: self)) == nil
+    }
+
+    /// A press on open floor drags the view; one on a thing stays a click.
+    override func mouseDragged(with event: NSEvent) {
+        guard pressOnFloor else { return }
+        if !dragging, abs(event.deltaX) + abs(event.deltaY) < 1 { return }
+        dragging = true
+        NSCursor.closedHand.set()
+        pan(dx: event.deltaX, dy: event.deltaY)
+    }
+
     override func mouseUp(with event: NSEvent) {
+        if dragging {
+            dragging = false
+            NSCursor.openHand.set()
+            return
+        }
         let p = event.location(in: self)
         if event.clickCount == 2, hit(at: p) == nil {
             resetZoom()
@@ -606,9 +629,19 @@ final class OfficeScene: SKScene {
         cam.position = CGPoint(x: plan.size.width / 2 + panOffset.x, y: plan.size.height / 2 + panOffset.y)
     }
 
-    func zoom(by factor: CGFloat) {
+    /// Zoom; with an anchor (a point in the scene), that point stays under the pointer.
+    func zoom(by factor: CGFloat, at anchor: CGPoint? = nil) {
+        let before = cam.xScale
         userZoom = min(4, max(1, userZoom * factor))
         if userZoom == 1 { panOffset = .zero }
+        if let anchor, userZoom > 1, let plan {
+            let fit = fitScale()
+            let after = min(fit * 1.2, max(1 / 1.6, fit / userZoom))
+            let k = after / before
+            let c = CGPoint(x: plan.size.width / 2 + panOffset.x, y: plan.size.height / 2 + panOffset.y)
+            panOffset.x += (anchor.x - c.x) * (1 - k)
+            panOffset.y += (anchor.y - c.y) * (1 - k)
+        }
         placeCamera()
     }
 
