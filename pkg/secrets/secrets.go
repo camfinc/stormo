@@ -563,3 +563,43 @@ func Set(inst *instance.Instance, scope, name, value string) error {
 	}
 	return Save(path, inst.Names.Resource, f)
 }
+
+// SeedAgent mints a new format-1 agent's generated keys (its engine API key, and the local-only
+// keys the core reads) into its own agents/<id>/data/secrets.yaml, leaving secrets.local.yaml and
+// every other agent alone: what `secrets init` would add for it, without rewriting the shared file.
+// An agent that already has values, or one of format 0, is left to `secrets init`.
+func SeedAgent(root string, a *manifest.Agent) ([]string, error) {
+	if a.Format < 1 {
+		return nil, nil
+	}
+	if f, err := Load(Path(root)); err != nil || f.Agents.Get(a.ID) != nil || f.InFolder(a.ID) {
+		return nil, err
+	}
+	own, local := env.New(), env.New()
+	minted := []string{}
+	for _, name := range a.Secrets {
+		if slices.Contains(engines.APIKeyNames(), name) {
+			own.Set(name, randomKey())
+			minted = append(minted, name)
+		}
+	}
+	for _, name := range manifest.LocalOnlySecrets(a.Engine) {
+		local.Set(name, randomKey())
+		minted = append(minted, name)
+	}
+	if len(minted) == 0 {
+		return nil, nil
+	}
+	var localLayer *Layer
+	if len(local.Keys()) > 0 {
+		localLayer = local
+	}
+	body, err := agentFileBody(a.ID, own, localLayer)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := manifest.EnsureDataDir(root, a.ID); err != nil {
+		return nil, err
+	}
+	return minted, WritePrivate(AgentFile(root, a.ID), body)
+}

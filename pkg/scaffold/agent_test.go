@@ -57,7 +57,13 @@ func TestNewAgentFromDefaults(t *testing.T) {
 		}
 	}
 	if !slices.Contains(r.Missing, "SLACK_BOT_TOKEN") || slices.Contains(r.Missing, "API_SERVER_KEY") {
-		t.Errorf("missing %v: want the channel's tokens, not the engine key secrets init mints", r.Missing)
+		t.Errorf("missing %v: want the channel's tokens, not the engine key it mints", r.Missing)
+	}
+	if fi, err := os.Stat(filepath.Join(inst.Root, "agents", "front-desk", "data", "secrets.yaml")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("data/secrets.yaml: %v %v", fi, err)
+	}
+	if _, err := os.Stat(filepath.Join(inst.Root, "secrets.local.yaml")); err == nil {
+		t.Error("secrets.local.yaml was written; new agent must leave it alone")
 	}
 	a := checkAgent(t, inst, "front-desk")
 	if a.Format != manifest.Format || a.Engine.Version != d.Engine.Version || a.Role != "Greets visitors." {

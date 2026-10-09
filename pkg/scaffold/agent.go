@@ -132,13 +132,12 @@ type AgentResult struct {
 	Files []string `json:"files"`
 	// Secrets are the declared names; values go in with `stormo secrets set <id> NAME`.
 	Secrets []string `json:"secrets"`
-	// Missing are the declared names with no local value yet, but for the engine's API key, which
-	// `stormo secrets init` mints.
+	// Missing are the declared names with no local value yet (the generated keys are minted).
 	Missing []string `json:"missing"`
 }
 
-// NewAgent writes agents/<id>/ (agent.yaml at the current format, SOUL.md) and, when asked, the
-// unit it joins. The result must load and pass the connection checks; otherwise nothing is left.
+// NewAgent writes agents/<id>/ (agent.yaml at the current format, SOUL.md, data/secrets.yaml with
+// its generated keys) and, when asked, the unit it joins. The result must load and pass the connection checks; otherwise nothing is left.
 func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	if s.Name = strings.TrimSpace(s.Name); s.Name == "" {
 		return AgentResult{}, errors.New("a name is required")
@@ -245,11 +244,18 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	if unitFile != "" {
 		r.Files = append(r.Files, "units/"+s.Unit+"/unit.yaml")
 	}
+	// Its generated keys go in its own data folder; secrets.local.yaml is not rewritten.
+	if _, err := secrets.SeedAgent(inst.Root, a); err != nil {
+		return fail(err)
+	}
 	r.Missing = []string{}
-	file, _ := secrets.Load(secrets.Path(inst.Root))
+	file, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return fail(err)
+	}
 	values := secrets.Resolve(file, a, manifest.Local).Values
 	for _, n := range declared {
-		if v, _ := values.Get(n); v == "" && n != eng.Runtime().APIKeyName() {
+		if v, _ := values.Get(n); v == "" {
 			r.Missing = append(r.Missing, n)
 		}
 	}

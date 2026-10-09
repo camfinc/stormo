@@ -213,10 +213,8 @@ struct NewAgentWizard: View {
         defer { creating = false }
         do {
             let body = try JSONEncoder().encode(draft.spec)
-            let r = try await cli.run(["new", "agent"], as: NewAgentResult.self, stdin: body)
-            // Mints the engine's own key for the new agent; the rest are asked for next.
-            try? await cli.perform(["secrets", "init"])
-            created = r
+            // The engine mints the agent's own generated keys; the rest are asked for next.
+            created = try await cli.run(["new", "agent"], as: NewAgentResult.self, stdin: body)
             step = .keys
             reached = .keys
             await model.fleet.refresh()
@@ -687,9 +685,9 @@ private struct KeysPage: View {
                 Label(started ? "Starting…" : "Start \(result.name)", systemImage: "play.fill")
             }
             .controlSize(.large)
-            .disabled(started || !model.core.state.isRunning || saved.count < missing.count)
+            .disabled(started || !model.core.state.isRunning)
             Text(!model.core.state.isRunning ? "Start the core first to run agents."
-                 : saved.count < missing.count ? "Save its keys to start it." : "Runs it on this Mac.")
+                 : saved.count < missing.count ? "Some keys are still missing: it may not connect until they’re added." : "Runs it on this Mac.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Text("Created \(result.files.joined(separator: ", ")).").font(.caption).foregroundStyle(.tertiary).padding(.top, 14)
