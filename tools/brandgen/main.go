@@ -1,8 +1,8 @@
 // Command brandgen writes Stormo's logo files (docs/brand/*.svg) from one spiral: dots evenly
 // spaced along an Archimedean curve, growing and cooling from teal to indigo, plus the monoline
-// wordmark. Edit the parameters here and regenerate every file together:
+// wordmark, and the macOS app icon. Edit the parameters here and regenerate every file together:
 //
-//	go run ./tools/brandgen [-out docs/brand]
+//	go run ./tools/brandgen [-out docs/brand] [-icon apps/macos/Stormo/AppIcon.icon]
 //
 // social-preview.png is a browser render of social-preview.svg at 1280×640 (docs/brand/README.md).
 package main
@@ -68,8 +68,8 @@ func (s spiral) dots() []dot {
 	return out
 }
 
-// centred fits the dots into a box×box square with pad on each side.
-func centred(ds []dot, box, pad float64) string {
+// fit scales and moves the dots into a box×box square with pad on each side.
+func fit(ds []dot, box, pad float64) []dot {
 	x0, y0, x1, y1 := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
 	for _, d := range ds {
 		x0, y0 = math.Min(x0, d.x-d.r), math.Min(y0, d.y-d.r)
@@ -77,11 +77,70 @@ func centred(ds []dot, box, pad float64) string {
 	}
 	k := (box - 2*pad) / math.Max(x1-x0, y1-y0)
 	dx, dy := box/2-(x0+x1)/2*k, box/2-(y0+y1)/2*k
+	out := make([]dot, len(ds))
+	for i, d := range ds {
+		out[i] = dot{dx + d.x*k, dy + d.y*k, d.r * k, d.color}
+	}
+	return out
+}
+
+func (d dot) circle() string {
+	return fmt.Sprintf(`<circle cx="%.2f" cy="%.2f" r="%.2f" fill="%s"/>`, d.x, d.y, d.r, d.color)
+}
+
+// centred is the dots fitted into a box×box square, as SVG circles.
+func centred(ds []dot, box, pad float64) string {
 	var b strings.Builder
-	for _, d := range ds {
-		fmt.Fprintf(&b, `<circle cx="%.2f" cy="%.2f" r="%.2f" fill="%s"/>`, dx+d.x*k, dy+d.y*k, d.r*k, d.color)
+	for _, d := range fit(ds, box, pad) {
+		b.WriteString(d.circle())
 	}
 	return b.String()
+}
+
+// appIcon is the macOS app's Icon Composer document (AppIcon.icon): the tile colour as its fill
+// and every dot of the mark as its own opaque glass layer on Apple's 1024-point canvas, so each
+// dot catches light separately and the overlapping outer dots stay distinct. The first layer is
+// frontmost: the centre of the spiral sits on top, as in the flat mark.
+func appIcon(ds []dot) map[string]string {
+	var r, g, b int
+	fmt.Sscanf(tileBG, "#%02x%02x%02x", &r, &g, &b)
+	files := map[string]string{}
+	layers := []string{}
+	for i, d := range fit(ds, 1024, 180) {
+		name := fmt.Sprintf("dot%02d", i)
+		files["Assets/"+name+".svg"] = fmt.Sprintf(`%s viewBox="0 0 1024 1024" width="1024" height="1024">%s</svg>`, head, d.circle())
+		layers = append(layers, fmt.Sprintf(`        {
+          "glass" : true,
+          "image-name" : "%s.svg",
+          "name" : "%s"
+        }`, name, name))
+	}
+	files["icon.json"] = fmt.Sprintf(`{
+  "fill" : {
+    "solid" : "srgb:%.5f,%.5f,%.5f,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+%s
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}`, float64(r)/255, float64(g)/255, float64(b)/255, strings.Join(layers, ",\n"))
+	return files
 }
 
 // wordmark is "stormo" in monoline strokes: x-height 12..40, stroke 6, round caps.
@@ -108,6 +167,7 @@ func wordmark(ink string) (string, float64) {
 
 func main() {
 	out := flag.String("out", "docs/brand", "directory to write into")
+	icon := flag.String("icon", "apps/macos/Stormo/AppIcon.icon", "the macOS app icon to write")
 	flag.Parse()
 	mark := full.dots()
 	files := map[string]string{
@@ -128,13 +188,23 @@ func main() {
 		`<g transform="translate(250 190) scale(4.1)">%s</g><g transform="translate(560 262) scale(2.6)">%s</g>`+
 		`<text x="563" y="420" fill="#8b98a8" font-family="Helvetica Neue, Arial, sans-serif" font-size="30">An agent swarm engine</text></svg>`,
 		head, tileBG, centred(mark, 64, 2), wm)
-	if err := os.MkdirAll(*out, 0o755); err != nil {
+	write(*out, files)
+	// A spiral with fewer dots must not leave stale layers behind.
+	if err := os.RemoveAll(filepath.Join(*icon, "Assets")); err != nil {
 		log.Fatal(err)
 	}
+	write(*icon, appIcon(mark))
+}
+
+func write(dir string, files map[string]string) {
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(*out, name), []byte(body+"\n"), 0o644); err != nil {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body+"\n"), 0o644); err != nil {
 			log.Fatal(err)
 		}
 	}
-	fmt.Printf("wrote %d files to %s\n", len(files), *out)
+	fmt.Printf("wrote %d files to %s\n", len(files), dir)
 }

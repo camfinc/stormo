@@ -1,0 +1,114 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.05098,0.07843,0.10980,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "dot00.svg",
+          "name" : "dot00"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot01.svg",
+          "name" : "dot01"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot02.svg",
+          "name" : "dot02"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot03.svg",
+          "name" : "dot03"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot04.svg",
+          "name" : "dot04"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot05.svg",
+          "name" : "dot05"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot06.svg",
+          "name" : "dot06"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot07.svg",
+          "name" : "dot07"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot08.svg",
+          "name" : "dot08"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot09.svg",
+          "name" : "dot09"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot10.svg",
+          "name" : "dot10"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot11.svg",
+          "name" : "dot11"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot12.svg",
+          "name" : "dot12"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot13.svg",
+          "name" : "dot13"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot14.svg",
+          "name" : "dot14"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot15.svg",
+          "name" : "dot15"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot16.svg",
+          "name" : "dot16"
+        },
+        {
+          "glass" : true,
+          "image-name" : "dot17.svg",
+          "name" : "dot17"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

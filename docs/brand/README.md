@@ -12,6 +12,7 @@ nothing depends on a font.
 | `favicon.svg` | a nine-dot cut of the mark that stays legible at 16 px (the office's browser tab) |
 | `wordmark-light.svg` · `wordmark-dark.svg` | the name alone |
 | `social-preview.png` (`.svg` source) | GitHub's social preview, 1280×640 |
+| `apps/macos/Stormo/AppIcon.icon` | the macOS app icon: an Icon Composer document, the tile as its fill and each dot an opaque glass layer |
 
 Colours: teal `#2dd4bf` → indigo `#818cf8`, tile `#0d141c`, light ink `#e8eef5`, dark ink `#0d141c`
 (the office UI's palette). Leave clear space of at least one dot's width around the mark, and never
@@ -20,7 +21,7 @@ spiral (even spacing along an Archimedean curve), so edits go to the generator a
 regenerated together:
 
 ```sh
-go run ./tools/brandgen        # rewrites docs/brand/*.svg
+go run ./tools/brandgen        # rewrites docs/brand/*.svg and the app icon
 ```
 
 `social-preview.png` is a browser render of `social-preview.svg` at 1280×640 (for example
