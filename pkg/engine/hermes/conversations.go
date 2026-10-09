@@ -14,8 +14,10 @@ import (
 )
 
 // Conversations are Hermes' sessions (`/api/sessions`). A Hermes compaction ends the session and
-// continues the conversation in a child (`end_reason: compression`); `/messages` follows that chain
-// to its live tip, `/chat` does not, so a turn goes to the tip and a delete takes the whole chain.
+// continues the conversation in a child (`end_reason: compression`). The listing shows a chain as
+// its live tip (`_lineage_root_id` naming the first session); `/messages` follows the chain from
+// any of its sessions, `/chat` does not. So a conversation's id is its root, a turn goes to the
+// tip, and a delete takes the whole chain.
 func (runtime) Conversations(call engine.APICall) engine.Conversations { return conversations{call} }
 
 type conversations struct{ call engine.APICall }
@@ -33,6 +35,8 @@ type hermesSession struct {
 	EndedAt      any    `json:"ended_at"`
 	MessageCount int    `json:"message_count"`
 	Parent       string `json:"parent_session_id"`
+	EndReason    string `json:"end_reason"`
+	Root         string `json:"_lineage_root_id"`
 	Hidden       bool   `json:"hidden"`
 }
 
@@ -103,10 +107,14 @@ func (c conversations) List(ctx context.Context, limit int) ([]engine.Conversati
 		if s.Hidden || s.ID == "" {
 			continue
 		}
+		id := s.ID
+		if s.Root != "" {
+			id = s.Root
+		}
 		list = append(list, engine.Conversation{
-			ID: s.ID, Title: s.Title, Source: s.Source, Preview: s.Preview,
+			ID: id, Title: s.Title, Source: s.Source, Preview: s.Preview,
 			StartedAt: when(s.StartedAt), LastActive: when(s.LastActive),
-			Messages: s.MessageCount, Ended: when(s.EndedAt) != "",
+			Messages: s.MessageCount, Ended: when(s.EndedAt) != "", Compacted: id != s.ID,
 		})
 	}
 	return list, nil
@@ -271,14 +279,22 @@ func (c conversations) Delete(ctx context.Context, id string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	children := map[string][]string{}
+	byID, children := map[string]hermesSession{}, map[string][]string{}
 	for _, s := range rows {
+		byID[s.ID] = s
 		if s.Parent != "" {
 			children[s.Parent] = append(children[s.Parent], s.ID)
 		}
 	}
-	// The conversation, then what continued it, deepest last (a delete orphans a child, and the ids
-	// are already collected).
+	// Up to the conversation's first session (id may be a later one of the chain)...
+	for i := 0; i < 32; i++ {
+		p, ok := byID[byID[id].Parent]
+		if !ok || p.EndReason != "compression" {
+			break
+		}
+		id = p.ID
+	}
+	// ...then it and everything that continued it (a delete orphans a child; the ids are collected).
 	ids, seen := []string{id}, map[string]bool{id: true}
 	for i := 0; i < len(ids); i++ {
 		for _, ch := range children[ids[i]] {

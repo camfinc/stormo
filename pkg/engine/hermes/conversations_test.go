@@ -25,7 +25,7 @@ type fakeSessions struct {
 func newFake() *fakeSessions {
 	return &fakeSessions{
 		sessions: map[string]map[string]any{
-			"c1":    {"id": "c1", "title": "Plan", "source": "api_server", "started_at": 1.7e9, "message_count": 0, "ended_at": 1.7e9 + 60},
+			"c1":    {"id": "c1", "title": "Plan", "source": "api_server", "started_at": 1.7e9, "message_count": 0, "ended_at": 1.7e9 + 60, "end_reason": "compression"},
 			"c1b":   {"id": "c1b", "source": "api_server", "parent_session_id": "c1", "message_count": 3},
 			"slack": {"id": "slack", "source": "slack", "preview": "hi", "message_count": 2},
 		},
@@ -54,8 +54,18 @@ func (f *fakeSessions) call(_ context.Context, method, path string, body any) (i
 	switch {
 	case method == http.MethodGet && id == "":
 		var data []any
+		children := u.Query().Get("include_children") == "true"
 		for _, s := range f.sessions {
-			if s["parent_session_id"] == nil || u.Query().Get("include_children") == "true" {
+			switch {
+			case children:
+				data = append(data, s)
+			case s["parent_session_id"] != nil:
+			case f.tip[s["id"].(string)] != "":
+				// A compressed chain is listed as its tip (Hermes' _project_compression_tips).
+				tip := f.sessions[f.tip[s["id"].(string)]]
+				data = append(data, map[string]any{"id": tip["id"], "title": s["title"], "source": s["source"],
+					"message_count": tip["message_count"], "started_at": s["started_at"], "_lineage_root_id": s["id"]})
+			default:
 				data = append(data, s)
 			}
 		}
@@ -103,7 +113,10 @@ func TestConversations(t *testing.T) {
 		t.Fatalf("list = %+v, %v (continuations are not conversations)", list, err)
 	}
 	for _, cv := range list {
-		if cv.ID == "c1" && (cv.Title != "Plan" || !cv.Ended || cv.StartedAt == "") {
+		if cv.ID == "c1b" {
+			t.Errorf("a compacted conversation is listed by its tip's id: %+v", cv)
+		}
+		if cv.ID == "c1" && (cv.Title != "Plan" || !cv.Compacted || cv.Messages != 3 || cv.StartedAt == "") {
 			t.Errorf("c1 = %+v", cv)
 		}
 	}
@@ -148,8 +161,8 @@ func TestConversations(t *testing.T) {
 		t.Errorf("missing = %v", err)
 	}
 
-	// Clearing takes the continuation with it.
-	n, err := c.Delete(ctx, "c1")
+	// Clearing takes the whole chain, from any of its sessions.
+	n, err := c.Delete(ctx, "c1b")
 	if err != nil || n != 2 || f.sessions["c1"] != nil || f.sessions["c1b"] != nil || f.sessions["slack"] == nil {
 		t.Fatalf("delete = %d %v, left %v", n, err, f.sessions)
 	}

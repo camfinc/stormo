@@ -102,8 +102,9 @@ type Conversations interface {
 	// Send runs one turn in conversation id, created when it does not exist yet. It returns the
 	// reply and the session that holds the conversation now (a compaction can move it).
 	Send(ctx context.Context, id, message string) (reply, tip string, err error)
-	// Delete removes a conversation and the sessions its compactions continued in; the number of
-	// sessions removed, 0 when it did not exist.
+	// Delete removes a conversation (id: any of its sessions) and the sessions its compactions
+	// continued in; the number of sessions removed, 0 when it did not exist. Hermes: the chain is
+	// found among the 200 most recently active sessions.
 	Delete(ctx context.Context, id string) (int, error)
 }
 
@@ -117,6 +118,9 @@ type Conversation struct {
 	LastActive string `json:"lastActive,omitempty"`
 	Messages   int    `json:"messages"`
 	Ended      bool   `json:"ended"`
+	// Compacted: the engine folded older turns into a summary (ID stays the conversation's first
+	// session; the counts and times are the live part's).
+	Compacted bool `json:"compacted"`
 }
 
 // Message kinds: what a client shows differently.

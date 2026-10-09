@@ -177,6 +177,10 @@ private struct ConversationRow: View {
                 Label(conversation.sourceLabel, systemImage: symbol)
                     .labelStyle(.titleAndIcon)
                 Text("\(conversation.messages) message\(conversation.messages == 1 ? "" : "s")")
+                if conversation.compacted == true {
+                    Image(systemName: "rectangle.compress.vertical")
+                        .help("Compacted automatically: older turns are kept as a summary")
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)

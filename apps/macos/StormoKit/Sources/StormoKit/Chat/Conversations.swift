@@ -13,6 +13,8 @@ public struct Conversation: Codable, Sendable, Equatable, Identifiable {
     public var lastActive: String?
     public var messages: Int
     public var ended: Bool
+    /// The agent folded older turns into a summary (automatic compaction).
+    public var compacted: Bool?
 
     public init(id: String, title: String? = nil, source: String? = "api_server", preview: String? = nil,
                 startedAt: String? = nil, lastActive: String? = nil, messages: Int = 0, ended: Bool = false) {

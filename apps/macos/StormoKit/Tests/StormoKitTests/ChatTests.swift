@@ -13,9 +13,9 @@ import Testing
     }
 
     @Test func conversationsFromCLI() throws {
-        let line = #"{"event":"result","data":{"agent":"sofia","conversations":[{"id":"a","title":"Plan","source":"api_server","lastActive":"2026-10-09T19:12:55Z","messages":4,"ended":false},{"id":"b","source":"cron","preview":"Daily report","messages":6,"ended":true}]}}"#
+        let line = #"{"event":"result","data":{"agent":"sofia","conversations":[{"id":"a","title":"Plan","source":"api_server","lastActive":"2026-10-09T19:12:55Z","messages":4,"ended":false,"compacted":true},{"id":"b","source":"cron","preview":"Daily report","messages":6,"ended":true}]}}"#
         let list = try #require(try CLIEvent(line: line)?.decode(ConversationsResult.self)).conversations
-        #expect(list[0].isDirect && list[0].displayTitle == "Plan" && list[0].activeDate != nil)
+        #expect(list[0].isDirect && list[0].displayTitle == "Plan" && list[0].activeDate != nil && list[0].compacted == true)
         #expect(!list[1].isDirect && list[1].displayTitle == "Daily report" && list[1].sourceLabel == "Scheduled")
     }
 
