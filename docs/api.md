@@ -59,7 +59,9 @@ carries only events: anything else the command or the tools it runs print
 
 Exit status: 0 success, 1 failure, 2 usage. Error codes: `usage` (bad flags or arguments),
 `instance` (no instance found, or its stormo.yaml is invalid), `failed` (anything else); `config`
-adds `unsupported`, `conflict`, `invalid` and `readonly` (below). Commands
+adds `unsupported`, `conflict`, `invalid` and `readonly` (below); `chat` and `conversations` add
+`not_running` (the agent's engine API does not answer here), `busy` (the engine refuses another turn
+now) and `not_found` (no such conversation). Commands
 gain structured `result` data one by one; until a command has it, `--json` still turns its failure
 into an `error` event.
 
@@ -72,6 +74,11 @@ into an `error` event.
 | `instance` | `root`, `name`, `org`, `slug` of the instance this invocation found (`--instance`, `STORMO_INSTANCE`, the working directory, the binary's directory, in that order) |
 | `status` (`ps`) | one row per agent: `agent`, `unit`, `where`, `state` (running \| stopped \| starting \| missing \| unknown), `health`, `endpoint`, `lastNap`, `pendingLearnings`, `pendingSkills`, `detail` |
 | `start`, `stop`, `restart`, `nap-now` | `action`, `where`, `agents` (in the order handled); progress as `step` events |
+| `chat <agent> <msg>\|- [--session s]` | `agent`, `session` (where the conversation is now: an engine compaction can move it), `reply`. `-` reads the message from stdin (use it: a message could be `--json`). The session (default `swarm-local`) is created when missing. A turn can take minutes; cancel by ending the process |
+| `conversations <agent>` | `agent`, `conversations` [{`id`, `title`, `source` (`api_server`, `slack`, `cron`, …), `preview`, `startedAt`, `lastActive`, `messages`, `ended`}], most recently active first. Titles, previews and messages are client data: shown to the owner, never sent to the core |
+| `conversations <agent> <session>` | `agent`, `id`, `tip` (the session holding it now), `compacted` (older turns were folded into a summary by the engine's automatic compaction), `messages` [{`id`, `role`, `kind` (`text` \| `tool`), `content`, `at`, `tools` (an assistant row's tool calls), `tool` (the tool a tool row answers)}], oldest first, the latest 500 |
+| `conversations new <agent> [--name title]` | as a transcript, empty: `id` of the new conversation |
+| `conversations clear <agent> <session>\|--all` | `agent`, `cleared` (ids), `removed` (sessions, compaction continuations included). `--all` clears the conversations started through the API (`source` `api_server`); a Slack thread's or a schedule's stays with its channel |
 | `core up` | `started` (false when a core already answered), `pid`, `port`, `log`, `login` |
 | `core down` | `stopped`, `pid`; not stopped: `reason` `not_running`, or `not_ours` (a core answers that `core up` did not start; left alone) |
 | `core status` | `running`, `port`, `login` (the gateway's, else the sign-in on disk), `gateway` (as `/api/gateway`) when running |

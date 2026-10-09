@@ -56,7 +56,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   stormo restart [agent...]               local: recycle like a redeploy   · remote: new deployment
   stormo handoff <agent> --to local|remote  stop where it runs, carry its latest nap over, start there [--force]
   stormo learn   [agent...]               nap now (local), fold naps into proposals, show what to review
-  stormo logs <agent> [-f] · chat <agent> "msg" [--session s] · nap-now <agent>   (local)
+  stormo logs <agent> [-f] · chat <agent> "msg"|- [--session s] · nap-now <agent>   (local)
+  stormo conversations <agent> [session]  an agent's conversations, or one's transcript (local)
+    conversations new <agent> [--name title] · conversations clear <agent> <session>|--all
     target: --remote | --target local|remote | SWARM_TARGET=remote · remote changes ask first (--yes skips)
     start/restart (local): [--keep-home] [--nap-interval s] [--allow-prod-token] [--rebuild-sidecar]
     agents default to all of them
@@ -142,6 +144,7 @@ var (
 	fAllowProd   = fs.Bool("allow-prod-token", false, "")
 	fRebuild     = fs.Bool("rebuild-sidecar", false, "")
 	fSession     = fs.String("session", "swarm-local", "")
+	fAll         = fs.Bool("all", false, "")
 	fFollow      = fs.BoolP("follow", "f", false, "")
 	fRemote      = fs.BoolP("remote", "r", false, "")
 	fTarget      = fs.String("target", "", "")
@@ -648,20 +651,10 @@ func run(args []string) error {
 		return runCore(inst, sub, rest)
 
 	case "chat":
-		id, err := need(sub, "agent")
-		if err != nil {
-			return err
-		}
-		msg, err := need(strings.Join(rest, " "), "message")
-		if err != nil {
-			return err
-		}
-		reply, err := local.Chat(inst, id, msg, *fSession)
-		if err != nil {
-			return err
-		}
-		fmt.Println(reply)
-		return nil
+		return chatCmd(inst, sub, rest)
+
+	case "conversations":
+		return conversationsCmd(inst, sub, rest)
 
 	case "slack":
 		if sub != "manifest" || len(rest) == 0 {

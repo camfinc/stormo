@@ -2,6 +2,9 @@ package local
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,10 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/camfinc/stormo/pkg/aws"
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/deploy"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/loop"
@@ -213,41 +218,64 @@ func NapNow(inst *instance.Instance, id string) error {
 	return err
 }
 
-// Chat sends one message to the agent's local engine API (engine.Runtime.ChatRequest).
-func Chat(inst *instance.Instance, id, message, session string) (string, error) {
+// Conversations is the agent's chat surface on its local engine API (engine.Runtime.Conversations),
+// keyed with its API key from the local secrets.
+func Conversations(inst *instance.Instance, id string) (engine.Conversations, error) {
 	a, err := load(inst, id)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	rt, err := engines.Runtime(a.Engine.Kind)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	file, err := secrets.Load(secrets.Path(inst.Root))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	key, _ := secrets.Resolve(file, a, manifest.Local).Values.Get(rt.APIKeyName())
 	if key == "" {
-		return "", fmt.Errorf("%s: %s missing in %s", id, rt.APIKeyName(), secrets.Path(inst.Root))
+		return nil, fmt.Errorf("%s: %s missing in %s", id, rt.APIKeyName(), secrets.Path(inst.Root))
 	}
 	port, err := Port(inst.Root, id)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	req, err := rt.ChatRequest(fmt.Sprintf("http://127.0.0.1:%d", port), session, message)
-	if err != nil {
-		return "", err
+	return rt.Conversations(apiCall(id, fmt.Sprintf("http://127.0.0.1:%d", port), key)), nil
+}
+
+// ErrNotRunning is an agent whose engine API does not answer here.
+var ErrNotRunning = errors.New("not running locally")
+
+// apiCall sends requests to an agent's API. No client timeout: a turn can run for minutes; the
+// caller's context ends it.
+func apiCall(id, endpoint, key string) engine.APICall {
+	return func(ctx context.Context, method, path string, body any) (int, []byte, error) {
+		var rd io.Reader
+		if body != nil {
+			b, err := json.Marshal(body)
+			if err != nil {
+				return 0, nil, err
+			}
+			rd = bytes.NewReader(b)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, endpoint+path, rd)
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				return 0, nil, fmt.Errorf("%s: %w (start it first)", id, ErrNotRunning)
+			}
+			return 0, nil, fmt.Errorf("%s: %w", id, err)
+		}
+		defer res.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(res.Body, 32<<20))
+		return res.StatusCode, raw, err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
-	if res.StatusCode >= 300 {
-		return "", fmt.Errorf("%s: HTTP %d %s", id, res.StatusCode, raw)
-	}
-	return rt.ChatReply(raw)
 }

@@ -22,7 +22,7 @@ const APIKeyName = "API_SERVER_KEY"
 const SignatureHeader = "X-Hermes-Signature-256"
 
 // Runtime is Hermes' API server (0.21+): `/health/detailed`, `/api/sessions`, `/api/jobs`,
-// `POST /v1/runs`, the OpenAI-compatible `/v1/chat/completions`, and its outbound hooks.
+// `POST /v1/runs`, `/api/sessions/{id}/chat`, and its outbound hooks.
 func (h *Hermes) Runtime() engine.Runtime { return runtime{} }
 
 // NewRuntime is the runtime without an instance.
@@ -81,34 +81,6 @@ func (runtime) WakeRequest(ctx context.Context, endpoint, input, session, idempo
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", idempotency)
 	return req, nil
-}
-
-func (runtime) ChatRequest(endpoint, session, message string) (*http.Request, error) {
-	body, _ := json.Marshal(map[string]any{"model": "hermes-agent", "messages": []map[string]string{{"role": "user", "content": message}}})
-	req, err := http.NewRequest(http.MethodPost, endpoint+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Hermes-Session-Id", session)
-	return req, nil
-}
-
-func (runtime) ChatReply(body []byte) (string, error) {
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return "", err
-	}
-	if len(out.Choices) == 0 {
-		return "", nil
-	}
-	return out.Choices[0].Message.Content, nil
 }
 
 func (runtime) HookSignature(h http.Header) string {

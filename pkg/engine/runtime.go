@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 )
@@ -21,9 +22,10 @@ type Runtime interface {
 	// WakeRequest starts a turn: input as the user message, continuing session; idempotency makes a
 	// retried wake start one run. The caller adds the key and sends it.
 	WakeRequest(ctx context.Context, endpoint, input, session, idempotency string) (*http.Request, error)
-	// ChatRequest sends one message in session (`stormo chat`); ChatReply reads the answer.
-	ChatRequest(endpoint, session, message string) (*http.Request, error)
-	ChatReply(body []byte) (string, error)
+	// Conversations is the agent's chat surface (`stormo chat`, `stormo conversations`, the app's
+	// Chat): its sessions, their transcripts, one turn, and clearing one. call sends one request to
+	// the agent's API with its key.
+	Conversations(call APICall) Conversations
 	// HookSignature is the hex HMAC-SHA256 of a hook delivery's body (keyed with the agent's core
 	// key) from the delivery's headers, "" when absent; ParseHook reads the delivery.
 	HookSignature(h http.Header) string
@@ -83,3 +85,67 @@ type HookEvent struct {
 	Status   string
 	Duration time.Duration
 }
+
+// APICall sends one request to an agent's engine API with its key: body is marshalled as JSON when
+// not nil. It returns the HTTP status and the response body (any status: the engine reads it).
+type APICall func(ctx context.Context, method, path string, body any) (status int, resp []byte, err error)
+
+// Conversations reads and drives an agent's sessions through its engine API. Titles, previews and
+// messages are client data: they go to the caller (the owner's CLI and app), never to the core.
+type Conversations interface {
+	List(ctx context.Context, limit int) ([]Conversation, error)
+	// Transcript is a conversation as the agent holds it now: after the engine compacted it, its
+	// summary replaces the older turns (Compacted, with Tip the session that carries it on).
+	Transcript(ctx context.Context, id string, limit int) (*Transcript, error)
+	// New starts an empty conversation, its id generated when id is "".
+	New(ctx context.Context, id, title string) (string, error)
+	// Send runs one turn in conversation id, created when it does not exist yet. It returns the
+	// reply and the session that holds the conversation now (a compaction can move it).
+	Send(ctx context.Context, id, message string) (reply, tip string, err error)
+	// Delete removes a conversation and the sessions its compactions continued in; the number of
+	// sessions removed, 0 when it did not exist.
+	Delete(ctx context.Context, id string) (int, error)
+}
+
+// Conversation is one session as the engine lists it.
+type Conversation struct {
+	ID         string `json:"id"`
+	Title      string `json:"title,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Preview    string `json:"preview,omitempty"`
+	StartedAt  string `json:"startedAt,omitempty"`
+	LastActive string `json:"lastActive,omitempty"`
+	Messages   int    `json:"messages"`
+	Ended      bool   `json:"ended"`
+}
+
+// Message kinds: what a client shows differently.
+const (
+	MessageText = "text"
+	MessageTool = "tool"
+)
+
+// Message is one visible transcript row.
+type Message struct {
+	ID      string   `json:"id,omitempty"`
+	Role    string   `json:"role"`
+	Kind    string   `json:"kind"`
+	Content string   `json:"content"`
+	At      string   `json:"at,omitempty"`
+	Tools   []string `json:"tools,omitempty"` // the tools an assistant row called
+	Tool    string   `json:"tool,omitempty"`  // the tool a tool row answers for
+}
+
+// Transcript is a conversation's visible messages, oldest first.
+type Transcript struct {
+	ID        string    `json:"id"`
+	Tip       string    `json:"tip"`
+	Compacted bool      `json:"compacted"`
+	Messages  []Message `json:"messages"`
+}
+
+// ErrNotFound is a conversation the engine does not hold.
+var ErrNotFound = errors.New("conversation not found")
+
+// ErrBusy is an engine refusing a turn because it already runs as many as it allows.
+var ErrBusy = errors.New("the agent is busy with other turns; try again shortly")

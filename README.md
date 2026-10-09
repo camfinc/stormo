@@ -113,7 +113,7 @@ The design in depth: [ARCHITECTURE.md](ARCHITECTURE.md). The core and the office
 | `stormo` | status of every agent: state, last nap, lessons waiting for review |
 | `stormo start` · `stop` · `restart [agent…]` | local by default; `-r` targets ECS (remote changes ask first) |
 | `stormo handoff <agent> --to remote` | stop here, carry the latest nap over, start there |
-| `stormo logs <agent> -f` · `chat <agent> "hello"` | follow an agent, or talk to its local API |
+| `stormo logs <agent> -f` · `chat <agent> "hello"` · `conversations <agent>` | follow an agent, talk to its local API, list or clear its conversations |
 | `stormo learn [agent…]` | nap now, fold naps into proposals, show what to review |
 | `stormo learn list` · `accept` · `reject` · `promote` | review lessons; `learn skills` for skill proposals |
 | `stormo inspect <agent>` | everything the engine computes for an agent, as JSON |
