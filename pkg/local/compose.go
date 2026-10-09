@@ -96,6 +96,8 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 	nap.Environment = map[string]string{"SWARM_AGENT": a.ID, "SWARM_STORE": "/store", "SWARM_HOME": "/data", "SWARM_NAP_INTERVAL": fmt.Sprint(napInterval)}
 	nap.DependsOn = map[string]any{"rehydrate": map[string]string{"condition": "service_completed_successfully"}}
 	nap.StopGrace = "100s"
+	// Like the agent: a Docker restart (daemon, laptop sleep) brings both back, not the agent alone.
+	nap.Restart = "unless-stopped"
 
 	volumes := []string{"home:" + eng.Layout().Home}
 	for _, l := range shared.Layers(a) {

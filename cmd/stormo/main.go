@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	// Time zones (core.learning.timezone) resolve in the sidecar image too, which ships no zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/camfinc/stormo"
 	"github.com/camfinc/stormo/pkg/agentpack"

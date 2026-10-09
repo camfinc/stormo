@@ -58,6 +58,11 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 	if got := spec.Services["nap"].Command; !slices.Equal(got, []string{"nap", "--loop"}) {
 		t.Errorf("nap command = %v", got)
 	}
+	for _, s := range []string{"agent", "nap"} {
+		if got := spec.Services[s].Restart; got != "unless-stopped" {
+			t.Errorf("%s restart = %q, want unless-stopped", s, got)
+		}
+	}
 }
 
 func TestPortConcurrentAllocationsAreDistinct(t *testing.T) {
