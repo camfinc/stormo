@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo"
+	"github.com/camfinc/stormo/pkg/agentpack"
 	"github.com/camfinc/stormo/pkg/bench"
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
@@ -68,6 +69,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
+  export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
+  import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]
+                                         an exported agent into this instance; checked, undone if it fails
   migrate agent [agent...]               bring agents to agent.yaml format 1 (docs/agent-standard.md);
                                          a stopped agent's data moves into agents/<id>/data too
   build <agent>                          compile dist/<agent>/baseline (also a Hermes distribution)
@@ -143,6 +147,12 @@ var (
 	fTemplate    = fs.String("template", "", "")
 	fNoGit       = fs.Bool("no-git", false, "")
 	fIfHash      = fs.String("if-hash", "", "")
+	fData        = fs.Bool("data", false, "")
+	fOut         = fs.StringP("out", "o", "", "")
+	fAs          = fs.String("as", "", "")
+	fUnit        = fs.String("unit", "", "")
+	fReplace     = fs.Bool("replace", false, "")
+	fWithActions = fs.Bool("with-actions", false, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -297,6 +307,45 @@ func run(args []string) error {
 
 	case "config":
 		return configCmd(inst, sub, rest)
+
+	case "export":
+		id, err := need(sub, "agent")
+		if err != nil {
+			return err
+		}
+		r, err := agentpack.Export(inst, id, *fData, *fOut)
+		if err != nil {
+			var pe *agentpack.Error
+			if errors.As(err, &pe) {
+				return withCode(pe.Code, err)
+			}
+			return err
+		}
+		if r.ContainsSecrets {
+			step("WARNING: %s contains %s's secret values in plain text and its naps (client data). Keep it private, delete it once imported, rotate the values if it leaks.", r.Path, id)
+		}
+		result(r, func(w io.Writer) { fmt.Fprintf(w, "exported %s (%s, %d files) to %s\n", id, r.Mode, r.Files, r.Path) })
+		return nil
+
+	case "import":
+		zipPath, err := need(sub, "zip file")
+		if err != nil {
+			return err
+		}
+		r, err := agentpack.Import(inst, zipPath, agentpack.ImportOptions{As: *fAs, Unit: *fUnit, Replace: *fReplace, WithActions: *fWithActions},
+			func(id string) error { return check(inst, []string{id}) })
+		if err != nil {
+			var pe *agentpack.Error
+			if errors.As(err, &pe) {
+				return withCode(pe.Code, err)
+			}
+			return err
+		}
+		for _, c := range r.Changes {
+			step("%s: %s", r.Agent, c)
+		}
+		result(r, func(w io.Writer) { fmt.Fprintf(w, "imported %s from %s (%s)\n", r.Agent, r.From, r.Mode) })
+		return nil
 
 	case "migrate":
 		if sub != "agent" {

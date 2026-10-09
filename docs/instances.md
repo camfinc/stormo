@@ -20,6 +20,9 @@ three agents). It is the engine's test fixture and the template for a new one.
   agents/<id>/SOUL.md            behavior
   agents/<id>/{skills,plugins,scripts,bench,<engine>}/   optional, as in ARCHITECTURE.md
   agents/<id>/learnings/         written by the dream; reviewed in git
+  (`stormo export <agent> [--data]` packs the folder, its persona, its unit's identity and the
+  bridge actions it uses into one zip; `--data` adds its naps and secret values. `stormo import`
+  unpacks one, renamed with --as or into another unit with --unit, and keeps it only if it checks.)
   agents/<id>/data/              the agent's data, never in git (its own .gitignore): store/ (local
                                  naps), secrets.yaml (its own secret values; shared and unit values
                                  stay in secrets.local.yaml), agent.env (rendered for local runs)
