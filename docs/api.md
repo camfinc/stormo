@@ -40,7 +40,8 @@ carries only events: anything else the command or the tools it runs print
 (compose, docker, the text it would otherwise show) goes to stderr, which a caller can keep as a log.
 
 Exit status: 0 success, 1 failure, 2 usage. Error codes: `usage` (bad flags or arguments),
-`instance` (no instance found, or its stormo.yaml is invalid), `failed` (anything else). Commands
+`instance` (no instance found, or its stormo.yaml is invalid), `failed` (anything else); `config`
+adds `unsupported`, `conflict`, `invalid` and `readonly` (below). Commands
 gain structured `result` data one by one; until a command has it, `--json` still turns its failure
 into an `error` event.
 
@@ -56,3 +57,13 @@ into an `error` event.
 | `core status` | `running`, `port`, `login` (the gateway's, else the sign-in on disk), `gateway` (as `/api/gateway`) when running |
 | `core login` | `login`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
 | `core logout` | `login` (`missing`), `changed` (tokens were removed) |
+| `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
+| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text` |
+| `config write <file> --if-hash <h>` | the same, for what was written. The new content comes on stdin |
+
+`config` edits `agents/<id>/agent.yaml` and `agents/<id>/SOUL.md` (`pkg/config`); any other path
+is refused with `unsupported`. `write` replaces the file atomically, and only when it still hashes
+to `--if-hash` (else `conflict`: reload and edit again) and the new content validates: an
+`agent.yaml` must load as the manifest and its bridge actions do in `check` (else `invalid`, with
+the reason) and keep `deploy:` as it was (else `readonly`: it names cloud resources); a `SOUL.md`
+must not be empty. Building the agent is not part of the write: run `check <agent>` after it.

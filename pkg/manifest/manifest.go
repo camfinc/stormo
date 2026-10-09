@@ -306,6 +306,12 @@ func Load(root, id, secretPrefix string) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	return Parse(root, id, secretPrefix, body)
+}
+
+// Parse validates body as agents/<id>/agent.yaml of the instance at root, whatever the file on
+// disk holds: what a proposed edit would load as (pkg/config validates with it before writing).
+func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	where := fmt.Sprintf("agents/%s/agent.yaml", id)
 	var m raw
 	if err := yaml.Unmarshal(body, &m); err != nil {

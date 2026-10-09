@@ -20,6 +20,7 @@ import (
 	"github.com/camfinc/stormo/pkg/bench"
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
+	"github.com/camfinc/stormo/pkg/config"
 	"github.com/camfinc/stormo/pkg/deploy"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/inspect"
@@ -63,6 +64,8 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
 
   build and ship:
   check [agent...]                       validate manifests, compile, check action isolation
+  config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
+  config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   build <agent>                          compile dist/<agent>/baseline (also a Hermes distribution)
   inspect <agent> [--target aws|local]   everything the engine computes for the agent, as JSON
   bench <agent> [--runner mock|docker] [--env-file f] [--tag t]   docker: env from secrets.local.yaml
@@ -135,6 +138,7 @@ var (
 	fSlug        = fs.String("slug", "", "")
 	fTemplate    = fs.String("template", "", "")
 	fNoGit       = fs.Bool("no-git", false, "")
+	fIfHash      = fs.String("if-hash", "", "")
 	errUsage     = errors.New("usage")
 )
 
@@ -286,6 +290,9 @@ func run(args []string) error {
 
 	case "check":
 		return check(inst, targets())
+
+	case "config":
+		return configCmd(inst, sub, rest)
 
 	case "build":
 		id, err := need(sub, "agent")
@@ -538,11 +545,21 @@ func region(inst *instance.Instance) string {
 	return inst.Aws.Region
 }
 
+// checked is one agent that passed check.
+type checked struct {
+	Agent  string `json:"agent"`
+	Unit   string `json:"unit"`
+	Engine string `json:"engine"`
+	Files  int    `json:"files"`
+	Skills int    `json:"skills"`
+}
+
 func check(inst *instance.Instance, ids []string) error {
 	registry, err := bridge.Load(inst)
 	if err != nil {
 		return err
 	}
+	rows := []checked{}
 	for _, id := range ids {
 		a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
 		if err != nil {
@@ -555,7 +572,8 @@ func check(inst *instance.Instance, ids []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("ok  %s  unit=%s engine=%s files=%d skills=%d\n", id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills))
+		rows = append(rows, checked{id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills)})
+		step("ok  %s  unit=%s engine=%s files=%d skills=%d", id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills))
 	}
 	owners, err := slack.SlashCommandOwners(inst)
 	if err != nil {
@@ -570,6 +588,42 @@ func check(inst *instance.Instance, ids []string) error {
 		}
 		return errors.New("secrets file problems")
 	}
+	result(rows, func(io.Writer) {})
+	return nil
+}
+
+// configCmd shows and replaces configuration files for editors (pkg/config, docs/api.md).
+func configCmd(inst *instance.Instance, sub string, rest []string) error {
+	file, err := need(strings.Join(rest, " "), "file (agents/<id>/agent.yaml or agents/<id>/SOUL.md)")
+	if err != nil {
+		return err
+	}
+	var f *config.File
+	switch sub {
+	case "show":
+		f, err = config.Show(inst, file)
+	case "write":
+		var body []byte
+		if body, err = io.ReadAll(os.Stdin); err == nil {
+			f, err = config.Write(inst, file, body, *fIfHash)
+		}
+	default:
+		return errUsage
+	}
+	var ce *config.Error
+	if errors.As(err, &ce) {
+		return withCode(ce.Code, err)
+	}
+	if err != nil {
+		return err
+	}
+	result(f, func(w io.Writer) {
+		if sub == "show" {
+			fmt.Fprint(w, f.Text)
+			return
+		}
+		fmt.Fprintf(w, "wrote %s (%s)\n", f.Path, f.Hash)
+	})
 	return nil
 }
 
