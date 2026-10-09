@@ -359,7 +359,7 @@ func Stop(where place.Where, id string, d *Deps) error {
 		if err := local.Down(d.Inst, id); err != nil {
 			return err
 		}
-		d.Log(id + ": stopped locally (final nap saved to agents/"+id+"/data/store)")
+		d.Log(id + ": stopped locally (final nap saved to agents/" + id + "/data/store)")
 		return nil
 	}
 	s, err := d.requireService(id)

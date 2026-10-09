@@ -38,8 +38,8 @@ type Paths struct {
 	BaselineDir string // the local build of the agent's baseline
 	EnvFile     string
 	// StoreDir is the agent's own local store (loop.LocalStoreDir).
-	StoreDir    string
-	SharedDir   string
+	StoreDir  string
+	SharedDir string
 }
 
 func ProjectName(a *manifest.Agent) string { return "swarm-" + a.ID }
