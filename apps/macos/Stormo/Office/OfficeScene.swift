@@ -55,6 +55,9 @@ final class OfficeScene: SKScene {
     private var lastSecond = 0
     private var userZoom: CGFloat = 1
     private var panOffset = CGPoint.zero
+    /// False until the floor has been laid out for the view's settled size: the scene starts at a
+    /// placeholder size, and showing that layout would jump when the real one replaces it.
+    private var revealed = false
 
     override init(size: CGSize) {
         super.init(size: size)
@@ -62,6 +65,7 @@ final class OfficeScene: SKScene {
         // The floor fills the view (it is laid out to the view's shape); while a resize is under way
         // the gap, if any, is the colour of its outer wall, so it reads as more wall.
         backgroundColor = Art.nsColor(BuildingArt.wallColor)
+        world.alpha = 0
         addChild(world)
         addChild(cam)
         camera = cam
@@ -73,11 +77,27 @@ final class OfficeScene: SKScene {
         super.didChangeSize(oldSize)
         placeCamera()
         // Once the resize settles, lay the floor out again for the new shape.
-        guard let plan, size.width > 0, size.height > 0 else { return }
-        let want = min(max(size.width / size.height, FloorPlan.aspectRange.lowerBound), FloorPlan.aspectRange.upperBound)
-        guard abs(plan.size.width / plan.size.height - want) > 0.01 else { return }
+        guard plan != nil, size.width > 0, size.height > 0 else { return }
+        guard !revealed || needsRelayout else { return }
         removeAction(forKey: "relayout")
-        run(.sequence([.wait(forDuration: 0.3), .run { [weak self] in self?.rebuild() }]), withKey: "relayout")
+        // Before the first reveal, settle quickly (the view is still finding its size); after it,
+        // wait out a live resize.
+        run(.sequence([.wait(forDuration: revealed ? 0.3 : 0.1), .run { [weak self] in self?.settle() }]), withKey: "relayout")
+    }
+
+    /// Whether the floor's shape no longer matches the view's.
+    private var needsRelayout: Bool {
+        guard let plan, size.width > 0, size.height > 0 else { return false }
+        let want = min(max(size.width / size.height, FloorPlan.aspectRange.lowerBound), FloorPlan.aspectRange.upperBound)
+        return abs(plan.size.width / plan.size.height - want) > 0.01
+    }
+
+    /// Lays the floor out for the current size if needed, then shows it (once).
+    private func settle() {
+        if needsRelayout { rebuild() }
+        guard !revealed, view != nil else { return }
+        revealed = true
+        world.run(.fadeIn(withDuration: reduceMotion ? 0 : 0.15))
     }
 
     // MARK: Data
@@ -92,6 +112,9 @@ final class OfficeScene: SKScene {
         if key != rosterKey {
             rosterKey = key
             rebuild()
+            if !revealed, view != nil, action(forKey: "relayout") == nil {
+                run(.sequence([.wait(forDuration: 0.1), .run { [weak self] in self?.settle() }]), withKey: "relayout")
+            }
         }
         refresh(force: avatarsChanged)
     }
