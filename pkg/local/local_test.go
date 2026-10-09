@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/engine/hermes"
@@ -52,5 +53,34 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 	}
 	if got := spec.Services["nap"].Command; !slices.Equal(got, []string{"nap", "--loop"}) {
 		t.Errorf("nap command = %v", got)
+	}
+}
+
+func TestPortConcurrentAllocationsAreDistinct(t *testing.T) {
+	root := t.TempDir()
+	ids := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	got := make([]int, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			p, err := Port(root, id)
+			if err != nil {
+				t.Error(err)
+			}
+			got[i] = p
+		}(i, id)
+	}
+	wg.Wait()
+	seen := map[int]bool{}
+	for i, p := range got {
+		if seen[p] {
+			t.Fatalf("port %d handed out twice: %v", p, got)
+		}
+		seen[p] = true
+		if again, _ := Port(root, ids[i]); again != p {
+			t.Errorf("%s: %d then %d (an entry was lost)", ids[i], p, again)
+		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -128,9 +129,16 @@ func ComposeCommand() ([]string, error) {
 	return nil, errors.New("docker compose not found: install Docker with compose v2 (OrbStack, Docker Desktop or Docker Engine)")
 }
 
+// portMu serialises Port: the core asks for every agent's port at once, and two allocations
+// reading the file together would hand out one port twice and lose an entry.
+var portMu sync.Mutex
+
 // Port is the agent's stable host port, kept in .swarm/ports.json: an agent keeps its port once it
-// has one, and a new agent takes the lowest free port from PortBase.
+// has one, and a new agent takes the lowest free port from PortBase. The file is replaced
+// atomically, so a reader never sees half of it.
 func Port(root, agentID string) (int, error) {
+	portMu.Lock()
+	defer portMu.Unlock()
 	path := filepath.Join(root, ".swarm", "ports.json")
 	ports := map[string]int{}
 	if b, err := os.ReadFile(path); err == nil {
@@ -167,5 +175,21 @@ func Port(root, agentID string) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
-	return port, os.WriteFile(path, []byte(body), 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ports-*.json")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(body); err != nil {
+		tmp.Close()
+		return 0, err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return 0, err
+	}
+	if err := tmp.Close(); err != nil {
+		return 0, err
+	}
+	return port, os.Rename(tmp.Name(), path)
 }
