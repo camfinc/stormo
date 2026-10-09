@@ -5,9 +5,8 @@ version: 1.0.0
 author: zzresourcezz
 license: proprietary
 metadata:
-  hermes:
-    tags: [zzslugzz, shared, documents, handoff]
-    related_skills: [zzknowledgezz]
+  tags: [zzslugzz, shared, documents, handoff]
+  related_skills: [zzknowledgezz]
 ---
 # ZZORGZZ shared documents (generated)
 
@@ -25,7 +24,7 @@ Other units' directories do not exist for you. To share with another unit, write
 - One Markdown file per document with frontmatter (`title`, `author`, `unit`, `created`,
   `tags`, optional `to`). Create documents with the script so the frontmatter and a unique,
   collision-free file name are always right:
-  `python3 ${HERMES_SKILL_DIR}/scripts/shared_docs.py new zzunitzz q4-plan --title "Q4 plan" --tags planning,brief < body.md`
+  `python3 ${SKILL_DIR}/scripts/shared_docs.py new zzunitzz q4-plan --title "Q4 plan" --tags planning,brief < body.md`
 - Handoffs to a specific agent: add `--to <agent>`; the file lands in `<layer>/handoffs/<agent>/`.
 - Find documents: `shared_docs.py list` (newest first; `--layer`, `--tag`, `--to zzagentzz`).
   Check `--to zzagentzz` at the start of a task that mentions a handoff.

@@ -4,7 +4,7 @@
 Here the shared space is watched by the swarm core: it records who creates and changes each file,
 and agents take locks so they do not overwrite each other. Use the core's tools
 (`mcp_core_fs_*`) or, from the terminal, the helper:
-`python3 ${HERMES_SKILL_DIR}/scripts/workdir.py <command>`.
+`python3 ${SKILL_DIR}/scripts/workdir.py <command>`.
 
 - **Before changing a file another agent may be working on**, check it: `fs_info` (or
   `workdir.py info <path>`) names its last writer and any locks.

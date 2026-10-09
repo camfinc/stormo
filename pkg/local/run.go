@@ -2,7 +2,6 @@ package local
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -200,9 +199,13 @@ func NapNow(inst *instance.Instance, id string) error {
 	return err
 }
 
-// Chat sends one message to the agent's local API server (OpenAI-compatible chat completions).
+// Chat sends one message to the agent's local engine API (engine.Runtime.ChatRequest).
 func Chat(inst *instance.Instance, id, message, session string) (string, error) {
 	a, err := load(inst, id)
+	if err != nil {
+		return "", err
+	}
+	rt, err := engines.Runtime(a.Engine.Kind)
 	if err != nil {
 		return "", err
 	}
@@ -210,19 +213,19 @@ func Chat(inst *instance.Instance, id, message, session string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	key, _ := secrets.Resolve(file, a, manifest.Local).Values.Get("API_SERVER_KEY")
+	key, _ := secrets.Resolve(file, a, manifest.Local).Values.Get(rt.APIKeyName())
 	if key == "" {
-		return "", fmt.Errorf("%s: API_SERVER_KEY missing in %s", id, secrets.Path(inst.Root))
+		return "", fmt.Errorf("%s: %s missing in %s", id, rt.APIKeyName(), secrets.Path(inst.Root))
 	}
 	port, err := Port(inst.Root, id)
 	if err != nil {
 		return "", err
 	}
-	body, _ := json.Marshal(map[string]any{"model": "hermes-agent", "messages": []map[string]string{{"role": "user", "content": message}}})
-	req, _ := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), bytes.NewReader(body))
+	req, err := rt.ChatRequest(fmt.Sprintf("http://127.0.0.1:%d", port), session, message)
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Hermes-Session-Id", session)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
@@ -232,15 +235,5 @@ func Chat(inst *instance.Instance, id, message, session string) (string, error) 
 	if res.StatusCode >= 300 {
 		return "", fmt.Errorf("%s: HTTP %d %s", id, res.StatusCode, raw)
 	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
-		return "", err
-	}
-	return out.Choices[0].Message.Content, nil
+	return rt.ChatReply(raw)
 }

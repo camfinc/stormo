@@ -42,7 +42,8 @@ func New(inst *instance.Instance) *Hermes {
 		StateRoot: sd, // not "state/": Hermes v0.21 keeps its own runtime state there
 		// The image's `hermes` user. Its boot chown is targeted and skips files it did not create, so
 		// without this MEMORY.md and the skills would be root-owned and the agent could not learn.
-		RuntimeUID: 10000, RuntimeGID: 10000,
+		// It is also the shared space's owner (shared.PosixUID).
+		RuntimeUID: shared.PosixUID, RuntimeGID: shared.PosixUID,
 		Rules: []engine.SnapshotRule{
 			// learning: what the agent taught itself
 			{Class: engine.Learning, Glob: "memories/{MEMORY,USER}.md"},
@@ -89,6 +90,12 @@ func (h *Hermes) HealthCheck() []string {
 	return []string{"CMD-SHELL", "curl -fsS http://localhost:8642/health || exit 1"}
 }
 func (h *Hermes) Command(*manifest.Agent) []string { return []string{"gateway", "run"} }
+
+// SlackManifestArgv drafts a Slack app manifest with Hermes' own CLI (pkg/slack).
+func (h *Hermes) SlackManifestArgv(a *manifest.Agent, name, description string) []string {
+	return []string{"docker", "run", "--rm", "--entrypoint", "hermes", h.Image(a),
+		"slack", "manifest", "--agent-view", "--name", name, "--description", description}
+}
 
 func (h *Hermes) Image(a *manifest.Agent) string {
 	tag := a.Engine.ImageTag
@@ -314,7 +321,7 @@ func coreHooks(cfg *yaml.Node) error {
 			}
 		}
 	}
-	list.Content = append(list.Content, yamlMap("name", CoreHookName, "url", manifest.Core.IngestURL, "events", CoreHookEvents,
+	list.Content = append(list.Content, yamlMap("name", CoreHookName, "url", manifest.Core.IngestURL+"/hermes", "events", CoreHookEvents,
 		"secret_env", manifest.Core.KeyEnv, "timeout", 5))
 	return setNode(cfg, "hooks.outbound", list)
 }
@@ -411,6 +418,11 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	}
 	if body, err := os.ReadFile(filepath.Join(dir, "hermes", "cron.jobs.json")); err == nil {
 		files["cron/jobs.json"] = body
+	}
+	for p, body := range files {
+		if strings.HasPrefix(p, "skills/") && strings.HasSuffix(p, "/SKILL.md") {
+			files[p] = []byte(renderSkill(string(body)))
+		}
 	}
 	// Hot-tier seed. Rehydrate merges these with live memory instead of copying them over it.
 	files[h.layout.Memory.Memory] = []byte(h.Memory().File(ctx.Seed.Memory))

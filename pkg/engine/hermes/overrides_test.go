@@ -37,7 +37,7 @@ func TestCoreHooksOnlyLocallyOnTheCore(t *testing.T) {
 		t.Errorf("first target %q", n.Value)
 	}
 	core := list.Content[1]
-	for k, want := range map[string]string{"name": CoreHookName, "url": manifest.Core.IngestURL, "secret_env": manifest.Core.KeyEnv, "timeout": "5"} {
+	for k, want := range map[string]string{"name": CoreHookName, "url": manifest.Core.IngestURL + "/hermes", "secret_env": manifest.Core.KeyEnv, "timeout": "5"} {
 		if n := getPath(core, k); n == nil || n.Value != want {
 			t.Errorf("core target %s = %v, want %s", k, n, want)
 		}
@@ -56,7 +56,7 @@ func TestCoreHooksOnlyLocallyOnTheCore(t *testing.T) {
 	// AWS builds and agents that do not go through the core get no core target.
 	for name, cfg := range map[string]*yaml.Node{"aws": overridden(t, base, true, manifest.AWS), "no core": overridden(t, base, false, manifest.Local)} {
 		for _, tgt := range getPath(cfg, "hooks.outbound").Content {
-			if n := getPath(tgt, "name"); n.Value == CoreHookName && getPath(tgt, "url").Value == manifest.Core.IngestURL {
+			if n := getPath(tgt, "name"); n.Value == CoreHookName && getPath(tgt, "url").Value == manifest.Core.IngestURL+"/hermes" {
 				t.Errorf("%s: core hook target present", name)
 			}
 		}

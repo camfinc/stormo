@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/aws"
+	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/env"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -207,9 +208,9 @@ func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	return p, r, WritePrivate(p, []byte(body))
 }
 
-// PerAgent names belong to one agent by design (its own API key, its own bot/app tokens).
+// PerAgent names belong to one agent by design (its engine API key, its own bot/app tokens).
 func PerAgent(name string) bool {
-	if name == "API_SERVER_KEY" {
+	if slices.Contains(engines.APIKeyNames(), name) {
 		return true
 	}
 	for _, names := range manifest.ChannelSecrets {
@@ -283,7 +284,7 @@ func Init(inst *instance.Instance) (string, []string, error) {
 				continue
 			}
 			v := ""
-			if name == "API_SERVER_KEY" { // per-agent by design; generated instead of asked for
+			if slices.Contains(engines.APIKeyNames(), name) { // the engine API key: per agent, generated
 				v = randomKey()
 			}
 			f.Agents.Ensure(a.ID).Set(name, v)

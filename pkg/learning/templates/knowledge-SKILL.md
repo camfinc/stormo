@@ -5,9 +5,8 @@ version: 1.0.0
 author: zzresourcezz
 license: proprietary
 metadata:
-  hermes:
-    tags: [zzslugzz, knowledge, memory]
-    related_skills: []
+  tags: [zzslugzz, knowledge, memory]
+  related_skills: []
 ---
 # ZZORGZZ knowledge (generated)
 

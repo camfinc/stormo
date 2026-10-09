@@ -72,8 +72,9 @@ var Core = struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }{
 	// The core runs on the host (it drives the local compose projects), so containers reach it here.
 	URL:     "http://host.docker.internal:18600",
 	BaseURL: "http://host.docker.internal:18600/v1",
-	// Hermes' outbound hooks post here, signed with the agent's core key (docs/core.md §2).
-	IngestURL: "http://host.docker.internal:18600/ingest/hermes",
+	// An engine's hooks post to IngestURL/<engine kind>, signed with the agent's core key
+	// (docs/core.md §2).
+	IngestURL: "http://host.docker.internal:18600/ingest",
 	// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
 	MCPURL: "http://host.docker.internal:18600/mcp",
 }

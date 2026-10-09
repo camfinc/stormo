@@ -125,6 +125,12 @@ func truncate(s string, n int) string {
 	return s
 }
 
+// manifestDrafter is an engine that drafts an agent's Slack app manifest with its own tooling: the
+// command prints the manifest JSON (the scopes and events its gateway needs).
+type manifestDrafter interface {
+	SlackManifestArgv(a *manifest.Agent, name, description string) []string
+}
+
 // Manifest generates the agent's Slack app manifest with the pinned engine image's own generator
 // and writes dist/<id>/slack-manifest[.dev].json.
 func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result, error) {
@@ -143,13 +149,13 @@ func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result
 	if err != nil {
 		return nil, err
 	}
-	if eng.Kind() != "hermes" {
-		return nil, fmt.Errorf("slack manifest generation is implemented for hermes only")
+	drafter, ok := eng.(manifestDrafter)
+	if !ok {
+		return nil, fmt.Errorf("the %s engine cannot draft a Slack app manifest", eng.Kind())
 	}
 	name := AppName(a.Name, dev)
 	// The TS engine cut the description at 139 UTF-16 units; roles are plain text, so runes match.
-	argv := []string{"docker", "run", "--rm", "--entrypoint", "hermes", eng.Image(a),
-		"slack", "manifest", "--agent-view", "--name", name, "--description", truncate(a.Role, 139)}
+	argv := drafter.SlackManifestArgv(a, name, truncate(a.Role, 139))
 	out, stderr, code := run(argv)
 	start := strings.Index(out, "{")
 	if code != 0 || start < 0 {
@@ -157,7 +163,7 @@ func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result
 		if msg == "" {
 			msg = out
 		}
-		return nil, fmt.Errorf("hermes slack manifest failed: %s", msg)
+		return nil, fmt.Errorf("%s slack manifest failed: %s", eng.Kind(), msg)
 	}
 	owners, err := SlashCommandOwners(inst)
 	if err != nil {
@@ -168,7 +174,7 @@ func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result
 	}
 	m, err := parseJSON([]byte(out[start : strings.LastIndex(out, "}")+1]))
 	if err != nil {
-		return nil, fmt.Errorf("hermes slack manifest: %w", err)
+		return nil, fmt.Errorf("%s slack manifest: %w", eng.Kind(), err)
 	}
 	isOwner := false
 	for _, o := range owners {

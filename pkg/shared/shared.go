@@ -20,7 +20,8 @@ import (
 // Root is where the layers are mounted inside the agent container.
 const Root = "/shared"
 
-// PosixUID: EFS access points run as the Hermes image's runtime user so files stay writable by every agent.
+// PosixUID is the shared space's owner: EFS access points run as it, and every engine runs its
+// agents as it (engine.Layout.RuntimeUID), so files stay writable by every agent.
 const PosixUID = 10000
 
 // Layer is one mounted directory: "group" or a unit id.

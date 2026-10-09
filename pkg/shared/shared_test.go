@@ -30,7 +30,7 @@ func TestSharedDocsScriptCreatesAndListsDocuments(t *testing.T) {
 	}
 	files := Skill(inst, a)
 	skill := files["acme-shared-docs/SKILL.md"]
-	if !strings.Contains(skill, "/shared/sales") || !strings.Contains(skill, "${HERMES_SKILL_DIR}/scripts/shared_docs.py") || !strings.Contains(skill, "every Acme agent") {
+	if !strings.Contains(skill, "/shared/sales") || !strings.Contains(skill, "${SKILL_DIR}/scripts/shared_docs.py") || !strings.Contains(skill, "every Acme agent") {
 		t.Errorf("skill text:\n%s", skill)
 	}
 	tmp := t.TempDir()
