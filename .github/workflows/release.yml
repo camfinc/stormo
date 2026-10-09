@@ -2,6 +2,7 @@
 #   - stormo_<tag>_<os>_<arch>.tar.gz for linux and darwin, amd64 and arm64, plus SHA256SUMS;
 #   - ghcr.io/<owner>/stormo-sidecar:<tag> for linux/amd64 and linux/arm64, the image a released
 #     binary pulls on `stormo start` (its version is the tag).
+#   - Stormo-<tag>.dmg, the macOS app, signed and notarized (job macos).
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 name: release
@@ -69,3 +70,58 @@ jobs:
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$VERSION" dist/*.tar.gz dist/SHA256SUMS \
             --title "$VERSION" --notes-file notes.md --generate-notes $prerelease
+
+  # Stormo-<tag>.dmg: the app, signed with the Developer ID certificate and notarized
+  # (apps/macos/scripts/dmg.sh). Secrets: MACOS_CERT_P12 (base64 of the .p12), MACOS_CERT_PASSWORD,
+  # NOTARY_KEY_P8 (base64 of the App Store Connect API .p8), NOTARY_KEY_ID, NOTARY_ISSUER_ID.
+  macos:
+    needs: release
+    runs-on: macos-26
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: universal cli
+        run: |
+          for a in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$a go build -trimpath \
+              -ldflags "-s -w -X github.com/camfinc/stormo/pkg/version.Version=${VERSION}" \
+              -o "$RUNNER_TEMP/stormo-$a" ./cmd/stormo
+          done
+          lipo -create "$RUNNER_TEMP/stormo-arm64" "$RUNNER_TEMP/stormo-amd64" -output "$RUNNER_TEMP/stormo"
+
+      - name: signing keychain
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pw="$(uuidgen)"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc"
+          security default-keychain -s "$kc"
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials stormo-notary --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --keychain "$kc"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
+
+      - name: dmg
+        run: |
+          STORMO_BINARY="$RUNNER_TEMP/stormo" NOTARY_PROFILE=stormo-notary apps/macos/scripts/dmg.sh "$VERSION"
+
+      - name: attach
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$VERSION" "dist/Stormo-$VERSION.dmg"
