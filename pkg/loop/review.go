@@ -178,3 +178,31 @@ func pruneEmpty(dir string) {
 		os.RemoveAll(dir)
 	}
 }
+
+// AutoAcceptable: a proposed lesson that needs no judgement call. Agent-scoped memory only (a
+// user-profile entry is about a person), with no PII flag, seen at least minSeen times.
+func AutoAcceptable(e *learning.Learning, minSeen int) bool {
+	return e.Status == learning.Proposed && e.Scope == manifest.ScopeAgent && e.Kind == learning.KindMemory &&
+		len(e.PII) == 0 && e.SeenCount >= minSeen
+}
+
+// AutoAccept accepts agent's auto-acceptable lessons and returns their ids. It writes the ledger
+// in the working tree only, like every review decision.
+func AutoAccept(root, agent string, minSeen int) ([]string, error) {
+	ledger, err := learning.LoadLedger(root, agent)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, e := range ledger {
+		if AutoAcceptable(e, minSeen) {
+			ids = append(ids, e.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	accepted := learning.Accepted
+	_, err = Decide(root, agent, ids, Change{Status: &accepted, Note: "accepted automatically (core.learning.auto_accept)"})
+	return ids, err
+}

@@ -292,3 +292,41 @@ func TestLearnRoutes(t *testing.T) {
 	}
 	t.Error("the cycle never finished")
 }
+
+func TestAutoAcceptAndRestartOnlyIdleRunningAgents(t *testing.T) {
+	f := newLearn(t)
+	restarted := []string{}
+	f.l.o.Deps.AutoAccept = func(id string, minSeen int) ([]string, error) {
+		if minSeen != 2 {
+			t.Errorf("min seen %d", minSeen)
+		}
+		return []string{"a1", "a2"}, nil
+	}
+	f.l.o.Deps.Restart = func(id string) error { restarted = append(restarted, id); return nil }
+	// Off by default: nothing accepted, nothing restarted.
+	c, _ := f.l.RunCycle("manual", nil, false)
+	if c.Runs[0].AutoAccepted != 0 || len(restarted) != 0 {
+		t.Fatalf("auto accept is opt-in: %+v", c.Runs[0])
+	}
+	f.inst.CoreLearning.AutoAccept, f.inst.CoreLearning.AutoAcceptMinSeen = true, 2
+	c, _ = f.l.RunCycle("manual", nil, false)
+	if a := c.Runs[0]; a.AutoAccepted != 2 || a.Restarted || a.RestartNote != "applies when it next restarts" || len(restarted) != 0 {
+		t.Errorf("accept without restart: %+v", a)
+	}
+	if !f.l.Unapplied()["atlas"] {
+		t.Error("atlas has unapplied lessons")
+	}
+	f.inst.CoreLearning.AutoRestart = true
+	c, _ = f.l.RunCycle("manual", nil, false)
+	a, n := c.Runs[0], c.Runs[1]
+	if !a.Restarted || strings.Join(restarted, ",") != "atlas" || f.l.Unapplied()["atlas"] {
+		t.Errorf("atlas restarted: %+v %v", a, restarted)
+	}
+	if n.Restarted || n.RestartNote != "not running: applies when it starts" || !f.l.Unapplied()["nova"] {
+		t.Errorf("nova: %+v", n)
+	}
+	b, _ := os.ReadFile(c.Digest)
+	if !strings.Contains(string(b), "atlas: 2 lessons accepted automatically (restarted, in effect now)") {
+		t.Errorf("digest:\n%s", b)
+	}
+}

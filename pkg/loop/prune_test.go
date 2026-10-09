@@ -12,6 +12,7 @@ import (
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
+	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 // prunedNap writes a nap whose single file has body, as NapOnce would, and points latest at it.
@@ -105,5 +106,41 @@ func TestPruneSparesFreshBodiesAndRepairsARacingNap(t *testing.T) {
 	}
 	if l, _ := Latest(s, "atlas"); l == nil || l.ID != "20261005T000000000Z-x" {
 		t.Errorf("latest moved back to %+v", l)
+	}
+}
+
+func TestAutoAcceptOnlyWhatNeedsNoJudgement(t *testing.T) {
+	root := t.TempDir()
+	mk := func(id string, kind learning.Kind, scope manifest.Scope, pii []string, seen int, st learning.Status) *learning.Learning {
+		return &learning.Learning{ID: id, Kind: kind, Scope: scope, Agent: "atlas", Unit: "sales", Text: id, PII: pii, Status: st, SeenCount: seen,
+			FirstSeen: "2026-10-09T00:00:00.000Z", LastSeen: "2026-10-09T00:00:00.000Z", Instances: []string{}, Naps: []string{}}
+	}
+	ledger := []*learning.Learning{
+		mk("ok0000000001", learning.KindMemory, manifest.ScopeAgent, []string{}, 3, learning.Proposed),
+		mk("once00000001", learning.KindMemory, manifest.ScopeAgent, []string{}, 1, learning.Proposed),
+		mk("user00000001", learning.KindUser, manifest.ScopeAgent, []string{}, 5, learning.Proposed),
+		mk("pii000000001", learning.KindMemory, manifest.ScopeAgent, []string{"email"}, 5, learning.Proposed),
+		mk("unit00000001", learning.KindMemory, manifest.ScopeUnit, []string{}, 5, learning.Proposed),
+		mk("rej000000001", learning.KindMemory, manifest.ScopeAgent, []string{}, 5, learning.Rejected),
+	}
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := AutoAccept(root, "atlas", 2)
+	if err != nil || len(ids) != 1 || ids[0] != "ok0000000001" {
+		t.Fatalf("auto-accepted %v %v", ids, err)
+	}
+	after, _ := learning.LoadLedger(root, "atlas")
+	for _, e := range after {
+		want := map[string]learning.Status{"ok0000000001": learning.Accepted, "rej000000001": learning.Rejected}[e.ID]
+		if want == "" {
+			want = learning.Proposed
+		}
+		if e.Status != want {
+			t.Errorf("%s: %s, want %s", e.ID, e.Status, want)
+		}
+	}
+	if ids, _ := AutoAccept(root, "atlas", 1); len(ids) != 1 || ids[0] != "once00000001" {
+		t.Errorf("min_seen 1: %v", ids)
 	}
 }

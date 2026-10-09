@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{{name}} review</title>
+  <link rel="stylesheet" href="/ui/style.css">
+  <style>
+    body { display: block; overflow: auto; }
+    .rv { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+    .rv h1 { font-size: 20px; margin: 0 0 4px; }
+    .rv .lede { color: var(--ink-2); margin: 0 0 20px; max-width: 70ch; }
+    .rv .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 20px; }
+    .rv .pill { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; color: var(--ink-2); background: var(--panel); }
+    .rv .pill b { color: var(--ink); }
+    .rv .pill.on { border-color: var(--ok); color: var(--ok); }
+    .agent { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin: 0 0 16px; }
+    .agent > header { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .agent h2 { font-size: 16px; margin: 0; }
+    .agent .meta { color: var(--ink-3); font-size: 12px; }
+    .agent .spacer { flex: 1; }
+    .agent .empty { color: var(--ink-3); padding: 12px 16px; margin: 0; }
+    .sec { padding: 8px 16px 12px; }
+    .sec h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin: 8px 0; }
+    .item { border-top: 1px solid var(--line); padding: 10px 0; display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; }
+    .item:first-of-type { border-top: 0; }
+    .item .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .item .tags { grid-column: 1; display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--ink-3); }
+    .tag { border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }
+    .tag.warn { color: var(--warn); border-color: var(--warn); }
+    .tag.ok { color: var(--ok); border-color: var(--ok); }
+    .acts { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: start; flex-wrap: wrap; justify-content: end; }
+    .btn { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
+    .btn:hover { border-color: var(--ink-3); }
+    .btn.yes { border-color: var(--ok); color: var(--ok); }
+    .btn.no { color: var(--bad); }
+    .btn.go { background: var(--ok); color: #04130d; border-color: var(--ok); font-weight: 600; }
+    .btn[disabled] { opacity: .5; cursor: default; }
+    details.files { grid-column: 1; }
+    details.files summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
+    details.files pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow: auto; max-height: 360px; font: 12px/1.45 var(--mono); white-space: pre-wrap; }
+    .fname { font: 12px var(--mono); color: var(--ink-2); margin: 8px 0 4px; }
+    .note { color: var(--ink-3); font-size: 12px; }
+    .msg { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; max-width: calc(100% - 32px); }
+    .msg.bad { border-color: var(--bad); }
+    .gate { max-width: 60ch; margin: 80px auto; padding: 0 16px; color: var(--ink-2); }
+    @media (max-width: 640px) {
+      .item { grid-template-columns: 1fr; }
+      .acts { grid-row: auto; grid-column: 1; justify-content: start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="rv" id="app" aria-live="polite"></main>
+  <div class="msg" id="msg" role="status" hidden></div>
+  <script type="module" src="/ui/review.js"></script>
+</body>
+</html>

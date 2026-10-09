@@ -74,6 +74,9 @@ core:
     stagger_minutes: 2            # between agents in a scheduled cycle (default 2)
     quiet_wait_minutes: 30        # wait this long for a busy agent, then dream without a fresh nap (default 30)
     agents: [atlas]               # default: every agent
+    auto_accept: false            # accept agent-scoped memory lessons with no PII flag on their own (default false)
+    auto_accept_min_seen: 1       # …only once seen this many times (default 1)
+    auto_restart: false           # restart an idle running agent after auto-accepting, so they apply (needs auto_accept)
 
 deploy:
   aws:                            # unset fields render as <unset> and `deploy render` reports them

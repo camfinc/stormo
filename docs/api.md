@@ -29,6 +29,10 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /api/workdir` | `locks` [{`owner`, `path`, `kind`, `reason`, `created`, `expires`}], `changes` [{`path`, `at`, `kind`, `agent`, `how`, `violation`}] newest first (`?limit=`, default 50), `layers` {layer: files}. Owner token |
 | `GET /api/learning` | `at`, `timezone`, `next` (the schedule, empty when off), `running` (cycle id or null), `cycles` [{`id`, `trigger`, `started`, `finished`, `status`, `digest`, `runs` [{`agent`, `started`, `finished`, `napped`, `napNote`, `naps`, `newLearnings`, `resighted`, `skillProposals`, `cronProposal`, `pendingLearnings`, `pendingSkills`, `error`}]}], newest first. Counts only |
 | `POST /api/learn` | body `{agents, force}`; 202 `{cycle}`, 409 while a cycle runs. Owner token |
+| `GET /api/review` | `autoAccept`, `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`}], `skills` [{`skill`, `pii`, `nap`, `new`, `files` [{`path`, `size`, `text`, `current`}]}]}]. Owner token |
+| `POST /api/review` | `{agent, lessons: [id…] \| skill, decision: accept \| reject \| promote, scope: unit \| group}`; 400 with the reason when refused. Owner token |
+| `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
+| `GET /review` | the review page (no data; reads the owner token from `#t=`) |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models`, per-agent `usage` and `active` |
 | `GET /avatars/<id>.png` | the agent's newest portrait, 404 when it has none |
@@ -76,6 +80,7 @@ into an `error` event.
 | `core workdir [n]` | as `/api/workdir` |
 | `core learn [agent…] [--force]` | the finished cycle (as in `/api/learning`); a `step` per agent while it runs |
 | `core learning` | as `/api/learning` |
+| `core review [--no-open]` | `url`; emits `auth_url` with the page address, owner token in the fragment (keep it private) |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills`, `format` (its agent.yaml format) and `legacy` (format-0 keys it still uses) (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
 | `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values), `scripts` (the agent's scripts/), `reasoning` (the levels its engine accepts) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |

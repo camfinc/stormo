@@ -26,6 +26,8 @@ office:
 #   learning:
 #     at: "03:00"
 #     timezone: America/New_York
+#     auto_accept: true          # accept agent-scoped lessons with no PII flag on their own
+#     auto_restart: true         # and restart the agent (when idle) so they apply
 
 deploy:
   aws:

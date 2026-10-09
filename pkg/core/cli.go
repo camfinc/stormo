@@ -35,7 +35,8 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core findings [all]                    rule breaches the core saw (loop guards, unit boundary, locks); all adds resolved
   core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)
   core learn [agent…] [--force]          run a learning cycle now (nap + dream per agent, waits for busy agents unless --force)
-  core learning                          the learning schedule (stormo.yaml core.learning) and the last cycles`
+  core learning                          the learning schedule (stormo.yaml core.learning) and the last cycles
+  core review [--no-open]                open the review page: proposed lessons and skills, accept/reject, restart to apply`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -566,6 +567,30 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return learn(inst, args, opts.Force, o)
 	case "learning":
 		return learningCmd(inst, o)
+	case "review":
+		if h := health(); h == nil {
+			return fmt.Errorf("the core is not answering on %s: start it with `stormo core up`", base())
+		}
+		tok := ReadOwnerToken(inst.Root)
+		if tok == "" {
+			return fmt.Errorf("no owner token at %s", OwnerTokenPath(inst.Root))
+		}
+		// The token rides in the fragment: browsers never send it to a server or put it in a referrer.
+		u := base() + "/review#t=" + tok
+		o.AuthURL(u)
+		if !opts.NoOpen && !o.JSON {
+			if err := llm.DefaultOpenBrowser(u); err != nil {
+				o.Line("open this in a browser on this machine: " + u)
+			}
+		}
+		o.Result(map[string]string{"url": base() + "/review"}, func(w io.Writer) {
+			if opts.NoOpen {
+				fmt.Fprintln(w, "review page (keep the address private, it carries the owner token):", u)
+			} else {
+				fmt.Fprintln(w, "opened the review page")
+			}
+		})
+		return nil
 	case "login":
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {

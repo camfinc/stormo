@@ -133,6 +133,10 @@ var migrations = []string{
 	// 5: what each run pruned from the nap store after its dream.
 	`ALTER TABLE learn_runs ADD COLUMN pruned_naps INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN pruned_bytes INTEGER NOT NULL DEFAULT 0;`,
+	// 6: lessons accepted automatically, and whether the agent was restarted to apply them.
+	`ALTER TABLE learn_runs ADD COLUMN auto_accepted INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN restarted INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN restart_note TEXT NOT NULL DEFAULT '';`,
 }
 
 // DB is core.db.

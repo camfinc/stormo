@@ -421,6 +421,25 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   proposals waiting for review. Scheduled cycles wait `stagger_minutes` between agents; manual
   ones run straight through. One cycle at a time; a cycle a stopped core left running is marked
   `interrupted`.
+- *Prune*: after each agent's dream the cycle prunes its naps (`loop.Prune`, ARCHITECTURE.md): the
+  naps the dream folded go except the newest 3, and so do bodies nothing refers to. The run
+  records what it pruned.
+- *Auto-accept* (`core.learning.auto_accept`, off by default): after the dream, the lessons that
+  need no judgement call are accepted: agent-scoped memory (never user-profile entries) with no
+  PII flag, seen at least `auto_accept_min_seen` times (default 1). Skills and unit or group
+  promotions always wait for a person. With `auto_restart`, a running agent the cycle found idle
+  is restarted (`ops.Restart`, local only) so they apply at once; otherwise they apply on its
+  next restart.
+- *Review page* (`stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
+  proposed lessons (scrubbed text, kind, scope, times seen, PII flags), skill proposals with
+  their files and the current version when one exists, and the accepted lessons. Accept,
+  reject, accept everything auto-acceptable, share an accepted lesson with the unit or every
+  agent (the ledger's promotion rules apply), and restart an agent to apply what was decided.
+  The page holds no data: the owner token rides in the URL fragment (never sent to a server or
+  a referrer), stays in that tab's session storage, and goes as a bearer to `/api/review`
+  (`GET`, `POST {agent, lessons | skill, decision, scope}`) and
+  `POST /api/agents/<id>/restart`, owner token only. Decisions are `loop.Decide` /
+  `loop.DecideSkill`, the same as `stormo learn`: working tree only.
 - *Digest*: `.swarm/core/digests/<date>-cycle-<id>.md` (0600): per agent, nap or why not, naps
   folded, new lessons, lessons seen again, skill and cron proposals, what waits for review, and
   the `stormo learn list|skills <agent>` commands. Counts only, never lesson text. Slack delivery

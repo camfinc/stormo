@@ -56,6 +56,10 @@ var (
 	appJS []byte
 	//go:embed ui/style.css
 	styleCSS []byte
+	//go:embed ui/review.html
+	reviewHTML string
+	//go:embed ui/review.js
+	reviewJS []byte
 )
 
 var uiFiles = map[string]struct {
@@ -64,6 +68,7 @@ var uiFiles = map[string]struct {
 }{
 	"/ui/app.js":    {appJS, "text/javascript;charset=utf-8"},
 	"/ui/style.css": {styleCSS, "text/css;charset=utf-8"},
+	"/ui/review.js": {reviewJS, "text/javascript;charset=utf-8"},
 }
 
 var (
@@ -423,6 +428,16 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case path == "/mcp":
 			mcp.Handle(w, r)
+			return
+		case get && path == "/review":
+			// The page holds no data: it reads the owner token from its URL fragment and asks /api/review.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
+			return
+		case path == "/api/review" || (r.Method == http.MethodPost && strings.HasPrefix(path, "/api/agents/") && strings.HasSuffix(path, "/restart")):
+			c.handleReview(w, r, bo.Roster)
 			return
 		case get && path == "/api/learning":
 			// Schedule and counts per agent: no lesson text, so no key.

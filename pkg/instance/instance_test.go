@@ -80,7 +80,11 @@ func TestCoreLearning(t *testing.T) {
 	if err != nil || on.CoreLearning.At != "03:30" || on.CoreLearning.Timezone != "Europe/Lisbon" || on.CoreLearning.StaggerMinutes != 0 || strings.Join(on.CoreLearning.Agents, ",") != "atlas" {
 		t.Fatalf("%+v %v", on.CoreLearning, err)
 	}
-	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1"} {
+	auto, err := Load(mk(t, filepath.Join(tmp, "auto"), "slug: acme\ncore:\n  learning:\n    auto_accept: true\n    auto_accept_min_seen: 2\n    auto_restart: true\n"))
+	if err != nil || !auto.CoreLearning.AutoAccept || auto.CoreLearning.AutoAcceptMinSeen != 2 || !auto.CoreLearning.AutoRestart || off.CoreLearning.AutoAccept || off.CoreLearning.AutoAcceptMinSeen != 1 {
+		t.Errorf("auto accept %+v %v", auto.CoreLearning, err)
+	}
+	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_restart: true", "auto_accept_min_seen: 0"} {
 		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", i)), "slug: acme\ncore:\n  learning:\n    "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.learning") {
 			t.Errorf("%s: %v", bad, err)
 		}

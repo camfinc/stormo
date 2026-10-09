@@ -973,8 +973,7 @@ function agentPanel(a) {
     ...(PRESENT.has(mode) ? [[`swarm restart ${a.id}`, "recycle"], [`swarm logs ${a.id} -f`, "tail logs"], [`swarm stop ${a.id}`, "send home"]] : [[`swarm start ${a.id}`, "bring in"]]),
     [`swarm learn ${a.id}`, "nap + dream"],
     ...(a.messages?.received || a.messages?.sent ? [[`swarm core messages ${a.id}`, "read its messages"]] : []),
-    ...(a.pendingLearnings ? [[`swarm learn list ${a.id}`, "review lessons"]] : []),
-    ...(a.pendingSkills ? [[`swarm learn skills ${a.id}`, "review skills"]] : []),
+    ...(a.pendingLearnings || a.pendingSkills ? [["swarm core review", "open the review page"]] : []),
   ];
   return `<div style="--hue:${hueOf(a.unit)};--ring:${MODE[mode].color}">
     <div class="who">
@@ -1090,7 +1089,7 @@ function corePanel() {
     ${gw.manageUsageUrl && gw.login === "ok" ? `<a class="usage-link${limited ? " primary" : ""}" href="${esc(gw.manageUsageUrl)}" target="_blank" rel="noopener noreferrer">Manage usage <span aria-hidden="true">↗</span></a>` : ""}
     ${learningHTML()}
     <h3>Commands</h3>
-    <div class="cmds">${gw.login !== "ok" ? cmdButton("swarm core login", "sign in") : ""}${cmdButton("swarm core status", "usage")}${cmdButton("swarm core learn", "run a learning cycle")}</div>
+    <div class="cmds">${gw.login !== "ok" ? cmdButton("swarm core login", "sign in") : ""}${cmdButton("swarm core status", "usage")}${cmdButton("swarm core learn", "run a learning cycle")}${cmdButton("swarm core review", "review proposals")}</div>
   </div>`;
 }
 

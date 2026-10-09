@@ -98,6 +98,13 @@ type CoreLearning struct {
 	QuietWaitMinutes int `json:"quietWaitMinutes"`
 	// The agents a scheduled cycle covers; empty is every agent.
 	Agents []string `json:"agents,omitempty"`
+	// AutoAccept: after each dream, accept the lessons that need no judgement call: agent-scoped
+	// memory (never user-profile) with no PII flag, seen at least AutoAcceptMinSeen times. Skills
+	// and unit or group promotions always wait for a person.
+	AutoAccept        bool `json:"autoAccept"`
+	AutoAcceptMinSeen int  `json:"autoAcceptMinSeen"`
+	// AutoRestart: restart a running, idle agent after lessons were auto-accepted, so they apply.
+	AutoRestart bool `json:"autoRestart"`
 }
 
 // Instance is a loaded stormo.yaml.
@@ -166,11 +173,14 @@ type rawFile struct {
 	} `yaml:"office"`
 	Core struct {
 		Learning struct {
-			At               string   `yaml:"at"`
-			Timezone         string   `yaml:"timezone"`
-			StaggerMinutes   *int     `yaml:"stagger_minutes"`
-			QuietWaitMinutes *int     `yaml:"quiet_wait_minutes"`
-			Agents           []string `yaml:"agents"`
+			At                string   `yaml:"at"`
+			Timezone          string   `yaml:"timezone"`
+			StaggerMinutes    *int     `yaml:"stagger_minutes"`
+			QuietWaitMinutes  *int     `yaml:"quiet_wait_minutes"`
+			Agents            []string `yaml:"agents"`
+			AutoAccept        bool     `yaml:"auto_accept"`
+			AutoAcceptMinSeen *int     `yaml:"auto_accept_min_seen"`
+			AutoRestart       bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
 	Deploy struct {
@@ -238,7 +248,17 @@ func Load(root string) (*Instance, error) {
 		}
 	}
 	cl := raw.Core.Learning
-	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents}
+	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
+		AutoAccept: cl.AutoAccept, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
+	if cl.AutoAcceptMinSeen != nil {
+		if *cl.AutoAcceptMinSeen < 1 || *cl.AutoAcceptMinSeen > 1000 {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_seen must be 1 to 1000", path)}
+		}
+		learning.AutoAcceptMinSeen = *cl.AutoAcceptMinSeen
+	}
+	if cl.AutoRestart && !cl.AutoAccept {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.auto_restart needs auto_accept", path)}
+	}
 	if cl.At != "" && !atRe.MatchString(cl.At) {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.at must be a 24-hour time like \"03:00\", got %q", path, cl.At)}
 	}
