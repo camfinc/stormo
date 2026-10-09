@@ -105,7 +105,7 @@ struct AgentInspector: View {
         Form {
             Section {
                 HStack(spacing: 12) {
-                    AgentBadge(agent: agent, size: 44)
+                    AgentBadge(agent: agent, size: 64)
                     VStack(alignment: .leading) {
                         Text(agent.name).font(.title3).fontWeight(.semibold)
                         if let role = agent.role { Text(role).foregroundStyle(.secondary) }
@@ -164,18 +164,32 @@ struct AgentActionsBar: View {
     }
 }
 
-/// Initials on the unit's colour (the office's name tag, until portraits load).
+/// The agent's portrait (/avatars/<id>.png); initials on its shirt colour until one loads, or when
+/// the persona has no baked avatar.
 struct AgentBadge: View {
+    @Environment(AppModel.self) private var model
     let agent: FleetAgent
     var size: CGFloat = 28
 
     var body: some View {
-        Text(String(agent.name.prefix(1)))
-            .font(.system(size: size * 0.45, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(Circle().fill(Color(hex: agent.sprite?.shirt) ?? .accentColor))
-            .accessibilityHidden(true)
+        Group {
+            if let portrait = model.avatars[agent.id] {
+                Image(nsImage: portrait)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+            } else {
+                Text(String(agent.name.prefix(1)))
+                    .font(.system(size: size * 0.45, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(hex: agent.sprite?.shirt) ?? .accentColor)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(.separator, lineWidth: 0.5))
+        .accessibilityHidden(true)
     }
 }
 
