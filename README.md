@@ -72,6 +72,24 @@ Stormo finds the instance from the current directory (or `--instance <dir>`, or
 `STORMO_INSTANCE`). Vendoring the engine inside the instance as a git submodule keeps both in step
 ([docs/instances.md](docs/instances.md)).
 
+## The Mac app
+
+On macOS 26 or later, Stormo also comes as an app: download `Stormo-<version>.dmg` from
+[Releases](https://github.com/camfinc/stormo/releases), open it and drag Stormo to Applications.
+It is signed and notarized, so it opens without a Gatekeeper warning. Choose File › Open Instance…
+and pick your instance's folder (the one with `stormo.yaml`).
+
+The app is a front end to the same CLI and core: it carries its own `stormo` binary and prefers
+one you installed, starts the core with `stormo core up`, and leaves it running when you quit.
+From it you can watch the office, start and stop agents, create and edit them, chat with them,
+and set up model providers and ChatGPT accounts.
+
+![The Mac app's office: every agent at its desk, with the fleet beside it](docs/app-office.png)
+
+![The Mac app's agent list: unit, status, last nap and model for each agent](docs/app-agents.png)
+
+*Both show the bundled demo company (`go run ./examples/office-demo`), not a real fleet.*
+
 ## Use it from Claude Code or Codex
 
 Stormo can install itself as an agent skill, so Claude Code and Codex know how to operate an
@@ -146,10 +164,10 @@ pkg/                 the engine (instance, manifests, build, learning loop, core
 docker/              the sidecar image and the per-agent ECS layer
 examples/minimal/    a complete example instance: the template and the test fixture
 examples/office-demo the office with simulated activity (the screenshot above)
-apps/macos/          the macOS app (SwiftUI, in progress) and StormoKit
+apps/macos/          the macOS app (SwiftUI) and StormoKit; scripts/dmg.sh builds the installer
 docs/                instances, the core and the office; docs/brand: the logo
 tools/brandgen/      generates the logo files
-scripts/             release builds
+scripts/             release builds of the CLI
 .github/workflows/   CI and releases
 ```
 
