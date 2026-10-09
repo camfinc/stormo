@@ -30,8 +30,10 @@ import (
 
 // LearnDeps are the cycle's effects; zero values take the instance's real ones.
 type LearnDeps struct {
-	NapNow  func(id string) error
-	Dream   func(id string) (*loop.DreamReport, error)
+	NapNow func(id string) error
+	Dream  func(id string) (*loop.DreamReport, error)
+	// Prune drops the naps the dream has folded (loop.Prune).
+	Prune   func(id string) (*loop.PruneReport, error)
 	Pending func(id string) (learnings, skills int)
 	// Sleep waits d or until stop closes (false: stopped).
 	Sleep func(d time.Duration, stop <-chan struct{}) bool
@@ -64,7 +66,10 @@ type AgentRun struct {
 	CronProposal     bool   `json:"cronProposal"`
 	PendingLearnings int    `json:"pendingLearnings"`
 	PendingSkills    int    `json:"pendingSkills"`
-	Error            string `json:"error,omitempty"`
+	// Naps and bodies pruned after the dream, and their size.
+	PrunedNaps  int    `json:"prunedNaps"`
+	PrunedBytes int64  `json:"prunedBytes"`
+	Error       string `json:"error,omitempty"`
 }
 
 // Cycle is one learning cycle.
@@ -107,6 +112,9 @@ func NewLearner(o LearnerOptions) *Learner {
 	}
 	if d.Dream == nil {
 		d.Dream = func(id string) (*loop.DreamReport, error) { return loop.Dream(inst, id, ops.LocalStore(inst.Root)) }
+	}
+	if d.Prune == nil {
+		d.Prune = func(id string) (*loop.PruneReport, error) { return loop.Prune(inst, id, ops.LocalStore(inst.Root), 0) }
 	}
 	if d.Pending == nil {
 		d.Pending = func(id string) (int, int) {
@@ -245,9 +253,9 @@ func (l *Learner) run(cycle int64, trigger string, ids []string, force bool) {
 			break
 		}
 		if _, err := l.o.DB.Exec(`INSERT INTO learn_runs(cycle, agent, started, finished, napped, nap_note, naps, new_learnings, resighted, skill_proposals,
-			cron_proposal, pending_learnings, pending_skills, error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			cron_proposal, pending_learnings, pending_skills, error, pruned_naps, pruned_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			cycle, id, msOf(r.Started), msOf(r.Finished), r.Napped, r.NapNote, r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals,
-			r.CronProposal, r.PendingLearnings, r.PendingSkills, r.Error); err != nil {
+			r.CronProposal, r.PendingLearnings, r.PendingSkills, r.Error, r.PrunedNaps, r.PrunedBytes); err != nil {
 			log.Printf("learn: %s: %v", id, err)
 		}
 	}
@@ -302,6 +310,11 @@ func (l *Learner) runAgent(id string, force bool, quiet time.Duration) (r AgentR
 		r.Error = clip(err.Error(), 300)
 	} else if rep != nil {
 		r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals, r.CronProposal = len(rep.Naps), rep.NewLearnings, rep.Resighted, len(rep.SkillProposals), rep.CronProposal
+		if pr, err := l.o.Deps.Prune(id); err != nil {
+			log.Printf("learn: pruning %s: %v", id, err)
+		} else if pr != nil {
+			r.PrunedNaps, r.PrunedBytes = pr.Naps, pr.Bytes
+		}
 	}
 	r.PendingLearnings, r.PendingSkills = l.o.Deps.Pending(id)
 	r.Finished = isoMs(l.o.Now().UnixMilli())
@@ -316,8 +329,8 @@ func (l *Learner) writeDigest(c *Cycle) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Learning cycle %d (%s)\n\n", c.ID, c.Trigger)
 	fmt.Fprintf(&b, "Started %s, %s.\n\n", c.Started, c.Status)
-	fmt.Fprintln(&b, "| agent | nap | naps folded | new lessons | seen again | skill proposals | cron | waiting for review |")
-	fmt.Fprintln(&b, "|---|---|---|---|---|---|---|---|")
+	fmt.Fprintln(&b, "| agent | nap | naps folded | new lessons | seen again | skill proposals | cron | waiting for review | naps pruned |")
+	fmt.Fprintln(&b, "|---|---|---|---|---|---|---|---|---|")
 	review := []string{}
 	for _, r := range c.Runs {
 		nap := "yes"
@@ -332,7 +345,8 @@ func (l *Learner) writeDigest(c *Cycle) (string, error) {
 		if r.Error != "" {
 			pending = "dream failed: " + r.Error
 		}
-		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d | %s | %s |\n", r.Agent, nap, r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals, cron, pending)
+		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d | %s | %s | %d (%.1f MB) |\n", r.Agent, nap, r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals, cron, pending,
+			r.PrunedNaps, float64(r.PrunedBytes)/(1<<20))
 		if r.PendingLearnings > 0 {
 			review = append(review, "stormo learn list "+r.Agent)
 		}
@@ -364,7 +378,7 @@ func (l *Learner) Cycle(id int64) (*Cycle, error) {
 	}
 	c.Started, c.Finished = isoMs(started), optIso(finished)
 	rows, err := l.o.DB.Query(`SELECT agent, started, finished, napped, nap_note, naps, new_learnings, resighted, skill_proposals, cron_proposal,
-		pending_learnings, pending_skills, error FROM learn_runs WHERE cycle = ? ORDER BY id`, id)
+		pending_learnings, pending_skills, error, pruned_naps, pruned_bytes FROM learn_runs WHERE cycle = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +387,7 @@ func (l *Learner) Cycle(id int64) (*Cycle, error) {
 		var r AgentRun
 		var s, f int64
 		if err := rows.Scan(&r.Agent, &s, &f, &r.Napped, &r.NapNote, &r.Naps, &r.NewLearnings, &r.Resighted, &r.SkillProposals, &r.CronProposal,
-			&r.PendingLearnings, &r.PendingSkills, &r.Error); err != nil {
+			&r.PendingLearnings, &r.PendingSkills, &r.Error, &r.PrunedNaps, &r.PrunedBytes); err != nil {
 			return nil, err
 		}
 		r.Started, r.Finished = isoMs(s), isoMs(f)

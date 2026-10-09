@@ -571,6 +571,12 @@ func Learn(where place.Where, id string, d *Deps) (*loop.DreamReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	// What the dream has read is done with: drop those naps and bodies nothing else uses.
+	if pr, err := loop.Prune(d.Inst, id, s, 0); err != nil {
+		d.Log(fmt.Sprintf("%s: pruning naps failed (%v); the dream's result stands", id, err))
+	} else if pr.Naps > 0 || pr.Blobs > 0 {
+		d.Log(fmt.Sprintf("%s: pruned %d folded naps and %d unused bodies (%s), %d naps kept", id, pr.Naps, pr.Blobs, humanBytes(pr.Bytes), pr.Kept))
+	}
 	ledger, err := learning.LoadLedger(d.Inst.Root, id)
 	if err != nil {
 		return nil, err
@@ -629,4 +635,16 @@ func MigrateAgentData(inst *instance.Instance, id string) (changes []string, mov
 		return nil, false, err
 	}
 	return changes, moved, nil
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }

@@ -141,9 +141,13 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if err != nil {
 		return 0, nil, err
 	}
+	// The manifest's learning.nap_interval_seconds, unless --nap-interval overrides it.
 	interval := o.NapInterval
 	if interval == 0 {
-		interval = 120
+		interval = r.Agent.Learning.NapIntervalSeconds
+	}
+	if interval == 0 {
+		interval = 900
 	}
 	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir}, port, interval, image)
 	var b bytes.Buffer

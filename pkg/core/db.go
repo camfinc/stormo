@@ -130,6 +130,9 @@ var migrations = []string{
 		error             TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX learn_runs_cycle ON learn_runs(cycle);`,
+	// 5: what each run pruned from the nap store after its dream.
+	`ALTER TABLE learn_runs ADD COLUMN pruned_naps INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN pruned_bytes INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // DB is core.db.

@@ -62,6 +62,9 @@ func newLearn(t *testing.T) *learnFixture {
 					SkillProposals: []loop.SkillProposalReport{{}}, CronProposal: id == "atlas"}, nil
 			},
 			Pending: func(id string) (int, int) { return 4, 1 },
+			Prune: func(id string) (*loop.PruneReport, error) {
+				return &loop.PruneReport{Agent: id, Naps: 5, Bytes: 3 << 20}, nil
+			},
 			Sleep: func(d time.Duration, _ <-chan struct{}) bool {
 				f.mu.Lock()
 				defer f.mu.Unlock()
@@ -94,6 +97,9 @@ func TestManualCycleNapsDreamsAndDigests(t *testing.T) {
 	if a.Agent != "atlas" || !a.Napped || a.Naps != 2 || a.NewLearnings != 3 || a.SkillProposals != 1 || !a.CronProposal || a.PendingLearnings != 4 || a.PendingSkills != 1 {
 		t.Errorf("atlas %+v", a)
 	}
+	if a.PrunedNaps != 5 || a.PrunedBytes != 3<<20 {
+		t.Errorf("pruned %+v", a)
+	}
 	if n.Agent != "nova" || n.Napped || !strings.Contains(n.NapNote, "not running") || n.NewLearnings != 3 {
 		t.Errorf("nova is dreamed on its stored naps: %+v", n)
 	}
@@ -105,7 +111,7 @@ func TestManualCycleNapsDreamsAndDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := string(b)
-	for _, want := range []string{"Learning cycle 1 (manual)", "| atlas | yes | 2 | 3 | 1 | 1 | yes | 4 lessons, 1 skills |", "stormo learn list atlas", "stormo learn skills nova", "nothing was committed"} {
+	for _, want := range []string{"Learning cycle 1 (manual)", "| atlas | yes | 2 | 3 | 1 | 1 | yes | 4 lessons, 1 skills | 5 (3.0 MB) |", "stormo learn list atlas", "stormo learn skills nova", "nothing was committed"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("digest lacks %q:\n%s", want, d)
 		}

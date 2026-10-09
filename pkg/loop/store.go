@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -38,6 +39,10 @@ type Store interface {
 	Exists(key string) (bool, error)
 	// List returns every key under prefix, sorted.
 	List(prefix string) ([]string, error)
+	// Delete removes a key; a missing key is not an error.
+	Delete(key string) error
+	// Modified is when a key was last written (zero time when it does not exist).
+	Modified(key string) (time.Time, error)
 }
 
 // FsStore is a directory store (local runs, tests).
@@ -85,6 +90,25 @@ func (s FsStore) List(prefix string) ([]string, error) {
 	})
 	sort.Strings(out)
 	return out, err
+}
+
+func (s FsStore) Delete(key string) error {
+	err := os.Remove(filepath.Join(s.Root, key))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (s FsStore) Modified(key string) (time.Time, error) {
+	st, err := os.Stat(filepath.Join(s.Root, key))
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return st.ModTime(), nil
 }
 
 // LocalStore is an instance's local nap store: agent <id>'s keys live in its own folder,
@@ -147,6 +171,16 @@ func (s LocalStore) Exists(key string) (bool, error) {
 	return st.Exists(rest)
 }
 
+func (s LocalStore) Delete(key string) error {
+	st, rest := s.split(key)
+	return st.Delete(rest)
+}
+
+func (s LocalStore) Modified(key string) (time.Time, error) {
+	st, rest := s.split(key)
+	return st.Modified(rest)
+}
+
 // List takes a prefix that starts with an agent id.
 func (s LocalStore) List(prefix string) ([]string, error) {
 	agent, rest, _ := strings.Cut(prefix, "/")
@@ -201,6 +235,23 @@ func (s *S3Store) Exists(key string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func (s *S3Store) Delete(key string) error {
+	_, err := s.client.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: &s.Bucket, Key: &key})
+	return err
+}
+
+func (s *S3Store) Modified(key string) (time.Time, error) {
+	out, err := s.client.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: &s.Bucket, Key: &key})
+	var nf *types.NotFound
+	if errors.As(err, &nf) {
+		return time.Time{}, nil
+	}
+	if err != nil || out.LastModified == nil {
+		return time.Time{}, err
+	}
+	return *out.LastModified, nil
 }
 
 func (s *S3Store) List(prefix string) ([]string, error) {

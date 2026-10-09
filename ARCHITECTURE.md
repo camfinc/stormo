@@ -318,6 +318,16 @@ plus the latest nap:
 - Cron: repo jobs win by id; jobs the agent created at runtime survive.
 - State and raw history come back verbatim, so session search and tool state survive a redeploy.
 
+**Prune** (after every dream in `stormo learn` and the core's cycle; `loop.Prune`). A nap is
+working material: once the dream has folded it (its id is at or below the watermark) it is
+deleted, except the newest 3 and the one `latest.json` names, and so are the bodies (`blobs/`,
+`raw/`) no remaining nap refers to. Naps the dream has not read are never touched. A body written
+in the last hour is kept (a nap uploads bodies before its manifest), and a nap written during the
+prune that lost a body to it is dropped with `latest.json` moved back, so the next nap uploads
+again. Same code on disk and S3. Locally, the nap sidecar now runs at the manifest's
+`nap_interval_seconds` (it ran every 120 s whatever the manifest said; `--nap-interval` still
+overrides).
+
 **Dream** (`stormo dream <id>`, off-task). It reads only learning-class blobs; a guard throws if
 asked for anything else, and raw history sits under a prefix the dream role can be denied in IAM.
 - Every memory entry from every unseen nap is scrubbed (tokens, emails, cards, phones, plus the
