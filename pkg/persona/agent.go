@@ -83,6 +83,9 @@ func SetAgent(inst *instance.Instance, id string, l Look, ifHash string) (*Agent
 		return create(inst, id, l)
 	}
 	p := filepath.Join(inst.Root, cur.Path, "persona.md")
+	if ifHash == "" {
+		return nil, refuse("usage", "%s/persona.md: --if-hash is required (the hash `look show` gave)", cur.Path)
+	}
 	if cur.Hash != ifHash {
 		return nil, refuse("conflict", "%s/persona.md changed on disk since it was loaded; reload it and edit again", cur.Path)
 	}

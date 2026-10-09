@@ -87,7 +87,7 @@ struct LookEditor: View {
                     .padding(6)
                     .background(.background, in: .rect(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
-                Text("Who the portrait shows (face, hair, clothes, what they hold). A portrait is baked from it separately; until then chats show the character.")
+                Text("Who the portrait shows (face, hair, clothes, what they hold). A portrait is baked from it separately; until then chats show its initials on its shirt colour.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
