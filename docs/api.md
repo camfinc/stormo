@@ -76,7 +76,7 @@ into an `error` event.
 | `core workdir [n]` | as `/api/workdir` |
 | `core learn [agent…] [--force]` | the finished cycle (as in `/api/learning`); a `step` per agent while it runs |
 | `core learning` | as `/api/learning` |
-| `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
+| `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills`, `format` (its agent.yaml format) and `legacy` (format-0 keys it still uses) (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
 | `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
 | `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |

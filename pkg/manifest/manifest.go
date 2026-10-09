@@ -4,6 +4,7 @@ package manifest
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,7 +114,23 @@ type State struct {
 	Env  string `json:"env"`
 }
 
+// Limits bound the agent's work; zero leaves the engine's own setting.
+type Limits struct {
+	// Turns is the most tool-calling steps one turn may take.
+	Turns int `json:"turns,omitempty"`
+	// Reasoning is the model's reasoning effort (the engine maps it: low, medium, high, max, …).
+	Reasoning string `json:"reasoning,omitempty"`
+	// CommandTimeout bounds one terminal command, ScriptTimeout one scheduled script (seconds).
+	CommandTimeout int `json:"command_timeout,omitempty"`
+	ScriptTimeout  int `json:"script_timeout,omitempty"`
+}
+
+// Format is the newest agent.yaml format this stormo reads (docs/agent-standard.md). Format 0 is
+// the original layout (engine.model, learning.*_char_limit), still read.
+const Format = 1
+
 type Learning struct {
+	// The hot-memory budgets (memory.agent and memory.user; format 0: learning.*_char_limit).
 	MemoryCharLimit    int     `json:"memory_char_limit"`
 	UserCharLimit      int     `json:"user_char_limit"`
 	SeedFill           float64 `json:"seed_fill"`
@@ -146,6 +163,11 @@ type Agent struct {
 	State    []State  `json:"state"`
 	Learning Learning `json:"learning"`
 	Deploy   Deploy   `json:"deploy"`
+	Limits   Limits   `json:"limits"`
+	// Format is the file's agent.yaml format (0 when it does not say); Legacy lists the format-0
+	// keys it still uses, for `check` to point at.
+	Format int      `json:"format"`
+	Legacy []string `json:"legacy,omitempty"`
 }
 
 // Unit is units/<id>/unit.yaml.
@@ -227,6 +249,7 @@ func LocalOnlySecrets(engine EngineSpec) []string {
 
 // raw mirrors agent.yaml loosely so validation can report what is wrong instead of a decode error.
 type raw struct {
+	Format  any `yaml:"format"`
 	ID      any `yaml:"id"`
 	Name    any `yaml:"name"`
 	Unit    any `yaml:"unit"`
@@ -246,6 +269,16 @@ type raw struct {
 			Model any `yaml:"model"`
 		} `yaml:"local"`
 	} `yaml:"engine"`
+	Model *struct {
+		Name     any `yaml:"name"`
+		Provider any `yaml:"provider"`
+		Local    *struct {
+			Via  any `yaml:"via"`
+			Name any `yaml:"name"`
+		} `yaml:"local"`
+	} `yaml:"model"`
+	Memory          map[string]any   `yaml:"memory"`
+	Limits          map[string]any   `yaml:"limits"`
 	Channels        []map[string]any `yaml:"channels"`
 	Secrets         []any            `yaml:"secrets"`
 	OptionalSecrets []map[string]any `yaml:"optional_secrets"`
@@ -341,22 +374,21 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	if err := req(slices.Contains(UnitIDs(root), unit), `%s: unknown unit "%s" (see units/)`, where, unit); err != nil {
 		return nil, err
 	}
-	if err := req(m.Engine != nil && str(m.Engine.Kind) != "" && str(m.Engine.Version) != "" && str(m.Engine.Model) != "", "%s: engine.kind/version/model are required", where); err != nil {
+	format, legacy, err := formatOf(m, where)
+	if err != nil {
+		return nil, err
+	}
+	model, err := modelOf(m, where)
+	if err != nil {
+		return nil, err
+	}
+	if err := req(m.Engine != nil && str(m.Engine.Kind) != "" && str(m.Engine.Version) != "" && model.name != "", "%s: engine.kind, engine.version and model.name are required", where); err != nil {
 		return nil, err
 	}
 	if err := req(exists(filepath.Join(AgentDir(root, id), "SOUL.md")), "%s: SOUL.md is missing", where); err != nil {
 		return nil, err
 	}
-	engine := EngineSpec{Kind: str(m.Engine.Kind), Version: str(m.Engine.Version), ImageTag: str(m.Engine.ImageTag), Model: str(m.Engine.Model), Provider: or(str(m.Engine.Provider), "openrouter")}
-	if l := m.Engine.Local; l != nil {
-		if err := req(str(l.Via) == "core", `%s: engine.local.via must be "core"`, where); err != nil {
-			return nil, err
-		}
-		if err := req(str(l.Model) != "", "%s: engine.local.model is required", where); err != nil {
-			return nil, err
-		}
-		engine.Local = &EngineLocal{Via: "core", Model: str(l.Model)}
-	}
+	engine := EngineSpec{Kind: str(m.Engine.Kind), Version: str(m.Engine.Version), ImageTag: str(m.Engine.ImageTag), Model: model.name, Provider: or(model.provider, "openrouter"), Local: model.local}
 
 	actions := strs(m.Actions)
 	for _, a := range actions {
@@ -488,11 +520,27 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	}
 
 	learning := Learning{MemoryCharLimit: 2200, UserCharLimit: 1375, SeedFill: 0.6, NapIntervalSeconds: 900}
-	if v, ok := num(m.Learning["memory_char_limit"]); ok {
-		learning.MemoryCharLimit = int(v)
+	for _, b := range []struct {
+		now, old string
+		dst      *int
+	}{{"agent", "memory_char_limit", &learning.MemoryCharLimit}, {"user", "user_char_limit", &learning.UserCharLimit}} {
+		v, ok := num(m.Memory[b.now])
+		if ov, old := num(m.Learning[b.old]); old {
+			if err := req(!ok, "%s: memory.%s and learning.%s are the same budget; keep memory.%s", where, b.now, b.old, b.now); err != nil {
+				return nil, err
+			}
+			v, ok = ov, true
+		}
+		if ok {
+			if err := req(v > 0 && v == math.Trunc(v), "%s: memory.%s must be a positive number of characters", where, b.now); err != nil {
+				return nil, err
+			}
+			*b.dst = int(v)
+		}
 	}
-	if v, ok := num(m.Learning["user_char_limit"]); ok {
-		learning.UserCharLimit = int(v)
+	limits, err := limitsOf(m, where)
+	if err != nil {
+		return nil, err
 	}
 	if v, ok := num(m.Learning["seed_fill"]); ok {
 		learning.SeedFill = v
@@ -530,8 +578,111 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	return &Agent{
 		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Engine: engine,
 		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Env: envs,
-		State: state, Learning: learning, Deploy: deploy,
+		State: state, Learning: learning, Deploy: deploy, Limits: limits, Format: format, Legacy: legacy,
 	}, nil
+}
+
+// formatOf is the file's format and the format-0 keys it uses; format 1 refuses them.
+func formatOf(m raw, where string) (int, []string, error) {
+	format := 0
+	if m.Format != nil {
+		v, ok := num(m.Format)
+		if err := req(ok && v == math.Trunc(v) && v >= 0, "%s: format must be a whole number", where); err != nil {
+			return 0, nil, err
+		}
+		if err := req(int(v) <= Format, "%s: format %d is newer than this stormo reads (%d); update stormo", where, int(v), Format); err != nil {
+			return 0, nil, err
+		}
+		format = int(v)
+	}
+	legacy := []string{}
+	if m.Engine != nil {
+		for _, k := range []struct {
+			set  bool
+			name string
+		}{{m.Engine.Model != nil, "engine.model"}, {m.Engine.Provider != nil, "engine.provider"}, {m.Engine.Local != nil, "engine.local"}} {
+			if k.set {
+				legacy = append(legacy, k.name)
+			}
+		}
+	}
+	for _, k := range []string{"memory_char_limit", "user_char_limit"} {
+		if _, ok := m.Learning[k]; ok {
+			legacy = append(legacy, "learning."+k)
+		}
+	}
+	if format >= 1 && len(legacy) > 0 {
+		return 0, nil, &Error{fmt.Sprintf("%s: format %d has no %s (see docs/agent-standard.md; `stormo migrate agent` moves them)", where, format, strings.Join(legacy, ", "))}
+	}
+	return format, legacy, nil
+}
+
+type modelSpec struct {
+	name, provider string
+	local          *EngineLocal
+}
+
+// modelOf reads model: (format 1) or engine.model/provider/local (format 0); never both.
+func modelOf(m raw, where string) (modelSpec, error) {
+	var out modelSpec
+	var localVia, localName any
+	hasLocal := false
+	if m.Model != nil {
+		out.name, out.provider = str(m.Model.Name), str(m.Model.Provider)
+		if l := m.Model.Local; l != nil {
+			localVia, localName, hasLocal = l.Via, l.Name, true
+		}
+	}
+	if e := m.Engine; e != nil && (e.Model != nil || e.Provider != nil || e.Local != nil) {
+		if err := req(m.Model == nil, "%s: model: and engine.model/provider/local both set; keep model:", where); err != nil {
+			return out, err
+		}
+		out.name, out.provider = str(e.Model), str(e.Provider)
+		if l := e.Local; l != nil {
+			localVia, localName, hasLocal = l.Via, l.Model, true
+		}
+	}
+	if hasLocal {
+		if err := req(str(localVia) == "core", `%s: model.local.via must be "core"`, where); err != nil {
+			return out, err
+		}
+		if err := req(str(localName) != "", "%s: model.local.name is required", where); err != nil {
+			return out, err
+		}
+		out.local = &EngineLocal{Via: "core", Model: str(localName)}
+	}
+	return out, nil
+}
+
+var reasoningRe = regexp.MustCompile(`^[a-z]{1,16}$`)
+
+func limitsOf(m raw, where string) (Limits, error) {
+	var l Limits
+	for k, v := range m.Limits {
+		switch k {
+		case "turns", "command_timeout", "script_timeout":
+			n, ok := num(v)
+			if err := req(ok && n > 0 && n == math.Trunc(n), "%s: limits.%s must be a positive whole number", where, k); err != nil {
+				return l, err
+			}
+			switch k {
+			case "turns":
+				l.Turns = int(n)
+			case "command_timeout":
+				l.CommandTimeout = int(n)
+			default:
+				l.ScriptTimeout = int(n)
+			}
+		case "reasoning":
+			if err := req(reasoningRe.MatchString(str(v)), "%s: limits.reasoning is a word such as low, medium, high or max", where); err != nil {
+				return l, err
+			}
+			l.Reasoning = str(v)
+		default:
+			return l, &Error{fmt.Sprintf("%s: unknown limit %q (turns, reasoning, command_timeout, script_timeout)", where, k)}
+		}
+	}
+	return l, nil
 }
 
 func orEmpty(v []string) []string {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -123,5 +124,50 @@ func TestSlackNeedsBothTokens(t *testing.T) {
 	write("channels: [{kind: slack, allowed_users: [U01ABC2DEF3]}]\nsecrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN]\n")
 	if a, err := Load(root, "x", "p"); err != nil || a.Channels[0].Kind != "slack" {
 		t.Errorf("valid manifest rejected: %v", err)
+	}
+}
+
+// parseAs is atlas's manifest with its body replaced: the instance and SOUL.md stay the example's.
+func parseAs(t *testing.T, body string) (*Agent, error) {
+	t.Helper()
+	return Parse(example, "atlas", "acme/stormo", []byte(body))
+}
+
+const atlasHead = "id: atlas\nname: Atlas\nunit: sales\n"
+
+func TestFormatOneReadsLikeFormatZero(t *testing.T) {
+	legacy, err := parseAs(t, atlasHead+"engine:\n  kind: hermes\n  version: 0.21.5\n  model: openai/gpt-6-luna\n  provider: openrouter\n  local: {via: core, model: gpt-5.6-luna}\nlearning:\n  memory_char_limit: 3000\n  user_char_limit: 1000\n  seed_fill: 0.5\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, err := parseAs(t, atlasHead+"format: 1\nengine:\n  kind: hermes\n  version: 0.21.5\nmodel:\n  name: openai/gpt-6-luna\n  provider: openrouter\n  local: {via: core, name: gpt-5.6-luna}\nmemory:\n  agent: 3000\n  user: 1000\nlearning:\n  seed_fill: 0.5\nlimits:\n  turns: 40\n  reasoning: max\n  command_timeout: 600\n  script_timeout: 900\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(legacy.Engine, now.Engine) || legacy.Learning != now.Learning {
+		t.Errorf("engine %+v vs %+v, learning %+v vs %+v", legacy.Engine, now.Engine, legacy.Learning, now.Learning)
+	}
+	if legacy.Format != 0 || !slices.Equal(legacy.Legacy, []string{"engine.model", "engine.provider", "engine.local", "learning.memory_char_limit", "learning.user_char_limit"}) {
+		t.Errorf("legacy %d %v", legacy.Format, legacy.Legacy)
+	}
+	if now.Format != 1 || len(now.Legacy) != 0 || now.Limits != (Limits{Turns: 40, Reasoning: "max", CommandTimeout: 600, ScriptTimeout: 900}) {
+		t.Errorf("format 1: %d %v %+v", now.Format, now.Legacy, now.Limits)
+	}
+}
+
+func TestFormatRefusals(t *testing.T) {
+	eng := "engine:\n  kind: hermes\n  version: 0.21.5\n"
+	for body, want := range map[string]string{
+		atlasHead + "format: 1\n" + eng + "  model: x\n":                                              "format 1 has no engine.model",
+		atlasHead + "format: 2\n" + eng + "model: {name: x}\n":                                        "newer than this stormo",
+		atlasHead + eng + "  model: x\nmodel: {name: y}\n":                                            "both set",
+		atlasHead + eng + "model: {name: x}\nmemory: {agent: 10}\nlearning: {memory_char_limit: 9}\n": "same budget",
+		atlasHead + eng + "model: {name: x}\nlimits: {turns: -1}\n":                                   "positive whole number",
+		atlasHead + eng + "model: {name: x}\nlimits: {speed: 3}\n":                                    "unknown limit",
+		atlasHead + eng: "model.name are required",
+	} {
+		if _, err := parseAs(t, body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
 	}
 }

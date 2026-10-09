@@ -234,6 +234,20 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 		}
 	}
 
+	// The agent's limits (agent.yaml limits:); unset ones keep the config's own.
+	for _, l := range []struct {
+		path string
+		v    any
+		set  bool
+	}{{"agent.max_turns", a.Limits.Turns, a.Limits.Turns > 0}, {"agent.reasoning_effort", a.Limits.Reasoning, a.Limits.Reasoning != ""},
+		{"terminal.timeout", a.Limits.CommandTimeout, a.Limits.CommandTimeout > 0}, {"cron.script_timeout_seconds", a.Limits.ScriptTimeout, a.Limits.ScriptTimeout > 0}} {
+		if l.set {
+			if err := set(l.path, l.v); err != nil {
+				return err
+			}
+		}
+	}
+
 	// On Fargate there is no Docker daemon: the task is the sandbox. The old docker sandbox settings
 	// (persistent container, bind mounts, forwarded env) are dead config there, so neutralise them.
 	if err := set("terminal.backend", "local"); err != nil {

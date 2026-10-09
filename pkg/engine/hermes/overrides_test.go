@@ -106,3 +106,21 @@ func TestWorkdirHelperEnvOnlyLocallyOnTheCore(t *testing.T) {
 		t.Errorf("AWS passthrough %s", got)
 	}
 }
+
+func TestLimitsReachTheConfig(t *testing.T) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte("agent:\n  # kept\n  max_turns: 60\n  reasoning_effort: high\nterminal:\n  timeout: 180\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	a := &manifest.Agent{ID: "atlas", Unit: "sales", Limits: manifest.Limits{Turns: 80, ScriptTimeout: 900}}
+	a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
+	if err := ApplyOverrides(doc.Content[0], a, manifest.AWS); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doc.Content[0]
+	for path, want := range map[string]string{"agent.max_turns": "80", "agent.reasoning_effort": "high", "terminal.timeout": "180", "cron.script_timeout_seconds": "900"} {
+		if n := getPath(cfg, path); n == nil || n.Value != want {
+			t.Errorf("%s = %v, want %s", path, n, want)
+		}
+	}
+}

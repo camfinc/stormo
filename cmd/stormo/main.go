@@ -564,6 +564,9 @@ type checked struct {
 	Engine string `json:"engine"`
 	Files  int    `json:"files"`
 	Skills int    `json:"skills"`
+	// The manifest's agent.yaml format and the format-0 keys it still uses.
+	Format int      `json:"format"`
+	Legacy []string `json:"legacy"`
 }
 
 func check(inst *instance.Instance, ids []string) error {
@@ -584,8 +587,11 @@ func check(inst *instance.Instance, ids []string) error {
 		if err != nil {
 			return err
 		}
-		rows = append(rows, checked{id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills)})
+		rows = append(rows, checked{id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills), a.Format, orNone(a.Legacy)})
 		step("ok  %s  unit=%s engine=%s files=%d skills=%d", id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills))
+		if len(a.Legacy) > 0 {
+			step("    %s uses agent.yaml format 0 (%s); `stormo migrate agent %s` moves it to format %d", id, strings.Join(a.Legacy, ", "), id, manifest.Format)
+		}
 	}
 	owners, err := slack.SlashCommandOwners(inst)
 	if err != nil {
@@ -1144,4 +1150,11 @@ func projectRoot() (string, error) {
 		return strings.TrimSpace(string(out)), nil
 	}
 	return cwd, nil
+}
+
+func orNone(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }
