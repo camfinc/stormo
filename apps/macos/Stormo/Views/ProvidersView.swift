@@ -9,7 +9,6 @@ import SwiftUI
 struct ProvidersView: View {
     @Environment(AppModel.self) private var model
     @State private var rows: [ConnectionRow] = []
-    @State private var kinds: [ConnectionKindInfo] = []
     @State private var gateway: GatewayStatus?
     @State private var adding = false
     @State private var settingKey: ConnectionRow?
@@ -42,10 +41,16 @@ struct ProvidersView: View {
                     .disabled(model.cli == nil)
             }
         }
-        .task(id: model.cli?.instance) { await load() }
+        .task(id: model.cli?.instance) {
+            await load()
+            #if DEBUG
+            // STORMO_ADD_PROVIDER opens the Add Provider sheet (with STORMO_SNAPSHOT, a visual check).
+            if ProcessInfo.processInfo.environment["STORMO_ADD_PROVIDER"] != nil, model.cli != nil { adding = true }
+            #endif
+        }
         .task(id: model.core.state.isRunning) { await loadGateway() }
         .sheet(isPresented: $adding, onDismiss: { Task { await load() } }) {
-            AddProviderSheet(kinds: kinds, taken: Set(rows.map(\.name)))
+            AddProviderSheet(taken: Set(rows.map(\.name)))
         }
         .sheet(item: $settingKey, onDismiss: { Task { await load() } }) { SetKeySheet(row: $0) }
         .sheet(item: $signingIn, onDismiss: { Task { await loadGateway() } }) { ChatGPTSignInSheet(connection: $0.name) }
@@ -151,7 +156,6 @@ struct ProvidersView: View {
         guard let cli = model.cli else { return }
         do {
             rows = try await cli.run(["connections"], as: [ConnectionRow].self)
-            if kinds.isEmpty { kinds = try await cli.run(["connections", "kinds"], as: [ConnectionKindInfo].self) }
             failure = nil
         } catch {
             failure = error.localizedDescription
@@ -192,8 +196,10 @@ struct SignInTarget: Identifiable {
 struct AddProviderSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    let kinds: [ConnectionKindInfo]
     let taken: Set<String>
+    // Loaded by the sheet itself: a sheet's content does not see later changes of its presenter's
+    // state that the presenter's body never read.
+    @State private var kinds: [ConnectionKindInfo] = []
     @State private var kind = "openai"
     @State private var name = ""
     @State private var baseURL = ""
@@ -224,7 +230,6 @@ struct AddProviderSheet: View {
                 if info?.api == true {
                     TextField("Base URL", text: $baseURL, prompt: Text(info?.baseUrl ?? "https://…/v1"))
                     TextField("Key's secret name", text: $keyName, prompt: Text(info?.key ?? "MYAPI_API_KEY"))
-                        .monospaced()
                     SecureField("API key", text: $keyValue, prompt: Text("optional: set it now"))
                 }
             }
@@ -251,6 +256,15 @@ struct AddProviderSheet: View {
         }
         .padding(20)
         .frame(width: 480)
+        .task {
+            guard kinds.isEmpty, let cli = model.cli else { return }
+            do {
+                kinds = try await cli.run(["connections", "kinds"], as: [ConnectionKindInfo].self)
+                if !kinds.contains(where: { $0.kind == kind }), let first = kinds.first(where: \.api) { kind = first.kind }
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
     }
 
     private func add() async {
