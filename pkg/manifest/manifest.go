@@ -56,6 +56,9 @@ type Channel struct {
 	Local *SlackSettings `json:"local,omitempty"`
 }
 
+// AllowBots are the values of a slack channel's allow_bots.
+var AllowBots = []string{"none", "mentions", "all"}
+
 // ChannelSecrets are the secret names each channel kind needs declared.
 var ChannelSecrets = map[string][]string{
 	"slack":    {"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"},
@@ -461,7 +464,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 			}
 		}
 		if ch.AllowBots != "" {
-			if err := req(kind == "slack" && slices.Contains([]string{"none", "mentions", "all"}, ch.AllowBots), "%s: allow_bots is slack-only and must be none|mentions|all", where); err != nil {
+			if err := req(kind == "slack" && slices.Contains(AllowBots, ch.AllowBots), "%s: allow_bots is slack-only and must be none|mentions|all", where); err != nil {
 				return nil, err
 			}
 		}

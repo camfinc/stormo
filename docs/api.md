@@ -58,8 +58,9 @@ into an `error` event.
 | `core login` | `login`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
 | `core logout` | `login` (`missing`), `changed` (tokens were removed) |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
-| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text` |
-| `config write <file> --if-hash <h>` | the same, for what was written. The new content comes on stdin |
+| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
+| `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
+| `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |
 
 `config` edits `agents/<id>/agent.yaml` and `agents/<id>/SOUL.md` (`pkg/config`); any other path
 is refused with `unsupported`. `write` replaces the file atomically, and only when it still hashes
@@ -67,3 +68,11 @@ to `--if-hash` (else `conflict`: reload and edit again) and the new content vali
 `agent.yaml` must load as the manifest and its bridge actions do in `check` (else `invalid`, with
 the reason) and keep `deploy:` as it was (else `readonly`: it names cloud resources); a `SOUL.md`
 must not be empty. Building the agent is not part of the write: run `check <agent>` after it.
+
+`apply` is how a form saves: it edits the file's YAML node tree, so a key the patch does not name
+keeps its comments and place, and the file is re-encoded with its original blank lines and comment
+alignment wherever nothing changed (an empty patch changes no byte). Merge patch semantics: `null`
+deletes a key, an object merges into an object, anything else (an array too) replaces the value;
+inside a replaced array, unchanged strings keep their comments and objects are matched by position.
+A patch that names `id` or `deploy` is refused with `readonly`; then the result is validated and
+written as `write` does.

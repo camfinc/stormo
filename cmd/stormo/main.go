@@ -66,6 +66,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   check [agent...]                       validate manifests, compile, check action isolation
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
+  config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
   build <agent>                          compile dist/<agent>/baseline (also a Hermes distribution)
   inspect <agent> [--target aws|local]   everything the engine computes for the agent, as JSON
   bench <agent> [--runner mock|docker] [--env-file f] [--tag t]   docker: env from secrets.local.yaml
@@ -602,10 +603,12 @@ func configCmd(inst *instance.Instance, sub string, rest []string) error {
 	switch sub {
 	case "show":
 		f, err = config.Show(inst, file)
-	case "write":
+	case "write", "apply":
 		var body []byte
-		if body, err = io.ReadAll(os.Stdin); err == nil {
+		if body, err = io.ReadAll(os.Stdin); err == nil && sub == "write" {
 			f, err = config.Write(inst, file, body, *fIfHash)
+		} else if err == nil {
+			f, err = config.Apply(inst, file, body, *fIfHash)
 		}
 	default:
 		return errUsage

@@ -5,6 +5,8 @@
 //
 // Supported so far: agents/<id>/agent.yaml (validated like `stormo check` validates the manifest
 // and its bridge actions; deploy: is read-only, it names cloud resources) and agents/<id>/SOUL.md.
+// An agent.yaml can also be changed field by field (Apply, a JSON merge patch); Show then carries
+// the parsed document and the choices a form offers (Options).
 package config
 
 import (
@@ -33,6 +35,9 @@ type File struct {
 	Agent string `json:"agent"` // the agent the file belongs to
 	Hash  string `json:"hash"`  // sha256 of the bytes, hex: pass it back to Write
 	Text  string `json:"text"`
+	// agent.yaml only: the document as JSON (null when it does not parse) and the form's choices.
+	Doc     any      `json:"doc,omitempty"`
+	Options *Options `json:"options,omitempty"`
 }
 
 // Error is a refusal with a stable code for --json (docs/api.md): unsupported, conflict, invalid,
@@ -86,7 +91,19 @@ func Show(inst *instance.Instance, rel string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &File{Path: t.rel, Kind: t.kind, Agent: t.agent, Hash: Hash(b), Text: string(b)}, nil
+	return file(inst, t, b), nil
+}
+
+func file(inst *instance.Instance, t target, b []byte) *File {
+	f := &File{Path: t.rel, Kind: t.kind, Agent: t.agent, Hash: Hash(b), Text: string(b)}
+	if t.kind == "agent" {
+		var doc map[string]any
+		if yaml.Unmarshal(b, &doc) == nil {
+			f.Doc = doc
+		}
+		f.Options = options(inst, t.agent)
+	}
+	return f
 }
 
 // Write replaces one configuration file with body if the file still hashes to ifHash and body
@@ -115,7 +132,49 @@ func Write(inst *instance.Instance, rel string, body []byte, ifHash string) (*Fi
 			return nil, err
 		}
 	}
-	return &File{Path: t.rel, Kind: t.kind, Agent: t.agent, Hash: Hash(body), Text: string(body)}, nil
+	return file(inst, t, body), nil
+}
+
+// Apply changes an agent.yaml by a JSON merge patch (RFC 7386): the file's node tree is edited, so
+// comments, key order, blank lines and comment alignment stay where nothing changed. The result is
+// validated and written as Write does.
+func Apply(inst *instance.Instance, rel string, patch []byte, ifHash string) (*File, error) {
+	t, err := resolve(inst, rel)
+	if err != nil {
+		return nil, err
+	}
+	if t.kind != "agent" {
+		return nil, refuse("unsupported", "%s: only agent.yaml takes a patch; write the whole file", t.rel)
+	}
+	var p yaml.Node
+	if err := yaml.Unmarshal(patch, &p); err != nil || len(p.Content) != 1 || p.Content[0].Kind != yaml.MappingNode {
+		return nil, refuse("usage", "%s: the patch must be a JSON object", t.rel)
+	}
+	for _, key := range []string{"id", "deploy"} {
+		if keyIndex(p.Content[0], key) >= 0 {
+			return nil, refuse("readonly", "%s: %s: is not edited here", t.rel, key)
+		}
+	}
+	if ifHash == "" {
+		return nil, refuse("usage", "%s: --if-hash is required (the hash `config show` gave)", t.rel)
+	}
+	old, err := os.ReadFile(t.abs(inst))
+	if err != nil {
+		return nil, err
+	}
+	if Hash(old) != ifHash {
+		return nil, refuse("conflict", "%s changed on disk since it was loaded; reload it and edit again", t.rel)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(old, &doc); err != nil || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, refuse("invalid", "%s does not parse as a YAML mapping; fix it as text first", t.rel)
+	}
+	applyPatch(doc.Content[0], p.Content[0])
+	body, err := encode(&doc, old)
+	if err != nil {
+		return nil, err
+	}
+	return Write(inst, rel, body, ifHash)
 }
 
 func validate(inst *instance.Instance, t target, old, body []byte) error {

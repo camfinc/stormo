@@ -11,11 +11,11 @@ engine:
   kind: hermes
   version: 0.21.5
   image_tag: v2026.9.24
-  model: openai/gpt-6-luna
+  model: openai/gpt-6-luna    # the cloud model
   provider: openrouter
   local:
     via: core
-    model: gpt-5.6-luna
+    model: gpt-5.6-luna       # the core's catalog name for it
 
 channels:
   - kind: slack
