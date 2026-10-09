@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/local"
@@ -61,34 +62,19 @@ type Sprite struct {
 	Accessory string `json:"accessory,omitempty"`
 }
 
-// Platform is one messaging platform's state as the engine reports it.
-type Platform struct {
-	State          string `json:"state"`
-	NeedsAttention bool   `json:"needsAttention"`
-}
-
-// Activity is what the agent is doing right now, from its engine's own API (Hermes
-// `/health/detailed`, `/api/sessions`, `/api/jobs`). Counts, states and times only: session titles
-// and previews hold client data and never leave the core.
-type Activity struct {
-	ActiveAgents int  `json:"activeAgents"`
-	GatewayBusy  bool `json:"gatewayBusy"`
-	// Source of the most recently active session: slack, cron, api_server, telegram, …
-	Source string `json:"source,omitempty"`
-	// Scheduled jobs running right now (their names: configuration, not client data).
-	RunningJobs []string `json:"runningJobs"`
-	// When a scheduled job last finished: idle time counts from this or the last session.
-	LastJobAt  string              `json:"lastJobAt,omitempty"`
-	LastActive string              `json:"lastActive,omitempty"`
-	Platforms  map[string]Platform `json:"platforms"`
-	PolledAt   string              `json:"polledAt"`
-}
+// Platform and Activity are the agent's live state from its engine's API (engine.Runtime).
+type (
+	Platform = engine.Platform
+	Activity = engine.Activity
+)
 
 // FleetAgent is one desk of the office. Field names are read by the office UI.
 type FleetAgent struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Unit       string   `json:"unit"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Unit string `json:"unit"`
+	// Engine is the agent's engine kind (engine.kind).
+	Engine     string   `json:"engine"`
 	Role       string   `json:"role"`
 	Model      string   `json:"model"`
 	LocalModel string   `json:"localModel,omitempty"`
@@ -173,7 +159,8 @@ type FleetOptions struct {
 	Ps               PsFn
 	ActivityInterval time.Duration
 	ActivityFetch    ActivityFetch
-	// API keys per agent (default: API_SERVER_KEY from secrets.local.yaml, local overlay applied).
+	// API keys per agent (default: the secret its engine's runtime names, from secrets.local.yaml,
+	// local overlay applied).
 	APIKey func(id string) string
 }
 
@@ -306,158 +293,6 @@ func FindAvatar(personaDir string) string {
 	return filepath.Join(dir, best)
 }
 
-// JobMemo is what RunningJobs remembers about a job between polls.
-type JobMemo struct {
-	Next, Last string
-	Running    bool
-}
-
-func parseMs(s string) (float64, bool) {
-	if s == "" {
-		return math.NaN(), false
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return math.NaN(), false
-	}
-	return float64(t.UnixMilli()), true
-}
-
-func jobList(jobs any) []any {
-	m, ok := jobs.(map[string]any)
-	if !ok {
-		return nil
-	}
-	l, _ := m["jobs"].([]any)
-	return l
-}
-
-// RunningJobs tells which of an agent's scheduled jobs are running, from Hermes' `/api/jobs`. It
-// has no running flag, but its scheduler (v0.21) moves `next_run_at` forward when a run starts and
-// sets `last_run_at` when it finishes. So a job is running while (a) for an interval job, its last
-// finish is earlier than the start implied by `next_run_at - interval`, or (b) we saw `next_run_at`
-// move with no new `last_run_at`. (a) also covers a core started mid-run; (b) covers cron
-// expressions and first runs. memo carries what (b) needs between polls. now is epoch ms.
-func RunningJobs(jobs any, memo map[string]*JobMemo, now float64) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, raw := range jobList(jobs) {
-		j, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		id, ok := j["id"].(string)
-		if !ok || j["enabled"] == false {
-			continue
-		}
-		seen[id] = true
-		next, _ := j["next_run_at"].(string)
-		last, _ := j["last_run_at"].(string)
-		prev := memo[id]
-		running := prev != nil && prev.Running
-		if prev != nil && last != prev.Last {
-			running = false // finished
-		} else if prev != nil && next != "" && next != prev.Next && last == prev.Last {
-			running = true // started
-		}
-		if sch, ok := j["schedule"].(map[string]any); ok && sch["kind"] == "interval" {
-			if minutes, ok := sch["minutes"].(float64); ok && next != "" && last != "" {
-				nextMs, _ := parseMs(next)
-				lastMs, _ := parseMs(last)
-				startedAt := nextMs - minutes*60_000
-				running = lastMs < startedAt-5_000 && startedAt <= now // an unparsable time is NaN, which compares false
-			}
-		}
-		memo[id] = &JobMemo{Next: next, Last: last, Running: running}
-		name := ""
-		if n, ok := j["name"].(string); ok {
-			r := []rune(strings.TrimSpace(jobName.ReplaceAllString(n, "")))
-			if len(r) > 60 {
-				r = r[:60]
-			}
-			name = string(r)
-		}
-		if running && name != "" {
-			out = append(out, name)
-		}
-	}
-	for id := range memo {
-		if !seen[id] {
-			delete(memo, id)
-		}
-	}
-	return out
-}
-
-// LastJobRun is the latest `last_run_at` among an agent's scheduled jobs, or "".
-func LastJobRun(jobs any) string {
-	best, found := 0.0, false
-	for _, raw := range jobList(jobs) {
-		j, _ := raw.(map[string]any)
-		s, _ := j["last_run_at"].(string)
-		if t, ok := parseMs(s); ok && (!found || t > best) {
-			best, found = t, true
-		}
-	}
-	if !found {
-		return ""
-	}
-	return loop.IsoMillis(time.UnixMilli(int64(best)))
-}
-
-// ActivityFrom reads Hermes' `/health/detailed` and `/api/sessions` bodies; nil if not usable.
-func ActivityFrom(health, sessions any, now time.Time, jobs []string) *Activity {
-	h, ok := health.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if jobs == nil {
-		jobs = []string{}
-	}
-	a := &Activity{RunningJobs: jobs, Platforms: map[string]Platform{}, PolledAt: loop.IsoMillis(now)}
-	if ps, ok := h["platforms"].(map[string]any); ok {
-		for name, v := range ps {
-			p, ok := v.(map[string]any)
-			if !sourceRe.MatchString(name) || !ok {
-				continue
-			}
-			state := "unknown"
-			if s, ok := p["state"].(string); ok && sourceRe.MatchString(s) {
-				state = s
-			}
-			a.Platforms[name] = Platform{State: state, NeedsAttention: p["needs_attention"] == true}
-		}
-	}
-	var newest map[string]any
-	if s, ok := sessions.(map[string]any); ok {
-		list, _ := s["data"].([]any)
-		for _, raw := range list {
-			x, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			la, ok := x["last_active"].(float64)
-			if !ok {
-				continue
-			}
-			if newest == nil || la > newest["last_active"].(float64) {
-				newest = x
-			}
-		}
-	}
-	if n, ok := h["active_agents"].(float64); ok {
-		a.ActiveAgents = int(n)
-	}
-	a.GatewayBusy = h["gateway_busy"] == true
-	if newest != nil {
-		if src, ok := newest["source"].(string); ok && sourceRe.MatchString(src) {
-			a.Source = src
-		}
-		a.LastActive = loop.IsoMillis(time.UnixMilli(int64(newest["last_active"].(float64) * 1000)))
-	}
-	return a
-}
-
 type apiKeys struct {
 	mtime  time.Time
 	loaded bool
@@ -474,11 +309,12 @@ type Fleet struct {
 	mu       sync.Mutex
 	snap     FleetSnapshot
 	activity map[string]*Activity
-	jobMemo  map[string]map[string]*JobMemo
-	naps     map[string]*loop.Nap
-	events   []NapEvent
-	avatars  map[string]string
-	keys     apiKeys
+	// What each agent's engine runtime remembers between activity polls.
+	rtState map[string]any
+	naps    map[string]*loop.Nap
+	events  []NapEvent
+	avatars map[string]string
+	keys    apiKeys
 
 	pollMu   sync.Mutex
 	running  chan struct{}
@@ -490,7 +326,7 @@ type Fleet struct {
 
 // NewFleet builds a registry; call Start for the timers or Refresh / PollActivity by hand.
 func NewFleet(o FleetOptions) *Fleet {
-	f := &Fleet{o: o, root: o.Inst.Root, activity: map[string]*Activity{}, jobMemo: map[string]map[string]*JobMemo{},
+	f := &Fleet{o: o, root: o.Inst.Root, activity: map[string]*Activity{}, rtState: map[string]any{},
 		naps: map[string]*loop.Nap{}, avatars: map[string]string{}, stop: make(chan struct{}),
 		snap: FleetSnapshot{Units: []FleetUnit{}, Agents: []FleetAgent{}}}
 	f.reposDir = o.ReposDir
@@ -548,11 +384,11 @@ func (f *Fleet) Snapshot() FleetSnapshot {
 	return out
 }
 
-// APIKey is the agent's API_SERVER_KEY (its engine API), for the core's own calls. Never sent on.
+// APIKey is the agent's engine API key, for the core's own calls. Never sent on.
 func (f *Fleet) APIKey(id string) string { return f.apiKey(id) }
 
-// apiKey is API_SERVER_KEY per agent from secrets.local.yaml, reread when the file changes. Never
-// leaves the core.
+// apiKey is the engine API key per agent from secrets.local.yaml (the secret the agent's engine
+// runtime names), reread when the file changes. Never leaves the core.
 func (f *Fleet) apiKey(id string) string {
 	if f.o.APIKey != nil {
 		return f.o.APIKey(id)
@@ -576,7 +412,11 @@ func (f *Fleet) apiKey(id string) string {
 				if err != nil {
 					continue // this agent's manifest does not load right now; the others still get keys
 				}
-				if k, _ := secrets.Resolve(file, a, manifest.Local).Values.Get("API_SERVER_KEY"); k != "" {
+				eng, err := engines.Get(a.Engine.Kind, f.o.Inst)
+				if err != nil {
+					continue
+				}
+				if k, _ := secrets.Resolve(file, a, manifest.Local).Values.Get(eng.Runtime().APIKeyName()); k != "" {
 					values[aid] = k
 				}
 			}
@@ -651,43 +491,67 @@ func (f *Fleet) PollActivity() {
 				set(nil)
 				return
 			}
+			eng, err := engines.Get(a.Engine, f.o.Inst)
+			if err != nil {
+				set(nil)
+				return
+			}
+			rt := eng.Runtime()
 			key := f.apiKey(a.ID)
-			// Hermes only serves its API with a key of 16+ characters.
-			if len(key) < 16 {
+			if !rt.ValidAPIKey(key) {
 				set(nil)
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			var h, s, j any
-			var herr, serr error
-			var inner sync.WaitGroup
-			inner.Add(3)
-			go func() { defer inner.Done(); h, herr = f.fetchJSON(ctx, a.Endpoint+"/health/detailed", key) }()
-			go func() { defer inner.Done(); s, serr = f.fetchJSON(ctx, a.Endpoint+"/api/sessions?limit=5", key) }()
-			// Scheduled jobs (no_agent scripts run outside any agent turn): optional, never fatal.
-			go func() { defer inner.Done(); j, _ = f.fetchJSON(ctx, a.Endpoint+"/api/jobs", key) }()
-			inner.Wait()
-			if herr != nil || serr != nil {
+			get := func(ctx context.Context, path string) (any, error) { return f.fetchJSON(ctx, a.Endpoint+path, key) }
+			f.mu.Lock()
+			state := f.rtState[a.ID]
+			f.mu.Unlock()
+			act, state, err := rt.Activity(ctx, get, state, time.Now())
+			f.mu.Lock()
+			f.rtState[a.ID] = state
+			f.mu.Unlock()
+			if err != nil {
 				set(nil) // down, starting or timed out; never log the body
 				return
 			}
-			f.mu.Lock()
-			memo := f.jobMemo[a.ID]
-			if memo == nil {
-				memo = map[string]*JobMemo{}
-				f.jobMemo[a.ID] = memo
-			}
-			jobs := RunningJobs(j, memo, float64(time.Now().UnixMilli()))
-			f.mu.Unlock()
-			act := ActivityFrom(h, s, time.Now(), jobs)
-			if act != nil {
-				act.LastJobAt = LastJobRun(j)
-			}
-			set(act)
+			set(sanitize(act))
 		}(a)
 	}
 	wg.Wait()
+}
+
+// sanitize keeps an engine's activity to what may leave the core: names that look like platform
+// and source names, job names without odd characters.
+func sanitize(a *Activity) *Activity {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	out.Platforms = map[string]Platform{}
+	for name, p := range a.Platforms {
+		if sourceRe.MatchString(name) {
+			if !sourceRe.MatchString(p.State) {
+				p.State = "unknown"
+			}
+			out.Platforms[name] = p
+		}
+	}
+	if !sourceRe.MatchString(out.Source) {
+		out.Source = ""
+	}
+	out.RunningJobs = []string{}
+	for _, j := range a.RunningJobs {
+		r := []rune(strings.TrimSpace(jobName.ReplaceAllString(j, "")))
+		if len(r) > 60 {
+			r = r[:60]
+		}
+		if len(r) > 0 {
+			out.RunningJobs = append(out.RunningJobs, string(r))
+		}
+	}
+	return &out
 }
 
 // TakeNapEvents returns new naps since the last call (the first nap seen for an agent, e.g. after
@@ -846,7 +710,7 @@ func (f *Fleet) pollAgent(id string, store loop.Store) *FleetAgent {
 		endpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
 	a := &FleetAgent{
-		ID: id, Name: m.Name, Unit: m.Unit, Role: m.Role, Model: m.Engine.Model,
+		ID: id, Name: m.Name, Unit: m.Unit, Engine: m.Engine.Kind, Role: m.Role, Model: m.Engine.Model,
 		Channels: channels, OptionalChannels: optional, Avatar: avatar != "", Desk: desk, Sprite: sprite,
 		State: s.State, Health: s.Health, Detail: s.Detail, Endpoint: endpoint,
 		NapIntervalSeconds: m.Learning.NapIntervalSeconds, PendingSkills: len(skills),

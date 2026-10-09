@@ -23,7 +23,7 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline, `live`: the tool it runs now, from its hooks, or null, `messages`: `unread`, `received`, `sent` today, and `locks`: shared-space locks it holds), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
 | `GET /api/agents/<id>/timeline` | `agent`, `live`, `entries` [{`at`, `event`, `tool`}], newest first; `?limit=` (≤ 500, default 100) |
 | `GET /api/agents/<id>/activity` | the same with each entry's `session` and `preview`. Owner token or that agent's key |
-| `POST /ingest/hermes` | Hermes' outbound hook deliveries, signed with the agent's core key (docs/core.md §2) |
+| `POST /ingest/<engine>` | an engine's hook deliveries (Hermes: `/ingest/hermes`, its outbound hooks), signed with the agent's core key and read by that engine's runtime (`engine.Runtime`; docs/core.md §2) |
 | `GET /api/messages` | `threads` [{`thread`, `subject`, `updated`, `messages` [{`id`, `thread`, `from`, `to`, `subject`, `body`, `priority`, `attach`, `hop`, `sent`, `recipients` [{`agent`, `read`, `acked`, `woken`}]}]}], newest thread first; `?agent=`, `?limit=` (default 30). Owner token |
 | `GET /api/findings` | `findings` [{`id`, `agent`, `rule`, `severity`, `evidence`, `firstSeen`, `lastSeen`, `count`, `status`}]; `?all=1` adds resolved ones. Owner token |
 | `GET /api/workdir` | `locks` [{`owner`, `path`, `kind`, `reason`, `created`, `expires`}], `changes` [{`path`, `at`, `kind`, `agent`, `how`, `violation`}] newest first (`?limit=`, default 50), `layers` {layer: files}. Owner token |

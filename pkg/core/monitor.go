@@ -1,7 +1,6 @@
 package core
 
 import (
-	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -12,13 +11,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/loop"
 )
 
-// Activity ingest (docs/core.md §2, phase 3). Each local agent's Hermes posts its lifecycle hooks
-// (`hooks.outbound`, wired by pkg/engine/hermes for agents on the core) to POST /ingest/hermes,
-// signed with the agent's own core key. The core keeps a live view per agent (tool calls in
+// Activity ingest (docs/core.md §2, phase 3). Each local agent's engine posts its lifecycle hooks
+// (Hermes: `hooks.outbound`, wired by pkg/engine/hermes for agents on the core) to
+// POST /ingest/<engine kind>, signed with the agent's own core key; the engine's runtime reads them
+// (engine.Runtime.ParseHook). The core keeps a live view per agent (tool calls in
 // flight, open sessions, approvals waiting) and a timeline in core.db. Previews can hold client
 // data: they stay in core.db for RetainActivity and only reach owner-authenticated reads.
 
@@ -34,17 +36,6 @@ const (
 	maxIngestBody  = 8 << 20
 	maxPreview     = 160
 )
-
-// hookDelivery is the body Hermes' agent/outbound_webhooks.py posts.
-type hookDelivery struct {
-	Event     string         `json:"hook_event_name"`
-	ToolName  string         `json:"tool_name"`
-	ToolInput map[string]any `json:"tool_input"`
-	SessionID string         `json:"session_id"`
-	Extra     map[string]any `json:"extra"`
-	Delivery  string         `json:"delivery_id"`
-	Timestamp string         `json:"timestamp"`
-}
 
 // LiveCall is a tool call in flight.
 type LiveCall struct {
@@ -127,11 +118,16 @@ func (m *Monitor) OnToolDone(f func(ToolEvent)) {
 	m.subs = append(m.subs, f)
 }
 
-// Handle serves POST /ingest/hermes. Unsigned, unknown-key, stale or malformed deliveries are
-// refused with 4xx (Hermes does not retry those); a duplicate delivery is accepted and ignored.
+// Handle serves POST /ingest/<engine kind>. Unsigned, unknown-key, stale or malformed deliveries
+// are refused with 4xx (engines do not retry those); a duplicate delivery is accepted and ignored.
 func (m *Monitor) Handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONBody(w, 405, errBody("method_not_allowed", "POST only"))
+		return
+	}
+	rt, err := engines.Runtime(strings.TrimPrefix(r.URL.Path, "/ingest/"))
+	if err != nil {
+		writeJSONBody(w, 404, errBody("not_found", "no such engine"))
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxIngestBody+1))
@@ -143,23 +139,22 @@ func (m *Monitor) Handle(w http.ResponseWriter, r *http.Request) {
 		writeJSONBody(w, 413, errBody("too_large", "delivery too large"))
 		return
 	}
-	agent, ok := m.keys.VerifySignature(body, r.Header.Get("X-Hermes-Signature-256"))
+	agent, ok := m.keys.VerifySignature(body, rt.HookSignature(r.Header))
 	if !ok {
 		writeJSONBody(w, 401, errBody("unauthorized", "missing or unknown signature"))
 		return
 	}
-	var d hookDelivery
-	if err := json.Unmarshal(body, &d); err != nil || d.Event == "" || d.Delivery == "" {
-		writeJSONBody(w, 400, errBody("bad_request", "not a Hermes hook delivery"))
+	e, err := rt.ParseHook(body)
+	if err != nil {
+		writeJSONBody(w, 400, errBody("bad_request", err.Error()))
 		return
 	}
-	at, err := time.Parse(time.RFC3339Nano, d.Timestamp)
 	now := m.now()
-	if err != nil || at.Before(now.Add(-ingestSkew)) || at.After(now.Add(ingestSkew)) {
+	if e.At.Before(now.Add(-ingestSkew)) || e.At.After(now.Add(ingestSkew)) {
 		writeJSONBody(w, 400, errBody("stale", "timestamp missing or outside the accepted window"))
 		return
 	}
-	if err := m.Ingest(agent, d, at); err != nil {
+	if err := m.Ingest(agent, e); err != nil {
 		log.Printf("ingest %s: %v", agent, err)
 		writeJSONBody(w, 500, errBody("core_internal", "could not record the event"))
 		return
@@ -191,57 +186,40 @@ func clip(s string, n int) string {
 
 // preview is a short line about a hook: the file a tool touches, the start of a terminal command,
 // else the names of the arguments (never their values). Scrubbed before it is stored.
-func (m *Monitor) preview(d hookDelivery) string {
-	switch d.Event {
-	case "pre_tool_call":
-		if p := toolPath(d.ToolInput); p != "" {
+func (m *Monitor) preview(e *engine.HookEvent) string {
+	switch e.Kind {
+	case engine.ToolStart:
+		if p := toolPath(e.ToolInput); p != "" {
 			return m.scrub(clip(p, maxPreview))
 		}
-		if c, ok := d.ToolInput["command"].(string); ok {
+		if c, ok := e.ToolInput["command"].(string); ok {
 			return m.scrub(clip(c, maxPreview))
 		}
 		keys := []string{}
-		for k := range d.ToolInput {
+		for k := range e.ToolInput {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		return clip(strings.Join(keys, ", "), maxPreview)
-	case "post_tool_call":
-		s, _ := d.Extra["status"].(string)
-		if ms, ok := d.Extra["duration_ms"].(float64); ok {
-			s = strings.TrimSpace(s + " " + (time.Duration(ms) * time.Millisecond).Round(time.Millisecond).String())
+	case engine.ToolDone:
+		s := e.Status
+		if e.Duration > 0 {
+			s = strings.TrimSpace(s + " " + e.Duration.Round(time.Millisecond).String())
 		}
 		return clip(s, maxPreview)
-	case "on_session_start", "on_session_end":
-		if p, ok := d.Extra["platform"].(string); ok {
-			return clip(p, 40)
-		}
+	case engine.SessionStart, engine.SessionEnd:
+		return clip(e.Platform, 40)
 	}
 	return ""
 }
 
-func callKey(d hookDelivery) string {
-	if id, ok := d.Extra["tool_call_id"].(string); ok && id != "" {
-		return id
-	}
-	return d.SessionID + "\x00" + d.ToolName
-}
-
-func approvalKey(d hookDelivery) string {
-	for _, k := range []string{"approval_id", "request_id", "rule_key"} {
-		if s, ok := d.Extra[k].(string); ok && s != "" {
-			return s
-		}
-	}
-	return d.SessionID
-}
-
 // Ingest records one verified delivery from agent.
-func (m *Monitor) Ingest(agent string, d hookDelivery, at time.Time) error {
+func (m *Monitor) Ingest(agent string, e *engine.HookEvent) error {
+	at := e.At
 	ms := at.UnixMilli()
-	tool := clip(d.ToolName, 80)
+	tool := clip(e.Tool, 80)
 	res, err := m.db.Exec(`INSERT OR IGNORE INTO activity(agent, at, event, session, tool, call, preview, delivery) VALUES(?,?,?,?,?,?,?,?)`,
-		agent, ms, clip(d.Event, 40), clip(d.SessionID, 120), tool, clip(callKey(d), 120), m.preview(d), d.Delivery)
+		agent, ms, clip(e.Name, 40), clip(e.Session, 120), tool, clip(e.CallID, 120), m.preview(e), e.Delivery)
 	if err != nil {
 		return err
 	}
@@ -256,23 +234,23 @@ func (m *Monitor) Ingest(agent string, d hookDelivery, at time.Time) error {
 		m.live[agent] = l
 	}
 	l.last = ms
-	if d.SessionID != "" && d.Event != "on_session_end" {
-		l.sessions[d.SessionID] = ms
+	if e.Session != "" && e.Kind != engine.SessionEnd {
+		l.sessions[e.Session] = ms
 	}
-	switch d.Event {
-	case "on_session_end":
-		delete(l.sessions, d.SessionID)
+	switch e.Kind {
+	case engine.SessionEnd:
+		delete(l.sessions, e.Session)
 		for k, c := range l.calls {
-			if c.sess == d.SessionID {
+			if c.sess == e.Session {
 				delete(l.calls, k)
 			}
 		}
-	case "pre_tool_call":
-		l.calls[callKey(d)] = &LiveCall{Tool: tool, Since: loop.IsoMillis(at), path: toolPath(d.ToolInput), since: ms, sess: d.SessionID}
+	case engine.ToolStart:
+		l.calls[e.CallID] = &LiveCall{Tool: tool, Since: loop.IsoMillis(at), path: toolPath(e.ToolInput), since: ms, sess: e.Session}
 		l.lastTool = tool
-	case "post_tool_call":
-		key := callKey(d)
-		p := toolPath(d.ToolInput)
+	case engine.ToolDone:
+		key := e.CallID
+		p := toolPath(e.ToolInput)
 		if c := l.calls[key]; c != nil && p == "" {
 			p = c.path
 		}
@@ -280,10 +258,10 @@ func (m *Monitor) Ingest(agent string, d hookDelivery, at time.Time) error {
 		if p != "" {
 			done = &ToolEvent{Agent: agent, Tool: tool, Path: p, At: ms}
 		}
-	case "pre_approval_request":
-		l.waiting[approvalKey(d)] = ms
-	case "post_approval_response":
-		delete(l.waiting, approvalKey(d))
+	case engine.ApprovalWaiting:
+		l.waiting[e.ApprovalID] = ms
+	case engine.ApprovalAnswered:
+		delete(l.waiting, e.ApprovalID)
 	}
 	subs := append([]func(ToolEvent){}, m.subs...)
 	m.mu.Unlock()

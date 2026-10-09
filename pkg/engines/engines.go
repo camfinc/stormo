@@ -15,6 +15,29 @@ var registry = map[string]func(*instance.Instance) engine.Engine{
 	"hermes": func(i *instance.Instance) engine.Engine { return hermes.New(i) },
 }
 
+// runtimes are the engines' runtimes without an instance (the core's hook ingest, secrets).
+var runtimes = map[string]func() engine.Runtime{
+	"hermes": hermes.NewRuntime,
+}
+
+// Runtime is how Stormo talks to a running agent of engine kind.
+func Runtime(kind string) (engine.Runtime, error) {
+	f, ok := runtimes[kind]
+	if !ok {
+		return nil, fmt.Errorf("unknown engine %q (known: %v)", kind, Kinds())
+	}
+	return f(), nil
+}
+
+// APIKeyNames are the engines' API key secrets (per agent by design; secrets init mints them).
+func APIKeyNames() []string {
+	out := []string{}
+	for _, k := range Kinds() {
+		out = append(out, runtimes[k]().APIKeyName())
+	}
+	return out
+}
+
 // Get returns the engine for kind, bound to the instance.
 func Get(kind string, inst *instance.Instance) (engine.Engine, error) {
 	f, ok := registry[kind]

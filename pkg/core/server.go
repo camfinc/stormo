@@ -92,8 +92,8 @@ type CoreOptions struct {
 	Keys *AgentKeys
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
 	OwnerToken string
-	// The bus's view of the fleet, wake runs and Slack mirror; nil takes the fleet's, Hermes'
-	// /v1/runs with each agent's API key, and its Slack home channel.
+	// The bus's view of the fleet, wake runs and Slack mirror; nil takes the fleet's, a run through
+	// each agent's engine API with its API key, and its Slack home channel.
 	Roster   func() []BusAgent
 	Wake     WakeFn
 	Mirror   MirrorFn
@@ -303,13 +303,13 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return out
 			}
 			for _, a := range fleet.Snapshot().Agents {
-				out = append(out, BusAgent{ID: a.ID, Unit: a.Unit, Running: a.State == "running", Busy: busy(a), Endpoint: a.Endpoint})
+				out = append(out, BusAgent{ID: a.ID, Unit: a.Unit, Engine: a.Engine, Running: a.State == "running", Busy: busy(a), Endpoint: a.Endpoint})
 			}
 			return out
 		}
 	}
 	if bo.Wake == nil && fleet != nil {
-		bo.Wake = HermesWake(fleet.APIKey, nil)
+		bo.Wake = EngineWake(inst, fleet.APIKey, nil)
 	}
 	if bo.Mirror == nil && !o.NoMirror {
 		bo.Mirror = SlackMirror(inst, nil)
@@ -418,7 +418,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			writeJSONBody(w, 200, view)
 			return
-		case path == "/ingest/hermes":
+		case strings.HasPrefix(path, "/ingest/"):
 			monitor.Handle(w, r)
 			return
 		case path == "/mcp":

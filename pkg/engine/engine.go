@@ -150,6 +150,8 @@ type Engine interface {
 	Layout() *Layout
 	// Memory is the format of the hot-memory files (Layout.Memory).
 	Memory() MemoryFormat
+	// Runtime is how Stormo talks to the running engine.
+	Runtime() Runtime
 	Image(a *manifest.Agent) string
 	// Compile returns baseline files relative to the engine home (SOUL, config, skills, plugins,
 	// cron, seed memory).

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes"
 	"github.com/camfinc/stormo/pkg/place"
 )
 
@@ -103,11 +104,15 @@ func TestOpenDBMigratesOnceAndRefusesNewer(t *testing.T) {
 func TestVerifySignature(t *testing.T) {
 	k := testKeys(t)
 	body := []byte(`{"x":1}`)
-	if a, ok := k.VerifySignature(body, sign(novaKey, body)); !ok || a != "nova" {
+	// The header as Hermes sends it, read by its runtime.
+	sig := func(h string) string {
+		return hermes.NewRuntime().HookSignature(http.Header{hermes.SignatureHeader: {h}})
+	}
+	if a, ok := k.VerifySignature(body, sig(sign(novaKey, body))); !ok || a != "nova" {
 		t.Fatalf("got %q %v", a, ok)
 	}
 	for _, h := range []string{"", sign("someone-elses-key-0123", body), "sha256=zz", sign(novaKey, []byte(`{"x":2}`)), strings.ToUpper(sign(novaKey, body))} {
-		if _, ok := k.VerifySignature(body, h); ok {
+		if _, ok := k.VerifySignature(body, sig(h)); ok {
 			t.Errorf("%q must not verify", h)
 		}
 	}

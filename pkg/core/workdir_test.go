@@ -1,11 +1,14 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/pkg/engine/hermes"
 )
 
 type wdFixture struct {
@@ -180,11 +183,15 @@ func TestLockKindsAndBoundaries(t *testing.T) {
 
 func ingest(t *testing.T, m *Monitor, agent, event, tool string, input map[string]any, call string, at time.Time) {
 	t.Helper()
-	var d hookDelivery
 	deliverySeq++
-	d.Event, d.ToolName, d.ToolInput, d.SessionID, d.Delivery = event, tool, input, "s", "x"+string(rune('a'+deliverySeq%26))+time.Now().Format("150405.000000000")
-	d.Extra = map[string]any{"tool_call_id": call}
-	if err := m.Ingest(agent, d, at); err != nil {
+	body, _ := json.Marshal(map[string]any{"hook_event_name": event, "tool_name": tool, "tool_input": input, "session_id": "s",
+		"delivery_id": "x" + string(rune('a'+deliverySeq%26)) + time.Now().Format("150405.000000000"),
+		"timestamp":   at.Format(time.RFC3339Nano), "extra": map[string]any{"tool_call_id": call}})
+	e, err := hermes.NewRuntime().ParseHook(body) // a Hermes delivery, as the core reads it
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Ingest(agent, e); err != nil {
 		t.Fatal(err)
 	}
 }

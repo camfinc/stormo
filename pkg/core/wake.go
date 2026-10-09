@@ -18,26 +18,28 @@ import (
 // What the bus does outside the core: wake an agent with a run on its own API, and mirror an
 // urgent message to the recipient's Slack home channel.
 
-// HermesWake starts a run on a Hermes agent's API server (`POST /v1/runs`, Hermes 0.21+): input
-// is the turn's user message, session the transcript it continues, idempotency the key Hermes
-// uses to make a retried wake start one run. apiKey gives the agent's API_SERVER_KEY.
-func HermesWake(apiKey func(id string) string, client *http.Client) WakeFn {
+// EngineWake starts a run on an agent's engine API (engine.Runtime.WakeRequest): input is the
+// turn's user message, session the transcript it continues, idempotency the key that makes a
+// retried wake start one run. apiKey gives the agent's engine API key.
+func EngineWake(inst *instance.Instance, apiKey func(id string) string, client *http.Client) WakeFn {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
 	return func(ctx context.Context, a BusAgent, input, session, idempotency string) error {
-		key := apiKey(a.ID)
-		if len(key) < 16 {
-			return fmt.Errorf("%s has no API_SERVER_KEY of 16+ characters", a.ID)
+		eng, err := engines.Get(a.Engine, inst)
+		if err != nil {
+			return fmt.Errorf("%s: %w", a.ID, err)
 		}
-		body, _ := json.Marshal(map[string]string{"input": input, "session_id": session})
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Endpoint+"/v1/runs", bytes.NewReader(body))
+		rt := eng.Runtime()
+		key := apiKey(a.ID)
+		if !rt.ValidAPIKey(key) {
+			return fmt.Errorf("%s has no usable %s", a.ID, rt.APIKeyName())
+		}
+		req, err := rt.WakeRequest(ctx, a.Endpoint, input, session, idempotency)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+key)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Idempotency-Key", idempotency)
 		res, err := client.Do(req)
 		if err != nil {
 			return err
@@ -45,7 +47,7 @@ func HermesWake(apiKey func(id string) string, client *http.Client) WakeFn {
 		defer res.Body.Close()
 		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
 		if res.StatusCode < 200 || res.StatusCode > 299 {
-			return fmt.Errorf("POST /v1/runs: HTTP %d", res.StatusCode)
+			return fmt.Errorf("%s %s: HTTP %d", req.Method, req.URL.Path, res.StatusCode)
 		}
 		return nil
 	}

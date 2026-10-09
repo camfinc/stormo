@@ -97,17 +97,16 @@ func (k *AgentKeys) Agents() []string {
 	return out
 }
 
-var signature = regexp.MustCompile(`^sha256=([0-9a-f]{64})$`)
+var signature = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// VerifySignature is the agent whose core key signed body: Hermes' outbound hooks send
-// `X-Hermes-Signature-256: sha256=<hex HMAC-SHA256 of the raw body>` keyed with the agent's
-// SWARM_CORE_KEY (`secret_env`). Every agent's key is tried; a fleet has a handful.
-func (k *AgentKeys) VerifySignature(body []byte, header string) (string, bool) {
-	m := signature.FindStringSubmatch(header)
-	if m == nil {
+// VerifySignature is the agent whose core key signed body: sig is the hex HMAC-SHA256 of the raw
+// body keyed with the agent's SWARM_CORE_KEY, as its engine's runtime read it from the delivery
+// (engine.Runtime.HookSignature). Every agent's key is tried; a fleet has a handful.
+func (k *AgentKeys) VerifySignature(body []byte, sig string) (string, bool) {
+	if !signature.MatchString(sig) {
 		return "", false
 	}
-	want, _ := hex.DecodeString(m[1])
+	want, _ := hex.DecodeString(sig)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.reload()

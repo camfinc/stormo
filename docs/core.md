@@ -149,8 +149,8 @@ from three sources:
 | source | how | gives |
 |---|---|---|
 | container | `ops.status("local")` (compose ps) every 15 s | running / stopped / starting, health check |
-| engine | `GET :<port>/health/detailed` with the agent's `API_SERVER_KEY` | `gateway_busy`, `active_agents`, platform states, readiness. **Built** (`pkg/core/fleet.go`): every 3 s for running local agents, `/health/detailed` + `/api/sessions?limit=5` + `/api/jobs` with the agent's `API_SERVER_KEY` (read in the core, never sent on; an agent whose manifest fails to load is retried every 30 s without costing the others their keys); only counts, platform states and the newest session's source and time reach `/api/fleet`, never titles or previews |
-| activity | Hermes `hooks.outbound` → `POST /ingest/hermes` (HMAC-signed) | session start/end, `pre/post_tool_call` (tool name, short redacted preview), approvals pending. **Built** (`pkg/core/monitor.go`), see below |
+| engine | the agent's engine API through its runtime (`engine.Runtime.Activity`); Hermes: `GET :<port>/health/detailed` with the agent's `API_SERVER_KEY` | `gateway_busy`, `active_agents`, platform states, readiness. **Built** (`pkg/core/fleet.go`): every 3 s for running local agents, `/health/detailed` + `/api/sessions?limit=5` + `/api/jobs` with the agent's `API_SERVER_KEY` (read in the core, never sent on; an agent whose manifest fails to load is retried every 30 s without costing the others their keys); only counts, platform states and the newest session's source and time reach `/api/fleet`, never titles or previews |
+| activity | the engine's hooks → `POST /ingest/<engine>` (HMAC-signed, read by `engine.Runtime.ParseHook`); Hermes: `hooks.outbound` → `/ingest/hermes` | session start/end, `pre/post_tool_call` (tool name, short redacted preview), approvals pending. **Built** (`pkg/core/monitor.go`), see below |
 
 Derived state per agent: `down`, `starting`, `idle`, `busy` (current tool and since when),
 `waiting` (approval pending), `degraded` (health failing, LLM on fallback, nap sidecar down),
@@ -485,7 +485,7 @@ separate 0600 file and is never in the database.
 | `GET /health` | anyone | liveness, login state (no secrets) |
 | `/v1/chat/completions`, `/v1/models` | agent key | LLM gateway |
 | `POST /mcp` (built) | agent key | MCP (streamable HTTP): comms, workdir, fleet tools by scope |
-| `POST /ingest/hermes` (built) | HMAC per agent | Hermes outbound hook events |
+| `POST /ingest/<engine>` (built) | HMAC per agent | an engine's hook events (Hermes: `/ingest/hermes`) |
 | `/api/*`, `GET /api/events` (SSE) | loopback browser or agent key | UI and CLI JSON |
 | `GET /api/fleet` (built) | loopback, no key yet | roster, cached compose state, review counts, gateway state, each agent's `live` tool; no secrets, no account email |
 | `GET /api/agents/<id>/timeline` (built) | loopback | the agent's newest hook events: event, tool, time |

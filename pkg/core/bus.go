@@ -29,12 +29,13 @@ import (
 type BusAgent struct {
 	ID       string
 	Unit     string
+	Engine   string // engine.kind: how to wake it
 	Running  bool
 	Busy     bool // a turn, a job or a tool call is running
 	Endpoint string
 }
 
-// Wake starts a turn on the agent's API with input, in session (Hermes `POST /v1/runs`).
+// Wake starts a turn on the agent's API with input, in session (engine.Runtime.WakeRequest).
 type WakeFn func(ctx context.Context, a BusAgent, input, session, idempotency string) error
 
 // MirrorFn posts text to the agent's own Slack home channel (urgent messages).
