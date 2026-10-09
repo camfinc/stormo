@@ -77,7 +77,7 @@ into an `error` event.
 | `core learn [agent…] [--force]` | the finished cycle (as in `/api/learning`); a `step` per agent while it runs |
 | `core learning` | as `/api/learning` |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills`, `format` (its agent.yaml format) and `legacy` (format-0 keys it still uses) (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
-| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
+| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values), `scripts` (the agent's scripts/), `reasoning` (the levels its engine accepts) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
 | `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |
 
@@ -93,5 +93,5 @@ keeps its comments and place, and the file is re-encoded with its original blank
 alignment wherever nothing changed (an empty patch changes no byte). Merge patch semantics: `null`
 deletes a key, an object merges into an object, anything else (an array too) replaces the value;
 inside a replaced array, unchanged strings keep their comments and objects are matched by position.
-A patch that names `id` or `deploy` is refused with `readonly`; then the result is validated and
+A patch that names `id`, `deploy` or `format` is refused with `readonly` (`stormo migrate agent` changes the format); then the result is validated and
 written as `write` does.

@@ -151,7 +151,7 @@ func Apply(inst *instance.Instance, rel string, patch []byte, ifHash string) (*F
 	if err := yaml.Unmarshal(patch, &p); err != nil || len(p.Content) != 1 || p.Content[0].Kind != yaml.MappingNode {
 		return nil, refuse("usage", "%s: the patch must be a JSON object", t.rel)
 	}
-	for _, key := range []string{"id", "deploy"} {
+	for _, key := range []string{"id", "deploy", "format"} {
 		if keyIndex(p.Content[0], key) >= 0 {
 			return nil, refuse("readonly", "%s: %s: is not edited here", t.rel, key)
 		}

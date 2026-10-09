@@ -27,6 +27,8 @@ type Options struct {
 	Channels  []ChannelOption `json:"channels"`  // channels[].kind and the secrets each needs declared
 	AllowBots []string        `json:"allowBots"` // channels[].allow_bots (slack)
 	Secrets   []string        `json:"secrets"`   // secret names declared anywhere in the instance (names only)
+	Scripts   []string        `json:"scripts"`   // the agent's scripts/, for schedules' script and monitor
+	Reasoning []string        `json:"reasoning"` // limits.reasoning levels the agent's engine accepts
 }
 
 type ActionOption struct {
@@ -43,7 +45,21 @@ type ChannelOption struct {
 
 func options(inst *instance.Instance, agent string) *Options {
 	o := &Options{Units: []manifest.Unit{}, Actions: []ActionOption{}, Skills: []string{}, Personas: []string{},
-		Engines: engines.Kinds(), Channels: []ChannelOption{}, AllowBots: manifest.AllowBots, Secrets: []string{}}
+		Engines: engines.Kinds(), Channels: []ChannelOption{}, AllowBots: manifest.AllowBots, Secrets: []string{},
+		Scripts: []string{}, Reasoning: []string{}}
+	if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil {
+		if eng, err := engines.Get(a.Engine.Kind, inst); err == nil {
+			o.Reasoning = eng.Reasoning()
+		}
+	}
+	scripts := filepath.Join(manifest.AgentDir(inst.Root, agent), "scripts")
+	_ = filepath.WalkDir(scripts, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && !strings.HasPrefix(d.Name(), ".") {
+			rel, _ := filepath.Rel(scripts, p)
+			o.Scripts = append(o.Scripts, filepath.ToSlash(rel))
+		}
+		return nil
+	})
 	for _, id := range manifest.UnitIDs(inst.Root) {
 		if u, err := manifest.LoadUnit(inst.Root, id); err == nil {
 			o.Units = append(o.Units, *u)

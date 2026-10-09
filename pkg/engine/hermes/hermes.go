@@ -104,6 +104,11 @@ func engineFile(agentDir, rel, legacy string) (string, error) {
 	return rel, nil
 }
 
+// Reasoning is hermes_constants.VALID_REASONING_EFFORTS, plus none (reasoning off).
+func (h *Hermes) Reasoning() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+}
+
 func (h *Hermes) Kind() string           { return "hermes" }
 func (h *Hermes) Layout() *engine.Layout { return &h.layout }
 func (h *Hermes) Port() int              { return 8642 }
@@ -413,6 +418,9 @@ func readTree(dir, prefix string, out map[string][]byte, skip []string) error {
 
 // Compile returns the baseline files relative to the engine home.
 func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[string][]byte, error) {
+	if r := a.Limits.Reasoning; r != "" && !slices.Contains(h.Reasoning(), r) {
+		return nil, fmt.Errorf("agents/%s: limits.reasoning %q is not a Hermes level (%s)", a.ID, r, strings.Join(h.Reasoning(), ", "))
+	}
 	dir := manifest.AgentDir(ctx.Instance.Root, a.ID)
 	files := map[string][]byte{}
 	soul, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))

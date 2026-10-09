@@ -173,6 +173,8 @@ type Engine interface {
 	Memory() MemoryFormat
 	// Runtime is how Stormo talks to the running engine.
 	Runtime() Runtime
+	// Reasoning is the reasoning levels the engine accepts for limits.reasoning.
+	Reasoning() []string
 	Image(a *manifest.Agent) string
 	// Compile returns baseline files relative to the engine home (SOUL, config, skills, plugins,
 	// cron, seed memory).
