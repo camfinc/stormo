@@ -188,12 +188,33 @@ func main() {
 		`<g transform="translate(250 190) scale(4.1)">%s</g><g transform="translate(560 262) scale(2.6)">%s</g>`+
 		`<text x="563" y="420" fill="#8b98a8" font-family="Helvetica Neue, Arial, sans-serif" font-size="30">An agent swarm engine</text></svg>`,
 		head, tileBG, centred(mark, 64, 2), wm)
+	files["dmg-background.svg"] = dmgBackground(mark)
 	write(*out, files)
 	// A spiral with fewer dots must not leave stale layers behind.
 	if err := os.RemoveAll(filepath.Join(*icon, "Assets")); err != nil {
 		log.Fatal(err)
 	}
 	write(*icon, appIcon(mark))
+}
+
+// dmgBackground is the installer window's picture, 640×400 points: the app at (170, 190) and the
+// Applications link at (470, 190) (apps/macos/scripts/dmg.sh places them), joined by a row of
+// dots (Finder draws icon labels black over a picture, so each sits on a light chip) that grows and cools like the spiral, over a faint cut of the mark.
+func dmgBackground(mark []dot) string {
+	var arrow strings.Builder
+	const n = 7
+	for i := range n {
+		t := float64(i) / (n - 1)
+		arrow.WriteString(dot{262 + t*116, 190, 2.2 + t*3.2, mix(teal, indigo, t)}.circle())
+	}
+	return fmt.Sprintf(`%[1]s viewBox="0 0 640 400" width="640" height="400">`+
+		`<defs><radialGradient id="glow" cx="0.5" cy="0.45" r="0.7"><stop offset="0" stop-color="#16212d"/><stop offset="1" stop-color="%[2]s"/></radialGradient></defs>`+
+		`<rect width="640" height="400" fill="url(#glow)"/>`+
+		`<g opacity="0.045" transform="translate(140 10)">%[3]s</g>%[6]s`+
+		`<rect x="115" y="252" width="110" height="22" rx="11" fill="%[5]s" opacity="0.9"/><rect x="415" y="252" width="110" height="22" rx="11" fill="%[5]s" opacity="0.9"/>`+
+		`<path d="M390 182 l10 8 -10 8" fill="none" stroke="%[4]s" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`+
+		`<text x="320" y="330" text-anchor="middle" fill="#8b98a8" font-family="Helvetica Neue, Arial, sans-serif" font-size="14">Drag Stormo to Applications to install</text></svg>`,
+		head, tileBG, centred(mark, 360, 0), indigo, inkDark, arrow.String())
 }
 
 func write(dir string, files map[string]string) {
