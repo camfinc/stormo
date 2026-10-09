@@ -3,6 +3,7 @@ import SwiftUI
 
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var selection = Set<FleetAgent.ID>()
     @State private var inspecting = true
 
@@ -64,6 +65,12 @@ struct AgentsView: View {
             }
         }
         .navigationTitle("Agents")
+        #if DEBUG
+        .task {
+            // STORMO_EDIT=<agent> opens its editor (with STORMO_SNAPSHOT, a visual check).
+            if let id = ProcessInfo.processInfo.environment["STORMO_EDIT"] { openWindow(id: AgentEditor.windowID, value: id) }
+        }
+        #endif
         .toolbar {
             ToolbarItem {
                 Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
@@ -79,6 +86,7 @@ struct AgentsView: View {
 /// Start, stop, restart and nap now for the given agents.
 struct AgentActions: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     let ids: [String]
 
     var body: some View {
@@ -88,6 +96,8 @@ struct AgentActions: View {
             Button("Restart") { Task { await model.run("restart", agents: ids) } }
             if ids.count == 1 {
                 Button("Nap Now") { Task { await model.run("nap-now", agents: ids) } }
+                Divider()
+                Button("Edit Definition…") { openWindow(id: AgentEditor.windowID, value: ids[0]) }
             }
             Divider()
             Button("Copy Command") {
@@ -99,6 +109,7 @@ struct AgentActions: View {
 }
 
 struct AgentInspector: View {
+    @Environment(\.openWindow) private var openWindow
     let agent: FleetAgent
 
     var body: some View {
@@ -110,6 +121,9 @@ struct AgentInspector: View {
                         Text(agent.name).font(.title3).fontWeight(.semibold)
                         if let role = agent.role { Text(role).foregroundStyle(.secondary) }
                     }
+                }
+                Button("Edit Definition…", systemImage: "square.and.pencil") {
+                    openWindow(id: AgentEditor.windowID, value: agent.id)
                 }
             }
             Section("Now") {

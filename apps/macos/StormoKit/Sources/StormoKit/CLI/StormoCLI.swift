@@ -76,8 +76,9 @@ public struct StormoCLI: Sendable {
     }
 
     /// Streams the command's events. An error event or a non-zero exit ends the stream with a CLIError;
-    /// cancelling the consumer terminates the process.
-    public func events(_ command: [String]) -> AsyncThrowingStream<CLIEvent, Error> {
+    /// cancelling the consumer terminates the process. `stdin` is the command's input (`config write`),
+    /// otherwise it reads nothing.
+    public func events(_ command: [String], stdin: Data? = nil) -> AsyncThrowingStream<CLIEvent, Error> {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments(command)
@@ -87,7 +88,8 @@ public struct StormoCLI: Sendable {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
-        process.standardInput = FileHandle.nullDevice
+        let input = stdin.map { _ in Pipe() }
+        process.standardInput = input ?? FileHandle.nullDevice
         let box = ProcessBox(process)
 
         return AsyncThrowingStream { continuation in
@@ -103,6 +105,13 @@ public struct StormoCLI: Sendable {
                 } catch {
                     continuation.finish(throwing: CLIError(code: "launch", message: "cannot run \(executable.path): \(error.localizedDescription)", status: -1, stderr: ""))
                     return
+                }
+                if let input, let stdin {
+                    // Off this task: a large input fills the pipe until the command reads it.
+                    Task.detached {
+                        try? input.fileHandleForWriting.write(contentsOf: stdin)
+                        try? input.fileHandleForWriting.close()
+                    }
                 }
                 let errReader = Task {
                     for try await chunk in err.fileHandleForReading.bytes.lines { await stderrTail.append(chunk) }
@@ -137,9 +146,9 @@ public struct StormoCLI: Sendable {
     }
 
     /// Runs a command to its result, reporting other events (steps, the sign-in page) as they come.
-    public func run<T: Decodable & Sendable>(_ command: [String], as type: T.Type, onEvent: @Sendable (CLIEvent) -> Void = { _ in }) async throws -> T {
+    public func run<T: Decodable & Sendable>(_ command: [String], as type: T.Type, stdin: Data? = nil, onEvent: @Sendable (CLIEvent) -> Void = { _ in }) async throws -> T {
         var value: T?
-        for try await event in events(command) {
+        for try await event in events(command, stdin: stdin) {
             if let v = try event.decode(T.self) { value = v } else { onEvent(event) }
         }
         guard let value else {

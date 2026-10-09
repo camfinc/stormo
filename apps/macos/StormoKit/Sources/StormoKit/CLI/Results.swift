@@ -82,3 +82,22 @@ public struct NewInstanceResult: Codable, Sendable, Equatable {
     /// `git init` ran in it.
     public var git: Bool
 }
+
+/// One agent that passed `check`.
+public struct CheckedAgent: Codable, Sendable, Equatable {
+    public var agent: String
+    public var unit: String
+    public var engine: String
+    public var files: Int
+    public var skills: Int
+}
+
+/// `config show` / `config write`: an editable file and the hash of what was read or written.
+public struct ConfigFile: Codable, Sendable, Equatable {
+    public var path: String
+    /// agent (agent.yaml) | soul (SOUL.md)
+    public var kind: String
+    public var agent: String
+    public var hash: String
+    public var text: String
+}

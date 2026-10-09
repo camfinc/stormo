@@ -279,3 +279,47 @@ final class Steps: @unchecked Sendable {
         #expect(supervisor.state == .down)
     }
 }
+
+/// Editing an agent's files through this checkout's bin/stormo, on a scratch copy of the example.
+@Suite struct ConfigEditing {
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    @MainActor func editSaveConflictAndRefusal() async throws {
+        let s = try Scratch()
+        let instance = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: instance)
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: instance)
+        let manifest = instance.appending(path: "agents/atlas/agent.yaml")
+
+        let editor = ConfigEditor(path: "agents/atlas/agent.yaml")
+        await editor.load(with: cli)
+        #expect(editor.file?.kind == "agent" && !editor.isDirty && editor.problem == nil)
+
+        // A valid edit is written as typed, comments and all (stdin carries it).
+        editor.text = editor.text.replacingOccurrences(of: "\nrole: ", with: "\n# edited in the app\nrole: ")
+        #expect(editor.isDirty)
+        #expect(await editor.save(with: cli))
+        let written = try String(contentsOf: manifest, encoding: .utf8)
+        #expect(!editor.isDirty && written == editor.text)
+
+        // An edit that would not load is refused and leaves the file alone.
+        let saved = editor.text
+        editor.text = saved.replacingOccurrences(of: "unit: sales", with: "unit: nowhere")
+        #expect(!(await editor.save(with: cli)))
+        #expect(editor.problem?.code == "invalid" && editor.problem?.message.contains("nowhere") == true)
+        let untouched = try String(contentsOf: manifest, encoding: .utf8)
+        #expect(untouched == saved)
+
+        // A change on disk since the load is a conflict; reloading picks it up.
+        try (saved + "\n# changed by another editor\n").write(to: manifest, atomically: true, encoding: .utf8)
+        editor.text = saved + "\n# mine\n"
+        #expect(!(await editor.save(with: cli)))
+        #expect(editor.isStale)
+        await editor.load(with: cli)
+        #expect(!editor.isStale && editor.text.hasSuffix("# changed by another editor\n"))
+
+        // check runs after a save, with a result row.
+        let rows = try await cli.run(["check", "atlas"], as: [CheckedAgent].self)
+        #expect(rows.map(\.agent) == ["atlas"])
+    }
+}
