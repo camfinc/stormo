@@ -21,8 +21,15 @@ struct CoreView: View {
                     Text("This core is an older build of the pinned binary. Restart it to update.")
                         .foregroundStyle(.orange)
                 }
+                if case .incompatible = model.core.state {
+                    Text("This core is older than the app and cannot be read. Restart it with the pinned stormo.")
+                        .foregroundStyle(.orange)
+                }
                 HStack {
                     CoreToggleButton()
+                    if model.core.state.isRunning, !model.core.isOutdated(comparedTo: model.pinned?.info) {
+                        RestartCoreButton()
+                    }
                     if case .otherInstance(let c) = model.core.state {
                         Text("Stop it from \(c.instance.name)'s folder, or with `stormo core down` there.")
                             .foregroundStyle(.secondary)

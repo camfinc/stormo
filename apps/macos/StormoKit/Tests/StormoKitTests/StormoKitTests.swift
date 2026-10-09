@@ -229,3 +229,28 @@ final class Steps: @unchecked Sendable {
         await #expect(throws: CLIError.self) { _ = try await cli.run(["nap-now"], as: LifecycleResult.self) }
     }
 }
+
+/// The supervisor restarting a real core (this checkout's bin/stormo) on a scratch instance and port.
+@Suite(.serialized) struct RealCore {
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    @MainActor func restartReplacesTheProcess() async throws {
+        let s = try Scratch()
+        let instance = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: instance)
+        let port = 18690 + Int.random(in: 0..<9)
+        var env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        env["SWARM_CORE_PORT"] = String(port)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: instance)
+        let supervisor = CoreSupervisor(client: CoreClient(port: port), instanceRoot: instance)
+        defer { Task { _ = try? await cli.run(["core", "down"], as: CoreDownResult.self) } }
+
+        await supervisor.start(with: cli)
+        let first = try #require(supervisor.state.info, "\(supervisor.state) \(supervisor.lastError ?? "")")
+        await supervisor.restart(with: cli)
+        let second = try #require(supervisor.state.info, "\(supervisor.state) \(supervisor.lastError ?? "")")
+        #expect(supervisor.state.isRunning && second.pid != first.pid && supervisor.lastError == nil)
+
+        await supervisor.stop(with: cli)
+        #expect(supervisor.state == .down)
+    }
+}

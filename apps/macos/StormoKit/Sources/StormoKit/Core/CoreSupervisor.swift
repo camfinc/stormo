@@ -103,6 +103,42 @@ public final class CoreSupervisor {
         state = await probe()
     }
 
+    /// Restarts the core with the pinned binary: `core down`, wait for the port to free, `core up`.
+    /// For a core this instance's `core up` started (its pid file), whatever version it is.
+    public func restart(with cli: StormoCLI) async {
+        lastError = nil
+        state = .stopping
+        do {
+            let r = try await cli.run(["core", "down"], as: CoreDownResult.self)
+            if r.reason == "not_ours" {
+                lastError = "This core was not started with `stormo core up` for this instance, so it is left running. Stop it where it was started."
+                state = await probe()
+                return
+            }
+        } catch {
+            lastError = error.localizedDescription
+            state = await probe()
+            return
+        }
+        // The old core exits on SIGTERM; wait (up to 10 s) until nothing answers before starting.
+        for _ in 0..<40 {
+            if (try? await client.health()) == nil { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        if (try? await client.health()) != nil {
+            lastError = "The core did not stop within 10 seconds."
+            state = await probe()
+            return
+        }
+        state = .starting
+        do {
+            _ = try await cli.run(["core", "up"], as: CoreUpResult.self)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        state = await probe()
+    }
+
     /// A running core built from another version than the pinned binary (typically after an app update).
     public func isOutdated(comparedTo pinned: VersionInfo?) -> Bool {
         guard let pinned, case .running(let core) = state else { return false }

@@ -204,15 +204,20 @@ struct CoreNotRunningView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("The core is not running", systemImage: "server.rack")
+            switch model.core.state {
+            case .incompatible: Label("The core needs a restart", systemImage: "arrow.clockwise.circle")
+            case .otherInstance: Label("Another instance's core is running", systemImage: "server.rack")
+            default: Label("The core is not running", systemImage: "server.rack")
+            }
         } description: {
             switch model.core.state {
             case .otherInstance(let c): Text("The core on this Mac belongs to \(c.instance.name). One core runs at a time.")
-            case .incompatible: Text("The running core is too old for this app. Restart it with the pinned binary.")
+            case .incompatible: Text("The running core is older than this app. Restarting it with the pinned stormo takes a few seconds; agents keep running.")
             default: Text("Start the core to see the fleet.")
             }
         } actions: {
             CoreToggleButton()
+                .buttonStyle(.borderedProminent)
         }
     }
 }

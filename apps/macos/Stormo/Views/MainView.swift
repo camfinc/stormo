@@ -100,15 +100,33 @@ struct CoreToggleButton: View {
     var body: some View {
         switch model.core.state {
         case .running:
-            Button("Stop Core", systemImage: "stop.circle") { Task { await model.stopCore() } }
+            if model.core.isOutdated(comparedTo: model.pinned?.info) {
+                RestartCoreButton(title: "Restart Core to Update")
+            } else {
+                Button("Stop Core", systemImage: "stop.circle") { Task { await model.stopCore() } }
+            }
         case .down:
             Button("Start Core", systemImage: "play.circle") { Task { await model.startCore() } }
                 .disabled(model.cli == nil)
+        case .incompatible:
+            RestartCoreButton(title: "Restart Core")
         case .starting, .stopping:
             ProgressView().controlSize(.small)
         default:
             EmptyView()
         }
+    }
+}
+
+/// core down + core up with the pinned binary: how a too-old or outdated core gets replaced.
+struct RestartCoreButton: View {
+    @Environment(AppModel.self) private var model
+    var title = "Restart Core"
+
+    var body: some View {
+        Button(title, systemImage: "arrow.clockwise.circle") { Task { await model.restartCore() } }
+            .disabled(model.cli == nil)
+            .help("Stops the core and starts it again with \(model.pinned?.resolved.lastPathComponent ?? "the pinned stormo"). Agents keep running; model calls pause for a few seconds.")
     }
 }
 
@@ -121,6 +139,7 @@ struct CoreStatusBadge: View {
         } icon: {
             Circle().fill(color).frame(width: 8, height: 8)
         }
+        .labelStyle(.titleAndIcon)
         .font(.callout)
         .foregroundStyle(.secondary)
     }
@@ -133,7 +152,7 @@ struct CoreStatusBadge: View {
         case .stopping: "Stopping core…"
         case .running: "Core running"
         case .otherInstance(let c): "Core belongs to \(c.instance.name)"
-        case .incompatible(let v, _): "Core \(v ?? "of an older version") is too old"
+        case .incompatible(let v, _): v.map { "Core \($0) is too old" } ?? "Core is too old"
         }
     }
 

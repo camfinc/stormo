@@ -112,6 +112,14 @@ final class AppModel {
         await fleet.refresh()
     }
 
+    func restartCore() async {
+        guard let cli else { return failNoBinary() }
+        fleet.clear()
+        await core.restart(with: cli)
+        if let e = core.lastError { failure = e }
+        await fleet.refresh()
+    }
+
     func stopCore() async {
         guard let cli else { return failNoBinary() }
         await core.stop(with: cli)

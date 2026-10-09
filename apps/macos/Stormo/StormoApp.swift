@@ -48,8 +48,20 @@ struct StormoCommands: Commands {
         CommandMenu("Core") {
             Button("Start Core") { Task { await model.startCore() } }
                 .disabled(model.core.state != .down)
+            Button("Restart Core") { Task { await model.restartCore() } }
+                .disabled(!canRestart)
             Button("Stop Core") { Task { await model.stopCore() } }
                 .disabled(!model.core.state.isRunning)
+        }
+    }
+}
+
+extension StormoCommands {
+    private var canRestart: Bool {
+        guard model.cli != nil else { return false }
+        switch model.core.state {
+        case .running, .incompatible: return true
+        default: return false
         }
     }
 }
