@@ -972,6 +972,7 @@ function agentPanel(a) {
   const cmds = [
     ...(PRESENT.has(mode) ? [[`swarm restart ${a.id}`, "recycle"], [`swarm logs ${a.id} -f`, "tail logs"], [`swarm stop ${a.id}`, "send home"]] : [[`swarm start ${a.id}`, "bring in"]]),
     [`swarm learn ${a.id}`, "nap + dream"],
+    ...(a.messages?.received || a.messages?.sent ? [[`swarm core messages ${a.id}`, "read its messages"]] : []),
     ...(a.pendingLearnings ? [[`swarm learn list ${a.id}`, "review lessons"]] : []),
     ...(a.pendingSkills ? [[`swarm learn skills ${a.id}`, "review skills"]] : []),
   ];
@@ -1009,6 +1010,7 @@ function agentPanel(a) {
       ${a.detail ? `<dt>Note</dt><dd class="warn">${esc(a.detail)}</dd>` : ""}
       <dt>Last nap</dt><dd${stale ? ' class="warn"' : ""}>${ago(a.lastNap)}${stale ? " · overdue" : ""} <small>every ${Math.round(a.napIntervalSeconds / 60)} min</small></dd>
       <dt>Learnings</dt><dd>${a.pendingLearnings} proposed · ${a.pendingSkills} skill${a.pendingSkills === 1 ? "" : "s"}</dd>
+      <dt>Messages</dt><dd${a.messages?.unread ? ' class="warn"' : ""}>${a.messages?.unread ?? 0} unread <small>· ${a.messages?.received ?? 0} in, ${a.messages?.sent ?? 0} out today (agent bus)</small></dd>
       <dt>API</dt><dd>${esc(a.endpoint)}</dd>
       <dt>Channels</dt><dd>${a.channels.map((c) => (a.optionalChannels?.includes(c) ? `${esc(c)} <small>(only with its token)</small>` : esc(c))).join(", ") || "none"}</dd>
     </dl>

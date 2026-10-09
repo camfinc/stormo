@@ -89,6 +89,12 @@ type CoreOptions struct {
 	Keys *AgentKeys
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
 	OwnerToken string
+	// The bus's view of the fleet, wake runs and Slack mirror; nil takes the fleet's, Hermes'
+	// /v1/runs with each agent's API key, and its Slack home channel.
+	Roster   func() []BusAgent
+	Wake     WakeFn
+	Mirror   MirrorFn
+	NoMirror bool
 }
 
 // Core is a running core service.
@@ -102,6 +108,8 @@ type Core struct {
 	Office  *Office
 	DB      *DB
 	Monitor *Monitor
+	Bus     *Bus
+	MCP     *MCP
 	keys    *AgentKeys
 	owner   string
 	ownDB   bool
@@ -152,6 +160,8 @@ type fleetAgentView struct {
 	Office *OfficeState `json:"office"`
 	// From the agent's hooks: the tool it is running now. nil until it posts one.
 	Live *Live `json:"live"`
+	// Its swarm messages: unread, and received and sent in the last day. Counts only.
+	Messages BusCounts `json:"messages"`
 }
 
 type gatewayView struct {
@@ -266,7 +276,35 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 		office.Tick(agents, gateway.Status().Active, time.Now().UnixMilli())
 	}
-	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+	busy := func(a FleetAgent) bool {
+		l := monitor.Live(a.ID)
+		return l != nil && l.Running > 0 ||
+			a.Activity != nil && (a.Activity.ActiveAgents > 0 || a.Activity.GatewayBusy || len(a.Activity.RunningJobs) > 0) ||
+			gateway.Status().Active[a.ID] > 0
+	}
+	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror}
+	if bo.Roster == nil {
+		bo.Roster = func() []BusAgent {
+			out := []BusAgent{}
+			if fleet == nil {
+				return out
+			}
+			for _, a := range fleet.Snapshot().Agents {
+				out = append(out, BusAgent{ID: a.ID, Unit: a.Unit, Running: a.State == "running", Busy: busy(a), Endpoint: a.Endpoint})
+			}
+			return out
+		}
+	}
+	if bo.Wake == nil && fleet != nil {
+		bo.Wake = HermesWake(fleet.APIKey, nil)
+	}
+	if bo.Mirror == nil && !o.NoMirror {
+		bo.Mirror = SlackMirror(inst, nil)
+	}
+	bus := NewBus(bo)
+	mcp := NewMCP(keys, BusTools(bus))
+	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, MCP: mcp, keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+	go bus.Run(c.stop, 5*time.Second)
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -284,6 +322,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 				officeTick()
 			case <-prune.C:
 				if err := monitor.Prune(); err != nil {
+					log.Printf("core.db prune: %v", err)
+				}
+				if err := bus.Prune(RetainMessages); err != nil {
 					log.Printf("core.db prune: %v", err)
 				}
 			}
@@ -348,13 +389,44 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			view := fleetView{PolledAt: fs.PolledAt, Units: fs.Units, Agents: []fleetAgentView{}, Now: time.Now().UnixMilli(), Robot: office.Robot(),
 				Gateway: gatewayView{s.Login, s.PlanLimitedUntil, s.ManageUsageURL, s.Inflight, s.Queued, s.Concurrency, s.Usage, s.Active}}
+			counts, _ := bus.Counts()
 			for _, a := range fs.Agents {
-				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID), monitor.Live(a.ID)})
+				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID), monitor.Live(a.ID), counts[a.ID]})
 			}
 			writeJSONBody(w, 200, view)
 			return
 		case path == "/ingest/hermes":
 			monitor.Handle(w, r)
+			return
+		case path == "/mcp":
+			mcp.Handle(w, r)
+			return
+		case get && (path == "/api/messages" || path == "/api/findings"):
+			// Bodies, subjects and evidence can hold client data: the owner only.
+			if !c.caller(r).Owner {
+				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+				return
+			}
+			q := r.URL.Query()
+			limit, _ := strconv.Atoi(q.Get("limit"))
+			if path == "/api/messages" {
+				threads, err := bus.Threads(q.Get("agent"), limit, true)
+				if err != nil {
+					writeJSONBody(w, 500, errBody("core_internal", "could not read messages"))
+					return
+				}
+				writeJSONBody(w, 200, map[string]any{"threads": threads})
+				return
+			}
+			if limit <= 0 || limit > 500 {
+				limit = 100
+			}
+			fs, err := db.Findings(q.Get("all") == "1", limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read findings"))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"findings": fs})
 			return
 		}
 		if m := agentPath.FindStringSubmatch(path); m != nil && get {

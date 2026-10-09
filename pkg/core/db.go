@@ -32,6 +32,44 @@ var migrations = []string{
 		delivery TEXT NOT NULL UNIQUE
 	);
 	CREATE INDEX activity_agent_at ON activity(agent, at);`,
+	// 2: the agent message bus (phase 5) and findings (rule breaches, phase 7 builds on them).
+	`CREATE TABLE messages (
+		id       INTEGER PRIMARY KEY,
+		thread   INTEGER NOT NULL,
+		sender   TEXT NOT NULL,
+		audience TEXT NOT NULL,
+		subject  TEXT NOT NULL,
+		body     TEXT NOT NULL,
+		priority TEXT NOT NULL,
+		attach   TEXT NOT NULL DEFAULT '[]',
+		hop      INTEGER NOT NULL,
+		created  INTEGER NOT NULL
+	);
+	CREATE INDEX messages_thread ON messages(thread);
+	CREATE INDEX messages_sender ON messages(sender, created);
+	CREATE TABLE deliveries (
+		message    INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		agent      TEXT NOT NULL,
+		read_at    INTEGER,
+		acked_at   INTEGER,
+		woken_at   INTEGER,
+		wake_tries INTEGER NOT NULL DEFAULT 0,
+		wake_error TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (message, agent)
+	);
+	CREATE INDEX deliveries_agent ON deliveries(agent, read_at);
+	CREATE TABLE findings (
+		id         INTEGER PRIMARY KEY,
+		agent      TEXT NOT NULL,
+		rule       TEXT NOT NULL,
+		severity   TEXT NOT NULL,
+		evidence   TEXT NOT NULL,
+		first_seen INTEGER NOT NULL,
+		last_seen  INTEGER NOT NULL,
+		count      INTEGER NOT NULL DEFAULT 1,
+		status     TEXT NOT NULL DEFAULT 'open',
+		UNIQUE (agent, rule, evidence)
+	);`,
 }
 
 // DB is core.db.
@@ -99,3 +137,51 @@ func (d *DB) migrate() error {
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
+
+// Finding is a rule breach the core saw (docs/core.md §7). Repeats of the same agent, rule and
+// evidence count up instead of adding rows. Evidence never holds message bodies or file contents.
+type Finding struct {
+	ID        int64  `json:"id"`
+	Agent     string `json:"agent"`
+	Rule      string `json:"rule"`
+	Severity  string `json:"severity"`
+	Evidence  string `json:"evidence"`
+	FirstSeen string `json:"firstSeen"`
+	LastSeen  string `json:"lastSeen"`
+	Count     int    `json:"count"`
+	Status    string `json:"status"`
+}
+
+// RaiseFinding records (or counts again) a finding.
+func (d *DB) RaiseFinding(agent, rule, severity, evidence string, at int64) error {
+	_, err := d.Exec(`INSERT INTO findings(agent, rule, severity, evidence, first_seen, last_seen) VALUES(?,?,?,?,?,?)
+		ON CONFLICT(agent, rule, evidence) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1, severity = excluded.severity,
+		status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END`, agent, rule, severity, evidence, at, at)
+	return err
+}
+
+// Findings are the open findings, newest first (all when all is true).
+func (d *DB) Findings(all bool, limit int) ([]Finding, error) {
+	q := `SELECT id, agent, rule, severity, evidence, first_seen, last_seen, count, status FROM findings`
+	if !all {
+		q += ` WHERE status = 'open'`
+	}
+	rows, err := d.Query(q+` ORDER BY last_seen DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Finding{}
+	for rows.Next() {
+		var f Finding
+		var first, last int64
+		if err := rows.Scan(&f.ID, &f.Agent, &f.Rule, &f.Severity, &f.Evidence, &first, &last, &f.Count, &f.Status); err != nil {
+			return nil, err
+		}
+		f.FirstSeen, f.LastSeen = isoMs(first), isoMs(last)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func isoMs(ms int64) string { return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z") }

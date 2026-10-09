@@ -548,6 +548,9 @@ func (f *Fleet) Snapshot() FleetSnapshot {
 	return out
 }
 
+// APIKey is the agent's API_SERVER_KEY (its engine API), for the core's own calls. Never sent on.
+func (f *Fleet) APIKey(id string) string { return f.apiKey(id) }
+
 // apiKey is API_SERVER_KEY per agent from secrets.local.yaml, reread when the file changes. Never
 // leaves the core.
 func (f *Fleet) apiKey(id string) string {

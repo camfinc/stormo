@@ -3,7 +3,8 @@
 Status: local first. **Phase 1 (the LLM gateway, on Sign in with ChatGPT) is built** (`pkg/core/`,
 `stormo core up|down|status|serve|login|logout`). **The office UI over a polled fleet registry is
 built** (`pkg/core/fleet.go`, `pkg/core/ui/`, part of phase 2), and so is `core.db`
-(`pkg/core/db.go`). **Phase 3 (activity ingest) is built** (`pkg/core/monitor.go`). The Phases table
+(`pkg/core/db.go`). **Phase 3 (activity ingest) is built** (`pkg/core/monitor.go`), and so is
+**phase 5 (the message bus over the core's MCP server)** (`pkg/core/bus.go`, `mcp.go`). The Phases table
 says what each phase has; everything not marked built is design.
 AWS comes later and is sketched only where it changes a local decision.
 
@@ -325,6 +326,36 @@ internal bus for agent-to-agent work that should not clutter Slack.
 Hermes' kanban board was considered and set aside: its dispatcher spawns workers as local
 subprocesses of one Hermes install, which does not fit one container per agent.
 
+**Built (phase 5).**
+- *MCP server* (`pkg/core/mcp.go`): `POST /mcp`, Streamable HTTP without sessions or server
+  streams (GET and DELETE answer 405), JSON answers, protocol versions 2024-11-05 to 2025-11-25
+  (an `initialize` with another version gets the newest). Every request carries the agent's own
+  core key, so the caller is never an argument; tools refuse unknown arguments. A tool failure is
+  a result with `isError`, so the model reads why. A local build of an agent on the core lists it
+  as `mcp_servers.core` (`Authorization: Bearer ${SWARM_CORE_KEY}`, expanded by Hermes from the
+  agent's env); Hermes names the tools `mcp_core_msg_send` and so on.
+- *Tools*: `msg_send(to, subject, body, thread?, priority?, attach?)`, `msg_inbox(unread_only,
+  limit)` (short previews), `msg_read(id)` (marks read), `msg_ack(id)`, `msg_thread(id)`. A party
+  to a message is its sender or a recipient; nothing else is visible. Subject ≤ 200 characters,
+  body ≤ 16 KB, ≤ 10 attachments.
+- *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
+  normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
+  agents of that unit (else refused and a `unit_boundary` finding).
+- *Wake*: a round every 5 s and on every send. Each running agent that is idle (no turn, job,
+  tool call or gateway call in flight) with unread messages it was not yet woken for gets one run
+  on its own API (`POST /v1/runs` with its `API_SERVER_KEY`, `session_id` `swarm-bus-<thread>`,
+  `Idempotency-Key` per agent and newest message), input `[AGENT MESSAGE from <sender>] <subject>`
+  plus how to read and answer; never the body. A busy agent is woken when it goes idle; a stopped
+  one reads its inbox when it next runs. A failed wake is retried 3 times, then the message waits.
+- *Loop guards* (each breach is refused, and recorded as a finding): 20 messages an hour from one
+  agent to another (`bus_rate`), 12 messages per thread (`bus_hops`), no new message in a thread
+  older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet (`bus_wake_cap`).
+- *Urgent* messages are also posted to each recipient's Slack home channel with its own bot token
+  (subject only), as its local run is configured.
+- *Owner reads*: `GET /api/messages` and `GET /api/findings` (owner token), `stormo core messages
+  [agent] [n]` and `stormo core findings [all]`. The office shows counts only (unread, in and out
+  today). Threads are deleted 90 days after their last message.
+
 ## 6. Learning phase orchestration
 
 Core triggers and sequences the existing nap/dream loop; it does not replace it.
@@ -392,12 +423,13 @@ separate 0600 file and is never in the database.
 |---|---|---|
 | `GET /health` | anyone | liveness, login state (no secrets) |
 | `/v1/chat/completions`, `/v1/models` | agent key | LLM gateway |
-| `POST /mcp` | agent key | MCP (streamable HTTP): comms, workdir, fleet tools by scope |
+| `POST /mcp` (built) | agent key | MCP (streamable HTTP): comms, workdir, fleet tools by scope |
 | `POST /ingest/hermes` (built) | HMAC per agent | Hermes outbound hook events |
 | `/api/*`, `GET /api/events` (SSE) | loopback browser or agent key | UI and CLI JSON |
 | `GET /api/fleet` (built) | loopback, no key yet | roster, cached compose state, review counts, gateway state, each agent's `live` tool; no secrets, no account email |
 | `GET /api/agents/<id>/timeline` (built) | loopback | the agent's newest hook events: event, tool, time |
 | `GET /api/agents/<id>/activity` (built) | owner token, or that agent's key | the same with sessions and previews |
+| `GET /api/messages`, `GET /api/findings` (built) | owner token | bus threads in full; findings |
 | `GET /avatars/<agent>.png` (built) | loopback | the agent's persona portrait, read in place |
 | `/`, `/ui/app.js`, `/ui/style.css` (built) | loopback browser | the office UI |
 
@@ -415,10 +447,11 @@ pkg/core/
   fleet.go             roster from manifests, async compose poller, cached snapshot, avatars (built)
   monitor.go           activity ingest, live state, timeline (built)
   workdir.go           watcher, attribution, locks
-  bus.go               messages, delivery, loop guards
+  bus.go               messages, delivery, loop guards (built)
+  wake.go              wake runs (Hermes /v1/runs) and the urgent Slack mirror (built)
   learn.go             nap triggers, learning cycle
   compliance.go        rule checks → findings
-  mcp.go               MCP server (tools above)
+  mcp.go               MCP server (built; bus tools so far)
   ui/                  index.html, app.js, style.css: the office (built)
 docs/core.md           this plan
 ```
@@ -431,7 +464,8 @@ which another session owns right now:
    `SWARM_CORE_KEY`; OpenRouter stays `fallback_providers[0]`; retire the per-agent `auth.json`
    mount and `stormo login` (in progress there).
 2. A local-only secret notion so `SWARM_CORE_KEY` is never expected or pushed in AWS.
-3. `mcp_servers.core: {url: http://host.docker.internal:18600/mcp, headers: {Authorization: "Bearer ${SWARM_CORE_KEY}"}}`.
+3. ~~`mcp_servers.core`~~ **Done** (phase 5): `{url: http://host.docker.internal:18600/mcp, headers:
+   {Authorization: "Bearer ${SWARM_CORE_KEY}"}, timeout: 60, connect_timeout: 15}`.
 4. ~~`hooks.outbound` to `/ingest/hermes`~~ **Done** (phase 3): session, tool and approval events,
    signed with the agent's `SWARM_CORE_KEY`; outbound targets need no `hooks_auto_accept`.
 5. `/workdir` bind mount, `HERMES_WRITE_SAFE_ROOT` += `/workdir`, `SWARM_WORKDIR=/workdir`.
@@ -448,7 +482,7 @@ which another session owns right now:
 | 2 | server skeleton, `core.db`, registry, pollers, fleet page | UI shows every local agent's state live; stopping an agent flips its card within 30 s. **Built**: office UI, registry, compose poller, `core.db` (migrations by `user_version`) |
 | 3 | activity ingest + agent page | UI shows the current tool of a busy agent in real time. **Built**: signed ingest, live tool per agent on `/api/fleet` and in the office, agent timeline, `stormo core activity`; the UI polls (2.5 s), no SSE yet |
 | 4 | workdir mount, watcher, attribution, locks, `fs_*` MCP tools, workdir skill | two agents contend for a file: the second sees the lock and holder; a terminal write is attributed |
-| 5 | comms bus (`msg_*`), wake delivery, loop guards | agent A asks agent B a question and gets an answer with no human in the loop, with no Slack noise |
+| 5 | comms bus (`msg_*`), wake delivery, loop guards | agent A asks agent B a question and gets an answer with no human in the loop, with no Slack noise. **Built** (tested with a fake agent API; not yet run between two live agents) |
 | 6 | learning cycle, nap trigger, schedule, digest | nightly cycle produces proposals and a summary without manual steps |
 | 7 | rule-based compliance + findings page | each rule has a test fixture that raises it |
 | 8 | `core` Hermes agent (persona, Slack app, cron, MCP scope) | daily digest in Slack; compliance samples judged locally |
@@ -472,4 +506,5 @@ which another session owns right now:
    OAuth client, public API, tokens local). If it goes ahead: every local agent shares one plan and
    its weekly per-app cap, so decide which agents go through core first and which go straight to
    OpenRouter.
-6. **Retention** for activity previews (7 days planned) and messages (90 days planned).
+6. **Retention** for activity previews (7 days) and messages (90 days after a thread's last
+   message), as built; change `RetainActivity` / `RetainMessages` if the owner decides otherwise.

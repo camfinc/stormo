@@ -206,6 +206,12 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 		if err := coreHooks(cfg); err != nil {
 			return err
 		}
+		// The core's tools (msg_*, fs_*), registered by Hermes as mcp_core_<tool>. Hermes expands
+		// ${VAR} in MCP server config from the agent's env, where the env file put its core key.
+		if err := setNode(cfg, "mcp_servers."+CoreMCPServer, yamlMap("url", manifest.Core.MCPURL,
+			"headers", yamlMap("Authorization", "Bearer ${"+manifest.Core.KeyEnv+"}"), "timeout", 60, "connect_timeout", 15)); err != nil {
+			return err
+		}
 	}
 
 	// On Fargate there is no Docker daemon: the task is the sandbox. The old docker sandbox settings
@@ -259,6 +265,9 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 
 // CoreHookName names the outbound hook target that posts an agent's activity to the swarm core.
 const CoreHookName = "swarm-core"
+
+// CoreMCPServer names the swarm core's MCP server in an agent's config (tools mcp_core_<name>).
+const CoreMCPServer = "core"
 
 // CoreHookEvents are the hooks posted to the core. LLM calls are not among them: their payloads
 // carry the whole conversation, and the core's gateway already knows which calls are in flight.

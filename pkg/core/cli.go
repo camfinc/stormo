@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,9 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core serve                             run in the foreground (logs to stdout)
   core login | logout                    Continue with ChatGPT (browser sign-in, ChatGPT plan usage) held only by the core
                                          login --no-open: print the sign-in page, do not open a browser
-  core activity <agent> [n]              the agent's last n hook events with previews (files, commands; default 40)`
+  core activity <agent> [n]              the agent's last n hook events with previews (files, commands; default 40)
+  core messages [agent] [n]              the newest n threads of the agents' message bus, in full (default 20)
+  core findings [all]                    rule breaches the core saw (loop guards, unit boundary, locks); all adds resolved`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -335,6 +338,87 @@ func activity(inst *instance.Instance, args []string, o *out.Writer) error {
 	return nil
 }
 
+// MessagesResult is `core messages`' outcome.
+type MessagesResult struct {
+	Threads []OwnerThread `json:"threads"`
+}
+
+func messages(inst *instance.Instance, args []string, o *out.Writer) error {
+	agent, n := "", 20
+	for _, a := range args {
+		if v, err := strconv.Atoi(a); err == nil && v > 0 {
+			n = v
+		} else {
+			agent = a
+		}
+	}
+	var r MessagesResult
+	q := fmt.Sprintf("/api/messages?limit=%d", n)
+	if agent != "" {
+		q += "&agent=" + agent
+	}
+	if err := ownerJSON(inst.Root, http.MethodGet, q, nil, &r); err != nil {
+		return err
+	}
+	o.Result(r, func(w io.Writer) {
+		if len(r.Threads) == 0 {
+			fmt.Fprintln(w, "no messages")
+		}
+		for i := len(r.Threads) - 1; i >= 0; i-- {
+			t := r.Threads[i]
+			fmt.Fprintf(w, "\n# thread %d: %s (last %s)\n", t.Thread, t.Subject, t.Updated)
+			for _, m := range t.Messages {
+				state := []string{}
+				for _, rc := range m.Recipients {
+					s := rc.Agent
+					switch {
+					case rc.Acked != "":
+						s += " acked"
+					case rc.Read != "":
+						s += " read"
+					case rc.Woken != "":
+						s += " woken"
+					default:
+						s += " unread"
+					}
+					state = append(state, s)
+				}
+				fmt.Fprintf(w, "[%d] %s  %s → %s (%s)%s\n    %s\n", m.ID, m.Sent, m.From, m.To, strings.Join(state, ", "),
+					map[bool]string{true: "  URGENT", false: ""}[m.Priority == "urgent"], strings.ReplaceAll(m.Body, "\n", "\n    "))
+				if len(m.Attach) > 0 {
+					fmt.Fprintf(w, "    attached: %s\n", strings.Join(m.Attach, ", "))
+				}
+			}
+		}
+	})
+	return nil
+}
+
+// FindingsResult is `core findings`' outcome.
+type FindingsResult struct {
+	Findings []Finding `json:"findings"`
+}
+
+func findings(inst *instance.Instance, args []string, o *out.Writer) error {
+	q := "/api/findings"
+	if slices.Contains(args, "all") {
+		q += "?all=1"
+	}
+	var r FindingsResult
+	if err := ownerJSON(inst.Root, http.MethodGet, q, nil, &r); err != nil {
+		return err
+	}
+	o.Result(r, func(w io.Writer) {
+		if len(r.Findings) == 0 {
+			fmt.Fprintln(w, "no open findings")
+		}
+		for _, f := range r.Findings {
+			fmt.Fprintf(w, "%-6s %-10s %-18s %-8s ×%d  %s  (last %s)\n", f.Status, f.Agent, f.Rule, f.Severity, f.Count, f.Evidence, f.LastSeen)
+		}
+	})
+	return nil
+}
+
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
 	o := opts.Out
@@ -352,6 +436,10 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return status(inst, o)
 	case "activity":
 		return activity(inst, args, o)
+	case "messages":
+		return messages(inst, args, o)
+	case "findings":
+		return findings(inst, args, o)
 	case "login":
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {

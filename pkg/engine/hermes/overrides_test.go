@@ -61,3 +61,22 @@ func TestCoreHooksOnlyLocallyOnTheCore(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreMCPServerOnlyLocallyOnTheCore(t *testing.T) {
+	cfg := overridden(t, "mcp_servers:\n  docs:\n    url: https://docs.example/mcp\n", true, manifest.Local)
+	if getPath(cfg, "mcp_servers.docs.url") == nil {
+		t.Error("the instance's own MCP servers are kept")
+	}
+	if n := getPath(cfg, "mcp_servers.core.url"); n == nil || n.Value != manifest.Core.MCPURL {
+		t.Fatalf("core url %v", n)
+	}
+	// The key itself never lands in config.yaml: Hermes expands the placeholder from the env.
+	if n := getPath(cfg, "mcp_servers.core.headers.Authorization"); n == nil || n.Value != "Bearer ${SWARM_CORE_KEY}" {
+		t.Errorf("auth header %v", n)
+	}
+	for name, cfg := range map[string]*yaml.Node{"aws": overridden(t, "{}", true, manifest.AWS), "no core": overridden(t, "{}", false, manifest.Local)} {
+		if getPath(cfg, "mcp_servers.core") != nil {
+			t.Errorf("%s: core MCP server present", name)
+		}
+	}
+}
