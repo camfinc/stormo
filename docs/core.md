@@ -411,7 +411,7 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
 - *Schedule*: `core.learning` in `stormo.yaml` (`at` "HH:MM", `timezone`, `stagger_minutes`
   default 2, `quiet_wait_minutes` default 30, `agents` default all; docs/instances.md). Off unless
   `at` is set: an unprompted write into `agents/*/learnings` of a checkout someone works in is a
-  surprise, so the owner opts in. A missed time (core down) still starts within 6 hours, once a
+  surprise, so the owner opts in (the example instance, also the scaffold, has it commented out). A missed time (core down) still starts within 6 hours, once a
   day.
 - *Cycle* (`pkg/core/learn.go`), agent by agent: a running agent that is busy (a turn, job, tool
   call or model call in flight) is looked at every 30 s for up to `quiet_wait_minutes`, then

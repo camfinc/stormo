@@ -85,8 +85,9 @@ func TestCoreLearning(t *testing.T) {
 			t.Errorf("%s: %v", bad, err)
 		}
 	}
+	// The example (also the `new instance --template example` scaffold) leaves it off: opt-in.
 	ex, err := Load("../../examples/minimal")
-	if err != nil || ex.CoreLearning.At != "03:00" {
-		t.Errorf("the example runs the cycle at 03:00: %+v %v", ex.CoreLearning, err)
+	if err != nil || ex.CoreLearning.At != "" {
+		t.Errorf("the example must not schedule the cycle: %+v %v", ex.CoreLearning, err)
 	}
 }

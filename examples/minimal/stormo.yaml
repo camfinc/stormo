@@ -20,10 +20,12 @@ office:
     - { city: New York, tz: America/New_York }
     - { city: Lisbon, tz: Europe/Lisbon }
 
-core:
-  learning:                     # the swarm core's nightly cycle: nap, then dream, agent by agent
-    at: "03:00"                 # no `at`, no cycle on its own (`stormo core learn` still runs one)
-    timezone: America/New_York
+# The swarm core's learning cycle (nap, then dream, agent by agent) is opt-in: uncomment to run it
+# every night. Without `at` it never starts on its own; `stormo core learn` still runs one.
+# core:
+#   learning:
+#     at: "03:00"
+#     timezone: America/New_York
 
 deploy:
   aws:

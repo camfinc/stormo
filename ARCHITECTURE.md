@@ -372,8 +372,10 @@ top of it later. Plan, phases and open decisions: [docs/core.md](docs/core.md).
 
 ## Open decisions
 
-1. **Who runs the dream**: by hand for now. Automating it as a scheduled job that opens a PR means
-   creating branches, which needs the instance owner's sign-off.
+1. **Who runs the dream**: by hand (`stormo learn`), or by the swarm core on a schedule the
+   instance opts into (`core.learning.at` in stormo.yaml; docs/core.md §6), which naps and dreams
+   into the working tree only and never commits. Still open: a scheduled job that opens a PR,
+   which means creating branches and needs the instance owner's sign-off.
 2. **LLM consolidation in the dream**: merging near-duplicate lessons and generalising incident
    notes into rules. The ledger and review flow are ready for it; the model call is not written.
 3. **Verify on an instance's first deploy**: ECS shutdown order (agent before nap), the first real
