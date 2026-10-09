@@ -37,6 +37,7 @@ import (
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/models"
 	"github.com/camfinc/stormo/pkg/ops"
+	"github.com/camfinc/stormo/pkg/persona"
 	"github.com/camfinc/stormo/pkg/place"
 	"github.com/camfinc/stormo/pkg/review"
 	"github.com/camfinc/stormo/pkg/scaffold"
@@ -77,6 +78,8 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
+  look show <agent>                     the agent's look: office character, desk, portrait description
+  look set <agent> [--if-hash h]         replace it with the JSON look on stdin (creates personas/<agent>)
   connections [list|kinds]               ways to reach models (stormo.yaml connections:) and who uses them
   connections models <name> [--agent id] the models a connection offers (its key: the agent's, else shared)
   connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
@@ -359,6 +362,9 @@ func run(args []string) error {
 
 	case "config":
 		return configCmd(inst, sub, rest)
+
+	case "look":
+		return lookCmd(inst, sub, rest)
 
 	case "connections":
 		switch sub {
@@ -856,6 +862,44 @@ func configCmd(inst *instance.Instance, sub string, rest []string) error {
 			return
 		}
 		fmt.Fprintf(w, "wrote %s (%s)\n", f.Path, f.Hash)
+	})
+	return nil
+}
+
+// lookCmd shows and replaces an agent's look (pkg/persona, docs/api.md).
+func lookCmd(inst *instance.Instance, sub string, rest []string) error {
+	id, err := need(strings.Join(rest, " "), "agent")
+	if err != nil {
+		return err
+	}
+	var l *persona.AgentLook
+	switch sub {
+	case "show":
+		l, err = persona.ShowAgent(inst, id)
+	case "set":
+		var look persona.Look
+		dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
+		dec.DisallowUnknownFields()
+		if err = dec.Decode(&look); err != nil {
+			return withCode("usage", fmt.Errorf("look set: stdin must be a JSON look: %w", err))
+		}
+		l, err = persona.SetAgent(inst, id, look, *fIfHash)
+	default:
+		return errUsage
+	}
+	var ce *config.Error
+	if errors.As(err, &ce) {
+		return withCode(ce.Code, err)
+	}
+	if err != nil {
+		return err
+	}
+	result(l, func(w io.Writer) {
+		if l.Path == "" {
+			fmt.Fprintf(w, "%s has no look yet (look set %s creates personas/%s)\n", id, id, id)
+			return
+		}
+		fmt.Fprintf(w, "%s: %s\n%s\n", id, l.Path, l.Look.Description)
 	})
 	return nil
 }

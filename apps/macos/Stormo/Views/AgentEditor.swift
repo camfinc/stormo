@@ -9,12 +9,13 @@ import SwiftUI
 /// and a running agent picks the change up on restart.
 struct AgentEditor: View {
     enum Page: String, CaseIterable, Identifiable {
-        case settings, behaviour, yaml
+        case settings, behaviour, look, yaml
         var id: Self { self }
         var title: String {
             switch self {
             case .settings: "Settings"
             case .behaviour: "Behaviour"
+            case .look: "Look"
             case .yaml: "agent.yaml"
             }
         }
@@ -34,11 +35,16 @@ struct AgentEditor: View {
     @State private var check: Check?
     @State private var confirmMigrate = false
     @State private var migration: MigrateResult?
+    @State private var lookDirty = false
 
     init(agentID: String) {
         self.agentID = agentID
         _definition = State(initialValue: ConfigEditor(path: "agents/\(agentID)/agent.yaml"))
         _soul = State(initialValue: ConfigEditor(path: "agents/\(agentID)/SOUL.md"))
+        #if DEBUG
+        // STORMO_EDIT_PAGE=<page> opens on that page (with STORMO_EDIT and STORMO_SNAPSHOT, a visual check).
+        if let p = ProcessInfo.processInfo.environment["STORMO_EDIT_PAGE"].flatMap(Page.init(rawValue:)) { _page = State(initialValue: p) }
+        #endif
     }
 
     private var editor: ConfigEditor { page == .behaviour ? soul : definition }
@@ -57,7 +63,7 @@ struct AgentEditor: View {
                 NoticeBanner(text: "agent.yaml has unsaved text changes. Save or revert them to use the form.")
             }
             content
-            if let check, !editor.isDirty {
+            if let check, !editor.isDirty, page != .look {
                 Divider()
                 checkBar(check)
                     .padding(.horizontal, 14)
@@ -65,7 +71,7 @@ struct AgentEditor: View {
             }
         }
         .navigationTitle(name)
-        .navigationSubtitle(page == .behaviour ? "agents/\(agentID)/SOUL.md" : "agents/\(agentID)/agent.yaml")
+        .navigationSubtitle(page == .behaviour ? "agents/\(agentID)/SOUL.md" : page == .look ? "its look (persona.md)" : "agents/\(agentID)/agent.yaml")
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("Page", selection: $page) {
@@ -77,6 +83,7 @@ struct AgentEditor: View {
                 .labelsHidden()
             }
             ToolbarItemGroup(placement: .primaryAction) {
+                if page != .look {
                 Button("Revert", systemImage: "arrow.uturn.backward") { editor.revert() }
                     .help("Drop the unsaved changes")
                     .disabled(!editor.isDirty)
@@ -84,6 +91,7 @@ struct AgentEditor: View {
                     .keyboardShortcut("s")
                     .help("Save through stormo, which validates it first")
                     .disabled(!editor.isDirty || editor.busy)
+                }
             }
         }
         .task(id: model.cli?.instance) { await load() }
@@ -119,7 +127,8 @@ struct AgentEditor: View {
         switch page {
         case .settings:
             if let options = definition.file?.options, definition.doc != nil {
-                AgentForm(editor: definition, options: options, agent: agent, agentID: agentID) { confirmMigrate = true }
+                AgentForm(editor: definition, options: options, agent: agent, agentID: agentID,
+                          migrate: { confirmMigrate = true }, editLook: { page = .look })
                     .disabled(definition.isTextDirty || definition.busy || definition.isStale)
             } else if definition.file != nil {
                 ContentUnavailableView("agent.yaml does not parse", systemImage: "exclamationmark.triangle",
@@ -131,6 +140,11 @@ struct AgentEditor: View {
             }
         case .behaviour:
             TextPane(editor: soul, wraps: true, editable: !soul.isStale)
+        case .look:
+            LookPane(agentID: agentID, unit: agent?.unit ?? definition.doc?[["unit"]]?.string ?? "", dirty: $lookDirty) {
+                // Its agent.yaml now points at the new persona.
+                if !definition.isDirty { Task { await load() } }
+            }
         case .yaml:
             TextPane(editor: definition, wraps: false, editable: !definition.isFormDirty && !definition.isStale)
         }
@@ -140,6 +154,7 @@ struct AgentEditor: View {
         switch p {
         case .settings: definition.isFormDirty
         case .behaviour: soul.isDirty
+        case .look: lookDirty
         case .yaml: definition.isTextDirty
         }
     }
@@ -204,6 +219,7 @@ private struct AgentForm: View {
     let agent: FleetAgent?
     let agentID: String
     let migrate: () -> Void
+    let editLook: () -> Void
 
     typealias Path = [JSONValue.Key]
 
@@ -270,10 +286,10 @@ private struct AgentForm: View {
                     Text(options.units.first { $0.id == id }?.name ?? id).tag(id)
                 }
             }
-            Picker("Persona", selection: persona) {
-                Text("None").tag("")
-                ForEach(choices(options.personas, current: get(["persona", "path"])?.string), id: \.self) { p in
-                    Text(p.split(separator: "/").last.map(String.init) ?? p).tag(p)
+            LabeledContent("Look") {
+                HStack {
+                    Text(get(["persona", "path"])?.string ?? "Not defined yet").foregroundStyle(.secondary)
+                    Button("Edit Look…", action: editLook)
                 }
             }
         }
@@ -660,14 +676,6 @@ private struct AgentForm: View {
             var items = list.wrappedValue.filter { $0 != item }
             if on { items.append(item) }
             list.wrappedValue = items
-        }
-    }
-
-    private var persona: Binding<String> {
-        Binding {
-            get(["persona", "path"])?.string ?? ""
-        } set: { p in
-            if p.isEmpty { set(["persona"], nil) } else { set(["persona", "path"], .string(p)) }
         }
     }
 
@@ -1075,6 +1083,107 @@ struct PlainTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
             text.wrappedValue = view.string
+        }
+    }
+}
+
+// MARK: Look
+
+/// The Look page: the agent's character, desk and portrait description, read and saved with
+/// `stormo look` (docs/api.md). An agent without a look gets personas/<id> on its first save.
+private struct LookPane: View {
+    @Environment(AppModel.self) private var model
+    let agentID: String
+    let unit: String
+    @Binding var dirty: Bool
+    let created: () -> Void
+
+    @State private var current: AgentLook?
+    @State private var draft: LookDraft?
+    @State private var saved: LookDraft?
+    @State private var problem: String?
+    @State private var busy = false
+
+    private var office: OfficeLook { OfficeLook(instance: model.fleet.look) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let problem {
+                NoticeBanner(text: problem)
+            }
+            if let current, let draft {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !current.editable {
+                            Label(current.reason ?? "This look is kept elsewhere.", systemImage: "lock")
+                                .foregroundStyle(.secondary)
+                        } else if current.path.isEmpty {
+                            Label("No look of its own yet: the office draws colours picked from its id. Saving creates personas/\(agentID).",
+                                  systemImage: "info.circle").foregroundStyle(.secondary)
+                        } else if let shared = current.shared, !shared.isEmpty {
+                            Label("\(current.path) is shared with \(shared.joined(separator: ", ")): changes here change their look too.",
+                                  systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        }
+                        LookEditor(look: Binding(get: { draft }, set: { self.draft = $0; dirty = $0 != saved }))
+                            .disabled(!current.editable || busy)
+                    }
+                    .frame(maxWidth: 640, alignment: .leading)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Divider()
+                HStack {
+                    Text(current.path.isEmpty ? "" : "\(current.path)/persona.md").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Revert") { self.draft = saved; dirty = false }.disabled(!dirty || busy)
+                    Button(current.path.isEmpty ? "Create Look" : "Save Look") { Task { await save() } }
+                        .keyboardShortcut("s")
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!current.editable || busy || (!dirty && !current.path.isEmpty))
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+            } else if problem == nil {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Spacer()
+            }
+        }
+        .task(id: model.cli?.instance) { await load() }
+    }
+
+    private func load() async {
+        guard let cli = model.cli else { return }
+        do {
+            let l = try await cli.run(["look", "show", agentID], as: AgentLook.self)
+            current = l
+            let d = LookDraft(id: agentID, unit: unit, look: l.path.isEmpty ? nil : l.look, office: office)
+            draft = d
+            saved = d
+            dirty = false
+            problem = nil
+        } catch {
+            problem = "Couldn’t read the look (\(error.localizedDescription)). An older stormo has no `look` command: update it."
+        }
+    }
+
+    private func save() async {
+        guard let cli = model.cli, let current, let draft else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let body = try JSONEncoder().encode(draft.spec)
+            var args = ["look", "set", agentID]
+            if !current.hash.isEmpty { args += ["--if-hash", current.hash] }
+            let l = try await cli.run(args, as: AgentLook.self, stdin: body)
+            let wasNew = current.path.isEmpty
+            self.current = l
+            saved = draft
+            dirty = false
+            problem = nil
+            if wasNew { created() }
+            await model.fleet.refresh()
+        } catch {
+            problem = error.localizedDescription
         }
     }
 }

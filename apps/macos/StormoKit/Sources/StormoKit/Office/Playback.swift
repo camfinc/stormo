@@ -10,6 +10,14 @@ public struct PersonFrame: Sendable, Equatable {
     public var away: Bool
     /// On the move this frame.
     public var walking: Bool
+
+    public init(point: CGPoint, pose: Pose, facing: Facing, away: Bool = false, walking: Bool = false) {
+        self.point = point
+        self.pose = pose
+        self.facing = facing
+        self.away = away
+        self.walking = walking
+    }
 }
 
 /// Where the robot is drawn this frame.

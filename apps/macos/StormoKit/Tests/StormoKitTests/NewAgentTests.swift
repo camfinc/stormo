@@ -82,3 +82,31 @@ private func options() throws -> NewAgentOptions {
     #expect(slack?["allowedUsers"] as? [String] == ["U0000000001", "U0000000002"])
     #expect(d.neededSecrets(try options().options) == ["OPENROUTER_API_KEY", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"])
 }
+
+@Suite struct LookDraftTests {
+    @Test func seedsWhatTheOfficeDraws() {
+        let office = OfficeLook(instance: nil)
+        let d = LookDraft(id: "greeter", unit: "sales", look: nil, office: office)
+        let agent = FleetAgent(id: "greeter", name: "Greeter", unit: "sales", state: "stopped")
+        #expect(d.resolved == office.sprite(for: agent))
+        #expect(d.apps == ["chat"] && d.props == ["notes", "mug", "plant"] && d.side == "bin")
+    }
+
+    @Test func screensAndSpec() throws {
+        var d = LookDraft(id: "a", unit: "u", look: LookSpec(description: " A calm figure. ", sprite: Sprite(skin: "#c08a62"),
+                                                             desk: .init(apps: ["inbox", "charts"], screens: 2, props: ["mug"], side: "nope")),
+                          office: OfficeLook(instance: nil))
+        #expect(d.skin == "#c08a62" && d.screens == 2 && d.side == "bin")
+        d.screens = 1
+        #expect(d.apps == ["inbox"])
+        var draft = NewAgentDraft()
+        draft.name = "A"
+        draft.look = d
+        #expect(draft.spec.look?.description == "A calm figure.")
+        #expect(draft.spec.look?.desk?.screens == 1)
+        draft.persona = "personas/atlas"
+        #expect(draft.spec.look == nil)
+        let json = String(decoding: try JSONEncoder().encode(d.spec), as: UTF8.self)
+        #expect(json.contains("\"hair_style\""))
+    }
+}

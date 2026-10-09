@@ -134,7 +134,9 @@ instance: inside a sidecar it is the agent's engine home.
 
 - **Personas.** `persona: {path: personas/<slug>}` resolves inside the instance; add
   `repo: <dir>` for a persona kept in a sibling repo (resolved against `SWARM_REPOS_DIR`, default
-  the instance's parent).
+  the instance's parent). A persona is one agent's look (its office character `sprite:`, its `desk:`
+  and the `## Avatar lock` a portrait is baked from), so each agent normally has its own:
+  `stormo new agent` with a `look` writes `personas/<id>`, and `stormo look show|set` edits it.
 - **Connections** (`connections:`): named ways to reach models, `{name, kind: chatgpt|openrouter|openai|anthropic|custom, base_url?, key?}`;
   `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`). Every
   instance has `openrouter` and `chatgpt` unless it redefines them. An agent's `model.provider` names an

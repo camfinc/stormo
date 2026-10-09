@@ -62,6 +62,15 @@ public struct ResolvedSprite: Sendable, Equatable {
     public var shirt: String
     public var pants: String
     public var accessory: String
+
+    public init(skin: String, hair: String, hairStyle: String, shirt: String, pants: String, accessory: String) {
+        self.skin = skin
+        self.hair = hair
+        self.hairStyle = hairStyle
+        self.shirt = shirt
+        self.pants = pants
+        self.accessory = accessory
+    }
 }
 
 /// The look rules for one instance (its stormo.yaml office block).
@@ -130,14 +139,18 @@ public struct OfficeLook: Sendable {
     }
 
     public func sprite(for agent: FleetAgent) -> ResolvedSprite {
-        let h = Self.hash(agent.id)
+        sprite(id: agent.id, unit: agent.unit, agent.sprite)
+    }
+
+    /// The persona's sprite where it sets a field, else picks seeded by the agent id.
+    public func sprite(id: String, unit: String, _ s: Sprite?) -> ResolvedSprite {
+        let h = Self.hash(id)
         func pick(_ xs: [String], _ shift: UInt32) -> String { xs[Int((h >> shift) % UInt32(xs.count))] }
-        let s = agent.sprite
         return ResolvedSprite(
             skin: s?.skin ?? pick(["#f1c7a5", "#d9a47e", "#c08a62", "#8d5a3b", "#5c3a24"], 1),
             hair: s?.hair ?? pick(["#1f1a17", "#3a2a20", "#6b4423", "#a0522d", "#d6b370", "#2b2b2b"], 4),
             hairStyle: s?.hairStyle ?? pick(["short", "long", "updo", "curly", "fade"], 7),
-            shirt: s?.shirt ?? hue(unit: agent.unit),
+            shirt: s?.shirt ?? hue(unit: unit),
             pants: s?.pants ?? "#2a2f38",
             accessory: s?.accessory ?? "none")
     }

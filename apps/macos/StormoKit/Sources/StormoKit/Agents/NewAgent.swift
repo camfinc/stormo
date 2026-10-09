@@ -41,7 +41,9 @@ public struct NewAgentSpec: Codable, Sendable, Equatable {
     public var role: String?
     public var unit: String?
     public var newUnit: Unit?
+    /// An existing personas/<slug> to share; `look` instead makes personas/<id> for this agent.
     public var persona: String?
+    public var look: LookSpec?
     public var engine: NewAgentOptions.Engine
     public var model: NewAgentOptions.Model
     public var channels: [Channel]
@@ -123,6 +125,11 @@ public struct NewAgentDraft: Equatable, Sendable {
     public var newUnitDescription = ""
 
     public var tone = Tone.friendly
+    /// The agent's own look (personas/<id>); nil until the wizard seeds it.
+    public var look: LookDraft?
+    /// Edited by hand: the wizard stops re-seeding it from the id.
+    public var lookEdited = false
+    /// Advanced: share an existing persona instead of defining a look.
     public var persona = ""
     /// nil until the person edits SOUL.md; until then it follows name, role and tone.
     public var editedSoul: String?
@@ -234,6 +241,7 @@ public struct NewAgentDraft: Equatable, Sendable {
             newUnit: createUnit ? .init(id: newUnitID, name: newUnitName.trimmingCharacters(in: .whitespaces),
                                         description: newUnitDescription.trimmingCharacters(in: .whitespacesAndNewlines)) : nil,
             persona: trimmed(persona),
+            look: trimmed(persona) == nil ? look?.spec : nil,
             engine: .init(kind: trimmed(engineKind), version: trimmed(engineVersion), imageTag: trimmed(imageTag)),
             model: .init(name: trimmed(model), provider: trimmed(provider),
                          localName: useLocal ? trimmed(localModel) : nil,

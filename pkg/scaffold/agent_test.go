@@ -10,6 +10,7 @@ import (
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"github.com/camfinc/stormo/pkg/persona"
 )
 
 func newInstance(t *testing.T, template string) *instance.Instance {
@@ -136,5 +137,47 @@ func TestNewAgentOptions(t *testing.T) {
 	o := NewAgentOptions(inst)
 	if len(o.Options.Units) < 2 || len(o.Options.Channels) == 0 || len(o.Options.Connections) == 0 || !slices.Contains(o.TakenIDs, "atlas") {
 		t.Errorf("%+v", o)
+	}
+}
+
+func TestNewAgentWithALook(t *testing.T) {
+	inst := newInstance(t, Example)
+	look := &persona.Look{Description: "A calm figure in a green cardigan.", Sprite: &persona.Sprite{Shirt: "#2f6b4f", HairStyle: "curly"},
+		Desk: &persona.Desk{Apps: []string{"inbox"}, Props: []string{"mug", "plant"}, Side: "bin"}}
+	r, err := NewAgent(inst, AgentSpec{Name: "Greeter", Look: look})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.Files, "personas/greeter/persona.md") {
+		t.Errorf("files %v", r.Files)
+	}
+	a := checkAgent(t, inst, "greeter")
+	if a.Persona == nil || a.Persona.Path != "personas/greeter" {
+		t.Fatalf("persona %+v", a.Persona)
+	}
+	b, err := os.ReadFile(filepath.Join(inst.Root, "personas", "greeter", "persona.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persona.Read(string(b)); got.Description != look.Description || got.Sprite.Shirt != "#2f6b4f" || got.Desk.Side != "bin" {
+		t.Errorf("written look %+v", got)
+	}
+	// A taken persona folder is refused, and a refusal leaves nothing behind.
+	if _, err := NewAgent(inst, AgentSpec{ID: "other", Name: "Greeter", Look: look}); err != nil {
+		t.Fatal(err) // its own id: personas/other
+	}
+	if err := os.MkdirAll(filepath.Join(inst.Root, "personas", "third"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewAgent(inst, AgentSpec{ID: "third", Name: "Third", Look: look}); err == nil {
+		t.Error("an existing personas/third was taken over")
+	}
+	if _, err := NewAgent(inst, AgentSpec{ID: "fourth", Name: "Fourth", Look: &persona.Look{Sprite: &persona.Sprite{Skin: "red"}}}); err == nil {
+		t.Error("a bad colour was accepted")
+	}
+	for _, p := range []string{"agents/third", "agents/fourth", "personas/fourth"} {
+		if _, err := os.Stat(filepath.Join(inst.Root, p)); err == nil {
+			t.Errorf("%s left behind", p)
+		}
 	}
 }

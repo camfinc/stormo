@@ -7,7 +7,7 @@ import SwiftUI
 /// (`secrets set <id> NAME`, value on stdin) and offers to start it or open its full editor.
 struct NewAgentWizard: View {
     enum Step: Int, CaseIterable, Identifiable {
-        case basics, team, brain, channels, personality, review, keys
+        case basics, team, brain, channels, personality, look, review, keys
         var id: Self { self }
         var title: String {
             switch self {
@@ -16,6 +16,7 @@ struct NewAgentWizard: View {
             case .brain: "Intelligence"
             case .channels: "Where it talks"
             case .personality: "Personality"
+            case .look: "Look"
             case .review: "Review"
             case .keys: "Connect"
             }
@@ -27,6 +28,7 @@ struct NewAgentWizard: View {
             case .brain: "brain"
             case .channels: "bubble.left.and.bubble.right"
             case .personality: "theatermasks"
+            case .look: "paintpalette"
             case .review: "checklist"
             case .keys: "key"
             }
@@ -157,6 +159,9 @@ struct NewAgentWizard: View {
         case .basics: return draft.nameProblem(taken: options.takenIds)
         case .team: return draft.unitProblem(units: options.options.units.map(\.id))
         case .brain: return draft.brainProblem
+        case .look:
+            return draft.persona.isEmpty && options.options.personas.contains("personas/\(draft.id)")
+                ? "personas/\(draft.id) already exists. Share it under Advanced, or choose another ID." : nil
         default: return nil
         }
     }
@@ -169,7 +174,8 @@ struct NewAgentWizard: View {
         case .team: TeamPage(draft: $draft, units: o.options.units, advanced: advanced)
         case .brain: BrainPage(draft: $draft, options: o, advanced: advanced)
         case .channels: ChannelsPage(draft: $draft, options: o.options, advanced: advanced)
-        case .personality: PersonalityPage(draft: $draft, personas: o.options.personas, advanced: advanced)
+        case .personality: PersonalityPage(draft: $draft)
+        case .look: LookPage(draft: $draft, personas: o.options.personas, office: OfficeLook(instance: model.fleet.look), advanced: advanced)
         case .review: ReviewPage(draft: draft, options: o, advanced: advanced) { step = $0 }
         case .keys:
             if let created { KeysPage(result: created) }
@@ -211,6 +217,11 @@ struct NewAgentWizard: View {
         creating = true
         problem = nil
         defer { creating = false }
+        if !draft.lookEdited {
+            // Not touched: the character the office would draw for this id, pinned in its own persona.
+            draft.look = LookDraft(id: draft.id, unit: draft.createUnit ? draft.newUnitID : draft.unit, look: nil,
+                                   office: OfficeLook(instance: model.fleet.look))
+        }
         do {
             let body = try JSONEncoder().encode(draft.spec)
             // The engine mints the agent's own generated keys; the rest are asked for next.
@@ -532,8 +543,6 @@ private struct ChannelsPage: View {
 
 private struct PersonalityPage: View {
     @Binding var draft: NewAgentDraft
-    let personas: [String]
-    let advanced: Bool
 
     var body: some View {
         PageHeader(title: "How should it sound?",
@@ -543,16 +552,6 @@ private struct PersonalityPage: View {
                 ChoiceCard(symbol: t == .friendly ? "face.smiling" : t == .professional ? "briefcase" : "text.alignleft",
                            title: t.title, detail: t.summary, selected: draft.tone == t) { draft.tone = t }
             }
-        }
-        if !personas.isEmpty {
-            Field(label: "Look", note: "A persona gives the agent a face in the office and in chats.") {
-                Picker("Persona", selection: $draft.persona) {
-                    Text("None").tag("")
-                    ForEach(personas, id: \.self) { Text($0.replacingOccurrences(of: "personas/", with: "").capitalized).tag($0) }
-                }
-                .labelsHidden().frame(maxWidth: 260, alignment: .leading)
-            }
-            .padding(.top, 16)
         }
         HStack {
             Text("Instructions").font(.callout.weight(.medium))
@@ -572,6 +571,50 @@ private struct PersonalityPage: View {
         Text("Saved as SOUL.md: what the agent reads before every conversation.")
             .font(.caption).foregroundStyle(.secondary)
     }
+}
+
+/// The agent's own look, seeded with the character the office would draw for it anyway. Sharing
+/// another persona is an Advanced choice: a persona is one agent's face, so two agents sharing one
+/// look like the same person.
+private struct LookPage: View {
+    @Binding var draft: NewAgentDraft
+    let personas: [String]
+    let office: OfficeLook
+    let advanced: Bool
+
+    private var seeded: LookDraft {
+        LookDraft(id: draft.id, unit: draft.createUnit ? draft.newUnitID : draft.unit, look: nil, office: office)
+    }
+
+    var body: some View {
+        PageHeader(title: "How should it look?",
+                   subtitle: "Its character in the office and in chats. Change anything now or later in its editor.")
+        if draft.persona.isEmpty {
+            LookEditor(look: Binding(get: { draft.look ?? seeded },
+                                     set: { draft.look = $0; draft.lookEdited = true }))
+            if draft.lookEdited {
+                Button("Start over") { draft.look = seeded; draft.lookEdited = false }
+                    .controlSize(.small).padding(.top, 8)
+            }
+        } else {
+            Text("\(draft.name) will share \(title(draft.persona))’s look: same character, desk and portrait.")
+                .foregroundStyle(.secondary)
+        }
+        if !personas.isEmpty {
+            Advanced(on: advanced || !draft.persona.isEmpty) {
+                Field(label: "Share an existing look",
+                      note: "Only for a look made ahead of the agent (a portrait already baked) or an agent being re-created. Edits to a shared look change every agent using it.") {
+                    Picker("Persona", selection: $draft.persona) {
+                        Text("No, its own").tag("")
+                        ForEach(personas, id: \.self) { Text(title($0)).tag($0) }
+                    }
+                    .labelsHidden().frame(maxWidth: 260, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func title(_ p: String) -> String { p.replacingOccurrences(of: "personas/", with: "").capitalized }
 }
 
 private struct ReviewPage: View {
@@ -596,7 +639,8 @@ private struct ReviewPage: View {
             row("Team", team, .team)
             row("Model", draft.model + (draft.useLocal ? " · plan: \(draft.localModel)" : ""), .brain)
             row("Channels", channels, .channels)
-            row("Tone", draft.tone.title + (draft.persona.isEmpty ? "" : " · " + draft.persona), .personality)
+            row("Tone", draft.tone.title, .personality)
+            row("Look", draft.persona.isEmpty ? "Its own (personas/\(draft.id))" : "Shares " + draft.persona, .look)
         }
         .background(.background, in: .rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))

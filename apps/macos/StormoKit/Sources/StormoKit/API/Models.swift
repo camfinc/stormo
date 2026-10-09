@@ -76,6 +76,15 @@ public struct Sprite: Codable, Sendable, Equatable {
         case skin, hair, shirt, pants, accessory
         case hairStyle = "hair_style"
     }
+
+    public init(skin: String? = nil, hair: String? = nil, shirt: String? = nil, pants: String? = nil, hairStyle: String? = nil, accessory: String? = nil) {
+        self.skin = skin
+        self.hair = hair
+        self.shirt = shirt
+        self.pants = pants
+        self.hairStyle = hairStyle
+        self.accessory = accessory
+    }
 }
 
 /// What the agent's engine reports while it runs (null when it is down or did not answer).

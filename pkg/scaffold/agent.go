@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"github.com/camfinc/stormo/pkg/persona"
 	"github.com/camfinc/stormo/pkg/secrets"
 )
 
@@ -26,11 +27,13 @@ type AgentSpec struct {
 	Role string `json:"role,omitempty"`
 	Unit string `json:"unit,omitempty"`
 	// NewUnit creates units/<id>/unit.yaml first, for an instance with no unit to put the agent in.
-	NewUnit  *manifest.Unit `json:"newUnit,omitempty"`
-	Persona  string         `json:"persona,omitempty"`
-	Engine   EngineChoice   `json:"engine"`
-	Model    ModelChoice    `json:"model"`
-	Channels []ChannelSpec  `json:"channels,omitempty"`
+	NewUnit *manifest.Unit `json:"newUnit,omitempty"`
+	// Persona points at an existing personas/<slug>; Look instead writes personas/<id> for this agent.
+	Persona  string        `json:"persona,omitempty"`
+	Look     *persona.Look `json:"look,omitempty"`
+	Engine   EngineChoice  `json:"engine"`
+	Model    ModelChoice   `json:"model"`
+	Channels []ChannelSpec `json:"channels,omitempty"`
 	// Secrets are extra names to declare (channel, connection and engine keys are added anyway).
 	Secrets []string `json:"secrets,omitempty"`
 	// Soul is SOUL.md; empty writes a starter from the name and role.
@@ -193,6 +196,21 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	sort.Strings(declared)
 	declared = slices.Compact(declared)
 
+	var personaDir, personaText string
+	if s.Look != nil {
+		if s.Persona != "" {
+			return AgentResult{}, errors.New("give persona (an existing one) or look (a new one), not both")
+		}
+		s.Persona = "personas/" + s.ID
+		personaDir = filepath.Join(inst.Root, "personas", s.ID)
+		if _, err := os.Stat(personaDir); err == nil {
+			return AgentResult{}, fmt.Errorf("%s already exists: pick it as the persona instead of giving a look", s.Persona)
+		}
+		if personaText, err = persona.New(s.Name, s.ID, *s.Look); err != nil {
+			return AgentResult{}, err
+		}
+	}
+
 	var unitFile string
 	if u := s.NewUnit; u != nil {
 		if !instance.ValidSlug(u.ID) || u.ID == "group" {
@@ -211,6 +229,9 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	files := map[string]string{"agent.yaml": body, "SOUL.md": soul(s)}
 	fail := func(err error) (AgentResult, error) {
 		_ = os.RemoveAll(dir)
+		if personaDir != "" {
+			_ = os.RemoveAll(personaDir)
+		}
 		if unitFile != "" {
 			_ = os.RemoveAll(filepath.Dir(unitFile))
 		}
@@ -232,6 +253,11 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 			return fail(err)
 		}
 	}
+	if personaDir != "" {
+		if err := writeFile(filepath.Join(personaDir, "persona.md"), personaText); err != nil {
+			return fail(err)
+		}
+	}
 	a, err := manifest.Load(inst.Root, s.ID, inst.Names.Secret)
 	if err != nil {
 		return fail(err)
@@ -243,6 +269,9 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 		Files: []string{"agents/" + s.ID + "/agent.yaml", "agents/" + s.ID + "/SOUL.md"}}
 	if unitFile != "" {
 		r.Files = append(r.Files, "units/"+s.Unit+"/unit.yaml")
+	}
+	if personaDir != "" {
+		r.Files = append(r.Files, s.Persona+"/persona.md")
 	}
 	// Its generated keys go in its own data folder; secrets.local.yaml is not rewritten.
 	if _, err := secrets.SeedAgent(inst.Root, a); err != nil {
