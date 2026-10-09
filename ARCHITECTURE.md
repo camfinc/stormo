@@ -88,7 +88,7 @@ engine-specific files (`hermes/` today).
     Daytona backends if per-command isolation matters. No-agent cron scripts get the same env as
     the agent's terminal (Hermes strips only its own provider and messaging keys, e.g.
     `SLACK_BOT_TOKEN`), so a secret a cron script needs is within the agent's reach too.
-  - `agents/<id>/scripts/` ships to `$HERMES_HOME/scripts/`; manifest `env:` (non-secret settings,
+  - `agents/<id>/scripts/` ships to `$AGENT_HOME/scripts/` (Hermes: `$HERMES_HOME`, the same place); manifest `env:` (non-secret settings,
     never `*_TOKEN`/`*_KEY`/`*_SECRET`/`*_PASSWORD`) is exported to the container under the engine's own keys.
   - Sandbox-only settings are neutralised (`docker_volumes`, `docker_forward_env`, `terminal.env`).
   - `memory.*_char_limit` comes from the manifest; `database.journal_mode: wal` (task-local disk;

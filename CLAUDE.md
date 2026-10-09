@@ -12,18 +12,27 @@ on `examples/minimal` only.
   AWS account or a domain. Org-specific values come from the instance's `stormo.yaml`
   (`pkg/instance`), passed explicitly (no globals); org-specific actions are the instance's
   `bridge/actions.yaml`. Tests use the example instance (Acme), never a real one.
-- **Persisted formats are contracts**: the nap store layout and manifests, ledger lines,
-  watermarks, baseline.json skill hashes, `.swarm/ports.json`, the core's auth files, the secrets
-  file. Change one only with a migration; testdata/classify.json pins the snapshot rules.
+- **Persisted formats are contracts**: the nap store layout and manifests (the local store lives in
+  `agents/<id>/data/store`; its layout did not change), ledger lines, watermarks, baseline.json skill
+  hashes, `.swarm/ports.json`, the core's auth files, the secrets files (`secrets.local.yaml` and each
+  agent's `data/secrets.yaml`, read as its `agents.<id>` layer), agent.yaml's `format` (format 0 still
+  loads; `stormo migrate agent` moves it to 1) and the `stormo export` zip (`stormo-agent/1`). Change
+  one only with a migration; testdata/classify.json pins the snapshot rules.
 - A new instance-level setting: add it to `stormo.yaml` (`pkg/instance` + docs/instances.md +
   examples/minimal), with a default derived from `slug` where one makes sense. Names that end up in
   deployed infrastructure or in agents' skills belong under `names:` and are documented as pinned.
 - Secrets: manifests list env var NAMES only. Never write a token into a skill, script, cron prompt,
   test or example. Values live in the instance's `secrets.local.yaml` / Secrets Manager.
 - `dist/` and `.swarm/` are generated, gitignored and belong to the instance; `.swarm/` can hold raw
-  session snapshots (PII).
-- Engine-specific files live under `agents/<id>/<engine>/`; engine-agnostic code goes through the
-  `engine.Engine` interface (`pkg/engine`).
+  session snapshots (PII). So does `agents/<id>/data/` (naps, the agent's secret values, its env):
+  it keeps its own `.gitignore`; never `git add -f` it, and export and import refuse a tracked one.
+- **Agents are Stormo's standard** (docs/agent-standard.md): agent.yaml format 1 is engine-neutral;
+  anything only one engine reads lives in `agents/<id>/engine/<kind>/` and goes through the
+  `engine.Engine` interface (Runtime, Memory, schedules, FormatZero). Outside `pkg/engine/<kind>`
+  nothing names an engine. A data export carries secret values in plain text by the owner's
+  decision: keep its disclaimer, 0600 mode and the app's confirmation.
+- Engine-specific files live under `agents/<id>/engine/<kind>/` (format 0: `agents/<id>/<engine>/`);
+  engine-agnostic code goes through the `engine.Engine` interface (`pkg/engine`).
 - Pin engine images (`engine.image_tag`); never deploy `latest`.
 - `deploy render` only renders. Registering task definitions, creating services, buckets or secrets
   in AWS is a human step. Never run remote start/stop/restart or `secrets push --yes` on an
