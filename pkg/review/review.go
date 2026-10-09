@@ -322,7 +322,7 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 		agent := inspect(agentID)
 		nap := inspect(containerID(compose, id, "nap"))
 		naps := []string{}
-		dir := filepath.Join(inst.Root, ".swarm", "store", id, "naps")
+		dir := filepath.Join(loop.LocalStoreDir(inst.Root, id), "naps")
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if !strings.HasSuffix(e.Name(), ".json") {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 // Store holds naps. Layout (identical on S3 and on disk):
@@ -83,6 +85,76 @@ func (s FsStore) List(prefix string) ([]string, error) {
 	})
 	sort.Strings(out)
 	return out, err
+}
+
+// LocalStore is an instance's local nap store: agent <id>'s keys live in its own folder,
+// agents/<id>/data/store (the same layout without the <id>/ prefix), or in format 0's
+// .swarm/store/<id> until MigrateLocalStore moves them.
+type LocalStore struct{ Root string }
+
+// LocalStoreDir is where agent id's local naps are now.
+func LocalStoreDir(root, id string) string {
+	dir := filepath.Join(manifest.DataDir(root, id), "store")
+	legacy := filepath.Join(root, ".swarm", "store", id)
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return dir
+}
+
+// MigrateLocalStore moves agent id's naps from .swarm/store/<id> into its folder (the agent must
+// be stopped); true when it moved them.
+func MigrateLocalStore(root, id string) (bool, error) {
+	legacy := filepath.Join(root, ".swarm", "store", id)
+	if _, err := os.Stat(legacy); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	dir := filepath.Join(manifest.DataDir(root, id), "store")
+	if _, err := os.Stat(dir); err == nil {
+		return false, fmt.Errorf("both %s and %s exist; keep one", legacy, dir)
+	}
+	if _, err := manifest.EnsureDataDir(root, id); err != nil {
+		return false, err
+	}
+	return true, os.Rename(legacy, dir)
+}
+
+func (s LocalStore) split(key string) (FsStore, string) {
+	agent, rest, _ := strings.Cut(key, "/")
+	return FsStore{Root: LocalStoreDir(s.Root, agent)}, rest
+}
+
+func (s LocalStore) Put(key string, body []byte) error {
+	agent, rest, _ := strings.Cut(key, "/")
+	dir := LocalStoreDir(s.Root, agent)
+	if dir == filepath.Join(manifest.DataDir(s.Root, agent), "store") {
+		if _, err := manifest.EnsureDataDir(s.Root, agent); err != nil {
+			return err
+		}
+	}
+	return FsStore{Root: dir}.Put(rest, body)
+}
+
+func (s LocalStore) Get(key string) ([]byte, error) {
+	st, rest := s.split(key)
+	return st.Get(rest)
+}
+
+func (s LocalStore) Exists(key string) (bool, error) {
+	st, rest := s.split(key)
+	return st.Exists(rest)
+}
+
+// List takes a prefix that starts with an agent id.
+func (s LocalStore) List(prefix string) ([]string, error) {
+	agent, rest, _ := strings.Cut(prefix, "/")
+	keys, err := FsStore{Root: LocalStoreDir(s.Root, agent)}.List(rest)
+	for i, k := range keys {
+		keys[i] = agent + "/" + k
+	}
+	return keys, err
 }
 
 // S3Store is a bucket. Credentials come from the default chain (the ECS task role in the sidecar,

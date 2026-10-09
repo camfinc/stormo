@@ -35,7 +35,7 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := Paths{Root: inst.Root, BaselineDir: "/x/.swarm/local/atlas/baseline", EnvFile: "/x/.swarm/env/atlas.env", StoreDir: "/x/.swarm/store", SharedDir: "/x/.swarm/shared"}
+	p := Paths{Root: inst.Root, BaselineDir: "/x/.swarm/local/atlas/baseline", EnvFile: "/x/agents/atlas/data/agent.env", StoreDir: "/x/agents/atlas/data/store", SharedDir: "/x/.swarm/shared"}
 	spec := Render(a, hermes.New(inst), p, 18642, 120, "stormo-sidecar:test")
 	if got := spec.Services["agent"].ExtraHosts; !slices.Equal(got, []string{"host.docker.internal:host-gateway"}) {
 		t.Errorf("extra_hosts = %v", got)
@@ -44,6 +44,10 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 		s := spec.Services[name]
 		if s.Image != "stormo-sidecar:test" || !slices.Contains(s.Volumes, p.BaselineDir+":/app/dist/atlas/baseline:ro") || !slices.Contains(s.Volumes, filepath.Join(inst.Root, "stormo.yaml")+":/app/stormo.yaml:ro") {
 			t.Errorf("%s: %+v", name, s)
+		}
+		// Its own store only, and none of the agent's data folder (secret values) through agents/atlas.
+		if !slices.Contains(s.Volumes, p.StoreDir+":/store/atlas") || !slices.Equal(s.Tmpfs, []string{"/app/agents/atlas/data"}) {
+			t.Errorf("%s: store %v, tmpfs %v", name, s.Volumes, s.Tmpfs)
 		}
 		for _, v := range s.Volumes {
 			if filepath.HasPrefix(v, filepath.Join(inst.Root, "dist")) {

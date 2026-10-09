@@ -60,7 +60,7 @@ func TestEmptyInstanceLoadsAndIgnoresLocalFiles(t *testing.T) {
 		t.Errorf("units %v", ids)
 	}
 	gi, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
-	for _, p := range []string{"dist/", ".swarm/", "workdir/", "secrets.local.yaml"} {
+	for _, p := range []string{"dist/", ".swarm/", "workdir/", "agents/*/data/", "secrets.local.yaml"} {
 		if !strings.Contains(string(gi), p) {
 			t.Errorf(".gitignore lacks %s", p)
 		}

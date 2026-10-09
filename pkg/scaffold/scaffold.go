@@ -59,6 +59,8 @@ dist/
 .swarm/
 # The local shared space (agents' working documents, can hold client data). Never commit.
 workdir/
+# Each agent's data (naps, its own secret values, env); agents/<id>/data has its own .gitignore too.
+agents/*/data/
 secrets.local.yaml
 *.secrets.yaml
 .env

@@ -275,6 +275,25 @@ func idsWith(dir, file string) []string {
 // AgentDir is agents/<id> of the instance at root.
 func AgentDir(root, id string) string { return filepath.Join(root, "agents", id) }
 
+// DataDir is agents/<id>/data: what the agent has accumulated running (its nap store, its own
+// secret values, its rendered env). Part of the agent's folder, never of git.
+func DataDir(root, id string) string { return filepath.Join(AgentDir(root, id), "data") }
+
+// EnsureDataDir creates DataDir with a .gitignore that keeps all of it out of git.
+func EnsureDataDir(root, id string) (string, error) {
+	dir := DataDir(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	ignore := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(ignore); os.IsNotExist(err) {
+		if err := os.WriteFile(ignore, []byte("# The agent's data: naps, secret values, env. Never committed.\n*\n"), 0o644); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
 // LoadUnit reads units/<id>/unit.yaml.
 func LoadUnit(root, id string) (*Unit, error) {
 	body, err := os.ReadFile(filepath.Join(root, "units", id, "unit.yaml"))

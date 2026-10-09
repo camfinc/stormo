@@ -129,12 +129,12 @@ on one bot token fight.
 
 | | local (Docker compose: OrbStack, Docker Desktop, Docker Engine on Linux) | remote (ECS) |
 |---|---|---|
-| `swarm` | compose state + health, API port, last nap in `.swarm/store` | `describe-services`, last nap in S3 |
+| `swarm` | compose state + health, API port, last nap in `agents/<id>/data/store` | `describe-services`, last nap in S3 |
 | `start` | build baseline, render compose, up | `update-service --desired-count 1` |
 | `stop` | down (agent first, final nap), drop home volume | `--desired-count 0` (final nap on SIGTERM) |
 | `restart` | stop + start: final nap → fresh home → rehydrate | `--force-new-deployment` |
-| `learn` | nap now, dream from `.swarm/store` | dream from S3 |
-| `handoff --to` | stop ECS (final nap) → copy naps S3 → `.swarm/store` → start | stop local → copy naps → start ECS |
+| `learn` | nap now, dream from `agents/<id>/data/store` | dream from S3 |
+| `handoff --to` | stop ECS (final nap) → copy naps S3 → `agents/<id>/data/store` → start | stop local → copy naps → start ECS |
 
 An agent runs in **one place at a time** (`pkg/place`): local and ECS share its Slack app, and
 Socket Mode would split its events between two live connections. `start` refuses while the other
@@ -153,7 +153,7 @@ and ask for confirmation (or `--yes`). They never create services; that stays an
 The local project is a twin of the ECS task (`pkg/local`): same three containers and stop
 order, sidecars on the engine's `stormo-sidecar:<version>` image with the instance's files and the
 baseline mounted read-only (so `stormo restart` after a manifest or skill edit needs no image
-build; `stormo start` builds the sidecar image itself when this engine version has none), naps in `.swarm/store`, shared space in
+build; `stormo start` builds the sidecar image itself when this engine version has none), naps in each agent's `agents/<id>/data/store` (format 0: `.swarm/store/<id>`, moved on start), shared space in
 `workdir/<layer>` (gitignored; tracked by the core, docs/core.md §4), API on `127.0.0.1:18642+`. Environment comes from `secrets.local.yaml` with its
 `local:` overlay. `start` refuses to run on a production bot/app token.
 

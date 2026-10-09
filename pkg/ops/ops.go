@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -79,9 +78,9 @@ func PromptConfirm(plan []string, yes bool) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
 }
 
-// LocalStore is the instance's directory store.
+// LocalStore is the instance's local store: each agent's naps in its own folder.
 func LocalStore(root string) loop.Store {
-	return loop.FsStore{Root: filepath.Join(root, ".swarm", "store")}
+	return loop.LocalStore{Root: root}
 }
 
 func (d *Deps) store(where place.Where) (loop.Store, error) {
@@ -360,7 +359,7 @@ func Stop(where place.Where, id string, d *Deps) error {
 		if err := local.Down(d.Inst, id); err != nil {
 			return err
 		}
-		d.Log(id + ": stopped locally (final nap saved to .swarm/store)")
+		d.Log(id + ": stopped locally (final nap saved to agents/"+id+"/data/store)")
 		return nil
 	}
 	s, err := d.requireService(id)

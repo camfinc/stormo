@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/deploy"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/place"
 	"github.com/camfinc/stormo/pkg/secrets"
@@ -101,7 +102,16 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if err != nil {
 		return 0, nil, err
 	}
-	storeDir := filepath.Join(root, ".swarm", "store")
+	// The agent's naps move into its own folder the first time it starts after format 0.
+	if moved, err := loop.MigrateLocalStore(root, id); err != nil {
+		return 0, nil, err
+	} else if moved {
+		o.Log(fmt.Sprintf("%s: moved its naps from .swarm/store/%s to agents/%s/data/store", id, id, id))
+	}
+	if _, err := manifest.EnsureDataDir(root, id); err != nil {
+		return 0, nil, err
+	}
+	storeDir := loop.LocalStoreDir(root, id)
 	sharedDir := shared.LocalDir(root)
 	moved, conflicts, err := shared.MigrateLocal(root)
 	if err != nil {

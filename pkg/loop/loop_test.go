@@ -317,3 +317,39 @@ func TestChownTree(t *testing.T) {
 		t.Errorf("n=%d seen=%v err=%v", n, seen, err)
 	}
 }
+
+func TestLocalStoreLivesInTheAgentsFolder(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, ".swarm", "store", "atlas")
+	write(t, filepath.Join(legacy, "latest.json"), `{"nap":"n1"}`)
+	s := LocalStore{Root: root}
+	// Until it moves, the format-0 place is read (and written).
+	if b, _ := s.Get("atlas/latest.json"); string(b) != `{"nap":"n1"}` {
+		t.Fatalf("legacy read: %q", b)
+	}
+	if moved, err := MigrateLocalStore(root, "atlas"); err != nil || !moved {
+		t.Fatal(moved, err)
+	}
+	if b, _ := s.Get("atlas/latest.json"); string(b) != `{"nap":"n1"}` {
+		t.Fatalf("after the move: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agents", "atlas", "data", "store", "latest.json")); err != nil {
+		t.Fatal(err)
+	}
+	if gi, _ := os.ReadFile(filepath.Join(root, "agents", "atlas", "data", ".gitignore")); !strings.Contains(string(gi), "*") {
+		t.Error("data/ is not ignored by git")
+	}
+	// A new agent's store starts in its folder; keys keep their <agent>/ prefix.
+	if err := s.Put("nova/naps/n2.json", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := s.List("nova/naps/"); !slices.Equal(keys, []string{"nova/naps/n2.json"}) {
+		t.Errorf("list = %v", keys)
+	}
+	if _, err := os.Stat(filepath.Join(root, "agents", "nova", "data", "store", "naps", "n2.json")); err != nil {
+		t.Error(err)
+	}
+	if moved, err := MigrateLocalStore(root, "nova"); err != nil || moved {
+		t.Errorf("nothing to move: %v %v", moved, err)
+	}
+}

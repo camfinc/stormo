@@ -81,7 +81,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   secrets init                           create/extend secrets.local.yaml with every declared name
   secrets share NAME... [--from <agent>] keep one value under shared: and drop identical per-agent copies
   secrets check [agent...]               report missing values (aws and local) and file problems
-  secrets env <agent>                    write .swarm/env/<agent>.env (local overlay applied)
+  secrets env <agent>                    write agents/<agent>/data/agent.env (local overlay applied)
   secrets push [agent...] [--yes]        diff key names vs AWS Secrets Manager; --yes writes
 
   dream <agent> [--store s3://bucket|dir] fold naps from an explicit store (learn does this for you)
@@ -466,11 +466,10 @@ func run(args []string) error {
 		if uri == "" {
 			uri = os.Getenv("SWARM_STORE")
 		}
+		var st loop.Store
 		if uri == "" {
-			uri = filepath.Join(inst.Root, ".swarm", "store")
-		}
-		st, err := loop.Open(uri, region(inst))
-		if err != nil {
+			st = loop.LocalStore{Root: inst.Root}
+		} else if st, err = loop.Open(uri, region(inst)); err != nil {
 			return err
 		}
 		r, err := loop.Dream(inst, id, st)

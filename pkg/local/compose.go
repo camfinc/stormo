@@ -4,10 +4,11 @@
 //   - the sidecars run the engine's sidecar image with the instance's files (stormo.yaml, units,
 //     this agent, its baseline) bind-mounted read-only, so a manifest or skill edit needs no image
 //     build, only `stormo restart`;
-//   - naps go to .swarm/store (a directory store), also the dream's default local store;
+//   - naps go to the agent's folder, agents/<id>/data/store (loop.LocalStore, also the dream's
+//     default local store), mounted into the sidecars as /store/<id>;
 //   - the shared space is workdir/<layer> (shared.LocalDir; moved from .swarm/shared once);
-//   - secrets come from .swarm/env/<agent>.env, rendered from secrets.local.yaml with the `local`
-//     overlay; the sidecars never see it;
+//   - secrets come from agents/<id>/data/agent.env, rendered from the secrets with the `local`
+//     overlay; the sidecars never see it (nor anything else in data/);
 //   - the baseline is the `local` build (.swarm/local/<agent>/baseline: `engine.local` model first);
 //   - with `engine.local.via: core` the agent calls the core's model gateway on the host.
 package local
@@ -36,6 +37,7 @@ type Paths struct {
 	Root        string // the instance
 	BaselineDir string // the local build of the agent's baseline
 	EnvFile     string
+	// StoreDir is the agent's own local store (loop.LocalStoreDir).
 	StoreDir    string
 	SharedDir   string
 }
@@ -59,6 +61,7 @@ type service struct {
 	StopGrace   string            `yaml:"stop_grace_period,omitempty"`
 	Restart     string            `yaml:"restart,omitempty"`
 	ExtraHosts  []string          `yaml:"extra_hosts,omitempty"`
+	Tmpfs       []string          `yaml:"tmpfs,omitempty"`
 }
 
 // Spec is a compose file.
@@ -78,9 +81,12 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		Volumes: []string{
 			ro(instance.File), ro("units"), ro("agents/" + a.ID),
 			p.BaselineDir + ":/app/dist/" + a.ID + "/baseline:ro",
-			"home:/data", p.StoreDir + ":/store",
+			"home:/data", p.StoreDir + ":/store/" + a.ID,
 		},
 		Environment: map[string]string{"SWARM_AGENT": a.ID, "SWARM_STORE": "/store", "SWARM_HOME": "/data"},
+		// The agent's data folder (its secret values, its store) stays out of the sidecars: they get
+		// the store at /store/<id> and nothing else of it.
+		Tmpfs: []string{"/app/agents/" + a.ID + "/data"},
 	}
 	rehydrate := sidecar
 	rehydrate.Command = []string{"rehydrate"}

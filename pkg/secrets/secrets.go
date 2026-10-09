@@ -193,7 +193,11 @@ func WritePrivate(path string, body []byte) error {
 	return os.Chmod(path, 0o600)
 }
 
-// WriteLocalEnv renders .swarm/env/<agent>.env from the local overlay.
+// EnvFile is where WriteLocalEnv renders an agent's env: in its data folder.
+func EnvFile(root, id string) string { return filepath.Join(manifest.DataDir(root, id), "agent.env") }
+
+// WriteLocalEnv renders the agent's env file (EnvFile) from the local overlay. Format 0's copy in
+// .swarm/env goes: it held secret values.
 func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	f, err := Load(Path(root))
 	if err != nil {
@@ -204,8 +208,17 @@ func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	if err != nil {
 		return "", r, err
 	}
-	p := filepath.Join(root, ".swarm", "env", a.ID+".env")
-	return p, r, WritePrivate(p, []byte(body))
+	if _, err := manifest.EnsureDataDir(root, a.ID); err != nil {
+		return "", r, err
+	}
+	p := EnvFile(root, a.ID)
+	if err := WritePrivate(p, []byte(body)); err != nil {
+		return "", r, err
+	}
+	if err := os.Remove(filepath.Join(root, ".swarm", "env", a.ID+".env")); err != nil && !os.IsNotExist(err) {
+		return "", r, err
+	}
+	return p, r, nil
 }
 
 // PerAgent names belong to one agent by design (its engine API key, its own bot/app tokens).
