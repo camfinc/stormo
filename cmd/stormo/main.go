@@ -69,7 +69,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
-  connections [list]                     ways to reach models (stormo.yaml connections:) and who uses them
+  connections [list|kinds]               ways to reach models (stormo.yaml connections:) and who uses them
   connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
   connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
@@ -323,6 +323,13 @@ func run(args []string) error {
 
 	case "connections":
 		switch sub {
+		case "kinds":
+			result(instance.ConnectionKinds, func(w io.Writer) {
+				for _, k := range instance.ConnectionKinds {
+					fmt.Fprintf(w, "%-11s %s\n", k.Kind, k.Label)
+				}
+			})
+			return nil
 		case "", "list":
 			rows, err := connectionRows(inst)
 			if err != nil {
