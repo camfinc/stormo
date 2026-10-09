@@ -564,6 +564,15 @@ final class OfficeScene: SKScene {
         onSelect(selection)
     }
 
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, selection != nil {  // Escape: back to the overview
+            selection = nil
+            onSelect(nil)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
     override func rightMouseDown(with event: NSEvent) {
         guard let view, case .agent(let id)? = hit(at: event.location(in: self)), let menu = menuForAgent(id) else { return }
         NSMenu.popUpContextMenu(menu, with: event, for: view)

@@ -29,8 +29,15 @@ struct OfficeView: View {
             }
         }
         .navigationTitle("Office")
-        .inspector(isPresented: Binding(get: { selection != nil }, set: { if !$0 { select(nil) } })) {
+        // Always open: an inspector that came and went would resize the floor (and refit its zoom)
+        // on every click. With nothing selected it gives the overview.
+        .inspector(isPresented: .constant(true)) {
             inspector.inspectorColumnWidth(min: 260, ideal: 300)
+        }
+        .onKeyPress(.escape) {
+            guard selection != nil else { return .ignored }
+            select(nil)
+            return .handled
         }
         .toolbar {
             ToolbarItemGroup {
@@ -76,7 +83,7 @@ struct OfficeView: View {
                 Text("Nobody works here yet. An agent whose manifest says `unit: \(unit)` gets this desk.")
             }
         case nil:
-            EmptyView()
+            OfficeOverview(select: { select(.agent($0)) })
         }
     }
 
@@ -203,6 +210,50 @@ struct OfficeHUD: View {
             }
             .font(.callout)
         }
+    }
+}
+
+/// The inspector with nothing selected: the floor's people at a glance, each a click away.
+struct OfficeOverview: View {
+    @Environment(AppModel.self) private var model
+    let select: (String) -> Void
+
+    var body: some View {
+        Form {
+            if let fleet = model.fleet.fleet {
+                let s = FleetSummary(fleet)
+                Section {
+                    LabeledContent("On shift", value: "\(s.onShift) of \(s.total)")
+                    LabeledContent("Working", value: "\(s.working)")
+                    if s.attention > 0 { LabeledContent("Needs attention") { Text("\(s.attention)").foregroundStyle(.red) } }
+                    if s.toReview > 0 { LabeledContent("With learnings to review", value: "\(s.toReview)") }
+                } header: {
+                    Label(model.instances.active?.name ?? "Office", systemImage: "building.2")
+                } footer: {
+                    Text("Click a person, a desk, the core rack or the robot for details. Right-click a person for actions.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(fleet.units.filter { u in fleet.agents.contains { $0.unit == u.id } }) { unit in
+                    Section(OfficeLook(instance: model.fleet.look).shortName(unit.name)) {
+                        ForEach(fleet.agents.filter { $0.unit == unit.id }) { a in
+                            Button { select(a.id) } label: {
+                                HStack(spacing: 8) {
+                                    StateDot(agent: a)
+                                    Text(a.name)
+                                    Spacer()
+                                    Text(OfficeLook.statusText(a, serverNow: Int64(Date().timeIntervalSince1970 * 1000) + model.fleet.clockOffset))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
