@@ -57,7 +57,9 @@ func docker0() string {
 	return ""
 }
 
-// bridgeRoute is what a bridge listener serves: the keyed model gateway and /health. The UI,
-// /api/* and avatars stay on loopback. A new route agents call (docs/core.md plans /mcp and
-// /ingest/*) must be added here too, or it works on macOS and 404s on Linux.
-func bridgeRoute(path string) bool { return path == "/health" || strings.HasPrefix(path, "/v1/") }
+// bridgeRoute is what a bridge listener serves: what agents call, each keyed or signed per agent
+// (the model gateway, MCP, hook ingest) and /health. The UI, /api/* and avatars stay on loopback.
+// A new route agents call must be added here too, or it works on macOS and 404s on Linux.
+func bridgeRoute(path string) bool {
+	return path == "/health" || path == "/mcp" || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/ingest/")
+}

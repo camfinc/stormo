@@ -67,10 +67,13 @@ var ChannelSecrets = map[string][]string{
 
 // Core is the swarm core's model gateway as local agent containers see it. Each agent
 // authenticates with its own key, a local-only secret (never pushed to AWS).
-var Core = struct{ KeyEnv, BaseURL string }{
+var Core = struct{ KeyEnv, URL, BaseURL, IngestURL string }{
 	KeyEnv: "SWARM_CORE_KEY",
 	// The core runs on the host (it drives the local compose projects), so containers reach it here.
+	URL:     "http://host.docker.internal:18600",
 	BaseURL: "http://host.docker.internal:18600/v1",
+	// Hermes' outbound hooks post here, signed with the agent's core key (docs/core.md §2).
+	IngestURL: "http://host.docker.internal:18600/ingest/hermes",
 }
 
 // OptionalSecret is a secret the agent can run without; when absent, what it gates is left out.

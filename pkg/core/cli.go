@@ -27,7 +27,8 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core up | down | status                start in the background / stop / show login, plan limit, usage
   core serve                             run in the foreground (logs to stdout)
   core login | logout                    Continue with ChatGPT (browser sign-in, ChatGPT plan usage) held only by the core
-                                         login --no-open: print the sign-in page, do not open a browser`
+                                         login --no-open: print the sign-in page, do not open a browser
+  core activity <agent> [n]              the agent's last n hook events with previews (files, commands; default 40)`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -251,6 +252,89 @@ type LoginResult struct {
 	Changed bool   `json:"changed"` // logout: tokens were removed
 }
 
+// ownerRequest calls the running core as its owner (.swarm/core/owner.token).
+func ownerRequest(root, method, path string, body io.Reader) (*http.Response, error) {
+	tok := ReadOwnerToken(root)
+	if tok == "" {
+		return nil, fmt.Errorf("no owner token at %s: start the core with `stormo core up`", OwnerTokenPath(root))
+	}
+	req, err := http.NewRequest(method, base()+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	c := http.Client{Timeout: 30 * time.Second}
+	res, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("the core is not answering on %s (start it with `stormo core up`): %w", base(), err)
+	}
+	return res, nil
+}
+
+// ownerJSON calls the core as its owner and decodes a JSON answer into v; an error body becomes the error.
+func ownerJSON(root, method, path string, body io.Reader, v any) error {
+	res, err := ownerRequest(root, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode >= 300 {
+		var e struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
+			return fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
+		}
+		return fmt.Errorf("core answered HTTP %d", res.StatusCode)
+	}
+	return json.Unmarshal(b, v)
+}
+
+// ActivityResult is `core activity`'s outcome.
+type ActivityResult struct {
+	Agent   string          `json:"agent"`
+	Live    *Live           `json:"live"`
+	Entries []TimelineEntry `json:"entries"`
+}
+
+func activity(inst *instance.Instance, args []string, o *out.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: stormo core activity <agent> [n]")
+	}
+	n := 40
+	if len(args) > 1 {
+		v, err := strconv.Atoi(args[1])
+		if err != nil || v <= 0 {
+			return fmt.Errorf("n must be a positive number, got %q", args[1])
+		}
+		n = v
+	}
+	var r ActivityResult
+	if err := ownerJSON(inst.Root, http.MethodGet, fmt.Sprintf("/api/agents/%s/activity?limit=%d", args[0], n), nil, &r); err != nil {
+		return err
+	}
+	o.Result(r, func(w io.Writer) {
+		if r.Live != nil && r.Live.Tool != "" {
+			fmt.Fprintf(w, "now: %s (since %s, %d call(s) running)\n", r.Live.Tool, r.Live.ToolSince, r.Live.Running)
+		}
+		if len(r.Entries) == 0 {
+			fmt.Fprintf(w, "no hook events from %s yet (it posts them once it runs with the core's hooks.outbound)\n", args[0])
+		}
+		for i := len(r.Entries) - 1; i >= 0; i-- {
+			e := r.Entries[i]
+			fmt.Fprintf(w, "%s  %-22s %-24s %s\n", e.At, e.Event, e.Tool, e.Preview)
+		}
+	})
+	return nil
+}
+
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
 	o := opts.Out
@@ -266,6 +350,8 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return down(inst, o)
 	case "", "status":
 		return status(inst, o)
+	case "activity":
+		return activity(inst, args, o)
 	case "login":
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {

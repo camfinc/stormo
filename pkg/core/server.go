@@ -18,13 +18,15 @@ import (
 
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/secrets"
 	"github.com/camfinc/stormo/pkg/version"
 )
 
 // The core service (docs/core.md). A host process on loopback; agent containers reach it as
-// host.docker.internal:18600 (on Linux through a bridge listener, bridge.go). It serves the LLM gateway and the office UI over the fleet registry;
-// activity, workdir and comms routes land here in later phases.
+// host.docker.internal:18600 (on Linux through a bridge listener, bridge.go). It serves the LLM
+// gateway, the agents' hook ingest and the office UI over the fleet registry, and keeps its
+// records in core.db.
 
 // Port is the core's default port.
 const Port = 18600
@@ -61,7 +63,10 @@ var uiFiles = map[string]struct {
 	"/ui/style.css": {styleCSS, "text/css;charset=utf-8"},
 }
 
-var avatarPath = regexp.MustCompile(`^/avatars/([a-z][a-z0-9-]*)\.png$`)
+var (
+	avatarPath = regexp.MustCompile(`^/avatars/([a-z][a-z0-9-]*)\.png$`)
+	agentPath  = regexp.MustCompile(`^/api/agents/([a-z][a-z0-9-]*)/(timeline|activity)$`)
+)
 
 var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 
@@ -78,6 +83,12 @@ type CoreOptions struct {
 	// Fleet registry for the UI; nil starts one unless NoFleet (tests skip the compose poller).
 	Fleet   *Fleet
 	NoFleet bool
+	// DB is core.db; nil opens the instance's (.swarm/core/core.db).
+	DB *DB
+	// Keys map core keys to agents; nil reads the instance's secrets file.
+	Keys *AgentKeys
+	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
+	OwnerToken string
 }
 
 // Core is a running core service.
@@ -89,6 +100,11 @@ type Core struct {
 	Gateway *llm.Gateway
 	Fleet   *Fleet
 	Office  *Office
+	DB      *DB
+	Monitor *Monitor
+	keys    *AgentKeys
+	owner   string
+	ownDB   bool
 	stop    chan struct{}
 	once    sync.Once
 }
@@ -102,8 +118,15 @@ func (c *Core) Close() error {
 	for _, b := range c.bridge {
 		_ = b.Close()
 	}
-	return c.Server.Close()
+	err := c.Server.Close()
+	if c.ownDB {
+		c.DB.Close()
+	}
+	return err
 }
+
+// caller is who a request comes from: the owner (owner token) or an agent (its core key).
+func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys) }
 
 func marshalCompact(v any) []byte {
 	var b bytes.Buffer
@@ -127,6 +150,8 @@ func errBody(code, msg string) map[string]any {
 type fleetAgentView struct {
 	FleetAgent
 	Office *OfficeState `json:"office"`
+	// From the agent's hooks: the tool it is running now. nil until it posts one.
+	Live *Live `json:"live"`
 }
 
 type gatewayView struct {
@@ -184,9 +209,32 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if g.Auth == nil {
 		g.Auth = llm.NewChatGPTAuth(llm.AuthOptions{Paths: llm.Paths(AuthDir(inst.Root))})
 	}
-	if g.Keys == nil {
-		g.Keys = NewAgentKeys(secrets.Path(inst.Root))
+	keys := o.Keys
+	if keys == nil {
+		keys = NewAgentKeys(secrets.Path(inst.Root))
 	}
+	if g.Keys == nil {
+		g.Keys = keys
+	}
+	db, ownDB := o.DB, false
+	if db == nil {
+		var err error
+		if db, err = OpenDB(DBPath(inst.Root)); err != nil {
+			return nil, err
+		}
+		ownDB = true
+	}
+	owner := o.OwnerToken
+	if owner == "" {
+		var err error
+		if owner, err = EnsureOwnerToken(inst.Root); err != nil {
+			if ownDB {
+				db.Close()
+			}
+			return nil, err
+		}
+	}
+	monitor := NewMonitor(db, keys, Scrubber(learning.NewScrubber(inst)))
 	if g.Concurrency == 0 {
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LLM_CONCURRENCY")); err == nil && n > 0 {
 			g.Concurrency = n
@@ -210,28 +258,37 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 		agents := []OfficeAgent{}
 		for _, a := range fleet.Snapshot().Agents {
-			agents = append(agents, OfficeAgent{ID: a.ID, State: a.State, Activity: a.Activity})
+			if a.State != "running" && a.State != "starting" {
+				monitor.Forget(a.ID) // its open tool calls will never finish
+			}
+			live := monitor.Live(a.ID)
+			agents = append(agents, OfficeAgent{ID: a.ID, State: a.State, Activity: a.Activity, Busy: live != nil && live.Running > 0})
 		}
 		office.Tick(agents, gateway.Status().Active, time.Now().UnixMilli())
 	}
-	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, stop: make(chan struct{})}
-	if fleet != nil {
-		go func() {
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-c.stop:
-					if startedFleet {
-						fleet.Stop()
-					}
-					return
-				case <-t.C:
-					officeTick()
+	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+	go func() {
+		office := time.NewTicker(time.Second)
+		prune := time.NewTicker(time.Hour)
+		defer office.Stop()
+		defer prune.Stop()
+		_ = monitor.Prune()
+		for {
+			select {
+			case <-c.stop:
+				if startedFleet {
+					fleet.Stop()
+				}
+				return
+			case <-office.C:
+				officeTick()
+			case <-prune.C:
+				if err := monitor.Prune(); err != nil {
+					log.Printf("core.db prune: %v", err)
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	index := strings.ReplaceAll(indexHTML, "{{name}}", htmlEscaper.Replace(inst.Name))
 	clocks := inst.Clocks
@@ -292,9 +349,32 @@ func StartCore(o CoreOptions) (*Core, error) {
 			view := fleetView{PolledAt: fs.PolledAt, Units: fs.Units, Agents: []fleetAgentView{}, Now: time.Now().UnixMilli(), Robot: office.Robot(),
 				Gateway: gatewayView{s.Login, s.PlanLimitedUntil, s.ManageUsageURL, s.Inflight, s.Queued, s.Concurrency, s.Usage, s.Active}}
 			for _, a := range fs.Agents {
-				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID)})
+				view.Agents = append(view.Agents, fleetAgentView{a, office.State(a.ID), monitor.Live(a.ID)})
 			}
 			writeJSONBody(w, 200, view)
+			return
+		case path == "/ingest/hermes":
+			monitor.Handle(w, r)
+			return
+		}
+		if m := agentPath.FindStringSubmatch(path); m != nil && get {
+			// timeline: event, tool and time only (the office's agent page). activity: with sessions
+			// and previews, which can hold client data: the owner, or that agent itself.
+			private := m[2] == "activity"
+			if private {
+				who := c.caller(r)
+				if !who.Owner && who.Agent != m[1] {
+					writeJSONBody(w, 401, errBody("unauthorized", "activity previews need the owner token or the agent's own key"))
+					return
+				}
+			}
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			rows, err := monitor.Timeline(m[1], limit, private)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read the timeline"))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"agent": m[1], "live": monitor.Live(m[1]), "entries": rows})
 			return
 		}
 		if f, ok := uiFiles[path]; ok && get {

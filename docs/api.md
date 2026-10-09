@@ -7,16 +7,23 @@ and refuse what you do not understand.
 
 ## The core's HTTP API
 
-`stormo core` listens on `127.0.0.1:$SWARM_CORE_PORT` (18600). Reads need no key: the bind is the
-boundary. Agent containers reach the core through bridge listeners that serve only `/health` and
-`/v1/*`, so nothing under `/api` reaches them.
+`stormo core` listens on `127.0.0.1:$SWARM_CORE_PORT` (18600). Reads of the fleet and the office
+need no key. The bind is not a full boundary: on OrbStack and Docker Desktop agent containers reach
+loopback ports through `host.docker.internal`. So reads that return message bodies, activity
+previews or file history need `Authorization: Bearer <owner token>` (the value in
+`.swarm/core/owner.token`, 0600, minted when the core starts; containers never mount `.swarm/core`)
+or the agent's own `SWARM_CORE_KEY`, which sees only its own part. On Linux, agent containers reach
+the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and `/ingest/*`.
 
 | route | body |
 |---|---|
 | `GET /health` | `status`, `service` (`swarm-core`), `login` (`ok` \| `missing` \| `relogin_required`), `planLimitedUntil`, `version`, `api`. Also on bridge listeners: no host paths |
 | `GET /api/core` | the running core: `service`, `version`, `api`, `pid`, `exe` (symlinks resolved), `port`, `startedAt` (RFC 3339), `instance` {`root`, `name`, `org`, `slug`}. Tells a client which binary and which instance it would attach to |
 | `GET /api/instance` | the instance's look: `name`, `org`, `slug`, `clocks` [{`city`, `tz`}], `units` {unit: {`hue`, `wall`, `floor`, `desk`}} (the web office's `window.STORMO`) |
-| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
+| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline and `live`: the tool it runs now, from its hooks, or null), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
+| `GET /api/agents/<id>/timeline` | `agent`, `live`, `entries` [{`at`, `event`, `tool`}], newest first; `?limit=` (≤ 500, default 100) |
+| `GET /api/agents/<id>/activity` | the same with each entry's `session` and `preview`. Owner token or that agent's key |
+| `POST /ingest/hermes` | Hermes' outbound hook deliveries, signed with the agent's core key (docs/core.md §2) |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models`, per-agent `usage` and `active` |
 | `GET /avatars/<id>.png` | the agent's newest portrait, 404 when it has none |
 | `/v1/*` | the OpenAI-compatible model gateway, `Authorization: Bearer <SWARM_CORE_KEY>` |
@@ -57,6 +64,7 @@ into an `error` event.
 | `core status` | `running`, `port`, `login` (the gateway's, else the sign-in on disk), `gateway` (as `/api/gateway`) when running |
 | `core login` | `login`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
 | `core logout` | `login` (`missing`), `changed` (tokens were removed) |
+| `core activity <agent> [n]` | `agent`, `live`, `entries` (as `/api/agents/<id>/activity`, newest first) |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills` (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
 | `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values) |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |

@@ -3,6 +3,7 @@
 package core
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -34,11 +35,13 @@ type AgentKeys struct {
 	mu       sync.Mutex
 	mtime    int64
 	byDigest map[string]string
+	// The keys themselves, by agent: they sign the agent's hook deliveries (VerifySignature).
+	byAgent map[string]string
 }
 
 // NewAgentKeys reads keys from the secrets file at path.
 func NewAgentKeys(path string) *AgentKeys {
-	return &AgentKeys{path: path, mtime: -1, byDigest: map[string]string{}}
+	return &AgentKeys{path: path, mtime: -1, byDigest: map[string]string{}, byAgent: map[string]string{}}
 }
 
 // reload re-reads the file when its mtime changed. Caller holds k.mu.
@@ -51,15 +54,16 @@ func (k *AgentKeys) reload() {
 		return
 	}
 	k.mtime = m
-	next := map[string]string{}
+	next, keys := map[string]string{}, map[string]string{}
 	if f, err := secrets.Load(k.path); err == nil && f.Local != nil {
 		for _, agent := range f.Local.Agents.Keys() {
 			if key, ok := f.Local.Agents.Get(agent).Get(manifest.Core.KeyEnv); ok && len(key) >= minKeyLength {
 				next[digest(key)] = agent
+				keys[agent] = key
 			}
 		}
 	}
-	k.byDigest = next
+	k.byDigest, k.byAgent = next, keys
 }
 
 // AgentFor is the agent a bearer header belongs to. Lookup is by digest, so no key is compared
@@ -91,4 +95,29 @@ func (k *AgentKeys) Agents() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+var signature = regexp.MustCompile(`^sha256=([0-9a-f]{64})$`)
+
+// VerifySignature is the agent whose core key signed body: Hermes' outbound hooks send
+// `X-Hermes-Signature-256: sha256=<hex HMAC-SHA256 of the raw body>` keyed with the agent's
+// SWARM_CORE_KEY (`secret_env`). Every agent's key is tried; a fleet has a handful.
+func (k *AgentKeys) VerifySignature(body []byte, header string) (string, bool) {
+	m := signature.FindStringSubmatch(header)
+	if m == nil {
+		return "", false
+	}
+	want, _ := hex.DecodeString(m[1])
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.reload()
+	found := ""
+	for agent, key := range k.byAgent {
+		mac := hmac.New(sha256.New, []byte(key))
+		mac.Write(body)
+		if hmac.Equal(mac.Sum(nil), want) {
+			found = agent
+		}
+	}
+	return found, found != ""
 }

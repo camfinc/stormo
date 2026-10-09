@@ -203,6 +203,9 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 				return err
 			}
 		}
+		if err := coreHooks(cfg); err != nil {
+			return err
+		}
 	}
 
 	// On Fargate there is no Docker daemon: the task is the sandbox. The old docker sandbox settings
@@ -252,6 +255,32 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) e
 		return err
 	}
 	return set("memory.user_char_limit", a.Learning.UserCharLimit)
+}
+
+// CoreHookName names the outbound hook target that posts an agent's activity to the swarm core.
+const CoreHookName = "swarm-core"
+
+// CoreHookEvents are the hooks posted to the core. LLM calls are not among them: their payloads
+// carry the whole conversation, and the core's gateway already knows which calls are in flight.
+var CoreHookEvents = []string{"on_session_start", "on_session_end", "pre_tool_call", "post_tool_call",
+	"pre_approval_request", "post_approval_response"}
+
+// coreHooks adds the core as an outbound hook target (Hermes `hooks.outbound`): session, tool and
+// approval events, signed with the agent's core key, so the core knows what the agent is doing
+// (docs/core.md §2). Delivery is fire-and-forget on Hermes' side and never blocks a turn. Targets
+// the base config already lists are kept; a stale core entry is replaced.
+func coreHooks(cfg *yaml.Node) error {
+	list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	if prev := getPath(cfg, "hooks.outbound"); prev != nil && prev.Kind == yaml.SequenceNode {
+		for _, t := range prev.Content {
+			if n := getPath(t, "name"); n == nil || n.Value != CoreHookName {
+				list.Content = append(list.Content, t)
+			}
+		}
+	}
+	list.Content = append(list.Content, yamlMap("name", CoreHookName, "url", manifest.Core.IngestURL, "events", CoreHookEvents,
+		"secret_env", manifest.Core.KeyEnv, "timeout", 5))
+	return setNode(cfg, "hooks.outbound", list)
 }
 
 func number(n *yaml.Node, def float64) float64 {

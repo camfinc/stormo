@@ -41,6 +41,8 @@ type OfficeAgent struct {
 	ID       string
 	State    string
 	Activity *Activity
+	// A tool call is in flight (the agent's hooks).
+	Busy bool
 }
 
 type span struct{ lo, hi int64 }
@@ -343,7 +345,7 @@ func (o *Office) Tick(agents []OfficeAgent, gatewayActive map[string]int, now in
 		isPresent := present[a.State]
 		// A turn, a model call through the core, or a scheduled script (no agent turn at all).
 		busy := gatewayActive[a.ID] > 0
-		if a.Activity != nil && (a.Activity.ActiveAgents > 0 || a.Activity.GatewayBusy || len(a.Activity.RunningJobs) > 0) {
+		if a.Busy || a.Activity != nil && (a.Activity.ActiveAgents > 0 || a.Activity.GatewayBusy || len(a.Activity.RunningJobs) > 0) {
 			busy = true
 		}
 		s, ok := o.agents[a.ID]

@@ -1,0 +1,63 @@
+package hermes
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/camfinc/stormo/pkg/manifest"
+	"go.yaml.in/yaml/v3"
+)
+
+func overridden(t *testing.T, base string, local bool, target manifest.Target) *yaml.Node {
+	t.Helper()
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(base), &doc); err != nil {
+		t.Fatal(err)
+	}
+	a := &manifest.Agent{ID: "atlas", Unit: "sales"}
+	a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
+	if local {
+		a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-6-luna"}
+	}
+	if err := ApplyOverrides(doc.Content[0], a, target); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Content[0]
+}
+
+func TestCoreHooksOnlyLocallyOnTheCore(t *testing.T) {
+	base := "hooks_auto_accept: false\nhooks:\n  outbound:\n    - name: audit\n      url: https://audit.example/hook\n      events: [post_tool_call]\n    - name: swarm-core\n      url: http://old/ingest\n      events: [pre_tool_call]\n"
+	cfg := overridden(t, base, true, manifest.Local)
+	list := getPath(cfg, "hooks.outbound")
+	if list == nil || len(list.Content) != 2 {
+		t.Fatalf("want the instance's own target kept and one core target, got %v", list)
+	}
+	if n := getPath(list.Content[0], "name"); n.Value != "audit" {
+		t.Errorf("first target %q", n.Value)
+	}
+	core := list.Content[1]
+	for k, want := range map[string]string{"name": CoreHookName, "url": manifest.Core.IngestURL, "secret_env": manifest.Core.KeyEnv, "timeout": "5"} {
+		if n := getPath(core, k); n == nil || n.Value != want {
+			t.Errorf("core target %s = %v, want %s", k, n, want)
+		}
+	}
+	events := []string{}
+	for _, e := range getPath(core, "events").Content {
+		events = append(events, e.Value)
+	}
+	if strings.Join(events, ",") != strings.Join(CoreHookEvents, ",") {
+		t.Errorf("events %v", events)
+	}
+	if strings.Contains(strings.Join(events, ","), "llm") {
+		t.Error("LLM hooks carry whole conversations; the core must not subscribe to them")
+	}
+
+	// AWS builds and agents that do not go through the core get no core target.
+	for name, cfg := range map[string]*yaml.Node{"aws": overridden(t, base, true, manifest.AWS), "no core": overridden(t, base, false, manifest.Local)} {
+		for _, tgt := range getPath(cfg, "hooks.outbound").Content {
+			if n := getPath(tgt, "name"); n.Value == CoreHookName && getPath(tgt, "url").Value == manifest.Core.IngestURL {
+				t.Errorf("%s: core hook target present", name)
+			}
+		}
+	}
+}

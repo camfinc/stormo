@@ -366,8 +366,12 @@ function idleFor(a) {
 }
 
 /** The status line under an agent's name: what it is doing, not where its body is. */
-/** What the agent is working on: a scheduled job when that is the only thing running, else the newest session's source. */
+/** A tool's name as people read it: MCP tools without their `mcp_<server>_` prefix, underscores as spaces. */
+const toolLabel = (t) => String(t ?? "").replace(/^mcp_[a-z0-9]+_/, "").replace(/_/g, " ");
+
+/** What the agent is working on: the tool it is running (its hooks), a scheduled job when that is the only thing running, else the newest session's source. */
 function workLabel(a) {
+  if (a.live?.tool) return toolLabel(a.live.tool);
   const jobs = a.activity?.runningJobs ?? [];
   if (jobs.length && !(a.activity?.activeAgents > 0)) return jobs[0];
   return sourceLabel(a.activity?.source);
@@ -989,6 +993,8 @@ function agentPanel(a) {
     <h3>Now</h3>
     <dl class="stats">
       <dt>Doing</dt><dd>${esc(statusText(a, mode, people.get(a.id)))}</dd>
+      ${a.live?.tool ? `<dt>Tool</dt><dd>${esc(toolLabel(a.live.tool))} <small>for ${ago(a.live.toolSince).replace(/ ago$/, "")}${a.live.running > 1 ? ` · ${a.live.running} calls running` : ""}</small></dd>` : ""}
+      ${a.live?.waiting ? `<dt>Waiting</dt><dd class="warn">${a.live.waiting} approval${a.live.waiting === 1 ? "" : "s"} for a person</dd>` : ""}
       ${a.activity ? `<dt>Engine</dt><dd>${a.activity.activeAgents} turn${a.activity.activeAgents === 1 ? "" : "s"} running${a.activity.gatewayBusy ? " · gateway busy" : ""}</dd>
       ${a.activity.runningJobs?.length ? `<dt>Scheduled</dt><dd>${a.activity.runningJobs.map(esc).join(", ")} <small>running</small></dd>` : ""}
       <dt>Last active</dt><dd>${ago(a.activity.lastActive)}${a.activity.source ? ` <small>on ${esc(sourceLabel(a.activity.source))}</small>` : ""}</dd>
@@ -996,6 +1002,7 @@ function agentPanel(a) {
       <dt>Platforms</dt><dd>${Object.entries(a.activity.platforms).map(([k, v]) => `${esc(k.replace(/_/g, " "))} <small${v.needsAttention ? ' class="warn"' : ""}>${esc(v.state)}</small>`).join(", ") || "none"}</dd>`
         : `<dt>Engine</dt><dd><small>${PRESENT.has(mode) ? "its API is not answering yet" : "not running"}</small></dd>`}
     </dl>
+    ${timelineHTML(a)}
     <h3>Status</h3>
     <dl class="stats">
       <dt>Container</dt><dd>${esc(a.state)}${a.health ? ` <small>(${esc(a.health)})</small>` : ""}</dd>
@@ -1019,6 +1026,34 @@ function agentPanel(a) {
     <div class="cmds">${cmds.map(([c, h]) => cmdButton(c, h)).join("")}</div>
     <p class="note">Click to copy, then run it in your terminal. The office is read-only for now.</p>
   </div>`;
+}
+
+// The selected agent's recent hooks (tool names and times only; previews stay with the owner's CLI).
+const timelines = new Map(); // agent id → entries
+const EVENT = {
+  pre_tool_call: "started",
+  post_tool_call: "finished",
+  on_session_start: "session opened",
+  on_session_end: "session closed",
+  pre_approval_request: "asked for approval",
+  post_approval_response: "approval answered",
+};
+
+async function fetchTimeline(id) {
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(id)}/timeline?limit=14`, { cache: "no-store" });
+    if (r.ok) timelines.set(id, (await r.json()).entries ?? []);
+  } catch {
+    /* the panel keeps the last list */
+  }
+}
+
+function timelineHTML(a) {
+  const rows = timelines.get(a.id);
+  if (!rows?.length) return a.live ? "" : `<h3>Activity</h3><p class="note">No hook events yet: they arrive once the agent runs with the core's <code>hooks.outbound</code> (restart it after <code>stormo check</code>).</p>`;
+  return `<h3>Activity</h3><ol class="timeline">${rows
+    .map((e) => `<li><time>${esc(ago(e.at))}</time> ${e.tool ? `<b>${esc(toolLabel(e.tool))}</b> ` : ""}${esc(EVENT[e.event] ?? e.event)}</li>`)
+    .join("")}</ol><p class="note">Details (files, commands) stay in the core: <code>stormo core activity ${esc(a.id)}</code>.</p>`;
 }
 
 function corePanel() {
@@ -1119,6 +1154,7 @@ async function poll() {
     if (typeof next.now === "number") clockOffset = next.now - Date.now();
     const key = JSON.stringify([next.units.map((u) => u.id), next.agents.map((a) => [a.id, a.unit, a.name, a.avatar]), !!next.robot]);
     snap = next;
+    if (selected?.kind === "agent") await fetchTimeline(selected.id);
     if (key !== rosterKey) {
       rosterKey = key;
       build();

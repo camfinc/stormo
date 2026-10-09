@@ -2,7 +2,9 @@
 
 Status: local first. **Phase 1 (the LLM gateway, on Sign in with ChatGPT) is built** (`pkg/core/`,
 `stormo core up|down|status|serve|login|logout`). **The office UI over a polled fleet registry is
-built** (`pkg/core/fleet.go`, `pkg/core/ui/`, part of phase 2); everything else is design.
+built** (`pkg/core/fleet.go`, `pkg/core/ui/`, part of phase 2), and so is `core.db`
+(`pkg/core/db.go`). **Phase 3 (activity ingest) is built** (`pkg/core/monitor.go`). The Phases table
+says what each phase has; everything not marked built is design.
 AWS comes later and is sketched only where it changes a local decision.
 
 Core is the fleet's control plane. It watches every agent, shows what each one is doing, drives
@@ -54,7 +56,8 @@ Why a host process and not a container:
   office, `/api/*` and avatars stay on loopback. `SWARM_CORE_BIND` overrides the addresses
   (comma-separated, e.g. a custom `host-gateway-ip` in daemon.json or a rootless setup) and `none`
   turns the listener off. A host firewall (ufw, firewalld) must let the Docker networks reach
-  that port.
+  that port. It serves what agents call, each keyed or signed per agent: `/v1/*`, `/mcp`,
+  `/ingest/*`, and `/health`.
 
 **Lifecycle rule.** Core starts, stops, restarts and moves agents only through `pkg/ops`
 (`start`, `stop`, `restart`, `handoff`), never raw `docker compose up` or ECS `update-service`.
@@ -144,12 +147,32 @@ from three sources:
 |---|---|---|
 | container | `ops.status("local")` (compose ps) every 15 s | running / stopped / starting, health check |
 | engine | `GET :<port>/health/detailed` with the agent's `API_SERVER_KEY` | `gateway_busy`, `active_agents`, platform states, readiness. **Built** (`pkg/core/fleet.go`): every 3 s for running local agents, `/health/detailed` + `/api/sessions?limit=5` + `/api/jobs` with the agent's `API_SERVER_KEY` (read in the core, never sent on; an agent whose manifest fails to load is retried every 30 s without costing the others their keys); only counts, platform states and the newest session's source and time reach `/api/fleet`, never titles or previews |
-| activity | Hermes `hooks.outbound` → `POST /ingest/hermes` (HMAC-signed) | session start/end, `pre/post_tool_call` (tool name, short redacted preview), LLM call start/end, approvals pending |
+| activity | Hermes `hooks.outbound` → `POST /ingest/hermes` (HMAC-signed) | session start/end, `pre/post_tool_call` (tool name, short redacted preview), approvals pending. **Built** (`pkg/core/monitor.go`), see below |
 
 Derived state per agent: `down`, `starting`, `idle`, `busy` (current tool and since when),
 `waiting` (approval pending), `degraded` (health failing, LLM on fallback, nap sidecar down),
 `stale` (no nap within 2× its interval). Transitions are events: stored, streamed to the UI and,
 when they matter (down, degraded > 5 min, stale), raised as findings.
+
+**Activity ingest (built).** For an agent on the core (`engine.local.via: core`), a local build adds
+the core to its Hermes config as an outbound hook target (`hooks.outbound`, name `swarm-core`,
+`pkg/engine/hermes`): `on_session_start|end`, `pre|post_tool_call`, `pre_approval_request`,
+`post_approval_response`. Hermes posts each one from a background queue (best effort, never
+blocking a turn), signed `X-Hermes-Signature-256: sha256=<HMAC-SHA256 of the body>` with the
+agent's `SWARM_CORE_KEY` (`secret_env`); the core finds the agent by the key that verifies, refuses
+unsigned, unknown or out-of-window deliveries (the timestamp is inside the signed body, ±10 min) and
+ignores a repeated `delivery_id`. LLM call hooks are left out on purpose: their payloads carry the
+whole conversation, and the gateway already knows which calls are in flight. Outbound targets need
+no `hooks_auto_accept` (that gates shell hooks only). From the deliveries the core keeps, per
+agent, the tool calls in flight (by `tool_call_id`; one whose `post_tool_call` never came stops
+counting after 15 min), open sessions and approvals waiting, served as `live` on `/api/fleet`; the
+office's "working" also holds while a tool runs, and its label names the tool. Each delivery is a
+row in `core.db` `activity`: event, tool, session and a preview that is the file a tool names, the
+first 160 characters of a terminal command, or the names (never values) of other tools' arguments,
+run through the instance's PII and secret scrubber. Previews and sessions reach only
+`/api/agents/<id>/activity` with the owner token (or that agent's own key) and
+`stormo core activity <agent>`; the office's agent panel lists `/timeline` (event, tool, time).
+Rows are pruned after 7 days.
 
 "Ping" is the poll above, plus an optional deep ping: `stormo core ping <agent>` sends a short
 turn through the agent's API (`/v1/runs`, session `core-ping`) and checks it answers. It costs a
@@ -370,9 +393,11 @@ separate 0600 file and is never in the database.
 | `GET /health` | anyone | liveness, login state (no secrets) |
 | `/v1/chat/completions`, `/v1/models` | agent key | LLM gateway |
 | `POST /mcp` | agent key | MCP (streamable HTTP): comms, workdir, fleet tools by scope |
-| `POST /ingest/hermes` | HMAC per agent | Hermes outbound hook events |
+| `POST /ingest/hermes` (built) | HMAC per agent | Hermes outbound hook events |
 | `/api/*`, `GET /api/events` (SSE) | loopback browser or agent key | UI and CLI JSON |
-| `GET /api/fleet` (built) | loopback, no key yet | roster, cached compose state, review counts, gateway state; no secrets, no account email |
+| `GET /api/fleet` (built) | loopback, no key yet | roster, cached compose state, review counts, gateway state, each agent's `live` tool; no secrets, no account email |
+| `GET /api/agents/<id>/timeline` (built) | loopback | the agent's newest hook events: event, tool, time |
+| `GET /api/agents/<id>/activity` (built) | owner token, or that agent's key | the same with sessions and previews |
 | `GET /avatars/<agent>.png` (built) | loopback | the agent's persona portrait, read in place |
 | `/`, `/ui/app.js`, `/ui/style.css` (built) | loopback browser | the office UI |
 
@@ -382,12 +407,13 @@ separate 0600 file and is never in the database.
 pkg/core/
   server.go            net/http: routing, auth (agent keys), embedded UI (built)
   keys.go              key → agent map from secrets.local.yaml (reload on change) (built)
-  db.go                SQLite schema and migrations
+  db.go                SQLite schema and migrations (built)
+  owner.go             the owner token for private reads (built)
   llm/chatgptauth.go   Sign in with ChatGPT: browser PKCE sign-in, ID-token check, single refresher (built)
   llm/translate.go     chat.completions ⇄ Responses API (request, SSE, errors, reasoning cache) (built)
   llm/gateway.go       /v1 routes, concurrency, usage, timeouts, error mapping (built)
   fleet.go             roster from manifests, async compose poller, cached snapshot, avatars (built)
-  monitor.go           activity ingest, derived state, events bus
+  monitor.go           activity ingest, live state, timeline (built)
   workdir.go           watcher, attribution, locks
   bus.go               messages, delivery, loop guards
   learn.go             nap triggers, learning cycle
@@ -406,8 +432,8 @@ which another session owns right now:
    mount and `stormo login` (in progress there).
 2. A local-only secret notion so `SWARM_CORE_KEY` is never expected or pushed in AWS.
 3. `mcp_servers.core: {url: http://host.docker.internal:18600/mcp, headers: {Authorization: "Bearer ${SWARM_CORE_KEY}"}}`.
-4. `hooks.outbound` to `/ingest/hermes` for session, tool and LLM events, signed with a per-agent
-   secret, plus `hooks_auto_accept` for that hook only.
+4. ~~`hooks.outbound` to `/ingest/hermes`~~ **Done** (phase 3): session, tool and approval events,
+   signed with the agent's `SWARM_CORE_KEY`; outbound targets need no `hooks_auto_accept`.
 5. `/workdir` bind mount, `HERMES_WRITE_SAFE_ROOT` += `/workdir`, `SWARM_WORKDIR=/workdir`.
 6. `extra_hosts: host.docker.internal:host-gateway` on the agent service (harmless on OrbStack,
    needed on Linux).
@@ -419,8 +445,8 @@ which another session owns right now:
 | # | deliverable | done when |
 |---|---|---|
 | 1 | LLM gateway + `stormo core up/down/serve/login/logout/status` | an agent streams a tool-calling turn through core; plan limit falls back to OpenRouter; tests cover translation, refresh single-flight, error mapping |
-| 2 | server skeleton, `core.db`, registry, pollers, fleet page | UI shows every local agent's state live; stopping an agent flips its card within 30 s. **Office UI, registry and compose poller built; `core.db` not yet** |
-| 3 | activity ingest + agent page | UI shows the current tool of a busy agent in real time |
+| 2 | server skeleton, `core.db`, registry, pollers, fleet page | UI shows every local agent's state live; stopping an agent flips its card within 30 s. **Built**: office UI, registry, compose poller, `core.db` (migrations by `user_version`) |
+| 3 | activity ingest + agent page | UI shows the current tool of a busy agent in real time. **Built**: signed ingest, live tool per agent on `/api/fleet` and in the office, agent timeline, `stormo core activity`; the UI polls (2.5 s), no SSE yet |
 | 4 | workdir mount, watcher, attribution, locks, `fs_*` MCP tools, workdir skill | two agents contend for a file: the second sees the lock and holder; a terminal write is attributed |
 | 5 | comms bus (`msg_*`), wake delivery, loop guards | agent A asks agent B a question and gets an answer with no human in the loop, with no Slack noise |
 | 6 | learning cycle, nap trigger, schedule, digest | nightly cycle produces proposals and a summary without manual steps |
