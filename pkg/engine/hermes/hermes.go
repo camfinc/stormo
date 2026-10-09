@@ -220,22 +220,47 @@ func (h *Hermes) Env(a *manifest.Agent, target manifest.Target) *env.Env {
 	return e
 }
 
-// ApplyOverrides sets the keys Stormo owns regardless of what the ported base config says.
-func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, target manifest.Target) error {
+// ApplyOverrides sets the keys Stormo owns regardless of what the ported base config says. conn is
+// the agent's API connection (model.provider): OpenRouter with its standard key is Hermes' own
+// openrouter provider; anything else (OpenAI, Anthropic, an OpenAI-compatible API, OpenRouter on
+// another key) is Hermes' custom provider with the connection's base_url and key_env, so a base
+// config's own base_url never sends the agent elsewhere.
+func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection, target manifest.Target) error {
 	set := func(path string, v any) error { return setPath(cfg, path, v) }
 	if err := set("model.default", a.Engine.Model); err != nil {
 		return err
 	}
-	if err := set("model.provider", a.Engine.Provider); err != nil {
+	provider, native := "custom", conn.Kind == instance.KindOpenRouter && conn.Key == "OPENROUTER_API_KEY"
+	if native {
+		provider = "openrouter"
+	}
+	if err := set("model.provider", provider); err != nil {
 		return err
+	}
+	if native {
+		if m := getPath(cfg, "model"); m != nil {
+			deleteKey(m, "key_env")
+		}
+		if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != conn.BaseURL {
+			bu.Value = conn.BaseURL
+		}
+	} else {
+		for _, kv := range [][2]string{{"model.base_url", conn.BaseURL}, {"model.key_env", conn.Key}, {"model.api_mode", "chat_completions"}} {
+			if err := set(kv[0], kv[1]); err != nil {
+				return err
+			}
+		}
 	}
 	if onCore(a, target) {
 		// Locally the swarm core's gateway serves the model on the ChatGPT subscription; the agent
 		// only holds its own core key. Hermes falls back to the AWS model on a 401, a 429 or a dead
 		// core, and retries the core every turn.
-		aws := yamlMap("provider", a.Engine.Provider, "model", a.Engine.Model)
+		aws := yamlMap("provider", provider, "model", a.Engine.Model)
 		if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != "" {
 			addKey(aws, "base_url", bu)
+		}
+		if !native {
+			addKey(aws, "key_env", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: conn.Key})
 		}
 		list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{aws}}
 		if prev := getPath(cfg, "fallback_providers"); prev != nil && prev.Kind == yaml.SequenceNode {
@@ -443,7 +468,11 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 			cfg = doc.Content[0]
 		}
 	}
-	if err := ApplyOverrides(cfg, a, ctx.Target); err != nil {
+	conn, ok := ctx.Instance.Connection(a.Engine.Provider)
+	if !ok {
+		return nil, fmt.Errorf("agents/%s: model.provider %q is not a connection of this instance", a.ID, a.Engine.Provider)
+	}
+	if err := ApplyOverrides(cfg, a, conn, ctx.Target); err != nil {
 		return nil, err
 	}
 	rendered, err := encodeYAML(cfg)

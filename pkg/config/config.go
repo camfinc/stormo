@@ -189,6 +189,9 @@ func validate(inst *instance.Instance, t target, old, body []byte) error {
 		if err != nil {
 			return refuse("invalid", "%v", err)
 		}
+		if err := manifest.CheckConnections(a, inst); err != nil {
+			return refuse("invalid", "%v", err)
+		}
 		registry, err := bridge.Load(inst)
 		if err != nil {
 			return err

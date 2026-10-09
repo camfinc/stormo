@@ -5,9 +5,12 @@ import (
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/env"
+	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"go.yaml.in/yaml/v3"
 )
+
+var openrouter = instance.Connection{Name: "openrouter", Kind: instance.KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY"}
 
 func overridden(t *testing.T, base string, local bool, target manifest.Target) *yaml.Node {
 	t.Helper()
@@ -20,7 +23,7 @@ func overridden(t *testing.T, base string, local bool, target manifest.Target) *
 	if local {
 		a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-6-luna"}
 	}
-	if err := ApplyOverrides(doc.Content[0], a, target); err != nil {
+	if err := ApplyOverrides(doc.Content[0], a, openrouter, target); err != nil {
 		t.Fatal(err)
 	}
 	return doc.Content[0]
@@ -114,13 +117,52 @@ func TestLimitsReachTheConfig(t *testing.T) {
 	}
 	a := &manifest.Agent{ID: "atlas", Unit: "sales", Limits: manifest.Limits{Turns: 80, ScriptTimeout: 900}}
 	a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
-	if err := ApplyOverrides(doc.Content[0], a, manifest.AWS); err != nil {
+	if err := ApplyOverrides(doc.Content[0], a, openrouter, manifest.AWS); err != nil {
 		t.Fatal(err)
 	}
 	cfg := doc.Content[0]
 	for path, want := range map[string]string{"agent.max_turns": "80", "agent.reasoning_effort": "high", "terminal.timeout": "180", "cron.script_timeout_seconds": "900"} {
 		if n := getPath(cfg, path); n == nil || n.Value != want {
 			t.Errorf("%s = %v, want %s", path, n, want)
+		}
+	}
+}
+
+func TestAnOpenAIConnectionLeavesNoOpenRouterBehind(t *testing.T) {
+	base := "model:\n  default: x\n  provider: openrouter\n  base_url: https://openrouter.ai/api/v1\n  api_mode: chat_completions\n"
+	conn := instance.Connection{Name: "openai", Kind: instance.KindOpenAI, BaseURL: "https://api.openai.com/v1", Key: "OPENAI_API_KEY"}
+	for _, local := range []bool{false, true} {
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(base), &doc); err != nil {
+			t.Fatal(err)
+		}
+		a := &manifest.Agent{ID: "atlas", Unit: "sales"}
+		a.Engine.Model, a.Engine.Provider = "gpt-6", "openai"
+		target := manifest.AWS
+		if local {
+			a.Engine.Local, target = &manifest.EngineLocal{Via: "core", Model: "gpt-5.6-sol"}, manifest.Local
+		}
+		if err := ApplyOverrides(doc.Content[0], a, conn, target); err != nil {
+			t.Fatal(err)
+		}
+		cfg := doc.Content[0]
+		if !local {
+			for path, want := range map[string]string{"model.provider": "custom", "model.base_url": "https://api.openai.com/v1", "model.key_env": "OPENAI_API_KEY", "model.default": "gpt-6"} {
+				if n := getPath(cfg, path); n == nil || n.Value != want {
+					t.Errorf("%s = %v, want %s", path, n, want)
+				}
+			}
+			continue
+		}
+		// On the core the cloud model is the fallback, with its own key.
+		fb := getPath(cfg, "fallback_providers")
+		if fb == nil || len(fb.Content) == 0 {
+			t.Fatal("no fallback")
+		}
+		for k, want := range map[string]string{"provider": "custom", "model": "gpt-6", "base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"} {
+			if n := getPath(fb.Content[0], k); n == nil || n.Value != want {
+				t.Errorf("fallback %s = %v, want %s", k, n, want)
+			}
 		}
 	}
 }

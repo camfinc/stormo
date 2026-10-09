@@ -99,7 +99,13 @@ type Persona struct {
 type EngineLocal struct {
 	Via   string `json:"via"`
 	Model string `json:"model"`
+	// Connection is the ChatGPT sign-in the core serves it with (model.local.connection); empty is
+	// the core's original one.
+	Connection string `json:"connection,omitempty"`
 }
+
+// ConnectionName is the connection the local route uses.
+func (l EngineLocal) ConnectionName() string { return or(l.Connection, "chatgpt") }
 
 type EngineSpec struct {
 	Kind     string       `json:"kind"`
@@ -344,8 +350,9 @@ type raw struct {
 		Name     any `yaml:"name"`
 		Provider any `yaml:"provider"`
 		Local    *struct {
-			Via  any `yaml:"via"`
-			Name any `yaml:"name"`
+			Via        any `yaml:"via"`
+			Name       any `yaml:"name"`
+			Connection any `yaml:"connection"`
 		} `yaml:"local"`
 	} `yaml:"model"`
 	Memory          map[string]any   `yaml:"memory"`
@@ -701,12 +708,12 @@ type modelSpec struct {
 // modelOf reads model: (format 1) or engine.model/provider/local (format 0); never both.
 func modelOf(m raw, where string) (modelSpec, error) {
 	var out modelSpec
-	var localVia, localName any
+	var localVia, localName, localConn any
 	hasLocal := false
 	if m.Model != nil {
 		out.name, out.provider = str(m.Model.Name), str(m.Model.Provider)
 		if l := m.Model.Local; l != nil {
-			localVia, localName, hasLocal = l.Via, l.Name, true
+			localVia, localName, localConn, hasLocal = l.Via, l.Name, l.Connection, true
 		}
 	}
 	if e := m.Engine; e != nil && (e.Model != nil || e.Provider != nil || e.Local != nil) {
@@ -725,7 +732,7 @@ func modelOf(m raw, where string) (modelSpec, error) {
 		if err := req(str(localName) != "", "%s: model.local.name is required", where); err != nil {
 			return out, err
 		}
-		out.local = &EngineLocal{Via: "core", Model: str(localName)}
+		out.local = &EngineLocal{Via: "core", Model: str(localName), Connection: str(localConn)}
 	}
 	return out, nil
 }

@@ -131,7 +131,9 @@ type Instance struct {
 	OfficeUnits map[string]OfficeUnit `json:"officeUnits"`
 	// The core's own learning schedule (stormo.yaml core.learning).
 	CoreLearning CoreLearning `json:"coreLearning"`
-	Aws          AwsTarget    `json:"aws"`
+	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
+	Connections []Connection `json:"connections"`
+	Aws         AwsTarget    `json:"aws"`
 }
 
 // Error is a problem with an instance's stormo.yaml or with finding one.
@@ -183,7 +185,8 @@ type rawFile struct {
 			AutoRestart       bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
-	Deploy struct {
+	Connections []rawConnection `yaml:"connections"`
+	Deploy      struct {
 		Aws struct {
 			Account          any    `yaml:"account"`
 			Region           string `yaml:"region"`
@@ -278,6 +281,10 @@ func Load(root string) (*Instance, error) {
 	if cl.QuietWaitMinutes != nil {
 		learning.QuietWaitMinutes = *cl.QuietWaitMinutes
 	}
+	connections, err := connectionsOf(raw.Connections, path)
+	if err != nil {
+		return nil, err
+	}
 	rules := raw.Scrub.Rules
 	if rules == nil {
 		rules = []ScrubRule{}
@@ -315,6 +322,7 @@ func Load(root string) (*Instance, error) {
 			TaskRoleArn:      or(aws.TaskRoleArn, Unset),
 			Efs:              Efs{FileSystemID: or(aws.Efs.FileSystemID, Unset), AccessPoints: aps},
 		},
+		Connections: connections,
 	}, nil
 }
 

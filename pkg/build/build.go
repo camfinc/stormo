@@ -158,6 +158,9 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 	if err != nil {
 		return nil, err
 	}
+	if err := manifest.CheckConnections(declared, inst); err != nil {
+		return nil, err
+	}
 	ctx, err := learning.CompileLearning(inst, agentID, eng.Memory())
 	if err != nil {
 		return nil, err

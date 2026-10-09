@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/camfinc/stormo/pkg/instance"
 )
 
 const example = "../../examples/minimal"
@@ -198,6 +200,41 @@ func TestSchedules(t *testing.T) {
 	} {
 		if _, err := parseAs(t, base+body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
+	}
+}
+
+func TestCheckConnections(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "stormo.yaml"), []byte("slug: acme\nconnections:\n  - {name: openai, kind: openai}\n  - {name: work-gpt, kind: chatgpt}\n"), 0o644)
+	inst, err := instance.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{ID: "atlas", Engine: EngineSpec{Provider: "openai"}, Secrets: []string{"OPENAI_API_KEY"}}
+	if err := CheckConnections(a, inst); err != nil {
+		t.Fatal(err)
+	}
+	a.Engine.Local = &EngineLocal{Via: "core", Model: "x", Connection: "work-gpt"}
+	if err := CheckConnections(a, inst); err != nil {
+		t.Errorf("work-gpt: %v", err)
+	}
+	for _, c := range []struct {
+		edit func(a *Agent)
+		want string
+	}{
+		{func(a *Agent) { a.Engine.Provider = "anthropic" }, "not an API connection"},
+		{func(a *Agent) { a.Engine.Provider = "chatgpt" }, "not an API connection"},
+		{func(a *Agent) { a.Secrets = nil }, "add it under secrets"},
+		{func(a *Agent) { a.Engine.Local.Connection = "openai" }, "not a ChatGPT connection"},
+		{func(a *Agent) { a.Schedules = []Schedule{{ID: "s", Provider: "nowhere"}} }, `schedule "s" provider`},
+	} {
+		b := *a
+		l := *a.Engine.Local
+		b.Engine.Local = &l
+		c.edit(&b)
+		if err := CheckConnections(&b, inst); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("want %q, got %v", c.want, err)
 		}
 	}
 }
