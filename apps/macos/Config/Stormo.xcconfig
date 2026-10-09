@@ -1,0 +1,34 @@
+// Build settings for Stormo.app (docs/macos-app.md). Identity lives in Identity.xcconfig.
+#include "Identity.xcconfig"
+
+PRODUCT_NAME = Stormo
+SDKROOT = macosx
+MACOSX_DEPLOYMENT_TARGET = 26.0
+SWIFT_VERSION = 6.0
+SWIFT_APPROACHABLE_CONCURRENCY = YES
+SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_KEY_CFBundleDisplayName = Stormo
+INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.developer-tools
+INFOPLIST_KEY_NSHumanReadableCopyright = Apache-2.0
+// Release builds set both from the engine tag and the CI run (scripts/build.sh).
+MARKETING_VERSION = 0.0.0
+CURRENT_PROJECT_VERSION = 1
+
+// Outside the App Store: hardened runtime, no App Sandbox (the app runs stormo, docker and the
+// CLI, and opens any instance folder). Local builds sign to run locally; release builds sign with
+// Developer ID in CI.
+ENABLE_HARDENED_RUNTIME = YES
+ENABLE_APP_SANDBOX = NO
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+// The bundle-stormo phase builds the engine from this checkout, outside the project folder.
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+COMBINE_HIDPI_IMAGES = YES
+ALWAYS_SEARCH_USER_PATHS = NO
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks
+ENABLE_PREVIEWS = YES
+SWIFT_EMIT_LOC_STRINGS = YES

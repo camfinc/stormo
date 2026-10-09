@@ -103,7 +103,8 @@ a skill named `stormo` that Stormo did not write is left alone unless you pass `
 - **Dream** reads only what an agent learned (never its conversations) and proposes it back.
 
 The design in depth: [ARCHITECTURE.md](ARCHITECTURE.md). The core and the office:
-[docs/core.md](docs/core.md).
+[docs/core.md](docs/core.md). What other programs can rely on (the core's API, `--json`):
+[docs/api.md](docs/api.md).
 
 ## Everyday commands
 
@@ -145,6 +146,7 @@ pkg/                 the engine (instance, manifests, build, learning loop, core
 docker/              the sidecar image and the per-agent ECS layer
 examples/minimal/    a complete example instance: the template and the test fixture
 examples/office-demo the office with simulated activity (the screenshot above)
+apps/macos/          the macOS app (SwiftUI, in progress) and StormoKit
 docs/                instances, the core and the office; docs/brand: the logo
 tools/brandgen/      generates the logo files
 scripts/             release builds

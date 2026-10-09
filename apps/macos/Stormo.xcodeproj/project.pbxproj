@@ -1,0 +1,254 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		5701000000000000000000A1 /* StormoKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5701000000000000000000C1 /* StormoKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		5701000000000000000000B1 /* Stormo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Stormo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5701000000000000000000B2 /* Stormo.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Stormo.xcconfig; sourceTree = "<group>"; };
+		5701000000000000000000B3 /* Identity.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Identity.xcconfig; sourceTree = "<group>"; };
+		5701000000000000000000B4 /* StormoKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = StormoKit; sourceTree = "<group>"; };
+		5701000000000000000000B5 /* bundle-stormo.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "bundle-stormo.sh"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5701000000000000000000D1 /* Stormo */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Stormo; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5701000000000000000000E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5701000000000000000000A1 /* StormoKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5701000000000000000000F1 = {
+			isa = PBXGroup;
+			children = (
+				5701000000000000000000D1 /* Stormo */,
+				5701000000000000000000B4 /* StormoKit */,
+				5701000000000000000000F2 /* Config */,
+				5701000000000000000000F3 /* scripts */,
+				5701000000000000000000F4 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5701000000000000000000F2 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				5701000000000000000000B2 /* Stormo.xcconfig */,
+				5701000000000000000000B3 /* Identity.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		5701000000000000000000F3 /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				5701000000000000000000B5 /* bundle-stormo.sh */,
+			);
+			path = scripts;
+			sourceTree = "<group>";
+		};
+		5701000000000000000000F4 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5701000000000000000000B1 /* Stormo.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		570100000000000000000101 /* Stormo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 570100000000000000000121 /* Build configuration list for PBXNativeTarget "Stormo" */;
+			buildPhases = (
+				570100000000000000000111 /* Sources */,
+				5701000000000000000000E1 /* Frameworks */,
+				570100000000000000000112 /* Resources */,
+				570100000000000000000113 /* Bundle stormo */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5701000000000000000000D1 /* Stormo */,
+			);
+			name = Stormo;
+			packageProductDependencies = (
+				5701000000000000000000C1 /* StormoKit */,
+			);
+			productName = Stormo;
+			productReference = 5701000000000000000000B1 /* Stormo.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		570100000000000000000131 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					570100000000000000000101 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = 570100000000000000000122 /* Build configuration list for PBXProject "Stormo" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5701000000000000000000F1;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				570100000000000000000141 /* XCLocalSwiftPackageReference "StormoKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5701000000000000000000F4 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				570100000000000000000101 /* Stormo */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		570100000000000000000112 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		570100000000000000000113 /* Bundle stormo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bundle stormo";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/scripts/bundle-stormo.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		570100000000000000000111 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		570100000000000000000151 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		570100000000000000000152 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		570100000000000000000153 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5701000000000000000000B2 /* Stormo.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		570100000000000000000154 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5701000000000000000000B2 /* Stormo.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		570100000000000000000121 /* Build configuration list for PBXNativeTarget "Stormo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				570100000000000000000153 /* Debug */,
+				570100000000000000000154 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		570100000000000000000122 /* Build configuration list for PBXProject "Stormo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				570100000000000000000151 /* Debug */,
+				570100000000000000000152 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		570100000000000000000141 /* XCLocalSwiftPackageReference "StormoKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = StormoKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5701000000000000000000C1 /* StormoKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StormoKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 570100000000000000000131 /* Project object */;
+}

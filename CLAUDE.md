@@ -32,3 +32,9 @@ on `examples/minimal` only.
   mount or access point that gives an agent another unit's directory.
 - The learning ledger's PII scrub and promotion refusals (flagged or user-profile entries) are
   invariants; keep them.
+- **The macOS app** (`apps/macos/`, SwiftUI, macOS 26+): no organisation in it beyond
+  `Config/Identity.xcconfig`. It talks to the engine only through the core's HTTP API and
+  `stormo --json` (docs/api.md, versioned by `version.API`); change either with the app in mind.
+  Checks when it changed: `swift test --package-path apps/macos/StormoKit` and
+  `xcodebuild -project apps/macos/Stormo.xcodeproj -scheme Stormo build`. Swift dependencies follow
+  the same two-week rule.

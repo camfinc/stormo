@@ -1,0 +1,3 @@
+// The app's identity: the publisher's bundle identifier and Apple team. A fork changes these lines.
+PRODUCT_BUNDLE_IDENTIFIER = com.camfsolutions.stormo
+DEVELOPMENT_TEAM =
