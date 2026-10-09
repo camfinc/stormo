@@ -2,18 +2,22 @@ import AppKit
 import StormoKit
 import SwiftUI
 
-/// An agent's definition (agent.yaml) and behaviour (SOUL.md), edited through `stormo config`
-/// (docs/api.md): the engine validates every save and refuses one made over a file that changed on
-/// disk; after a save the agent is checked, and a running agent picks the change up on restart.
+/// An agent's editor in the Agents section: its settings as a form, its behaviour (SOUL.md) and its
+/// agent.yaml as text. Everything goes through `stormo config` (docs/api.md): the form saves the
+/// fields it changed as a merge patch, so the file keeps its comments; the engine validates every
+/// save and refuses one made over a file that changed on disk. After a save the agent is checked,
+/// and a running agent picks the change up on restart.
 struct AgentEditor: View {
-    /// The window group; its value is the agent id, so each agent gets one editor window.
-    static let windowID = "agent-editor"
-
     enum Page: String, CaseIterable, Identifiable {
-        case definition, behaviour
+        case settings, behaviour, yaml
         var id: Self { self }
-        var title: String { self == .definition ? "Definition" : "Behaviour" }
-        var file: String { self == .definition ? "agent.yaml" : "SOUL.md" }
+        var title: String {
+            switch self {
+            case .settings: "Settings"
+            case .behaviour: "Behaviour"
+            case .yaml: "agent.yaml"
+            }
+        }
     }
 
     enum Check: Equatable {
@@ -24,116 +28,131 @@ struct AgentEditor: View {
 
     @Environment(AppModel.self) private var model
     let agentID: String
-    @State private var page = Page.definition
-    @State private var editors: [Page: ConfigEditor] = [:]
+    @State private var page = Page.settings
+    @State private var definition: ConfigEditor
+    @State private var soul: ConfigEditor
     @State private var check: Check?
 
-    private var editor: ConfigEditor? { editors[page] }
+    init(agentID: String) {
+        self.agentID = agentID
+        _definition = State(initialValue: ConfigEditor(path: "agents/\(agentID)/agent.yaml"))
+        _soul = State(initialValue: ConfigEditor(path: "agents/\(agentID)/SOUL.md"))
+    }
+
+    private var editor: ConfigEditor { page == .behaviour ? soul : definition }
     private var agent: FleetAgent? { model.fleet.agent(agentID) }
+    private var name: String { definition.doc?[["name"]]?.string ?? agent?.name ?? agentID }
 
     var body: some View {
         VStack(spacing: 0) {
-            if let editor {
-                EditorPane(editor: editor, wraps: page == .behaviour)
-                    .id(page) // its own undo history per file
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let problem = editor.problem {
+                ProblemBanner(problem: problem, stale: editor.isStale, oldBinary: editor.file == nil) {
+                    Task { await reload() }
+                }
+            } else if page == .yaml && definition.isFormDirty {
+                NoticeBanner(text: "The settings have unsaved changes. Save or revert them to edit the file as text.")
+            } else if page == .settings && definition.isTextDirty {
+                NoticeBanner(text: "agent.yaml has unsaved text changes. Save or revert them to use the form.")
             }
-            Divider()
-            statusBar
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            content
+            if let check, !editor.isDirty {
+                Divider()
+                checkBar(check)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+            }
         }
-        .navigationTitle(agent?.name ?? agentID)
-        .navigationSubtitle("agents/\(agentID)/\(page.file)")
+        .navigationTitle(name)
+        .navigationSubtitle(page == .behaviour ? "agents/\(agentID)/SOUL.md" : "agents/\(agentID)/agent.yaml")
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Picker("File", selection: $page) {
+                Picker("Page", selection: $page) {
                     ForEach(Page.allCases) { p in
-                        Text(p.title + (editors[p]?.isDirty == true ? " •" : "")).tag(p)
+                        Text(p.title + (dirty(p) ? " •" : "")).tag(p)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button("Revert", systemImage: "arrow.uturn.backward") { editor?.revert() }
-                    .disabled(editor?.isDirty != true)
+                Button("Revert", systemImage: "arrow.uturn.backward") { editor.revert() }
+                    .help("Drop the unsaved changes")
+                    .disabled(!editor.isDirty)
                 Button("Save", systemImage: "checkmark") { Task { await save() } }
                     .keyboardShortcut("s")
-                    .disabled(editor?.isDirty != true || editor?.busy == true)
+                    .help("Save through stormo, which validates it first")
+                    .disabled(!editor.isDirty || editor.busy)
             }
         }
         .task(id: model.cli?.instance) { await load() }
-        .frame(minWidth: 560, minHeight: 420)
     }
 
-    @ViewBuilder private var statusBar: some View {
-        HStack(spacing: 8) {
-            if let problem = editor?.problem {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                Text(problem.code == "usage" && editor?.file == nil
-                     ? "This stormo cannot edit agents (it has no `config` command). Update it, or choose the bundled one in Settings › Command line."
-                     : problem.message)
-                    .textSelection(.enabled).lineLimit(3)
-                Spacer()
-                if editor?.isStale == true {
-                    Button("Reload") { Task { await reload() } }
-                        .help("Load the version on disk; your edits to this file are dropped")
-                }
-            } else if editor?.isDirty == true {
-                Text("Edited").foregroundStyle(.secondary)
-                Spacer()
-            } else if let check {
-                checkStatus(check)
+    @ViewBuilder private var content: some View {
+        switch page {
+        case .settings:
+            if let options = definition.file?.options, definition.doc != nil {
+                AgentForm(editor: definition, options: options, agent: agent, agentID: agentID)
+                    .disabled(definition.isTextDirty || definition.busy || definition.isStale)
+            } else if definition.file != nil {
+                ContentUnavailableView("agent.yaml does not parse", systemImage: "exclamationmark.triangle",
+                                       description: Text("Fix it in the agent.yaml tab; the form comes back once it parses."))
+            } else if definition.problem == nil {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text(page == .definition ? "Saved through stormo, which validates the manifest first. deploy: is read-only here."
-                                         : "How the agent behaves, in Markdown. It reaches the agent on its next start.")
-                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        case .behaviour:
+            TextPane(editor: soul, wraps: true, editable: !soul.isStale)
+        case .yaml:
+            TextPane(editor: definition, wraps: false, editable: !definition.isFormDirty && !definition.isStale)
+        }
+    }
+
+    private func dirty(_ p: Page) -> Bool {
+        switch p {
+        case .settings: definition.isFormDirty
+        case .behaviour: soul.isDirty
+        case .yaml: definition.isTextDirty
+        }
+    }
+
+    @ViewBuilder private func checkBar(_ check: Check) -> some View {
+        HStack(spacing: 8) {
+            switch check {
+            case .running:
+                ProgressView().controlSize(.small)
+                Text("Saved. Checking \(name)…").foregroundStyle(.secondary)
+                Spacer()
+            case .passed(let row):
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("Saved and checked" + (row.map { ": \($0.files) files, \($0.skills) skills" } ?? "") + ".")
+                Spacer()
+                if agent?.state == "running" {
+                    Text("Restart to use it.").foregroundStyle(.secondary)
+                    Button("Restart \(name)") { Task { await model.run("restart", agents: [agentID]) } }
+                }
+            case .failed(let message):
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Saved, but the check failed: \(message)").textSelection(.enabled).lineLimit(3)
                 Spacer()
             }
         }
         .font(.callout)
-        .frame(minHeight: 22)
-    }
-
-    @ViewBuilder private func checkStatus(_ check: Check) -> some View {
-        switch check {
-        case .running:
-            ProgressView().controlSize(.small)
-            Text("Saved. Checking \(agent?.name ?? agentID)…").foregroundStyle(.secondary)
-            Spacer()
-        case .passed(let row):
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            Text("Saved and checked" + (row.map { ": \($0.files) files, \($0.skills) skills" } ?? "") + ".")
-            Spacer()
-            if agent?.state == "running" {
-                Text("Restart to use it.").foregroundStyle(.secondary)
-                Button("Restart \(agent?.name ?? agentID)") { Task { await model.run("restart", agents: [agentID]) } }
-            }
-        case .failed(let message):
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text("Saved, but the check failed: \(message)").textSelection(.enabled).lineLimit(3)
-            Spacer()
-        }
     }
 
     private func load() async {
         guard let cli = model.cli else { return }
-        for p in Page.allCases {
-            let e = editors[p] ?? ConfigEditor(path: "agents/\(agentID)/\(p.file)")
-            editors[p] = e
-            await e.load(with: cli)
-        }
+        await definition.load(with: cli)
+        await soul.load(with: cli)
     }
 
     private func reload() async {
-        guard let cli = model.cli, let editor else { return }
+        guard let cli = model.cli else { return }
         await editor.load(with: cli)
     }
 
     private func save() async {
-        guard let cli = model.cli, let editor else { return }
+        guard let cli = model.cli else { return }
         check = nil
         guard await editor.save(with: cli) else { return }
         check = .running
@@ -146,12 +165,590 @@ struct AgentEditor: View {
     }
 }
 
-private struct EditorPane: View {
+// MARK: The form
+
+/// agent.yaml as a form. It edits the loaded document in place, field by field, so keys it does not
+/// show (a channel's local overrides, anything newer than this app) are kept; every choice comes
+/// from the engine (`options`).
+private struct AgentForm: View {
     @Bindable var editor: ConfigEditor
-    let wraps: Bool
+    let options: AgentOptions
+    let agent: FleetAgent?
+    let agentID: String
+
+    typealias Path = [JSONValue.Key]
 
     var body: some View {
-        PlainTextEditor(text: $editor.text, editable: editor.file != nil && !editor.isStale, wraps: wraps)
+        Form {
+            header
+            identity
+            engine
+            addChannel
+            ForEach(channelIndices, id: \.self) { i in channel(i) }
+            actions
+            secrets
+            optionalSecrets
+            environment
+            state
+            learning
+            deploy
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: Sections
+
+    private var header: some View {
+        Section {
+            HStack(spacing: 14) {
+                if let agent {
+                    AgentBadge(agent: agent, size: 56)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(get(["name"])?.string ?? agentID).font(.title2).fontWeight(.semibold)
+                    Text("id \(agentID) · the folder's name, fixed").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var identity: some View {
+        Section("Identity") {
+            TextField("Name", text: text(["name"], keepEmpty: true))
+            TextField("Role", text: text(["role"]), prompt: Text("What the agent does, in a sentence or two"), axis: .vertical)
+                .lineLimit(2...6)
+            Picker("Unit", selection: text(["unit"], keepEmpty: true)) {
+                ForEach(choices(options.units.filter { $0.id != "group" }.map(\.id), current: get(["unit"])?.string), id: \.self) { id in
+                    Text(options.units.first { $0.id == id }?.name ?? id).tag(id)
+                }
+            }
+            Picker("Persona", selection: persona) {
+                Text("None").tag("")
+                ForEach(choices(options.personas, current: get(["persona", "path"])?.string), id: \.self) { p in
+                    Text(p.split(separator: "/").last.map(String.init) ?? p).tag(p)
+                }
+            }
+        }
+    }
+
+    private var engine: some View {
+        Section {
+            Picker("Engine", selection: text(["engine", "kind"], keepEmpty: true)) {
+                ForEach(choices(options.engines, current: get(["engine", "kind"])?.string), id: \.self) { Text($0).tag($0) }
+            }
+            TextField("Version", text: text(["engine", "version"], keepEmpty: true))
+            TextField("Image tag", text: text(["engine", "image_tag"]), prompt: Text("the pinned engine image"))
+            TextField("Model", text: text(["engine", "model"], keepEmpty: true), prompt: Text("provider/model"))
+            TextField("Provider", text: text(["engine", "provider"]), prompt: Text("openrouter"))
+            Toggle("Use the core's model gateway when running locally", isOn: local)
+            if get(["engine", "local"]) != nil {
+                TextField("Local model", text: text(["engine", "local", "model"], keepEmpty: true), prompt: Text("the gateway's name for it"))
+            }
+        } header: {
+            Text("Model")
+        }
+    }
+
+    private var channelIndices: [Int] { Array((get(["channels"])?.array ?? []).indices) }
+
+    private func channel(_ i: Int) -> some View {
+        let base: Path = ["channels", .index(i)]
+        let kind = get(base + ["kind"])?.string ?? "?"
+        let slack = kind == "slack"
+        let needs = options.channels.first { $0.kind == kind }?.secrets ?? []
+        let missing = needs.filter { !declared($0) }
+        return Section {
+            StringListRows(title: "Allowed users", items: strings(base + ["allowed_users"]),
+                           prompt: slack ? "Slack member ID (U…)" : "Telegram user id", suggestions: [], monospaced: true)
+            Toggle("Anyone may message", isOn: toggle(base + ["allow_all_users"], default: false))
+            if slack {
+                Picker("Messages from other bots", selection: text(base + ["allow_bots"])) {
+                    Text("Default").tag("")
+                    ForEach(options.allowBots, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            TextField("Home channel", text: text(base + ["home_channel"]), prompt: Text("where cron results go"))
+            if slack {
+                Toggle("Owns the workspace's slash commands", isOn: toggle(base + ["slash_commands"], default: false))
+            }
+        } header: {
+            HStack {
+                Label(kind.capitalized, systemImage: slack ? "number" : "paperplane")
+                Spacer()
+                Button("Remove", systemImage: "trash", role: .destructive) { set(base, nil) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Remove the \(kind.capitalized) channel")
+            }
+        } footer: {
+            if !missing.isEmpty {
+                Label("Needs \(missing.joined(separator: ", ")) under Secrets or Optional secrets.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var addChannel: some View {
+        let present = Set((get(["channels"])?.array ?? []).compactMap { $0[["kind"]]?.string })
+        let addable = options.channels.filter { !present.contains($0.kind) }
+        return Section {
+            if addable.isEmpty {
+                Text("Every channel kind is set up.").foregroundStyle(.secondary)
+            } else {
+                if present.isEmpty { Text("No channels: the agent works from cron jobs and other agents only.").foregroundStyle(.secondary) }
+                HStack {
+                    ForEach(addable) { c in
+                        Button("Add \(c.kind.capitalized)", systemImage: "plus") {
+                            var list = get(["channels"])?.array ?? []
+                            list.append(.object(["kind": .string(c.kind)]))
+                            set(["channels"], .array(list))
+                        }
+                    }
+                }
+            }
+        } header: {
+            SectionTitle("Channels", note: "Where people reach the agent. Each channel's settings follow.")
+        }
+    }
+
+    private var actions: some View {
+        let unit = get(["unit"])?.string ?? ""
+        let chosen = strings(["actions"])
+        let available = options.actions.filter { $0.unit == unit || $0.unit == "group" }
+        let foreign = chosen.wrappedValue.filter { name in !available.contains { $0.name == name } }
+        return Section {
+            if available.isEmpty && foreign.isEmpty {
+                Text("No bridge actions for this unit.").foregroundStyle(.secondary)
+            }
+            ForEach(available) { a in
+                Toggle(isOn: member(a.name, of: chosen)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(a.name).monospaced()
+                            if a.mutates {
+                                Text("changes data").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Capsule().fill(.orange.opacity(0.18)))
+                            }
+                        }
+                        if !a.description.isEmpty { Text(a.description).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            ForEach(foreign, id: \.self) { name in
+                Toggle(isOn: member(name, of: chosen)) {
+                    Label("\(name): not available to this unit", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
+        } header: {
+            SectionTitle("Bridge actions", note: "Actions of the agent's unit and of group.")
+        }
+    }
+
+    private var secrets: some View {
+        Section {
+            StringListRows(title: nil, items: strings(["secrets"]), prompt: "ENV_VAR_NAME",
+                           suggestions: options.secrets, monospaced: true)
+        } header: {
+            SectionTitle("Secrets", note: "Names only. Values live in secrets.local.yaml and AWS Secrets Manager.")
+        }
+    }
+
+    private var optionalSecrets: some View {
+        let list = get(["optional_secrets"])?.array ?? []
+        return Section {
+            ForEach(list.indices, id: \.self) { i in
+                let base: Path = ["optional_secrets", .index(i)]
+                HStack(alignment: .firstTextBaseline) {
+                    TextField("Name", text: text(base + ["name"], keepEmpty: true), prompt: Text("ENV_VAR_NAME"))
+                        .monospaced()
+                        .labelsHidden()
+                    Spacer()
+                    MultiPicker(title: "Skills", all: options.skills, selection: strings(base + ["skills"]))
+                    MultiPicker(title: "Actions", all: strings(["actions"]).wrappedValue, selection: strings(base + ["actions"]))
+                    Button("Remove", systemImage: "minus.circle") { remove(base, emptying: ["optional_secrets"]) }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+            }
+            Button("Add Optional Secret", systemImage: "plus") {
+                set(["optional_secrets"], .array(list + [.object(["name": .string("")])]))
+            }
+        } header: {
+            SectionTitle("Optional secrets", note: "Without a value, the skills and actions an optional secret gates are left out instead of failing.")
+        }
+    }
+
+    private var environment: some View {
+        let env = get(["env"])?.object ?? [:]
+        return Section {
+            ForEach(env.keys.sorted(), id: \.self) { key in
+                HStack {
+                    Text(key).monospaced().lineLimit(1).truncationMode(.middle).frame(width: 260, alignment: .leading)
+                    TextField("Value", text: text(["env", .key(key)], keepEmpty: true)).labelsHidden().monospaced()
+                    Button("Remove", systemImage: "minus.circle") { remove(["env", .key(key)], emptying: ["env"]) }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+            }
+            PairAdder(first: "NAME", second: "value") { k, v in set(["env", .key(k)], .string(v)) }
+        } header: {
+            SectionTitle("Environment", note: "Plain settings. A credential goes under Secrets, never here.")
+        }
+    }
+
+    private var state: some View {
+        let list = get(["state"])?.array ?? []
+        return Section {
+            ForEach(list.indices, id: \.self) { i in
+                HStack {
+                    Text(list[i][["name"]]?.string ?? "").monospaced().lineLimit(1).frame(width: 260, alignment: .leading)
+                    Text(list[i][["env"]]?.string ?? "").monospaced().foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove", systemImage: "minus.circle") { remove(["state", .index(i)], emptying: ["state"]) }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                }
+            }
+            PairAdder(first: "name", second: "ENV_VAR") { n, e in
+                set(["state"], .array(list + [.object(["name": .string(n), "env": .string(e)])]))
+            }
+        } header: {
+            SectionTitle("State", note: "Directories kept across restarts by naps; each one's path is in its env var.")
+        }
+    }
+
+    private var learning: some View {
+        Section("Learning") {
+            LabeledContent("Memory limit") {
+                TextField("Memory limit", value: int(["learning", "memory_char_limit"]), format: .number, prompt: Text("default"))
+                    .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                Text("characters").foregroundStyle(.secondary)
+            }
+            LabeledContent("User profile limit") {
+                TextField("User profile limit", value: int(["learning", "user_char_limit"]), format: .number, prompt: Text("default"))
+                    .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                Text("characters").foregroundStyle(.secondary)
+            }
+            LabeledContent("Seed fill") {
+                Slider(value: double(["learning", "seed_fill"], default: 0.6), in: 0...1, step: 0.05)
+                    .frame(maxWidth: 220)
+                Text(get(["learning", "seed_fill"])?.double.map { $0.formatted(.percent.precision(.fractionLength(0))) } ?? "default")
+                    .monospacedDigit().foregroundStyle(.secondary).frame(width: 60, alignment: .trailing)
+            }
+            LabeledContent("Nap every") {
+                TextField("Nap every", value: int(["learning", "nap_interval_seconds"]), format: .number, prompt: Text("default"))
+                    .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                Text(get(["learning", "nap_interval_seconds"])?.int.map {
+                    "seconds (\(Duration.seconds($0).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))))"
+                } ?? "seconds").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var deploy: some View {
+        if let deploy = get(["deploy"])?.object, !deploy.isEmpty {
+            Section {
+                ForEach(deploy.keys.sorted(), id: \.self) { key in
+                    LabeledContent(key) { Text(describe(deploy[key] ?? .null)).monospaced().textSelection(.enabled) }
+                }
+            } header: {
+                SectionTitle("Deploy", note: "Cloud settings name deployed resources, so the app shows them but does not change them.")
+            }
+        }
+    }
+
+    // MARK: Bindings into the document
+
+    private func get(_ path: Path) -> JSONValue? { editor.doc?[path] }
+
+    private func set(_ path: Path, _ value: JSONValue?) { editor.doc?.set(path, value) }
+
+    /// Removes path, and the container too when that leaves it empty and it was not in the file.
+    private func remove(_ path: Path, emptying container: Path) {
+        set(path, nil)
+        let left = get(container)
+        if (left?.object?.isEmpty ?? false) || (left?.array?.isEmpty ?? false), editor.file?.doc?[container] == nil {
+            set(container, nil)
+        }
+    }
+
+    private func declared(_ name: String) -> Bool {
+        strings(["secrets"]).wrappedValue.contains(name)
+            || (get(["optional_secrets"])?.array ?? []).contains { $0[["name"]]?.string == name }
+    }
+
+    /// A scalar as text. Typing the text it already shows changes nothing, so a number or a
+    /// boolean keeps its type; empty removes the key unless keepEmpty.
+    private func text(_ path: Path, keepEmpty: Bool = false) -> Binding<String> {
+        Binding {
+            get(path).map(describe) ?? ""
+        } set: { s in
+            if let v = get(path), describe(v) == s { return }
+            set(path, s.isEmpty && !keepEmpty ? nil : .string(s))
+        }
+    }
+
+    private func int(_ path: Path) -> Binding<Int?> {
+        Binding {
+            get(path)?.int.map(Int.init)
+        } set: { n in
+            set(path, n.map { .int(Int64($0)) })
+        }
+    }
+
+    private func double(_ path: Path, default d: Double) -> Binding<Double> {
+        Binding {
+            get(path)?.double ?? d
+        } set: { x in
+            set(path, .double((x * 100).rounded() / 100))
+        }
+    }
+
+    /// A boolean that is absent when it equals its default and the file did not set it.
+    private func toggle(_ path: Path, default d: Bool) -> Binding<Bool> {
+        Binding {
+            get(path)?.bool ?? d
+        } set: { b in
+            set(path, b == d && editor.file?.doc?[path] == nil ? nil : .bool(b))
+        }
+    }
+
+    /// A list of scalars as strings; items that read the same keep their original values.
+    private func strings(_ path: Path) -> Binding<[String]> {
+        Binding {
+            (get(path)?.array ?? []).map(describe)
+        } set: { list in
+            let old = get(path)?.array ?? []
+            if list.isEmpty && editor.file?.doc?[path] == nil {
+                set(path, nil)
+                return
+            }
+            set(path, .array(list.map { s in old.first { describe($0) == s } ?? .string(s) }))
+        }
+    }
+
+    private func member(_ item: String, of list: Binding<[String]>) -> Binding<Bool> {
+        Binding {
+            list.wrappedValue.contains(item)
+        } set: { on in
+            var items = list.wrappedValue.filter { $0 != item }
+            if on { items.append(item) }
+            list.wrappedValue = items
+        }
+    }
+
+    private var persona: Binding<String> {
+        Binding {
+            get(["persona", "path"])?.string ?? ""
+        } set: { p in
+            if p.isEmpty { set(["persona"], nil) } else { set(["persona", "path"], .string(p)) }
+        }
+    }
+
+    private var local: Binding<Bool> {
+        Binding {
+            get(["engine", "local"]) != nil
+        } set: { on in
+            if on {
+                let model = get(["engine", "model"])?.string?.split(separator: "/").last.map(String.init) ?? ""
+                set(["engine", "local"], editor.file?.doc?[["engine", "local"]] ?? .object(["via": .string("core"), "model": .string(model)]))
+            } else {
+                set(["engine", "local"], nil)
+            }
+        }
+    }
+
+    /// The choices, plus the current value when it is not one of them (so the picker shows it).
+    private func choices(_ all: [String], current: String?) -> [String] {
+        guard let current, !current.isEmpty, !all.contains(current) else { return all }
+        return all + [current]
+    }
+}
+
+private func describe(_ v: JSONValue) -> String {
+    switch v {
+    case .null: ""
+    case .bool(let b): b ? "true" : "false"
+    case .int(let i): String(i)
+    case .double(let d): String(d)
+    case .string(let s): s
+    case .array(let a): a.map(describe).joined(separator: ", ")
+    case .object(let o): o.keys.sorted().map { "\($0): \(describe(o[$0] ?? .null))" }.joined(separator: ", ")
+    }
+}
+
+// MARK: Pieces
+
+/// A section's title with a line on what it is for.
+private struct SectionTitle: View {
+    let title: String
+    let note: String
+    init(_ title: String, note: String) {
+        self.title = title
+        self.note = note
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(note).font(.caption).fontWeight(.regular).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// A list of strings as rows in a section: each with a remove button, then a field to add one
+/// (with suggestions to pick from).
+private struct StringListRows: View {
+    let title: String?
+    @Binding var items: [String]
+    let prompt: String
+    let suggestions: [String]
+    var monospaced = false
+    @State private var draft = ""
+
+    var body: some View {
+        if let title {
+            LabeledContent(title) {
+                if items.isEmpty { Text("none").foregroundStyle(.tertiary) }
+            }
+        }
+        ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+            HStack {
+                Text(item).monospaced(monospaced).textSelection(.enabled)
+                Spacer()
+                Button("Remove", systemImage: "minus.circle") { items.remove(at: i) }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+            }
+            .padding(.leading, title == nil ? 0 : 12)
+        }
+        HStack {
+            TextField("Add", text: $draft, prompt: Text(prompt))
+                .labelsHidden()
+                .monospaced(monospaced)
+                .onSubmit(add)
+            let more = suggestions.filter { !items.contains($0) }
+            if !more.isEmpty {
+                Menu {
+                    ForEach(more, id: \.self) { s in Button(s) { items.append(s) } }
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Pick one declared elsewhere in the instance")
+            }
+            Button("Add", systemImage: "plus.circle", action: add)
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .padding(.leading, title == nil ? 0 : 12)
+    }
+
+    private func add() {
+        let s = draft.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty, !items.contains(s) else { return }
+        items.append(s)
+        draft = ""
+    }
+}
+
+/// Two fields and an Add button, for a new environment variable or state directory.
+private struct PairAdder: View {
+    let first: String
+    let second: String
+    let add: (String, String) -> Void
+    @State private var a = ""
+    @State private var b = ""
+
+    var body: some View {
+        HStack {
+            TextField(first, text: $a, prompt: Text(first)).labelsHidden().monospaced().frame(width: 260)
+            TextField(second, text: $b, prompt: Text(second)).labelsHidden().monospaced()
+                .onSubmit(commit)
+            Button("Add", systemImage: "plus.circle", action: commit)
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .disabled(a.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private func commit() {
+        let k = a.trimmingCharacters(in: .whitespaces)
+        guard !k.isEmpty else { return }
+        add(k, b)
+        a = ""
+        b = ""
+    }
+}
+
+/// A pop-up of checkboxes over a list, summarised as a count.
+private struct MultiPicker: View {
+    let title: String
+    let all: [String]
+    @Binding var selection: [String]
+
+    var body: some View {
+        Menu {
+            if all.isEmpty { Text("None to choose from") }
+            ForEach(all, id: \.self) { item in
+                Toggle(item, isOn: Binding {
+                    selection.contains(item)
+                } set: { on in
+                    selection = selection.filter { $0 != item } + (on ? [item] : [])
+                })
+            }
+        } label: {
+            Text(selection.isEmpty ? "No \(title.lowercased())"
+                 : "\(selection.count) \(selection.count == 1 ? String(title.lowercased().dropLast()) : title.lowercased())")
+        }
+        .fixedSize()
+        .help("\(title) this secret gates")
+    }
+}
+
+private struct ProblemBanner: View {
+    let problem: ConfigEditor.Problem
+    let stale: Bool
+    let oldBinary: Bool
+    let reload: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Text(problem.code == "usage" && oldBinary
+                 ? "This stormo cannot edit agents (it has no `config` command). Update it, or choose the bundled one in Settings › Command line."
+                 : problem.message)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if stale {
+                Button("Reload", action: reload)
+                    .help("Load the version on disk; your unsaved changes to this file are dropped")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.red.opacity(0.08))
+    }
+}
+
+private struct NoticeBanner: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "info.circle")
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.yellow.opacity(0.1))
+    }
+}
+
+private struct TextPane: View {
+    @Bindable var editor: ConfigEditor
+    let wraps: Bool
+    let editable: Bool
+
+    var body: some View {
+        PlainTextEditor(text: $editor.text, editable: editable && editor.file != nil, wraps: wraps)
     }
 }
 

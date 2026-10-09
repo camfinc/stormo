@@ -1,15 +1,29 @@
 import StormoKit
 import SwiftUI
 
+/// An agent's editor, pushed in the Agents section.
+struct AgentRoute: Hashable {
+    let id: String
+}
+
 struct AgentsView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
     @State private var selection = Set<FleetAgent.ID>()
     @State private var inspecting = true
+    @State private var path: [AgentRoute] = []
 
     private var agents: [FleetAgent] { model.fleet.fleet?.agents ?? [] }
 
     var body: some View {
+        NavigationStack(path: $path) {
+            list
+                .navigationDestination(for: AgentRoute.self) { AgentEditor(agentID: $0.id) }
+        }
+    }
+
+    private func edit(_ id: String) { path = [AgentRoute(id: id)] }
+
+    private var list: some View {
         Group {
             if !model.core.state.isRunning {
                 CoreNotRunningView()
@@ -53,11 +67,13 @@ struct AgentsView: View {
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
-                    AgentActions(ids: Array(ids))
+                    AgentActions(ids: Array(ids), edit: edit)
+                } primaryAction: { ids in
+                    if ids.count == 1, let id = ids.first { edit(id) }
                 }
                 .inspector(isPresented: $inspecting) {
                     if selection.count == 1, let id = selection.first, let agent = model.fleet.agent(id) {
-                        AgentInspector(agent: agent)
+                        AgentInspector(agent: agent, edit: edit)
                     } else {
                         ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
                     }
@@ -68,7 +84,7 @@ struct AgentsView: View {
         #if DEBUG
         .task {
             // STORMO_EDIT=<agent> opens its editor (with STORMO_SNAPSHOT, a visual check).
-            if let id = ProcessInfo.processInfo.environment["STORMO_EDIT"] { openWindow(id: AgentEditor.windowID, value: id) }
+            if let id = ProcessInfo.processInfo.environment["STORMO_EDIT"] { edit(id) }
         }
         #endif
         .toolbar {
@@ -86,8 +102,8 @@ struct AgentsView: View {
 /// Start, stop, restart and nap now for the given agents.
 struct AgentActions: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
     let ids: [String]
+    let edit: (String) -> Void
 
     var body: some View {
         if !ids.isEmpty {
@@ -97,7 +113,7 @@ struct AgentActions: View {
             if ids.count == 1 {
                 Button("Nap Now") { Task { await model.run("nap-now", agents: ids) } }
                 Divider()
-                Button("Edit Definition…") { openWindow(id: AgentEditor.windowID, value: ids[0]) }
+                Button("Edit…") { edit(ids[0]) }
             }
             Divider()
             Button("Copy Command") {
@@ -109,8 +125,9 @@ struct AgentActions: View {
 }
 
 struct AgentInspector: View {
-    @Environment(\.openWindow) private var openWindow
     let agent: FleetAgent
+    /// Opens the agent's editor; no button without it.
+    var edit: ((String) -> Void)?
 
     var body: some View {
         Form {
@@ -122,8 +139,8 @@ struct AgentInspector: View {
                         if let role = agent.role { Text(role).foregroundStyle(.secondary) }
                     }
                 }
-                Button("Edit Definition…", systemImage: "square.and.pencil") {
-                    openWindow(id: AgentEditor.windowID, value: agent.id)
+                if let edit {
+                    Button("Edit…", systemImage: "square.and.pencil") { edit(agent.id) }
                 }
             }
             Section("Now") {

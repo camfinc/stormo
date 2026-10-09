@@ -323,3 +323,70 @@ final class Steps: @unchecked Sendable {
         #expect(rows.map(\.agent) == ["atlas"])
     }
 }
+
+@Suite struct Patches {
+    func json(_ s: String) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: Data(s.utf8)) }
+    func text(_ v: JSONValue) throws -> String { String(decoding: try MergePatch.data(v), as: UTF8.self) }
+
+    @Test func integersStayIntegers() throws {
+        let v = try json(#"{"cpu":2048,"seed_fill":0.6,"on":true,"name":"2048"}"#)
+        #expect(v[["cpu"]] == .int(2048) && v[["seed_fill"]] == .double(0.6) && v[["on"]] == .bool(true) && v[["name"]] == .string("2048"))
+        #expect(try text(v) == #"{"cpu":2048,"name":"2048","on":true,"seed_fill":0.6}"#)
+    }
+
+    @Test func onlyWhatChanged() throws {
+        let old = try json(#"{"name":"Atlas","engine":{"model":"a","local":{"via":"core","model":"b"}},"learning":{"seed_fill":0.6,"memory_char_limit":2200},"secrets":["A","B"],"env":{"X":"1"}}"#)
+        #expect(MergePatch.diff(from: old, to: old) == nil)
+        var new = old
+        new.set(["engine", "local", "model"], .string("c"))
+        new.set(["learning", "seed_fill"], .int(1))
+        new.set(["learning", "memory_char_limit"], .double(2200))  // the same number
+        new.set(["env", "X"], nil)
+        new.set(["secrets"], .array([.string("A")]))
+        new.set(["role"], .string("New"))
+        let patch = try #require(MergePatch.diff(from: old, to: new))
+        #expect(try text(patch) == #"{"engine":{"local":{"model":"c"}},"env":{"X":null},"learning":{"seed_fill":1},"role":"New","secrets":["A"]}"#)
+    }
+
+    @Test func paths() throws {
+        var v = try json(#"{"channels":[{"kind":"slack"},{"kind":"telegram"}]}"#)
+        #expect(v[["channels", 1, "kind"]] == .string("telegram") && v[["channels", 5]] == nil)
+        v.set(["channels", 0, "allowed_users"], .array([.string("U1")]))
+        v.set(["channels", 1], nil)
+        #expect(v == (try json(#"{"channels":[{"kind":"slack","allowed_users":["U1"]}]}"#)))
+    }
+}
+
+@Suite struct FormEditing {
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    @MainActor func aFormSaveChangesOnlyItsFields() async throws {
+        let s = try Scratch()
+        let instance = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: instance)
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: instance)
+        let manifest = instance.appending(path: "agents/atlas/agent.yaml")
+        let before = try String(contentsOf: manifest, encoding: .utf8)
+
+        let editor = ConfigEditor(path: "agents/atlas/agent.yaml")
+        await editor.load(with: cli)
+        let options = try #require(editor.file?.options)
+        #expect(options.units.map(\.id).contains("sales") && options.engines.contains("hermes"))
+        #expect(editor.doc?[["learning", "memory_char_limit"]] == .int(2200) && !editor.isDirty)
+
+        editor.doc?.set(["role"], .string("Edited in the form."))
+        editor.doc?.set(["learning", "memory_char_limit"], .int(3000))
+        #expect(editor.isFormDirty && !editor.isTextDirty)
+        #expect(await editor.save(with: cli))
+        let after = try String(contentsOf: manifest, encoding: .utf8)
+        let changed = zip(before.split(separator: "\n", omittingEmptySubsequences: false), after.split(separator: "\n", omittingEmptySubsequences: false)).filter { $0 != $1 }
+        #expect(changed.map { String($0.1) } == ["role: Edited in the form.", "  memory_char_limit: 3000"])
+        #expect(!editor.isDirty && editor.text == after)
+
+        // Form and text edited at once: refused until one is reverted.
+        editor.doc?.set(["name"], .string("Atlas II"))
+        editor.text += "\n# note\n"
+        #expect(!(await editor.save(with: cli)))
+        #expect(editor.problem?.code == "usage")
+    }
+}

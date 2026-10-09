@@ -100,4 +100,36 @@ public struct ConfigFile: Codable, Sendable, Equatable {
     public var agent: String
     public var hash: String
     public var text: String
+    /// agent.yaml: the manifest as JSON (nil when it does not parse) and the form's choices.
+    public var doc: JSONValue?
+    public var options: AgentOptions?
+}
+
+/// What an agent form may offer, from the instance and the engine (`config show`).
+public struct AgentOptions: Codable, Sendable, Equatable {
+    public struct Unit: Codable, Sendable, Equatable, Identifiable {
+        public var id: String
+        public var name: String
+        public var description: String?
+    }
+    public struct Action: Codable, Sendable, Equatable, Identifiable {
+        public var name: String
+        public var unit: String
+        public var description: String
+        public var mutates: Bool
+        public var id: String { name }
+    }
+    public struct Channel: Codable, Sendable, Equatable, Identifiable {
+        public var kind: String
+        public var secrets: [String]
+        public var id: String { kind }
+    }
+    public var units: [Unit]
+    public var actions: [Action]
+    public var skills: [String]
+    public var personas: [String]
+    public var engines: [String]
+    public var channels: [Channel]
+    public var allowBots: [String]
+    public var secrets: [String]
 }

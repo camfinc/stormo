@@ -20,14 +20,6 @@ struct StormoApp: App {
         .defaultSize(width: 1120, height: 700)
         .commands { StormoCommands(model: model) }
 
-        WindowGroup("Edit Agent", id: AgentEditor.windowID, for: String.self) { $agent in
-            if let agent {
-                AgentEditor(agentID: agent)
-                    .environment(model)
-            }
-        }
-        .defaultSize(width: 780, height: 640)
-
         MenuBarExtra {
             MenuBarView()
                 .environment(model)
