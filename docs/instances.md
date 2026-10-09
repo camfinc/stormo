@@ -20,6 +20,9 @@ three agents). It is the engine's test fixture and the template for a new one.
   agents/<id>/SOUL.md            behavior
   agents/<id>/{skills,plugins,scripts,bench,<engine>}/   optional, as in ARCHITECTURE.md
   agents/<id>/learnings/         written by the dream; reviewed in git
+  agents/<id>/data/              the agent's data, never in git (its own .gitignore): store/ (local
+                                 naps), secrets.yaml (its own secret values; shared and unit values
+                                 stay in secrets.local.yaml), agent.env (rendered for local runs)
   personas/<slug>/               optional: look + baked avatar (agent.yaml `persona.path`)
   bridge/actions.yaml            optional: the instance's bridge actions (stormo.yaml `bridge.actions`)
   tests/                         optional: the instance's own tests (see "Tests")

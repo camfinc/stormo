@@ -294,7 +294,7 @@ func FindAvatar(personaDir string) string {
 }
 
 type apiKeys struct {
-	mtime  time.Time
+	stamp  string
 	loaded bool
 	at     time.Time
 	values map[string]string
@@ -394,15 +394,12 @@ func (f *Fleet) apiKey(id string) string {
 		return f.o.APIKey(id)
 	}
 	path := secrets.Path(f.root)
-	st, err := os.Stat(path)
-	if err != nil {
-		return ""
-	}
 	f.mu.Lock()
 	_, have := f.keys.values[id]
 	// Reload when the file changes, and every 30 s while an agent has no key (its manifest may
 	// have been mid-edit, or it joined the fleet after the last load).
-	reload := !f.keys.loaded || !st.ModTime().Equal(f.keys.mtime) || (!have && time.Since(f.keys.at) > 30*time.Second)
+	stamp := secrets.Stamp(f.root)
+	reload := !f.keys.loaded || stamp != f.keys.stamp || (!have && time.Since(f.keys.at) > 30*time.Second)
 	f.mu.Unlock()
 	if reload {
 		values := map[string]string{}
@@ -422,7 +419,7 @@ func (f *Fleet) apiKey(id string) string {
 			}
 		} // unreadable or invalid secrets file: no activity until it is fixed
 		f.mu.Lock()
-		f.keys = apiKeys{mtime: st.ModTime(), loaded: true, at: time.Now(), values: values}
+		f.keys = apiKeys{stamp: stamp, loaded: true, at: time.Now(), values: values}
 		f.mu.Unlock()
 	}
 	f.mu.Lock()

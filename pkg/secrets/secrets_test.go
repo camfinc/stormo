@@ -279,3 +279,55 @@ agents:
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestAgentSecretsLiveInTheAgentsFolder(t *testing.T) {
+	root := t.TempDir()
+	write := func(p, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(Path(root), "shared:\n  OPENROUTER_API_KEY: or\nagents:\n  nova:\n    SLACK_BOT_TOKEN: nova-bot\n")
+	write(AgentFile(root, "atlas"), "secrets:\n  SLACK_BOT_TOKEN: atlas-bot\nlocal:\n  SWARM_CORE_KEY: atlas-core\n")
+	before := Stamp(root)
+	f, err := Load(Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := f.Agents.Get("atlas").Get("SLACK_BOT_TOKEN"); v != "atlas-bot" || !f.InFolder("atlas") || f.InFolder("nova") {
+		t.Fatalf("atlas = %q, in folder %v", v, f.InFolder("atlas"))
+	}
+	if v, _ := f.Local.Agents.Get("atlas").Get("SWARM_CORE_KEY"); v != "atlas-core" {
+		t.Errorf("local = %q", v)
+	}
+	// Save keeps each agent's layers where they live.
+	f.Agents.Get("atlas").Set("API_SERVER_KEY", "k")
+	f.MoveToFolder("nova")
+	if err := Save(Path(root), "acme-stormo", f); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := os.ReadFile(Path(root))
+	nova, _ := os.ReadFile(AgentFile(root, "nova"))
+	atlas, _ := os.ReadFile(AgentFile(root, "atlas"))
+	if strings.Contains(string(main), "atlas") || strings.Contains(string(main), "nova") || !strings.Contains(string(main), "OPENROUTER_API_KEY") {
+		t.Errorf("secrets.local.yaml:\n%s", main)
+	}
+	if !strings.Contains(string(nova), "nova-bot") || !strings.Contains(string(atlas), "API_SERVER_KEY: k") || !strings.Contains(string(atlas), "SWARM_CORE_KEY") {
+		t.Errorf("nova:\n%s\natlas:\n%s", nova, atlas)
+	}
+	if gi, err := os.ReadFile(filepath.Join(root, "agents", "nova", "data", ".gitignore")); err != nil || !strings.Contains(string(gi), "*") {
+		t.Error("nova's data folder is not ignored by git")
+	}
+	if Stamp(root) == before {
+		t.Error("the stamp did not change")
+	}
+	// The same agent in both places is refused.
+	write(Path(root), "agents:\n  atlas:\n    SLACK_BOT_TOKEN: other\n")
+	if _, err := Load(Path(root)); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Errorf("both places: %v", err)
+	}
+}

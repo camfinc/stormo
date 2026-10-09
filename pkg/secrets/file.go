@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/camfinc/stormo/pkg/env"
 	"go.yaml.in/yaml/v3"
@@ -52,10 +54,125 @@ type Layers struct {
 	Agents *Named
 }
 
-// File is secrets.local.yaml: the aws layers plus a `local:` overlay of the same shape.
+// File is secrets.local.yaml: the aws layers plus a `local:` overlay of the same shape. An agent's
+// own layers (agents.<id> and local.agents.<id>) can instead live in its folder,
+// agents/<id>/data/secrets.yaml (AgentFile); Load merges them in and Save writes them back there.
 type File struct {
 	Layers
 	Local *Layers
+	// inFolder are the agents whose own layers live in their folder.
+	inFolder map[string]bool
+}
+
+// AgentFile is where an agent's own secret values live in its folder.
+func AgentFile(root, id string) string {
+	return filepath.Join(root, "agents", id, "data", "secrets.yaml")
+}
+
+// InFolder reports whether agent id's own layers live in its folder.
+func (f *File) InFolder(id string) bool { return f.inFolder[id] }
+
+// MoveToFolder makes Save write agent id's own layers to its folder instead of the shared file.
+func (f *File) MoveToFolder(id string) {
+	if f.inFolder == nil {
+		f.inFolder = map[string]bool{}
+	}
+	f.inFolder[id] = true
+}
+
+// agentDoc is AgentFile's shape: the agent's layer and its local overlay.
+func agentFileBody(id string, own, local *Layer) ([]byte, error) {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if own != nil {
+		root.Content = append(root.Content, str("secrets"), layerNode(own))
+	}
+	if local != nil {
+		root.Content = append(root.Content, str("local"), layerNode(local))
+	}
+	var b bytes.Buffer
+	b.WriteString("# " + id + "'s own secret values (secrets: for every target, local: overrides for local runs).\n" +
+		"# NEVER COMMIT: agents/" + id + "/data is gitignored. Shared and unit values stay in secrets.local.yaml.\n")
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), enc.Close()
+}
+
+// loadAgentFiles merges each agents/<id>/data/secrets.yaml under root into f.
+func (f *File) loadAgentFiles(root string) error {
+	paths, _ := filepath.Glob(filepath.Join(root, "agents", "*", "data", "secrets.yaml"))
+	for _, p := range paths {
+		id := filepath.Base(filepath.Dir(filepath.Dir(p)))
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		var doc yaml.Node
+		if err := yaml.Unmarshal(body, &doc); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		if len(doc.Content) == 0 || doc.Content[0].Tag == "!!null" {
+			f.MoveToFolder(id)
+			continue
+		}
+		m := doc.Content[0]
+		if m.Kind != yaml.MappingNode {
+			return fmt.Errorf("%s: must be a map of secrets: and local:", p)
+		}
+		where := "agents/" + id + "/data/secrets.yaml"
+		for i := 0; i+1 < len(m.Content); i += 2 {
+			k := m.Content[i].Value
+			if k != "secrets" && k != "local" {
+				return fmt.Errorf("%s: unknown key %q (secrets, local)", where, k)
+			}
+		}
+		if s := get(m, "secrets"); s != nil {
+			l, err := layerFrom(s, where+" secrets")
+			if err != nil {
+				return err
+			}
+			if f.Agents.Get(id) != nil {
+				return fmt.Errorf("%s's secret values are in both secrets.local.yaml (agents.%s) and %s; keep %s", id, id, where, where)
+			}
+			if f.Agents == nil {
+				f.Agents = NewNamed()
+			}
+			f.Agents.Ensure(id).Merge(l)
+		}
+		if s := get(m, "local"); s != nil {
+			l, err := layerFrom(s, where+" local")
+			if err != nil {
+				return err
+			}
+			if f.Local != nil && f.Local.Agents.Get(id) != nil {
+				return fmt.Errorf("%s's local secret values are in both secrets.local.yaml (local.agents.%s) and %s; keep %s", id, id, where, where)
+			}
+			if f.Local == nil {
+				f.Local = &Layers{}
+			}
+			if f.Local.Agents == nil {
+				f.Local.Agents = NewNamed()
+			}
+			f.Local.Agents.Ensure(id).Merge(l)
+		}
+		f.MoveToFolder(id)
+	}
+	return nil
+}
+
+// Stamp changes whenever secrets.local.yaml or an agent's secrets file under root changes.
+func Stamp(root string) string {
+	paths, _ := filepath.Glob(filepath.Join(root, "agents", "*", "data", "secrets.yaml"))
+	paths = append([]string{filepath.Join(root, "secrets.local.yaml")}, paths...)
+	var b strings.Builder
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "%s:%d:%d;", p, info.ModTime().UnixNano(), info.Size())
+		}
+	}
+	return b.String()
 }
 
 func layerFrom(n *yaml.Node, where string) (*Layer, error) {
@@ -155,17 +272,21 @@ func Parse(body []byte) (*File, error) {
 	return f, nil
 }
 
-// Load reads path; a missing file is an empty one.
+// Load reads path (an instance's secrets.local.yaml; a missing file is an empty one) and the
+// instance's agent secrets files next to it.
 func Load(path string) (*File, error) {
+	f := &File{}
 	body, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return &File{}, nil
-	} else if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	f, err := Parse(body)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if err == nil {
+		if f, err = Parse(body); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	if err := f.loadAgentFiles(filepath.Dir(path)); err != nil {
+		return nil, err
 	}
 	return f, nil
 }
@@ -189,33 +310,39 @@ func layerNode(l *Layer) *yaml.Node {
 	return n
 }
 
-func namedNode(n *Named) *yaml.Node {
+func namedNode(n *Named, skip map[string]bool) *yaml.Node {
 	out := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	for _, k := range n.keys {
+		if skip[k] {
+			continue
+		}
 		out.Content = append(out.Content, str(k), layerNode(n.m[k]))
 	}
 	return out
 }
 
-func layersNode(ls Layers) *yaml.Node {
+func layersNode(ls Layers, skip map[string]bool) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	if ls.Shared != nil {
 		n.Content = append(n.Content, str("shared"), layerNode(ls.Shared))
 	}
 	if ls.Units != nil {
-		n.Content = append(n.Content, str("units"), namedNode(ls.Units))
+		n.Content = append(n.Content, str("units"), namedNode(ls.Units, nil))
 	}
 	if ls.Agents != nil {
-		n.Content = append(n.Content, str("agents"), namedNode(ls.Agents))
+		if a := namedNode(ls.Agents, skip); len(a.Content) > 0 || len(skip) == 0 {
+			n.Content = append(n.Content, str("agents"), a)
+		}
 	}
 	return n
 }
 
-// Marshal renders the file body (without the header).
+// Marshal renders secrets.local.yaml's body (without the header): every layer except the agent
+// layers that live in their folder.
 func (f *File) Marshal() ([]byte, error) {
-	root := layersNode(f.Layers)
+	root := layersNode(f.Layers, f.inFolder)
 	if f.Local != nil {
-		root.Content = append(root.Content, str("local"), layersNode(*f.Local))
+		root.Content = append(root.Content, str("local"), layersNode(*f.Local, f.inFolder))
 	}
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)

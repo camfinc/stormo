@@ -6,7 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"sync"
@@ -33,7 +33,7 @@ func digest(key string) string {
 type AgentKeys struct {
 	path     string
 	mu       sync.Mutex
-	mtime    int64
+	stamp    string
 	byDigest map[string]string
 	// The keys themselves, by agent: they sign the agent's hook deliveries (VerifySignature).
 	byAgent map[string]string
@@ -41,19 +41,16 @@ type AgentKeys struct {
 
 // NewAgentKeys reads keys from the secrets file at path.
 func NewAgentKeys(path string) *AgentKeys {
-	return &AgentKeys{path: path, mtime: -1, byDigest: map[string]string{}, byAgent: map[string]string{}}
+	return &AgentKeys{path: path, stamp: "-", byDigest: map[string]string{}, byAgent: map[string]string{}}
 }
 
-// reload re-reads the file when its mtime changed. Caller holds k.mu.
+// reload re-reads the secrets when the file or an agent's own secrets file changed. Caller holds k.mu.
 func (k *AgentKeys) reload() {
-	var m int64
-	if info, err := os.Stat(k.path); err == nil {
-		m = info.ModTime().UnixNano()
-	}
-	if m == k.mtime {
+	m := secrets.Stamp(filepath.Dir(k.path))
+	if m == k.stamp {
 		return
 	}
-	k.mtime = m
+	k.stamp = m
 	next, keys := map[string]string{}, map[string]string{}
 	if f, err := secrets.Load(k.path); err == nil && f.Local != nil {
 		for _, agent := range f.Local.Agents.Keys() {

@@ -242,13 +242,39 @@ func header(resource string) string {
 		"# `secrets init` / `secrets share` rewrite this file; they do not keep other comments.\n"
 }
 
-// Save writes the file 0600 with the standard header.
+// Save writes secrets.local.yaml (path) 0600 with the standard header, and each agent's own
+// layers that live in its folder to AgentFile.
 func Save(path, resource string, f *File) error {
 	body, err := f.Marshal()
 	if err != nil {
 		return err
 	}
-	return WritePrivate(path, append([]byte(header(resource)), append(body, '\n')...))
+	if err := WritePrivate(path, append([]byte(header(resource)), append(body, '\n')...)); err != nil {
+		return err
+	}
+	root := filepath.Dir(path)
+	ids := []string{}
+	for id := range f.inFolder {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		var local *Layer
+		if f.Local != nil {
+			local = f.Local.Agents.Get(id)
+		}
+		body, err := agentFileBody(id, f.Agents.Get(id), local)
+		if err != nil {
+			return err
+		}
+		if _, err := manifest.EnsureDataDir(root, id); err != nil {
+			return err
+		}
+		if err := WritePrivate(AgentFile(root, id), body); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func randomKey() string {
@@ -276,6 +302,15 @@ func Init(inst *instance.Instance) (string, []string, error) {
 			return path, nil, err
 		}
 		agents = append(agents, a)
+	}
+	moved := false
+	for _, a := range agents {
+		// Format 1 keeps the agent's own values in its folder (docs/agent-standard.md).
+		if a.Format >= 1 && !f.InFolder(a.ID) {
+			f.MoveToFolder(a.ID)
+			added = append(added, a.ID+": its values now in agents/"+a.ID+"/data/secrets.yaml")
+			moved = true
+		}
 	}
 	declaredBy := map[string]int{}
 	for _, a := range agents {
@@ -319,7 +354,7 @@ func Init(inst *instance.Instance) (string, []string, error) {
 			added = append(added, "local."+a.ID+"."+name)
 		}
 	}
-	if _, err := os.Stat(path); len(added) == 0 && err == nil {
+	if _, err := os.Stat(path); len(added) == 0 && err == nil && !moved {
 		return path, added, nil
 	}
 	return path, added, Save(path, inst.Names.Resource, f)
@@ -376,9 +411,19 @@ func Share(f *File, names []string, from string) (ShareResult, error) {
 	return r, nil
 }
 
-// FileProblems reports how the secrets file is stored (tracked by git, readable by others).
+// FileProblems reports how the files of secret values are stored (secrets.local.yaml and each
+// agent's data/secrets.yaml): tracked by git, readable by others.
 func FileProblems(root string) []string {
-	path := Path(root)
+	out := []string{}
+	paths, _ := filepath.Glob(filepath.Join(root, "agents", "*", "data", "secrets.yaml"))
+	for _, p := range append([]string{Path(root)}, paths...) {
+		out = append(out, fileProblems(root, p)...)
+	}
+	return out
+}
+
+// fileProblems checks one file of secret values: never in git, never readable by others.
+func fileProblems(root, path string) []string {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil
