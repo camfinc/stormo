@@ -92,6 +92,10 @@ public struct Activity: Codable, Sendable, Equatable {
     public var lastActive: String?
     public var platforms: [String: Platform]?
     public var polledAt: String?
+
+    public init(activeAgents: Int, gatewayBusy: Bool, source: String? = nil) {
+        self.activeAgents = activeAgents; self.gatewayBusy = gatewayBusy; self.source = source
+    }
 }
 
 /// The office's timeline for one agent (docs/core.md §3). Times are epoch milliseconds.
@@ -105,12 +109,21 @@ public struct OfficeState: Codable, Sendable, Equatable {
     public var label: String
     public var working: Bool
     public var seq: Int
+
+    public init(activity: String, phase: String, start: Int64, end: Int64?, from: String?, slot: Int, label: String, working: Bool, seq: Int) {
+        self.activity = activity; self.phase = phase; self.start = start; self.end = end; self.from = from
+        self.slot = slot; self.label = label; self.working = working; self.seq = seq
+    }
 }
 
 public struct FleetUnit: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var name: String
     public var description: String?
+
+    public init(id: String, name: String, description: String? = nil) {
+        self.id = id; self.name = name; self.description = description
+    }
 }
 
 public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
@@ -136,6 +149,10 @@ public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
     public var pendingLearnings: Int?
     public var pendingSkills: Int?
     public var office: OfficeState?
+
+    public init(id: String, name: String, unit: String, state: String, office: OfficeState? = nil) {
+        self.id = id; self.name = name; self.unit = unit; self.state = state; self.office = office
+    }
 }
 
 public struct RobotNote: Codable, Sendable, Equatable {
@@ -163,6 +180,10 @@ public struct RobotState: Codable, Sendable, Equatable {
     public var note: RobotNote?
     public var log: [RobotNote]?
     public var queue: [String]?
+
+    public init(phase: String, from: String? = nil, target: String? = nil, start: Int64? = nil, end: Int64? = nil, seq: Int? = nil) {
+        self.phase = phase; self.from = from; self.target = target; self.start = start; self.end = end; self.seq = seq
+    }
 }
 
 public struct AgentUsage: Codable, Sendable, Equatable {
