@@ -83,8 +83,9 @@ public struct FloorPlan: Sendable {
     public private(set) var reception: CGRect = .zero
     public private(set) var clocks: [CGRect] = []
 
-    public init(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clockCount: Int = 0) {
-        layout(units: units, agents: agents, look: look, clockCount: clockCount)
+    /// `clocks` are the world clocks' city names (stormo.yaml office.clocks), for the lobby wall.
+    public init(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks: [String] = []) {
+        layout(units: units, agents: agents, look: look, clocks: clocks)
     }
 
     // MARK: Layout
@@ -102,7 +103,7 @@ public struct FloorPlan: Sendable {
         }
     }
 
-    private mutating func layout(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clockCount: Int) {
+    private mutating func layout(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks cities: [String]) {
         let rooms = units.filter { $0.id != "group" }
         let roomIDs = Set(rooms.map(\.id))
         let left = rooms.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
@@ -183,19 +184,32 @@ public struct FloorPlan: Sendable {
             rx += widths[k]! + 9
         }
 
-        // Lobby: kitchen along the top wall, clocks on it, desks and seating in the middle.
-        let ky = lobby.minY + 48
+        // Lobby: clocks on the top wall beside the sign, or on their own row when they do not fit;
+        // the kitchen below them; desks and seating in the middle.
+        let clockWidths = cities.map { max(56, CGFloat($0.count) * 5.6 + 22) }
+        let clocksWidth = clockWidths.reduce(0, +) + 6 * CGFloat(max(0, clockWidths.count - 1))
+        let ownRow = clocksWidth > lobby.width - 190
+        if ownRow {
+            let spare = max(0, (lobby.width - 28 - clocksWidth) / CGFloat(max(1, clockWidths.count - 1)))
+            var cx = lobby.minX + 14
+            for w in clockWidths {
+                clocks.append(CGRect(x: cx, y: lobby.minY + 38, width: w, height: 30))
+                cx += w + 6 + spare
+            }
+        } else {
+            var cx = lobby.maxX - 12
+            for w in clockWidths.reversed() {
+                clocks.insert(CGRect(x: cx - w, y: lobby.minY + 7, width: w, height: 30), at: 0)
+                cx -= w + 6
+            }
+        }
+        let ky = lobby.minY + (ownRow ? 84 : 48)
         fridge = CGRect(x: lobby.minX + 14, y: ky, width: 26, height: 34)
         cooler = CGRect(x: lobby.maxX - 14 - 18, y: ky, width: 18, height: 18)
         counter = CGRect(x: fridge.maxX + 8, y: ky, width: cooler.minX - 8 - fridge.maxX - 8, height: 24)
         sink = CGRect(x: counter.minX + counter.width * 0.14, y: ky + 5, width: 18, height: 13)
         espresso = CGRect(x: counter.minX + counter.width * 0.48, y: ky + 2, width: 14, height: 18)
         fruit = CGRect(x: counter.maxX - counter.width * 0.12 - 15, y: ky + 4, width: 15, height: 15)
-        var cx = lobby.maxX - 12
-        for _ in 0..<clockCount {
-            clocks.insert(CGRect(x: cx - 56, y: lobby.minY + 7, width: 56, height: 30), at: 0)
-            cx -= 62
-        }
         let blockTop = lobby.minY + 100 + ((lobby.height - 170) - lobbyBlock) / 2
         if !lobbyAgents.isEmpty {
             placeDesks(lobbyAgents.map(\.id), unit: "group", office: nil, centerX: lobby.midX, top: blockTop)

@@ -54,6 +54,8 @@ public final class FleetStore {
     /// Core clock minus this Mac's, in milliseconds (the office plays back by the core's time).
     public private(set) var clockOffset: Int64 = 0
     public private(set) var lastError: String?
+    /// The instance's look (/api/instance); nil on a core without it.
+    public private(set) var look: InstanceLook?
     public var client: CoreClient
 
     public init(client: CoreClient) {
@@ -67,6 +69,7 @@ public final class FleetStore {
             summary = FleetSummary(f)
             clockOffset = f.now - Int64(Date().timeIntervalSince1970 * 1000)
             lastError = nil
+            if look == nil { look = try? await client.instance() }
         } catch {
             lastError = String(describing: error)
         }
@@ -74,6 +77,7 @@ public final class FleetStore {
 
     public func clear() {
         fleet = nil
+        look = nil
         summary = FleetSummary()
     }
 

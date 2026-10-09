@@ -5,7 +5,15 @@ import StormoKit
 /// The app's state: which instance, which binary, what the core and the fleet are doing.
 @Observable
 final class AppModel {
-    let instances = InstanceStore()
+    let instances = InstanceStore(defaults: AppModel.defaults)
+
+    /// Debug builds can keep their instance list apart from the installed app's (STORMO_DEFAULTS_SUITE).
+    static var defaults: UserDefaults {
+        #if DEBUG
+        if let suite = ProcessInfo.processInfo.environment["STORMO_DEFAULTS_SUITE"], let d = UserDefaults(suiteName: suite) { return d }
+        #endif
+        return .standard
+    }
     let core: CoreSupervisor
     let fleet: FleetStore
 
@@ -17,6 +25,8 @@ final class AppModel {
     private(set) var activity: String?
     /// The last failed action, shown as an alert.
     var failure: String?
+    /// Agents' portraits (/avatars/<id>.png), for name tags and the inspector.
+    private(set) var avatars: [String: NSImage] = [:]
 
     @ObservationIgnored private var poller: Task<Void, Never>?
 
@@ -185,10 +195,20 @@ final class AppModel {
                 await self.core.refresh()
                 if self.core.state.isRunning {
                     await self.fleet.refresh()
+                    await self.loadAvatars()
                 } else if self.fleet.fleet != nil {
                     self.fleet.clear()
                 }
                 try? await Task.sleep(for: .milliseconds(2500))
+            }
+        }
+    }
+
+    /// Fetches portraits the fleet says exist and the app does not have yet.
+    private func loadAvatars() async {
+        for a in fleet.fleet?.agents ?? [] where a.avatar == true && avatars[a.id] == nil {
+            if let data = try? await fleet.client.avatar(agent: a.id), let image = NSImage(data: data) {
+                avatars[a.id] = image
             }
         }
     }

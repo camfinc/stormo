@@ -24,7 +24,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
 struct MainView: View {
     @Environment(AppModel.self) private var model
-    @State private var section: SidebarItem? = .agents
+    @State private var section: SidebarItem? = Self.initialSection
     @State private var importing = false
     @State private var creating = false
 
@@ -41,7 +41,7 @@ struct MainView: View {
                     .navigationSplitViewColumnWidth(min: 160, ideal: 190)
                 } detail: {
                     switch section ?? .agents {
-                    case .office: OfficePlaceholder()
+                    case .office: OfficeView()
                     case .agents: AgentsView()
                     case .core: CoreView()
                     }
@@ -61,6 +61,15 @@ struct MainView: View {
         } message: {
             Text(model.failure ?? "")
         }
+    }
+}
+
+extension MainView {
+    static var initialSection: SidebarItem {
+        #if DEBUG
+        if let s = ProcessInfo.processInfo.environment["STORMO_SECTION"].flatMap(SidebarItem.init(rawValue:)) { return s }
+        #endif
+        return .office
     }
 }
 
@@ -188,9 +197,3 @@ struct WelcomeView: View {
     }
 }
 
-struct OfficePlaceholder: View {
-    var body: some View {
-        ContentUnavailableView("The office is coming", systemImage: "building.2",
-                               description: Text("Until the native office lands, Agents shows the same fleet."))
-    }
-}

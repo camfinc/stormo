@@ -55,7 +55,7 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
 @Suite struct Floor {
     @Test func everyDeskIsInItsOfficeAndRoutesConnect() throws {
         let (fleet, look) = try demo()
-        let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clockCount: 2)
+        let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: ["Lisbon", "New York"])
         #expect(plan.offices.map(\.unit.id) == ["product", "sales", "research", "support"])
         #expect(plan.offices.filter { $0.side == .left }.map(\.unit.id) == ["product", "sales"])
         for a in fleet.agents {
@@ -78,6 +78,12 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
         for o in plan.offices { #expect(plan.workstations.filter { $0.office == o.unit.id }.count >= 4) }
         #expect(plan.lobby.minY > plan.server.maxY && plan.racks.count == 4 && plan.clocks.count == 2)
         #expect(plan.size.width == 1400)
+        // Two short clocks fit beside the lobby sign; four long ones get their own row, kitchen below.
+        #expect(plan.clocks.allSatisfy { $0.minY < plan.lobby.minY + 10 })
+        let crowded = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: ["San Francisco", "New York", "Lisbon", "Singapore"])
+        #expect(crowded.clocks.allSatisfy { $0.minY > crowded.lobby.minY + 30 && crowded.lobby.contains($0) })
+        #expect(crowded.fridge.minY >= crowded.clocks[0].maxY)
+        #expect(crowded.clocks[0].width > 56)
     }
 
     @Test func lobbyAgentsAndOddUnits() {
