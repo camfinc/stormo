@@ -103,6 +103,29 @@ final class AppModel {
         }
     }
 
+    /// `stormo new instance` with the app's own binary (its release always has the command), then
+    /// `secrets init`, then opens it. Returns the problem, nil on success.
+    func createInstance(name: String, org: String, slug: String, template: String, at folder: URL) async -> String? {
+        guard let environment else { return "Still reading your shell's environment; try again in a moment." }
+        let bundled = FileManager.default.isExecutableFile(atPath: Self.bundledBinary.path) ? Self.bundledBinary : nil
+        let fallback = BinaryResolver.autoChoice(await resolver.candidates(instance: nil), runningCoreExe: nil)?.url
+        guard let binary = bundled ?? fallback else { return "No usable stormo binary was found." }
+        var command = ["new", "instance", folder.path, "--name", name, "--slug", slug, "--template", template]
+        let org = org.trimmingCharacters(in: .whitespaces)
+        if !org.isEmpty { command += ["--org", org] }
+        do {
+            try FileManager.default.createDirectory(at: folder.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let made = try await StormoCLI(executable: binary, environment: environment, instance: nil)
+                .run(command, as: NewInstanceResult.self)
+            let root = URL(filePath: made.root)
+            try await StormoCLI(executable: binary, environment: environment, instance: root).perform(["secrets", "init"])
+            await open(folder: root)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     // MARK: Core
 
     func startCore() async {

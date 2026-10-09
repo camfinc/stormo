@@ -70,3 +70,15 @@ public struct LoginResult: Codable, Sendable, Equatable {
     public var account: String?
     public var changed: Bool
 }
+
+/// `new instance`.
+public struct NewInstanceResult: Codable, Sendable, Equatable {
+    public var root: String
+    public var name: String
+    public var org: String
+    public var slug: String
+    /// empty | example
+    public var template: String
+    /// `git init` ran in it.
+    public var git: Bool
+}

@@ -38,9 +38,13 @@ struct StormoApp: App {
 struct StormoCommands: Commands {
     let model: AppModel
     @FocusedValue(\.openInstance) private var openInstance
+    @FocusedValue(\.newInstance) private var newInstance
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            Button("New Instance…") { newInstance?() }
+                .keyboardShortcut("n")
+                .disabled(newInstance == nil)
             Button("Open Instance…") { openInstance?() }
                 .keyboardShortcut("o")
                 .disabled(openInstance == nil)
@@ -68,6 +72,7 @@ extension StormoCommands {
 
 extension FocusedValues {
     @Entry var openInstance: (() -> Void)?
+    @Entry var newInstance: (() -> Void)?
 }
 
 struct MenuBarLabel: View {

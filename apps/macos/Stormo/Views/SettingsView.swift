@@ -41,6 +41,7 @@ struct GeneralSettings: View {
 struct InstanceSettings: View {
     @Environment(AppModel.self) private var model
     @State private var importing = false
+    @State private var creating = false
 
     var body: some View {
         Form {
@@ -63,10 +64,14 @@ struct InstanceSettings: View {
                     }
                 }
             } footer: {
-                Button("Open Instance…") { importing = true }
+                HStack {
+                    Button("New Instance…") { creating = true }
+                    Button("Open Instance…") { importing = true }
+                }
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $creating) { NewInstanceSheet().environment(model) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.open(folder: url) } }
         }

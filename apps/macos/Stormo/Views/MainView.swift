@@ -26,12 +26,13 @@ struct MainView: View {
     @Environment(AppModel.self) private var model
     @State private var section: SidebarItem? = .agents
     @State private var importing = false
+    @State private var creating = false
 
     var body: some View {
         @Bindable var model = model
         Group {
             if model.instances.active == nil {
-                WelcomeView(openInstance: { importing = true })
+                WelcomeView(newInstance: { creating = true }, openInstance: { importing = true })
             } else {
                 NavigationSplitView {
                     List(SidebarItem.allCases, selection: $section) { s in
@@ -45,11 +46,13 @@ struct MainView: View {
                     case .core: CoreView()
                     }
                 }
-                .toolbar { MainToolbar(openInstance: { importing = true }) }
+                .toolbar { MainToolbar(newInstance: { creating = true }, openInstance: { importing = true }) }
             }
         }
         .frame(minWidth: 820, minHeight: 520)
         .focusedSceneValue(\.openInstance, { importing = true })
+        .focusedSceneValue(\.newInstance, { creating = true })
+        .sheet(isPresented: $creating) { NewInstanceSheet().environment(model) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.open(folder: url) } }
         }
@@ -63,6 +66,7 @@ struct MainView: View {
 
 struct MainToolbar: ToolbarContent {
     @Environment(AppModel.self) private var model
+    let newInstance: () -> Void
     let openInstance: () -> Void
 
     var body: some ToolbarContent {
@@ -72,6 +76,7 @@ struct MainToolbar: ToolbarContent {
                     Button(record.name) { Task { await model.activate(record) } }
                 }
                 Divider()
+                Button("New Instance…", action: newInstance)
                 Button("Open Instance…", action: openInstance)
             } label: {
                 Label(model.instances.active?.name ?? "Instance", systemImage: "square.stack.3d.up")
@@ -167,16 +172,18 @@ struct CoreStatusBadge: View {
 }
 
 struct WelcomeView: View {
+    let newInstance: () -> Void
     let openInstance: () -> Void
 
     var body: some View {
         ContentUnavailableView {
-            Label("Open a Stormo instance", systemImage: "tornado")
+            Label("Welcome to Stormo", systemImage: "tornado")
         } description: {
-            Text("Choose the folder that holds your instance's stormo.yaml.")
+            Text("Create an instance for your organisation's agents, or open one you already have (a folder with a stormo.yaml).")
         } actions: {
-            Button("Open Instance…", action: openInstance)
+            Button("New Instance…", action: newInstance)
                 .buttonStyle(.borderedProminent)
+            Button("Open Instance…", action: openInstance)
         }
     }
 }

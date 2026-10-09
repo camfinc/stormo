@@ -81,3 +81,34 @@ public final class InstanceStore {
         defaults.set(activeRoot, forKey: Self.activeKey)
     }
 }
+
+/// Where the app creates instances, and how it names their folders.
+public enum InstanceLocation {
+    /// ~/Library/Application Support/Stormo/Instances: where a Mac app keeps its users' data.
+    public static var defaultParent: URL {
+        URL.applicationSupportDirectory.appending(path: "Stormo/Instances", directoryHint: .isDirectory)
+    }
+
+    /// A slug from a display name, as `stormo new instance` derives it: "Acme Swarm" → "acme-swarm".
+    public static func slug(from name: String) -> String {
+        var out = ""
+        var dash = false
+        for ch in name.lowercased() {
+            if ch.isASCII && (ch.isLetter || ch.isNumber) {
+                if dash && !out.isEmpty { out.append("-") }
+                out.append(ch)
+                dash = false
+            } else {
+                dash = true
+            }
+        }
+        while let f = out.first, f.isNumber || f == "-" { out.removeFirst() }
+        return isValidSlug(out) ? out : ""
+    }
+
+    /// Lowercase letters, digits and hyphens, starting with a letter (pkg/instance).
+    public static func isValidSlug(_ s: String) -> Bool {
+        guard let f = s.first, f.isASCII, f.isLowercase else { return false }
+        return s.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }
+    }
+}

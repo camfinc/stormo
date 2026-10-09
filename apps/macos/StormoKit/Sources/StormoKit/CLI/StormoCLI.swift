@@ -149,6 +149,13 @@ public struct StormoCLI: Sendable {
     }
 }
 
+extension StormoCLI {
+    /// Runs a command that has no structured result yet (its text goes to stderr), to completion.
+    public func perform(_ command: [String], onEvent: @Sendable (CLIEvent) -> Void = { _ in }) async throws {
+        for try await event in events(command) { onEvent(event) }
+    }
+}
+
 /// Process is not Sendable; the stream's task is its only user after launch.
 private final class ProcessBox: @unchecked Sendable {
     let process: Process

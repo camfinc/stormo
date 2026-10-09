@@ -230,6 +230,31 @@ final class Steps: @unchecked Sendable {
     }
 }
 
+@Suite struct NewInstances {
+    @Test func slugsMatchTheEngine() {
+        // The same cases as pkg/scaffold's TestSlugFrom.
+        for (name, want) in [("Acme Swarm", "acme-swarm"), ("  Zeta & Co.  ", "zeta-co"), ("42 Labs", "labs"), ("日本", ""), ("", "")] {
+            #expect(InstanceLocation.slug(from: name) == want, "\(name)")
+        }
+        #expect(InstanceLocation.isValidSlug("acme-2") && !InstanceLocation.isValidSlug("Acme") && !InstanceLocation.isValidSlug("2acme"))
+        #expect(InstanceLocation.defaultParent.path.hasSuffix("Library/Application Support/Stormo/Instances"))
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    func createsWithTheRealBinary() async throws {
+        let s = try Scratch()
+        let dir = s.url.appending(path: "Application Support/Stormo/Instances/zeta")
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: nil)
+        let r = try await cli.run(["new", "instance", dir.path, "--name", "Zeta", "--slug", "zeta", "--no-git"], as: NewInstanceResult.self)
+        #expect(r.slug == "zeta" && r.template == "empty" && !r.git)
+        let made = StormoCLI(executable: RealBinary.binary, environment: env, instance: dir)
+        try await made.perform(["secrets", "init"])
+        #expect(try await made.run(["instance"], as: InstanceInfo.self).slug == "zeta")
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: "secrets.local.yaml").path))
+    }
+}
+
 /// The supervisor restarting a real core (this checkout's bin/stormo) on a scratch instance and port.
 @Suite(.serialized) struct RealCore {
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
