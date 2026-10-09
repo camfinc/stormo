@@ -29,6 +29,17 @@ type Options struct {
 	Secrets   []string        `json:"secrets"`   // secret names declared anywhere in the instance (names only)
 	Scripts   []string        `json:"scripts"`   // the agent's scripts/, for schedules' script and monitor
 	Reasoning []string        `json:"reasoning"` // limits.reasoning levels the agent's engine accepts
+	// Connections the agent may use: API ones for model.provider, ChatGPT ones for model.local.
+	Connections []ConnectionOption `json:"connections"`
+}
+
+type ConnectionOption struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	API   bool   `json:"api"`
+	// Key is the secret an agent using it declares.
+	Key string `json:"key,omitempty"`
 }
 
 type ActionOption struct {
@@ -46,7 +57,11 @@ type ChannelOption struct {
 func options(inst *instance.Instance, agent string) *Options {
 	o := &Options{Units: []manifest.Unit{}, Actions: []ActionOption{}, Skills: []string{}, Personas: []string{},
 		Engines: engines.Kinds(), Channels: []ChannelOption{}, AllowBots: manifest.AllowBots, Secrets: []string{},
-		Scripts: []string{}, Reasoning: []string{}}
+		Scripts: []string{}, Reasoning: []string{}, Connections: []ConnectionOption{}}
+	for _, c := range inst.Connections {
+		k, _ := instance.KindOf(c.Kind)
+		o.Connections = append(o.Connections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
+	}
 	if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil {
 		if eng, err := engines.Get(a.Engine.Kind, inst); err == nil {
 			o.Reasoning = eng.Reasoning()

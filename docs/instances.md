@@ -135,6 +135,11 @@ instance: inside a sidecar it is the agent's engine home.
 - **Personas.** `persona: {path: personas/<slug>}` resolves inside the instance; add
   `repo: <dir>` for a persona kept in a sibling repo (resolved against `SWARM_REPOS_DIR`, default
   the instance's parent).
+- **Connections** (`connections:`): named ways to reach models, `{name, kind: chatgpt|openrouter|openai|anthropic|custom, base_url?, key?}`;
+  `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`). Every
+  instance has `openrouter` and `chatgpt` unless it redefines them. An agent's `model.provider` names an
+  API connection (and declares its key under `secrets:`); `model.local.connection` names the ChatGPT
+  sign-in the core serves it with (default `chatgpt`). `stormo connections add|remove` edits the list.
 - **Engines.** Agents pick `engine.kind`; what only that engine reads lives in `agents/<id>/engine/<kind>/`
   (format 0: `agents/<id>/<engine>/`). agent.yaml itself is engine-neutral (format 1,
   docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there.

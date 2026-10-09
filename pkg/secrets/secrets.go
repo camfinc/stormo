@@ -528,3 +528,38 @@ func ApplyPush(p PushPlan, r Resolved, region, resource string, cli aws.CLI) err
 	}
 	return nil
 }
+
+// Set gives name a value in scope: "shared" (every agent that declares it) or an agent id (its own
+// layer, in its folder for a format-1 agent). The value is never echoed; it must be one line.
+func Set(inst *instance.Instance, scope, name, value string) error {
+	if !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(name) {
+		return fmt.Errorf("%q is not an env var NAME", name)
+	}
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("the value must be one non-empty line")
+	}
+	path := Path(inst.Root)
+	f, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if scope == "shared" {
+		if f.Shared == nil {
+			f.Shared = env.New()
+		}
+		f.Shared.Set(name, value)
+	} else {
+		a, err := manifest.Load(inst.Root, scope, inst.Names.Secret)
+		if err != nil {
+			return err
+		}
+		if a.Format >= 1 {
+			f.MoveToFolder(a.ID)
+		}
+		if f.Agents == nil {
+			f.Agents = NewNamed()
+		}
+		f.Agents.Ensure(a.ID).Set(name, value)
+	}
+	return Save(path, inst.Names.Resource, f)
+}

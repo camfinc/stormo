@@ -2,8 +2,13 @@ package instance
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/camfinc/stormo/pkg/yamlfmt"
+	"go.yaml.in/yaml/v3"
 )
 
 // A connection is a named way to reach models (stormo.yaml connections:): an API provider, keyed by
@@ -139,4 +144,99 @@ func connectionsOf(raw []rawConnection, path string) ([]Connection, error) {
 		}
 	}
 	return out, nil
+}
+
+// AddConnection writes a connection into root's stormo.yaml (connections:, created when missing;
+// comments and layout kept) after checking the file still loads with it.
+func AddConnection(root string, c Connection) error {
+	return editConnections(root, func(list *yaml.Node) error {
+		for _, item := range list.Content {
+			if connName(item) == c.Name {
+				return &Error{fmt.Sprintf("a connection named %s already exists", c.Name)}
+			}
+		}
+		n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		add := func(k, v string) {
+			if v != "" {
+				n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v})
+			}
+		}
+		add("name", c.Name)
+		add("kind", c.Kind)
+		add("base_url", c.BaseURL)
+		add("key", c.Key)
+		list.Content = append(list.Content, n)
+		return nil
+	})
+}
+
+// RemoveConnection takes a connection out of root's stormo.yaml (an implicit one comes back as
+// its default).
+func RemoveConnection(root, name string) error {
+	return editConnections(root, func(list *yaml.Node) error {
+		for i, item := range list.Content {
+			if connName(item) == name {
+				list.Content = append(list.Content[:i], list.Content[i+1:]...)
+				return nil
+			}
+		}
+		return &Error{fmt.Sprintf("stormo.yaml has no connection named %s", name)}
+	})
+}
+
+func connName(item *yaml.Node) string {
+	for i := 0; i+1 < len(item.Content); i += 2 {
+		if item.Content[i].Value == "name" {
+			return item.Content[i+1].Value
+		}
+	}
+	return ""
+}
+
+func editConnections(root string, edit func(list *yaml.Node) error) error {
+	path := filepath.Join(root, File)
+	old, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(old, &doc); err != nil || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return &Error{fmt.Sprintf("%s does not parse as a map", path)}
+	}
+	m := doc.Content[0]
+	var list *yaml.Node
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == "connections" {
+			list = m.Content[i+1]
+		}
+	}
+	if list == nil {
+		list = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "connections",
+			HeadComment: "# Ways to reach models; agents pick one by name (model.provider, model.local.connection).\n# Key values live in the secrets, never here."}
+		m.Content = append(m.Content, k, list)
+	}
+	if list.Kind != yaml.SequenceNode {
+		return &Error{fmt.Sprintf("%s: connections must be a list", path)}
+	}
+	if err := edit(list); err != nil {
+		return err
+	}
+	body, err := yamlfmt.Encode(&doc, old)
+	if err != nil {
+		return err
+	}
+	// The result must load before it replaces the file.
+	tmp, err := os.MkdirTemp("", "stormo-yaml-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	if err := os.WriteFile(filepath.Join(tmp, File), body, 0o644); err != nil {
+		return err
+	}
+	if _, err := Load(tmp); err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0o644)
 }

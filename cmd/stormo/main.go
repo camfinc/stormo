@@ -69,6 +69,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
+  connections [list]                     ways to reach models (stormo.yaml connections:) and who uses them
+  connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
+  connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
   import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]
                                          an exported agent into this instance; checked, undone if it fails
@@ -85,6 +88,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
 
   review [agent...] [--since 24h]        read-only fleet health sweep (.swarm/review/)
   secrets init                           create/extend secrets.local.yaml with every declared name
+  secrets set <shared|agent> NAME        set one value, read from stdin (never an argument)
   secrets share NAME... [--from <agent>] keep one value under shared: and drop identical per-agent copies
   secrets check [agent...]               report missing values (aws and local) and file problems
   secrets env <agent>                    write agents/<agent>/data/agent.env (local overlay applied)
@@ -153,6 +157,9 @@ var (
 	fUnit        = fs.String("unit", "", "")
 	fReplace     = fs.Bool("replace", false, "")
 	fWithActions = fs.Bool("with-actions", false, "")
+	fKind        = fs.String("kind", "", "")
+	fBaseURL     = fs.String("base-url", "", "")
+	fKey         = fs.String("key", "", "")
 	errUsage     = errors.New("usage")
 )
 
@@ -312,6 +319,58 @@ func run(args []string) error {
 
 	case "config":
 		return configCmd(inst, sub, rest)
+
+	case "connections":
+		switch sub {
+		case "", "list":
+			rows, err := connectionRows(inst)
+			if err != nil {
+				return err
+			}
+			result(rows, func(w io.Writer) {
+				for _, r := range rows {
+					fmt.Fprintf(w, "%-14s %-11s %-22s used by %s\n", r.Name, r.Kind, r.Key, strings.Join(r.UsedBy, ", "))
+				}
+			})
+			return nil
+		case "add":
+			name, err := need(strings.Join(rest, " "), "connection name")
+			if err != nil {
+				return err
+			}
+			if err := instance.AddConnection(inst.Root, instance.Connection{Name: name, Kind: *fKind, BaseURL: *fBaseURL, Key: *fKey}); err != nil {
+				return withCode("invalid", err)
+			}
+		case "remove":
+			name, err := need(strings.Join(rest, " "), "connection name")
+			if err != nil {
+				return err
+			}
+			rows, err := connectionRows(inst)
+			if err != nil {
+				return err
+			}
+			for _, r := range rows {
+				if r.Name == name && len(r.UsedBy) > 0 {
+					return withCode("in_use", fmt.Errorf("%s is used by %s; point them elsewhere first", name, strings.Join(r.UsedBy, ", ")))
+				}
+			}
+			if err := instance.RemoveConnection(inst.Root, name); err != nil {
+				return withCode("invalid", err)
+			}
+		default:
+			return errUsage
+		}
+		next, err := instance.Load(inst.Root)
+		if err != nil {
+			return err
+		}
+		rows, err := connectionRows(next)
+		if err != nil {
+			return err
+		}
+		result(rows, func(w io.Writer) { fmt.Fprintf(w, "%s %s\n", sub, strings.Join(rest, " ")) })
+		return nil
 
 	case "export":
 		id, err := need(sub, "agent")
@@ -865,6 +924,20 @@ func secretsCmd(inst *instance.Instance, deps *ops.Deps, sub string, rest []stri
 	}
 	path := secrets.Path(inst.Root)
 	switch sub {
+	case "set":
+		// The value comes on stdin, never in argv (process lists, shell history).
+		if len(rest) != 2 {
+			return withCode("usage", errors.New("usage: stormo secrets set <shared|agent> NAME (value on stdin)"))
+		}
+		body, err := io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
+		if err != nil {
+			return err
+		}
+		if err := secrets.Set(inst, rest[0], rest[1], strings.TrimRight(string(body), "\r\n")); err != nil {
+			return withCode("invalid", err)
+		}
+		result(map[string]string{"scope": rest[0], "name": rest[1]}, func(w io.Writer) { fmt.Fprintf(w, "%s set for %s\n", rest[1], rest[0]) })
+		return nil
 	case "init":
 		p, added, err := secrets.Init(inst)
 		if err != nil {
@@ -1259,4 +1332,55 @@ func orNone(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+// connectionRow is one connection with what uses it and whether its key has a value.
+type connectionRow struct {
+	instance.Connection
+	Label string `json:"label"`
+	API   bool   `json:"api"`
+	// KeySet: the key has a shared value; AgentKeys: agents with their own value for it.
+	KeySet    bool     `json:"keySet"`
+	AgentKeys []string `json:"agentKeys"`
+	UsedBy    []string `json:"usedBy"`
+}
+
+func connectionRows(inst *instance.Instance) ([]connectionRow, error) {
+	f, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return nil, err
+	}
+	agents := []*manifest.Agent{}
+	for _, id := range manifest.AgentIDs(inst.Root) {
+		if a, err := manifest.Load(inst.Root, id, inst.Names.Secret); err == nil {
+			agents = append(agents, a)
+		}
+	}
+	rows := []connectionRow{}
+	for _, c := range inst.Connections {
+		k, _ := instance.KindOf(c.Kind)
+		r := connectionRow{Connection: c, Label: k.Label, API: k.API, AgentKeys: []string{}, UsedBy: []string{}}
+		if c.Key != "" && f.Shared != nil {
+			v, _ := f.Shared.Get(c.Key)
+			r.KeySet = v != ""
+		}
+		for _, a := range agents {
+			uses := a.Engine.Provider == c.Name || (a.Engine.Local != nil && a.Engine.Local.ConnectionName() == c.Name)
+			for _, s := range a.Schedules {
+				uses = uses || s.Provider == c.Name
+			}
+			if uses {
+				r.UsedBy = append(r.UsedBy, a.ID)
+			}
+			if c.Key != "" {
+				if l := f.Agents.Get(a.ID); l != nil {
+					if v, _ := l.Get(c.Key); v != "" {
+						r.AgentKeys = append(r.AgentKeys, a.ID)
+					}
+				}
+			}
+		}
+		rows = append(rows, r)
+	}
+	return rows, nil
 }
