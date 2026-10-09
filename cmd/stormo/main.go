@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -123,6 +124,7 @@ var (
 	fFor         = fs.String("for", "claude,codex", "")
 	fHelp        = fs.BoolP("help", "h", false, "")
 	fJSON        = fs.Bool("json", false, "")
+	fNoOpen      = fs.Bool("no-open", false, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -134,9 +136,16 @@ func printUsage() {
 	fmt.Printf(usage, name, root, coreUsage())
 }
 
+// lifecycleResult is start, stop, restart and nap-now's result: the agents it went through, in order.
+type lifecycleResult struct {
+	Action string   `json:"action"`
+	Where  string   `json:"where"`
+	Agents []string `json:"agents"`
+}
+
 func need(v, what string) (string, error) {
 	if v == "" {
-		return "", fmt.Errorf("missing %s (stormo --help)", what)
+		return "", withCode("usage", fmt.Errorf("missing %s (stormo --help)", what))
 	}
 	return v, nil
 }
@@ -151,10 +160,15 @@ func main() {
 		}
 		os.Exit(2)
 	}
+	if jsonMode() {
+		// Events own stdout; anything else this process or its children print (compose, docker,
+		// text logs) goes to stderr, so the event stream stays one JSON object per line.
+		os.Stdout = os.Stderr
+	}
 	if err := run(fs.Args()); err != nil {
 		if jsonMode() {
 			emitError(err)
-			if errors.Is(err, errUsage) {
+			if errorCode(err) == "usage" {
 				os.Exit(2)
 			}
 			os.Exit(1)
@@ -182,7 +196,7 @@ func run(args []string) error {
 	}
 	if cmd == "version" {
 		result(map[string]any{"version": version.String(), "api": version.API, "released": version.Released(), "exe": version.Exe()},
-			func() { fmt.Println(version.String()) })
+			func(w io.Writer) { fmt.Fprintln(w, version.String()) })
 		return nil
 	}
 	if cmd == "skill" {
@@ -194,7 +208,7 @@ func run(args []string) error {
 	}
 	if cmd == "instance" {
 		result(map[string]string{"root": inst.Root, "name": inst.Name, "org": inst.Org, "slug": inst.Slug},
-			func() { fmt.Printf("%s (%s)\n%s\n", inst.Name, inst.Slug, inst.Root) })
+			func(w io.Writer) { fmt.Fprintf(w, "%s (%s)\n%s\n", inst.Name, inst.Slug, inst.Root) })
 		return nil
 	}
 	where, err := ops.PickWhere(*fRemote, *fTarget, os.Getenv)
@@ -202,6 +216,7 @@ func run(args []string) error {
 		return err
 	}
 	deps := ops.DefaultDeps(inst, *fYes)
+	deps.Log = output().Line
 	deps.Up = local.UpOptions{KeepHome: *fKeepHome, AllowProdToken: *fAllowProd, NapInterval: *fNapInterval, RebuildSidecar: *fRebuild}
 	targets := func() []string {
 		if sub == "" {
@@ -225,7 +240,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(ops.RenderStatus(rows, time.Now()))
+		result(rows, func(o io.Writer) { fmt.Fprintln(o, ops.RenderStatus(rows, time.Now())) })
 		return nil
 
 	case "review":
@@ -300,11 +315,13 @@ func run(args []string) error {
 		if cmd == "up" {
 			w = place.Local
 		}
-		for _, id := range targets() {
+		ids := targets()
+		for _, id := range ids {
 			if err := ops.Start(w, id, deps); err != nil {
 				return err
 			}
 		}
+		result(lifecycleResult{"start", string(w), ids}, nil)
 		return nil
 
 	case "stop", "down":
@@ -312,19 +329,23 @@ func run(args []string) error {
 		if cmd == "down" {
 			w = place.Local
 		}
-		for _, id := range targets() {
+		ids := targets()
+		for _, id := range ids {
 			if err := ops.Stop(w, id, deps); err != nil {
 				return err
 			}
 		}
+		result(lifecycleResult{"stop", string(w), ids}, nil)
 		return nil
 
 	case "restart":
-		for _, id := range targets() {
+		ids := targets()
+		for _, id := range ids {
 			if err := ops.Restart(where, id, deps); err != nil {
 				return err
 			}
 		}
+		result(lifecycleResult{"restart", string(where), ids}, nil)
 		return nil
 
 	case "handoff":
@@ -349,7 +370,11 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return local.NapNow(inst, id)
+		if err := local.NapNow(inst, id); err != nil {
+			return err
+		}
+		result(lifecycleResult{"nap-now", string(place.Local), []string{id}}, nil)
+		return nil
 
 	case "core":
 		return runCore(inst, sub, rest)

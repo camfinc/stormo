@@ -1,60 +1,29 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"slices"
+
+	"github.com/camfinc/stormo/pkg/out"
 )
 
-// Machine output (--json, docs/api.md): one JSON object per line on stdout, each with an "event":
-//
-//	{"event":"step","msg":"…"}                 progress, as the text mode prints it
-//	{"event":"result","data":{…}}             what the command produced (last line on success)
-//	{"event":"error","code":"…","msg":"…"}   why it failed (last line on failure, exit status 1 or 2)
-//
-// Without --json the same calls print the text the CLI always printed.
+// Machine output (--json): see pkg/out and docs/api.md.
 
 var stdout io.Writer = os.Stdout
 
 // jsonMode is --json; also before parsing finished, so a bad flag is reported as an error event.
 func jsonMode() bool { return *fJSON || slices.Contains(os.Args[1:], "--json") }
 
-// event is one output line; "event" comes first so a reader can dispatch on it.
-type event struct {
-	Event string `json:"event"`
-	Msg   string `json:"msg,omitempty"`
-	Code  string `json:"code,omitempty"`
-	Data  any    `json:"data,omitempty"`
-}
+// output is the writer every command reports through.
+func output() *out.Writer { return &out.Writer{JSON: jsonMode(), W: stdout} }
 
-func emitLine(v any) {
-	b, _ := json.Marshal(v)
-	fmt.Fprintln(stdout, string(b))
-}
+// step reports progress.
+func step(format string, a ...any) { output().Step(format, a...) }
 
-// step reports progress: a line of text, or a step event.
-func step(format string, a ...any) {
-	msg := fmt.Sprintf(format, a...)
-	if jsonMode() {
-		emitLine(event{Event: "step", Msg: msg})
-		return
-	}
-	fmt.Fprintln(stdout, msg)
-}
-
-// result ends a successful command: the result event with data, or the text form.
-func result(data any, text func()) {
-	if jsonMode() {
-		emitLine(event{Event: "result", Data: data})
-		return
-	}
-	if text != nil {
-		text()
-	}
-}
+// result ends a successful command: data for --json, text otherwise.
+func result(data any, text func(w io.Writer)) { output().Result(data, text) }
 
 // cliError carries a stable code for the error event; plain errors get "failed".
 type cliError struct {
@@ -88,5 +57,5 @@ func emitError(err error) {
 	if errors.Is(err, errUsage) {
 		msg = "usage: stormo --help"
 	}
-	emitLine(event{Event: "error", Code: errorCode(err), Msg: msg})
+	output().Error(errorCode(err), msg)
 }

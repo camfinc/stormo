@@ -837,7 +837,8 @@ type SignInOptions struct {
 	Timeout     time.Duration
 }
 
-func defaultOpenBrowser(u string) error {
+// DefaultOpenBrowser opens u in the system browser (open, xdg-open, explorer).
+func DefaultOpenBrowser(u string) error {
 	cmd := "xdg-open"
 	switch runtime.GOOS {
 	case "darwin":
@@ -972,7 +973,7 @@ func SignIn(ctx context.Context, o SignInOptions) (*Connection, error) {
 	print(authURL.String())
 	open := o.OpenBrowser
 	if open == nil {
-		open = defaultOpenBrowser
+		open = DefaultOpenBrowser
 	}
 	go func() { _ = open(authURL.String()) }()
 

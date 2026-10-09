@@ -34,6 +34,9 @@ Any command takes `--json`: stdout becomes one JSON object per line, each with a
 {"event":"error","msg":"…","code":"…"}   why it failed: the last line on failure
 ```
 
+With `--json`, stdout carries only events: anything else the command or the tools it runs print
+(compose, docker, the text it would otherwise show) goes to stderr, which a caller can keep as a log.
+
 Exit status: 0 success, 1 failure, 2 usage. Error codes: `usage` (bad flags or arguments),
 `instance` (no instance found, or its stormo.yaml is invalid), `failed` (anything else). Commands
 gain structured `result` data one by one; until a command has it, `--json` still turns its failure
@@ -43,3 +46,10 @@ into an `error` event.
 |---|---|
 | `version` | `version`, `api`, `released` (a tagged release, whose sidecar image is published), `exe` |
 | `instance` | `root`, `name`, `org`, `slug` of the instance this invocation found (`--instance`, `STORMO_INSTANCE`, the working directory, the binary's directory, in that order) |
+| `status` (`ps`) | one row per agent: `agent`, `unit`, `where`, `state` (running \| stopped \| starting \| missing \| unknown), `health`, `endpoint`, `lastNap`, `pendingLearnings`, `pendingSkills`, `detail` |
+| `start`, `stop`, `restart`, `nap-now` | `action`, `where`, `agents` (in the order handled); progress as `step` events |
+| `core up` | `started` (false when a core already answered), `pid`, `port`, `log`, `login` |
+| `core down` | `stopped`, `pid`; not stopped: `reason` `not_running`, or `not_ours` (a core answers that `core up` did not start; left alone) |
+| `core status` | `running`, `port`, `login` (the gateway's, else the sign-in on disk), `gateway` (as `/api/gateway`) when running |
+| `core login` | `login`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
+| `core logout` | `login` (`missing`), `changed` (tokens were removed) |

@@ -52,6 +52,7 @@ pkg/
   bench/ bridge/ slack/        scenario runner; bridge action contract; Slack app manifests
   shared/                      shared document space: layers, generated shared-docs skill
   inspect/ review/             `stormo inspect` (agent as JSON), `stormo review` (fleet sweep)
+  out/                         CLI output: text, or --json events (docs/api.md)
   core/ core/llm/              control plane: fleet registry, office UI (embedded), model gateway (docs/core.md)
 docker/sidecar.Dockerfile      the engine's sidecar image (rehydrate + nap), one per engine version
 docker/instance.Dockerfile     one agent's ECS sidecar: that image + the instance's files
