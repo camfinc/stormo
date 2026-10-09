@@ -286,7 +286,6 @@ private struct AgentForm: View {
             }
             TextField("Version", text: text(["engine", "version"], keepEmpty: true))
             TextField("Image tag", text: text(["engine", "image_tag"]), prompt: Text("the pinned engine image"))
-            TextField("Model", text: text(modelPath + [modelNameKey], keepEmpty: true), prompt: Text("provider/model"))
             if let conns = options.connections {
                 Picker("Provider", selection: provider) {
                     ForEach(choices(conns.filter(\.api).map(\.name), current: get(modelPath + ["provider"])?.string), id: \.self) { n in
@@ -296,6 +295,14 @@ private struct AgentForm: View {
             } else {
                 TextField("Provider", text: text(modelPath + ["provider"]), prompt: Text("openrouter"))
             }
+            LabeledContent("Model") {
+                HStack {
+                    TextField("Model", text: text(modelPath + [modelNameKey], keepEmpty: true), prompt: Text("provider/model"))
+                        .labelsHidden().multilineTextAlignment(.trailing)
+                    ModelChooser(connection: get(modelPath + ["provider"])?.string ?? "openrouter", agentID: agentID,
+                                 value: text(modelPath + [modelNameKey], keepEmpty: true))
+                }
+            }
             Toggle("Use a ChatGPT account on the core when running locally", isOn: local)
             if get(modelPath + ["local"]) != nil {
                 if format >= 1, let conns = options.connections?.filter({ !$0.api }), conns.count > 1 {
@@ -303,7 +310,14 @@ private struct AgentForm: View {
                         ForEach(conns) { c in Text(c.name).tag(c.name == "chatgpt" ? "" : c.name) }
                     }
                 }
-                TextField("Local model", text: text(modelPath + ["local", localNameKey], keepEmpty: true), prompt: Text("the gateway's name for it"))
+                LabeledContent("Local model") {
+                    HStack {
+                        TextField("Local model", text: text(modelPath + ["local", localNameKey], keepEmpty: true), prompt: Text("the gateway's name for it"))
+                            .labelsHidden().multilineTextAlignment(.trailing)
+                        ModelChooser(connection: format >= 1 ? (get(["model", "local", "connection"])?.string ?? "chatgpt") : "chatgpt",
+                                     agentID: agentID, value: text(modelPath + ["local", localNameKey], keepEmpty: true))
+                    }
+                }
             }
         } header: {
             Text("Model")

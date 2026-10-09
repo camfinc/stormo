@@ -211,3 +211,10 @@ public struct ImportResult: Codable, Sendable, Equatable {
     public var mode: String
     public var changes: [String]
 }
+
+/// One model of `connections models <name>`.
+public struct ConnectionModel: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String?
+    public var contextLength: Int?
+}
