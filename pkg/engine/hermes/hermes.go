@@ -461,8 +461,16 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	for p, body := range ctx.Knowledge {
 		files["skills/"+p] = []byte(body)
 	}
-	if body, err := os.ReadFile(filepath.Join(dir, "hermes", "cron.jobs.json")); err == nil {
-		files["cron/jobs.json"] = body
+	legacyCron, legacyErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(h.layout.ScheduleSource)))
+	switch {
+	case a.Schedules != nil && legacyErr == nil:
+		return nil, fmt.Errorf("agents/%s: schedules: and %s both set; keep schedules: (stormo migrate agent moves it)", a.ID, h.layout.ScheduleSource)
+	case a.Schedules != nil:
+		if files[h.layout.Schedules], err = renderJobs(a.Schedules); err != nil {
+			return nil, err
+		}
+	case legacyErr == nil:
+		files[h.layout.Schedules] = legacyCron // format 0: Hermes' own file, as committed
 	}
 	for p, body := range files {
 		if strings.HasPrefix(p, "skills/") && strings.HasSuffix(p, "/SKILL.md") {

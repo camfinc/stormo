@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"go.yaml.in/yaml/v3"
 )
 
 // The dream folds naps back into git as *proposals*. It runs off-task (a laptop or a scheduled job
@@ -266,6 +268,27 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			}
 			repoCron, _ = os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), filepath.FromSlash(L.ScheduleSource)))
 		}
+		// Format 1: the agent's schedules live in agent.yaml; a change the agent made at runtime is
+		// proposed in that form. A job agent.yaml cannot express falls back to the engine's file.
+		if cron != nil && agent.Schedules != nil {
+			if live, err := eng.ReadSchedules([]byte(*cron)); err == nil {
+				if !sameSchedules(live, agent.Schedules) {
+					body, err := yaml.Marshal(map[string]any{"schedules": live})
+					if err != nil {
+						return nil, err
+					}
+					text, _ := scrubber.Scrub(string(body))
+					if err := os.MkdirAll(proposals, 0o755); err != nil {
+						return nil, err
+					}
+					if err := os.WriteFile(filepath.Join(proposals, "schedules.yaml"), []byte(text), 0o644); err != nil {
+						return nil, err
+					}
+					report.CronProposal = true
+				}
+				cron = nil
+			}
+		}
 		if cron != nil && learning.Trim(*cron) != learning.Trim(string(repoCron)) {
 			if err := os.MkdirAll(filepath.Join(proposals, "cron"), 0o755); err != nil {
 				return nil, err
@@ -337,9 +360,27 @@ func renderReport(r *DreamReport) string {
 	}
 	cron := "no"
 	if r.CronProposal {
-		cron = "yes (learnings/proposals/cron/jobs.json)"
+		cron = "yes (learnings/proposals/schedules.yaml, or cron/jobs.json for an engine-only job)"
 	}
 	lines = append(lines, "- cron proposal: "+cron, "",
 		"Review with `stormo learn list "+r.Agent+"` and `stormo learn skills "+r.Agent+"`.", "")
 	return strings.Join(lines, "\n")
+}
+
+// sameSchedules compares schedules as data (nil and empty lists alike).
+func sameSchedules(a, b []manifest.Schedule) bool {
+	norm := func(l []manifest.Schedule) []manifest.Schedule {
+		out := make([]manifest.Schedule, len(l))
+		for i, s := range l {
+			if len(s.Skills) == 0 {
+				s.Skills = nil
+			}
+			if len(s.Tools) == 0 {
+				s.Tools = nil
+			}
+			out[i] = s
+		}
+		return out
+	}
+	return reflect.DeepEqual(norm(a), norm(b))
 }

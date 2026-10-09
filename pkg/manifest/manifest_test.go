@@ -171,3 +171,33 @@ func TestFormatRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedules(t *testing.T) {
+	base := atlasHead + "engine:\n  kind: hermes\n  version: 0.21.5\nmodel: {name: x}\nschedules:\n"
+	a, err := parseAs(t, base+"  - id: digest\n    name: Digest\n    every: 2h\n    prompt: Post the digest\n    skills: [crm/crm-api]\n  - id: weekly\n    cron: \"0 9 * * 1\"\n    prompt: Plan\n    enabled: false\n    note: later\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Schedules) != 2 || a.Schedules[0].Minutes() != 120 || !a.Schedules[0].Agent || !a.Schedules[0].Enabled || a.Schedules[1].Enabled || a.Schedules[1].Minutes() != 0 {
+		t.Errorf("schedules = %+v", a.Schedules)
+	}
+	if none, _ := parseAs(t, atlasHead+"engine:\n  kind: hermes\n  version: 0.21.5\nmodel: {name: x}\n"); none.Schedules != nil {
+		t.Error("no schedules: must read as nil (the engine's own file, format 0)")
+	}
+	for body, want := range map[string]string{
+		"  - {id: a, prompt: p}\n":                                               "exactly one of every",
+		"  - {id: a, every: 2h, cron: \"* * * * *\", prompt: p}\n":               "exactly one of every",
+		"  - {id: a, every: 90s, prompt: p}\n":                                   "every is a number",
+		"  - {id: a, cron: \"* *\", prompt: p}\n":                                "five fields",
+		"  - {id: a, every: 1h}\n":                                               "a prompt or a script",
+		"  - {id: a, every: 1h, agent: false, prompt: p}\n":                      "runs only a script",
+		"  - {id: a, every: 1h, prompt: p}\n  - {id: a, every: 2h, prompt: q}\n": "used twice",
+		"  - {id: a, every: 1h, script: nope.py}\n":                              "not in agents/atlas/scripts",
+		"  - {id: a, every: 1h, prompt: p, when: now}\n":                         "unknown key",
+		"  - {every: 1h, prompt: p}\n":                                           "id is required",
+	} {
+		if _, err := parseAs(t, base+body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
+	}
+}

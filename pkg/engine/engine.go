@@ -56,8 +56,9 @@ type Layout struct {
 	NotRestored []string `json:"notRestored,omitempty"`
 	// Placeholders are files rehydrate creates empty (0600) when missing, before the engine starts.
 	Placeholders []string `json:"placeholders,omitempty"`
-	// Schedules is the engine's scheduled-jobs file relative to home, ScheduleSource the file in the
-	// agent's directory Compile builds it from; empty when the engine has none.
+	// Schedules is the engine's scheduled-jobs file relative to home (Compile renders it from
+	// agent.yaml schedules:); ScheduleSource is format 0's copy of it in the agent's directory.
+	// Empty when the engine has none.
 	Schedules      string `json:"schedules,omitempty"`
 	ScheduleSource string `json:"scheduleSource,omitempty"`
 	// Root for manifest `state:` entries relative to home; each gets <StateRoot>/<name>.
@@ -168,8 +169,10 @@ type Engine interface {
 	// MergeSchedules is the schedules file rehydrate writes: the baseline's jobs (the repo is the
 	// source of truth) and the jobs the agent made at runtime (live, from the nap).
 	MergeSchedules(baseline, live []byte) ([]byte, error)
-	// Schedules reads the engine's schedules file.
+	// Schedules reads the engine's schedules file as run status; ReadSchedules as the agent's
+	// schedules (definitions only), the inverse of what Compile renders from agent.yaml.
 	Schedules(body []byte) ([]ScheduleStatus, error)
+	ReadSchedules(body []byte) ([]manifest.Schedule, error)
 	LogNoise() []LogNoise
 	// BenchArgv is one bench turn executed inside the agent image; ParseBench reads its output.
 	BenchArgv(prompt string) []string

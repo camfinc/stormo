@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/env"
@@ -125,6 +126,54 @@ type Limits struct {
 	ScriptTimeout  int `json:"script_timeout,omitempty"`
 }
 
+// Schedule is one of the agent's scheduled jobs (agent.yaml schedules:). The engine renders it into
+// its own scheduler's file and keeps run state (last and next run, failures) itself.
+type Schedule struct {
+	// ID is stable: the engine's run state follows it across restarts.
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+	// Every is an interval (120m, 2h, 1d); Cron a cron expression. Exactly one is set.
+	Every string `json:"every,omitempty" yaml:"every,omitempty"`
+	Cron  string `json:"cron,omitempty" yaml:"cron,omitempty"`
+	// Prompt is the turn the agent runs, with Skills loaded. Script is a file in the agent's
+	// scripts/ that runs first (its output is the turn's context) or, with Agent false, alone.
+	Prompt string   `json:"prompt,omitempty" yaml:"prompt,omitempty"`
+	Skills []string `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Script string   `json:"script,omitempty" yaml:"script,omitempty"`
+	Agent  bool     `json:"agent" yaml:"agent"`
+	// Monitor is a script in scripts/ that decides whether the job needs to run at all.
+	Monitor string `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+	// Model and Provider override the agent's model for this job.
+	Model    string `json:"model,omitempty" yaml:"model,omitempty"`
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	// Tools limits the toolsets the job may use (engine names); empty is the agent's own.
+	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
+	// Deliver is where the result goes (a channel kind, or home); OnFailure where a failure goes.
+	Deliver   string `json:"deliver,omitempty" yaml:"deliver,omitempty"`
+	OnFailure string `json:"on_failure,omitempty" yaml:"on_failure,omitempty"`
+	Enabled   bool   `json:"enabled" yaml:"enabled"`
+	// Note says why (a paused job's reason).
+	Note string `json:"note,omitempty" yaml:"note,omitempty"`
+	// Times stops the job after that many runs (0: no limit).
+	Times int `json:"times,omitempty" yaml:"times,omitempty"`
+}
+
+// Minutes is an interval schedule's length, 0 for a cron one.
+func (s Schedule) Minutes() int {
+	m := everyRe.FindStringSubmatch(s.Every)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n * map[string]int{"m": 1, "h": 60, "d": 1440}[m[2]]
+}
+
+var (
+	everyRe      = regexp.MustCompile(`^([1-9][0-9]*)([mhd])$`)
+	scheduleIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	cronRe       = regexp.MustCompile(`^\S+( \S+){4}$`)
+)
+
 // Format is the newest agent.yaml format this stormo reads (docs/agent-standard.md). Format 0 is
 // the original layout (engine.model, learning.*_char_limit), still read.
 const Format = 1
@@ -164,6 +213,9 @@ type Agent struct {
 	Learning Learning `json:"learning"`
 	Deploy   Deploy   `json:"deploy"`
 	Limits   Limits   `json:"limits"`
+	// Schedules are the agent's scheduled jobs; nil when the manifest has no schedules: (format 0
+	// keeps them in the engine's own file).
+	Schedules []Schedule `json:"schedules,omitempty"`
 	// Format is the file's agent.yaml format (0 when it does not say); Legacy lists the format-0
 	// keys it still uses, for `check` to point at.
 	Format int      `json:"format"`
@@ -279,6 +331,7 @@ type raw struct {
 	} `yaml:"model"`
 	Memory          map[string]any   `yaml:"memory"`
 	Limits          map[string]any   `yaml:"limits"`
+	Schedules       []map[string]any `yaml:"schedules"`
 	Channels        []map[string]any `yaml:"channels"`
 	Secrets         []any            `yaml:"secrets"`
 	OptionalSecrets []map[string]any `yaml:"optional_secrets"`
@@ -542,6 +595,10 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	schedules, err := schedulesOf(m, root, id, where)
+	if err != nil {
+		return nil, err
+	}
 	if v, ok := num(m.Learning["seed_fill"]); ok {
 		learning.SeedFill = v
 	}
@@ -578,7 +635,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	return &Agent{
 		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Engine: engine,
 		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Env: envs,
-		State: state, Learning: learning, Deploy: deploy, Limits: limits, Format: format, Legacy: legacy,
+		State: state, Learning: learning, Deploy: deploy, Limits: limits, Schedules: schedules, Format: format, Legacy: legacy,
 	}, nil
 }
 
@@ -780,4 +837,69 @@ func ApplyOptional(a *Agent, present []string) Effective {
 		}
 	}
 	return Effective{Agent: &cp, SkipSkills: skip, Off: off}
+}
+
+// schedulesOf reads schedules:, nil when the manifest has none.
+func schedulesOf(m raw, root, id, where string) ([]Schedule, error) {
+	if m.Schedules == nil {
+		return nil, nil
+	}
+	out := []Schedule{}
+	seen := map[string]bool{}
+	known := map[string]bool{"id": true, "name": true, "every": true, "cron": true, "prompt": true, "skills": true, "script": true,
+		"agent": true, "monitor": true, "model": true, "provider": true, "tools": true, "deliver": true, "on_failure": true,
+		"enabled": true, "note": true, "times": true}
+	for i, j := range m.Schedules {
+		at := fmt.Sprintf("%s: schedules[%d]", where, i)
+		for k := range j {
+			if err := req(known[k], "%s: unknown key %q", at, k); err != nil {
+				return nil, err
+			}
+		}
+		okBools := true
+		s := Schedule{ID: str(j["id"]), Name: str(j["name"]), Every: str(j["every"]), Cron: str(j["cron"]), Prompt: str(j["prompt"]),
+			Skills: anyStrs(j["skills"]), Script: str(j["script"]), Monitor: str(j["monitor"]), Model: str(j["model"]),
+			Provider: str(j["provider"]), Tools: anyStrs(j["tools"]), Deliver: str(j["deliver"]), OnFailure: str(j["on_failure"]),
+			Note: str(j["note"]), Agent: true, Enabled: true}
+		if b := optBool(j["agent"], &okBools); b != nil {
+			s.Agent = *b
+		}
+		if b := optBool(j["enabled"], &okBools); b != nil {
+			s.Enabled = *b
+		}
+		if v, ok := num(j["times"]); ok {
+			if err := req(v > 0 && v == math.Trunc(v), "%s: times must be a positive whole number", at); err != nil {
+				return nil, err
+			}
+			s.Times = int(v)
+		}
+		if s.Name != "" {
+			at = fmt.Sprintf("%s: schedule %q", where, s.Name)
+		}
+		checks := []error{
+			req(okBools, "%s: agent and enabled must be true or false", at),
+			req(scheduleIDRe.MatchString(s.ID), "%s: id is required (letters, digits, - and _)", at),
+			req(!seen[s.ID], "%s: id %q is used twice", at, s.ID),
+			req((s.Every == "") != (s.Cron == ""), "%s: set exactly one of every (e.g. 30m, 2h, 1d) and cron", at),
+			req(s.Every == "" || everyRe.MatchString(s.Every), "%s: every is a number and m, h or d (30m, 2h, 1d)", at),
+			req(s.Cron == "" || cronRe.MatchString(s.Cron), "%s: cron is five fields (minute hour day month weekday)", at),
+			req(s.Prompt != "" || s.Script != "", "%s: a schedule needs a prompt or a script", at),
+			req(s.Agent || s.Script != "", "%s: agent: false runs only a script; set script", at),
+		}
+		for _, e := range checks {
+			if e != nil {
+				return nil, e
+			}
+		}
+		for _, f := range []string{s.Script, s.Monitor} {
+			if f != "" {
+				if err := req(!strings.Contains(f, "..") && exists(filepath.Join(AgentDir(root, id), "scripts", f)), "%s: %s is not in agents/%s/scripts/", at, f, id); err != nil {
+					return nil, err
+				}
+			}
+		}
+		seen[s.ID] = true
+		out = append(out, s)
+	}
+	return out, nil
 }
