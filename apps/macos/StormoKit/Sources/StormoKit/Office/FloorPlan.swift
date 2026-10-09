@@ -84,9 +84,14 @@ public struct FloorPlan: Sendable {
     public private(set) var clocks: [CGRect] = []
 
     /// `clocks` are the world clocks' city names (stormo.yaml office.clocks), for the lobby wall.
-    public init(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks: [String] = []) {
-        layout(units: units, agents: agents, look: look, clocks: clocks)
+    /// `fitting` is the width/height of the view it fills: the floor takes that shape (taller rows,
+    /// or wider offices and middle) so it fills the view edge to edge, within sane limits.
+    public init(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks: [String] = [], fitting aspect: CGFloat? = nil) {
+        layout(units: units, agents: agents, look: look, clocks: clocks, aspect: aspect)
     }
+
+    /// The shapes a floor can stretch to; beyond them it is shown with a margin.
+    public static let aspectRange: ClosedRange<CGFloat> = 0.6...3.2
 
     // MARK: Layout
 
@@ -103,7 +108,7 @@ public struct FloorPlan: Sendable {
         }
     }
 
-    private mutating func layout(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks cities: [String]) {
+    private mutating func layout(units: [FleetUnit], agents: [FleetAgent], look: OfficeLook, clocks cities: [String], aspect: CGFloat?) {
         let rooms = units.filter { $0.id != "group" }
         let roomIDs = Set(rooms.map(\.id))
         let left = rooms.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
@@ -131,12 +136,27 @@ public struct FloorPlan: Sendable {
             rowHeight = (inner - CGFloat(rows - 1) * Self.gap) / CGFloat(rows)
         }
 
+        // Take the view's shape: more height for the rows, or more width for the offices and middle.
+        var officeWidth = Self.officeWidth, middleWidth = Self.middleWidth
+        if let aspect, aspect > 0 {
+            let a = min(max(aspect, Self.aspectRange.lowerBound), Self.aspectRange.upperBound)
+            let naturalW = 2 * Self.wall + 2 * officeWidth + middleWidth + 2 * Self.hall + 4 * Self.gap
+            let naturalH = inner + 2 * Self.wall
+            if naturalW / naturalH > a {
+                inner = naturalW / a - 2 * Self.wall
+                rowHeight = (inner - CGFloat(rows - 1) * Self.gap) / CGFloat(rows)
+            } else {
+                let extra = naturalH * a - naturalW
+                officeWidth += extra * 0.36
+                middleWidth += extra * 0.28
+            }
+        }
         let x0 = Self.wall
-        let xHallL = x0 + Self.officeWidth + Self.gap
+        let xHallL = x0 + officeWidth + Self.gap
         let xMid = xHallL + Self.hall + Self.gap
-        let xHallR = xMid + Self.middleWidth + Self.gap
+        let xHallR = xMid + middleWidth + Self.gap
         let xRight = xHallR + Self.hall + Self.gap
-        size = CGSize(width: xRight + Self.officeWidth + Self.wall, height: inner + 2 * Self.wall)
+        size = CGSize(width: xRight + officeWidth + Self.wall, height: inner + 2 * Self.wall)
         halls = [.left: CGRect(x: xHallL, y: Self.wall, width: Self.hall, height: inner),
                  .right: CGRect(x: xHallR, y: Self.wall, width: Self.hall, height: inner)]
 
@@ -146,7 +166,7 @@ public struct FloorPlan: Sendable {
                 let span = i == list.count - 1 ? rows - i : 1
                 let y = Self.wall + CGFloat(i) * (rowHeight + Self.gap)
                 let h = CGFloat(span) * rowHeight + CGFloat(span - 1) * Self.gap
-                let rect = CGRect(x: side == .left ? x0 : xRight, y: y, width: Self.officeWidth, height: h)
+                let rect = CGRect(x: side == .left ? x0 : xRight, y: y, width: officeWidth, height: h)
                 let door = side == .left
                     ? CGRect(x: rect.maxX, y: rect.midY - 30, width: Self.gap, height: 60)
                     : CGRect(x: rect.minX - Self.gap, y: rect.midY - 30, width: Self.gap, height: 60)
@@ -169,8 +189,8 @@ public struct FloorPlan: Sendable {
 
         // The middle column: the server room over the lobby.
         let serverH = max(serverNeed, min(inner - Self.gap - lobbyNeed, (inner - Self.gap) * 1.1 / 2.1))
-        server = CGRect(x: xMid, y: Self.wall, width: Self.middleWidth, height: serverH)
-        lobby = CGRect(x: xMid, y: server.maxY + Self.gap, width: Self.middleWidth, height: inner - Self.gap - serverH)
+        server = CGRect(x: xMid, y: Self.wall, width: middleWidth, height: serverH)
+        lobby = CGRect(x: xMid, y: server.maxY + Self.gap, width: middleWidth, height: inner - Self.gap - serverH)
         serverDoor = CGRect(x: server.midX - 30, y: server.maxY, width: 60, height: Self.gap)
 
         let kinds: [Rack.Kind] = [.net, .core, .fleet, .ups]

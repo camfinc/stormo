@@ -32,6 +32,9 @@ enum DebugSnapshot {
                 for window in NSApp.windows {
                     for view in allSubviews(window.contentView) {
                         if let sk = view as? OfficeSKView, let image = sk.floorImage() {
+                            if i == 0, let plan = (sk.scene as? OfficeScene)?.plan {
+                                print("office floor \(Int(plan.size.width))x\(Int(plan.size.height)) in view \(Int(sk.bounds.width))x\(Int(sk.bounds.height))")
+                            }
                             let rep = NSBitmapImageRep(cgImage: image)
                             try? rep.representation(using: .png, properties: [:])?.write(to: out.appending(path: i == 0 ? "office-floor.png" : "office-floor-\(i).png"))
                         }

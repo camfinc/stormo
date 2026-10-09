@@ -20,8 +20,8 @@ enum BuildingArt {
 
     static func draw(_ ctx: CGContext, _ input: Input) {
         let plan = input.plan
-        Art.fill(ctx, CGRect(origin: .zero, size: plan.size), Art.color(wallColor), radius: 6)
-        Art.stroke(ctx, CGRect(origin: .zero, size: plan.size), Art.color("#3a4b5e"), width: 1, radius: 6)
+        // Edge to edge: the outer wall runs to the view's edges, no rounded page corners.
+        Art.fill(ctx, CGRect(origin: .zero, size: plan.size), Art.color(wallColor))
         for (_, rect) in plan.halls { hallway(ctx, rect) }
         for office in plan.offices { room(ctx, office, input.look) }
         serverRoom(ctx, plan, groupName: input.look.shortName(input.groupName))

@@ -14,7 +14,6 @@ struct OfficeView: View {
         Group {
             if model.core.state.isRunning, let fleet = model.fleet.fleet {
                 OfficeSpriteView(scene: scene)
-                    .background(Color(nsColor: .underPageBackgroundColor))
                     .overlay(alignment: .bottom) { OfficeHUD(fleet: fleet).padding(.bottom, 14) }
                     .onAppear {
                         configure()
@@ -125,7 +124,6 @@ struct OfficeSpriteView: NSViewRepresentable {
     func makeNSView(context: Context) -> OfficeSKView {
         let v = OfficeSKView()
         v.ignoresSiblingOrder = true
-        v.allowsTransparency = true
         v.preferredFramesPerSecond = 60
         v.presentScene(scene)
         return v

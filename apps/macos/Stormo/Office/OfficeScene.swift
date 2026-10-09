@@ -59,8 +59,9 @@ final class OfficeScene: SKScene {
     override init(size: CGSize) {
         super.init(size: size)
         scaleMode = .resizeFill
-        // Transparent: the window's own canvas colour shows around the floor (OfficeView).
-        backgroundColor = .clear
+        // The floor fills the view (it is laid out to the view's shape); while a resize is under way
+        // the gap, if any, is the colour of its outer wall, so it reads as more wall.
+        backgroundColor = Art.nsColor(BuildingArt.wallColor)
         addChild(world)
         addChild(cam)
         camera = cam
@@ -71,6 +72,12 @@ final class OfficeScene: SKScene {
     override func didChangeSize(_ oldSize: CGSize) {
         super.didChangeSize(oldSize)
         placeCamera()
+        // Once the resize settles, lay the floor out again for the new shape.
+        guard let plan, size.width > 0, size.height > 0 else { return }
+        let want = min(max(size.width / size.height, FloorPlan.aspectRange.lowerBound), FloorPlan.aspectRange.upperBound)
+        guard abs(plan.size.width / plan.size.height - want) > 0.01 else { return }
+        removeAction(forKey: "relayout")
+        run(.sequence([.wait(forDuration: 0.3), .run { [weak self] in self?.rebuild() }]), withKey: "relayout")
     }
 
     // MARK: Data
@@ -116,7 +123,8 @@ final class OfficeScene: SKScene {
         playback.reset()
 
         let clockList = look.instance?.clocks ?? []
-        let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: clockList.map(\.city))
+        let aspect = size.width > 0 && size.height > 0 ? size.width / size.height : nil
+        let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: clockList.map(\.city), fitting: aspect)
         self.plan = plan
         let byID = Dictionary(uniqueKeysWithValues: fleet.agents.map { ($0.id, $0) })
         let groupName = fleet.units.first { $0.id == "group" }?.name ?? "Commons"
@@ -125,12 +133,6 @@ final class OfficeScene: SKScene {
         building.anchorPoint = .zero
         building.zPosition = 0
         world.addChild(building)
-        // The floor sits on the canvas like a page: a soft shadow under it.
-        let shadow = SKSpriteNode(texture: Self.shadowTexture(plan.size), size: CGSize(width: plan.size.width + 120, height: plan.size.height + 120))
-        shadow.anchorPoint = .zero
-        shadow.position = CGPoint(x: -60, y: -60 - 10)
-        shadow.zPosition = -1
-        world.addChild(shadow)
 
         for ws in plan.workstations {
             let hit = SKSpriteNode(color: .clear, size: CGSize(width: ws.rect.width, height: ws.rect.height - 20))
@@ -205,23 +207,6 @@ final class OfficeScene: SKScene {
         }
         placeCamera()
         showSelection()
-    }
-
-    private static func shadowTexture(_ size: CGSize) -> SKTexture {
-        // Low resolution is fine for a blur, and keeps a floor-sized texture small.
-        let pad: CGFloat = 60, scale: CGFloat = 0.25
-        let px = CGSize(width: (size.width + 2 * pad) * scale, height: (size.height + 2 * pad) * scale)
-        let ctx = CGContext(data: nil, width: Int(px.width), height: Int(px.height), bitsPerComponent: 8, bytesPerRow: 0,
-                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.setShadow(offset: .zero, blur: 40 * scale, color: CGColor(gray: 0, alpha: 0.45))
-        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-        ctx.fill(CGRect(x: pad, y: pad, width: size.width, height: size.height))
-        // Keep only the shadow: clear the rectangle that casts it (the floor covers it anyway).
-        ctx.setShadow(offset: .zero, blur: 0, color: nil)
-        ctx.setBlendMode(.clear)
-        ctx.fill(CGRect(x: pad + 8, y: pad + 8, width: size.width - 16, height: size.height - 16))
-        return SKTexture(cgImage: ctx.makeImage()!)
     }
 
     private static let chairTexture: SKTexture = Art.texture(CGSize(width: 48, height: 46)) { ctx in
@@ -582,7 +567,7 @@ final class OfficeScene: SKScene {
 
     private func fitScale() -> CGFloat {
         guard let plan, size.width > 0, size.height > 0 else { return 1 }
-        return max(plan.size.width / size.width, plan.size.height / size.height) * 1.03
+        return max(plan.size.width / size.width, plan.size.height / size.height)
     }
 
     /// Fit the floor to the view, then the user's zoom (pinch) and pan (scroll).

@@ -86,6 +86,22 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
         #expect(crowded.clocks[0].width > 56)
     }
 
+    @Test func takesTheViewsShape() throws {
+        let (fleet, look) = try demo()
+        for aspect in [0.8, 1.2, 1.77, 2.6] as [CGFloat] {
+            let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: ["Lisbon"], fitting: aspect)
+            #expect(abs(plan.size.width / plan.size.height - aspect) < 0.01, "\(aspect)")
+            for ws in plan.workstations where ws.office != nil {
+                #expect(plan.office(ws.office)!.rect.contains(ws.rect), "\(aspect)")
+            }
+            for a in fleet.agents { #expect(plan.path(for: a.id, to: plan.spot("coffee", for: a.id)!) != nil) }
+            #expect(abs(plan.lobby.maxY + 8 - plan.size.height) < 0.001)
+        }
+        // Past the limits it keeps a sane shape.
+        let narrow = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, fitting: 0.2)
+        #expect(abs(narrow.size.width / narrow.size.height - FloorPlan.aspectRange.lowerBound) < 0.01)
+    }
+
     @Test func lobbyAgentsAndOddUnits() {
         let units = [FleetUnit(id: "group", name: "G"), FleetUnit(id: "a", name: "A"), FleetUnit(id: "b", name: "B"), FleetUnit(id: "c", name: "C")]
         let agents = [agent("core", unit: "group"), agent("x", unit: "a")] + (1...7).map { agent("c\($0)", unit: "c") }
