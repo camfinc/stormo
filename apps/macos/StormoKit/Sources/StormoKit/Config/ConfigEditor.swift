@@ -89,6 +89,12 @@ public final class ConfigEditor {
         if !isStale { problem = nil }
     }
 
+    /// Clears the last problem (a new action is starting).
+    public func problemReset() { problem = nil }
+
+    /// Shows error as this editor's problem (an action on its file failed).
+    public func report(_ error: Error) { problem = Self.problem(error) }
+
     static func problem(_ error: Error) -> Problem {
         if let e = error as? CLIError { return Problem(code: e.code, message: e.errorDescription ?? e.message) }
         return Problem(code: "failed", message: error.localizedDescription)

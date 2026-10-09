@@ -32,6 +32,8 @@ struct AgentEditor: View {
     @State private var definition: ConfigEditor
     @State private var soul: ConfigEditor
     @State private var check: Check?
+    @State private var confirmMigrate = false
+    @State private var migration: MigrateResult?
 
     init(agentID: String) {
         self.agentID = agentID
@@ -85,13 +87,39 @@ struct AgentEditor: View {
             }
         }
         .task(id: model.cli?.instance) { await load() }
+        .confirmationDialog("Migrate \(name) to agent.yaml format 1?", isPresented: $confirmMigrate) {
+            Button("Migrate") { Task { await runMigrate() } }
+        } message: {
+            Text("""
+            agent.yaml gets model, memory, limits and schedules (comments kept); Hermes' files move into engine/hermes/; \
+            skills and scripts say $AGENT_HOME. If \(name) is stopped, its naps and its own secret values move into \
+            agents/\(agentID)/data/ too (secrets.local.yaml is rewritten without its comments). \
+            Changes the files only: check them with git before committing; a running agent picks them up on restart.
+            """)
+        }
+        .sheet(item: $migration) { r in
+            MigrationSummary(result: r, restart: agent?.state == "running" ? { Task { await model.run("restart", agents: [agentID]) } } : nil)
+        }
+    }
+
+    private func runMigrate() async {
+        guard let cli = model.cli else { return }
+        definition.problemReset()
+        do {
+            let results = try await cli.run(["migrate", "agent", agentID], as: [MigrateResult].self)
+            migration = results.first
+        } catch {
+            definition.report(error)
+        }
+        await load()
+        await model.fleet.refresh()
     }
 
     @ViewBuilder private var content: some View {
         switch page {
         case .settings:
             if let options = definition.file?.options, definition.doc != nil {
-                AgentForm(editor: definition, options: options, agent: agent, agentID: agentID)
+                AgentForm(editor: definition, options: options, agent: agent, agentID: agentID) { confirmMigrate = true }
                     .disabled(definition.isTextDirty || definition.busy || definition.isStale)
             } else if definition.file != nil {
                 ContentUnavailableView("agent.yaml does not parse", systemImage: "exclamationmark.triangle",
@@ -175,6 +203,7 @@ private struct AgentForm: View {
     let options: AgentOptions
     let agent: FleetAgent?
     let agentID: String
+    let migrate: () -> Void
 
     typealias Path = [JSONValue.Key]
 
@@ -190,11 +219,20 @@ private struct AgentForm: View {
             optionalSecrets
             environment
             state
+            schedules
+            limits
             learning
             deploy
         }
         .formStyle(.grouped)
     }
+
+    /// agent.yaml's format: 1 is engine-neutral (model:, memory:, limits:, schedules:); 0 is the
+    /// original layout, edited at its own paths until it is migrated.
+    private var format: Int { self.get(["format"])?.int.map(Int.init) ?? 0 }
+    private var modelPath: Path { format >= 1 ? ["model"] : ["engine"] }
+    private var modelNameKey: JSONValue.Key { format >= 1 ? "name" : "model" }
+    private var localNameKey: JSONValue.Key { format >= 1 ? "name" : "model" }
 
     // MARK: Sections
 
@@ -210,6 +248,15 @@ private struct AgentForm: View {
                 }
             }
             .padding(.vertical, 4)
+            if format < 1 {
+                HStack(alignment: .firstTextBaseline) {
+                    Label("This agent uses agent.yaml format 0: its schedules and limits are still in Hermes' own files.",
+                          systemImage: "arrow.up.circle")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Migrate to Format 1…", action: migrate)
+                }
+            }
         }
     }
 
@@ -239,11 +286,11 @@ private struct AgentForm: View {
             }
             TextField("Version", text: text(["engine", "version"], keepEmpty: true))
             TextField("Image tag", text: text(["engine", "image_tag"]), prompt: Text("the pinned engine image"))
-            TextField("Model", text: text(["engine", "model"], keepEmpty: true), prompt: Text("provider/model"))
-            TextField("Provider", text: text(["engine", "provider"]), prompt: Text("openrouter"))
+            TextField("Model", text: text(modelPath + [modelNameKey], keepEmpty: true), prompt: Text("provider/model"))
+            TextField("Provider", text: text(modelPath + ["provider"]), prompt: Text("openrouter"))
             Toggle("Use the core's model gateway when running locally", isOn: local)
-            if get(["engine", "local"]) != nil {
-                TextField("Local model", text: text(["engine", "local", "model"], keepEmpty: true), prompt: Text("the gateway's name for it"))
+            if get(modelPath + ["local"]) != nil {
+                TextField("Local model", text: text(modelPath + ["local", localNameKey], keepEmpty: true), prompt: Text("the gateway's name for it"))
             }
         } header: {
             Text("Model")
@@ -415,15 +462,69 @@ private struct AgentForm: View {
         }
     }
 
+    @ViewBuilder private var limits: some View {
+        if format >= 1 {
+            Section {
+                LabeledContent("Steps per turn") {
+                    TextField("Steps per turn", value: int(["limits", "turns"]), format: .number, prompt: Text("engine default"))
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                }
+                Picker("Reasoning", selection: text(["limits", "reasoning"])) {
+                    Text("Engine default").tag("")
+                    ForEach(choices(options.reasoning ?? [], current: get(["limits", "reasoning"])?.string), id: \.self) { Text($0).tag($0) }
+                }
+                LabeledContent("Terminal command timeout") {
+                    TextField("Terminal command timeout", value: int(["limits", "command_timeout"]), format: .number, prompt: Text("engine default"))
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                    Text("seconds").foregroundStyle(.secondary)
+                }
+                LabeledContent("Scheduled script timeout") {
+                    TextField("Scheduled script timeout", value: int(["limits", "script_timeout"]), format: .number, prompt: Text("engine default"))
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
+                    Text("seconds").foregroundStyle(.secondary)
+                }
+            } header: {
+                SectionTitle("Limits", note: "How far one turn may go. Empty leaves the engine's own setting.")
+            }
+        }
+    }
+
+    @ViewBuilder private var schedules: some View {
+        if format >= 1 {
+            let list = get(["schedules"])?.array ?? []
+            Section {
+                if list.isEmpty {
+                    Text("No scheduled jobs.").foregroundStyle(.secondary)
+                }
+                ForEach(list.indices, id: \.self) { i in
+                    ScheduleRows(form: self, path: ["schedules", .index(i)])
+                }
+                Button("Add Schedule", systemImage: "plus") {
+                    let id = String(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(12))
+                    set(["schedules"], .array(list + [.object(["id": .string(id), "name": .string("New schedule"), "every": .string("1h"), "prompt": .string("")])]))
+                }
+            } header: {
+                SectionTitle("Schedules", note: "Jobs the agent runs on its own. Run times and failures are kept by the engine, not here.")
+            }
+        } else if get(["engine"]) != nil {
+            Section {
+                Text("Format 0 keeps scheduled jobs in Hermes' own file. Migrate to format 1 to edit them here.")
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Schedules")
+            }
+        }
+    }
+
     private var learning: some View {
         Section("Learning") {
             LabeledContent("Memory limit") {
-                TextField("Memory limit", value: int(["learning", "memory_char_limit"]), format: .number, prompt: Text("default"))
+                TextField("Memory limit", value: int(format >= 1 ? ["memory", "agent"] : ["learning", "memory_char_limit"]), format: .number, prompt: Text("default"))
                     .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
                 Text("characters").foregroundStyle(.secondary)
             }
             LabeledContent("User profile limit") {
-                TextField("User profile limit", value: int(["learning", "user_char_limit"]), format: .number, prompt: Text("default"))
+                TextField("User profile limit", value: int(format >= 1 ? ["memory", "user"] : ["learning", "user_char_limit"]), format: .number, prompt: Text("default"))
                     .labelsHidden().multilineTextAlignment(.trailing).frame(maxWidth: 110)
                 Text("characters").foregroundStyle(.secondary)
             }
@@ -457,12 +558,12 @@ private struct AgentForm: View {
 
     // MARK: Bindings into the document
 
-    private func get(_ path: Path) -> JSONValue? { editor.doc?[path] }
+    fileprivate func get(_ path: Path) -> JSONValue? { editor.doc?[path] }
 
-    private func set(_ path: Path, _ value: JSONValue?) { editor.doc?.set(path, value) }
+    fileprivate func set(_ path: Path, _ value: JSONValue?) { editor.doc?.set(path, value) }
 
     /// Removes path, and the container too when that leaves it empty and it was not in the file.
-    private func remove(_ path: Path, emptying container: Path) {
+    fileprivate func remove(_ path: Path, emptying container: Path) {
         set(path, nil)
         let left = get(container)
         if (left?.object?.isEmpty ?? false) || (left?.array?.isEmpty ?? false), editor.file?.doc?[container] == nil {
@@ -477,7 +578,7 @@ private struct AgentForm: View {
 
     /// A scalar as text. Typing the text it already shows changes nothing, so a number or a
     /// boolean keeps its type; empty removes the key unless keepEmpty.
-    private func text(_ path: Path, keepEmpty: Bool = false) -> Binding<String> {
+    fileprivate func text(_ path: Path, keepEmpty: Bool = false) -> Binding<String> {
         Binding {
             get(path).map(describe) ?? ""
         } set: { s in
@@ -486,7 +587,7 @@ private struct AgentForm: View {
         }
     }
 
-    private func int(_ path: Path) -> Binding<Int?> {
+    fileprivate func int(_ path: Path) -> Binding<Int?> {
         Binding {
             get(path)?.int.map(Int.init)
         } set: { n in
@@ -503,7 +604,7 @@ private struct AgentForm: View {
     }
 
     /// A boolean that is absent when it equals its default and the file did not set it.
-    private func toggle(_ path: Path, default d: Bool) -> Binding<Bool> {
+    fileprivate func toggle(_ path: Path, default d: Bool) -> Binding<Bool> {
         Binding {
             get(path)?.bool ?? d
         } set: { b in
@@ -512,7 +613,7 @@ private struct AgentForm: View {
     }
 
     /// A list of scalars as strings; items that read the same keep their original values.
-    private func strings(_ path: Path) -> Binding<[String]> {
+    fileprivate func strings(_ path: Path) -> Binding<[String]> {
         Binding {
             (get(path)?.array ?? []).map(describe)
         } set: { list in
@@ -545,19 +646,20 @@ private struct AgentForm: View {
 
     private var local: Binding<Bool> {
         Binding {
-            get(["engine", "local"]) != nil
+            get(modelPath + ["local"]) != nil
         } set: { on in
             if on {
-                let model = get(["engine", "model"])?.string?.split(separator: "/").last.map(String.init) ?? ""
-                set(["engine", "local"], editor.file?.doc?[["engine", "local"]] ?? .object(["via": .string("core"), "model": .string(model)]))
+                let model = get(modelPath + [modelNameKey])?.string?.split(separator: "/").last.map(String.init) ?? ""
+                let key = format >= 1 ? "name" : "model"
+                set(modelPath + ["local"], editor.file?.doc?[modelPath + ["local"]] ?? .object(["via": .string("core"), key: .string(model)]))
             } else {
-                set(["engine", "local"], nil)
+                set(modelPath + ["local"], nil)
             }
         }
     }
 
     /// The choices, plus the current value when it is not one of them (so the picker shows it).
-    private func choices(_ all: [String], current: String?) -> [String] {
+    fileprivate func choices(_ all: [String], current: String?) -> [String] {
         guard let current, !current.isEmpty, !all.contains(current) else { return all }
         return all + [current]
     }
@@ -576,6 +678,129 @@ private func describe(_ v: JSONValue) -> String {
 }
 
 // MARK: Pieces
+
+extension MigrateResult: @retroactive Identifiable {
+    public var id: String { agent }
+}
+
+/// What `stormo migrate agent` changed, after the fact.
+private struct MigrationSummary: View {
+    let result: MigrateResult
+    let restart: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("\(result.agent) is on agent.yaml format \(result.to)", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(result.changes, id: \.self) { Text("• " + $0).textSelection(.enabled) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 260)
+            if result.data == "running" {
+                Text("It is running, so its data (naps, secret values) stayed where it was. Stop it and migrate again to move it.")
+                    .foregroundStyle(.secondary)
+            }
+            Text("Review the changed files with git before you commit them.").foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                if let restart {
+                    Button("Restart \(result.agent)") {
+                        restart()
+                        dismiss()
+                    }
+                }
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+/// One schedule in the form, collapsed to a summary line.
+private struct ScheduleRows: View {
+    let form: AgentForm
+    let path: [JSONValue.Key]
+    @State private var open = false
+
+    private var interval: Bool { form.get(path + ["every"]) != nil || form.get(path + ["cron"]) == nil }
+    private var runsAgent: Bool { form.get(path + ["agent"])?.bool ?? true }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $open) {
+            TextField("Name", text: form.text(path + ["name"]))
+            Picker("Runs", selection: Binding {
+                interval
+            } set: { every in
+                guard every != interval else { return }
+                form.set(path + [every ? "cron" : "every"], nil)
+                form.set(path + [every ? "every" : "cron"], .string(every ? "1h" : "0 9 * * *"))
+            }) {
+                Text("Every").tag(true)
+                Text("On a cron schedule").tag(false)
+            }
+            .pickerStyle(.segmented)
+            if interval {
+                TextField("Every", text: form.text(path + ["every"], keepEmpty: true), prompt: Text("30m, 2h, 1d"))
+            } else {
+                TextField("Cron", text: form.text(path + ["cron"], keepEmpty: true), prompt: Text("minute hour day month weekday"))
+                    .monospaced()
+            }
+            Toggle("Enabled", isOn: form.toggle(path + ["enabled"], default: true))
+            TextField("Note", text: form.text(path + ["note"]), prompt: Text("why it is paused, or anything worth knowing"))
+            Toggle("Runs the agent", isOn: form.toggle(path + ["agent"], default: true))
+            if runsAgent {
+                TextField("Prompt", text: form.text(path + ["prompt"]), prompt: Text("What the agent does each time"), axis: .vertical)
+                    .lineLimit(3...12)
+                LabeledContent("Skills") {
+                    MultiPicker(title: "Skills", all: form.options.skills.map { $0.split(separator: "/").last.map(String.init) ?? $0 },
+                                selection: form.strings(path + ["skills"]))
+                }
+            }
+            Picker(runsAgent ? "Script first" : "Script", selection: form.text(path + ["script"])) {
+                Text("None").tag("")
+                ForEach(form.choices(form.options.scripts ?? [], current: form.get(path + ["script"])?.string), id: \.self) { Text($0).tag($0) }
+            }
+            Picker("Only when", selection: form.text(path + ["monitor"])) {
+                Text("Always").tag("")
+                ForEach(form.choices(form.options.scripts ?? [], current: form.get(path + ["monitor"])?.string), id: \.self) { Text("\($0) says so").tag($0) }
+            }
+            if runsAgent {
+                TextField("Model", text: form.text(path + ["model"]), prompt: Text("the agent's own"))
+                TextField("Provider", text: form.text(path + ["provider"]), prompt: Text("the agent's own"))
+            }
+            TextField("Deliver to", text: form.text(path + ["deliver"]), prompt: Text("slack, telegram, local"))
+            TextField("Failures to", text: form.text(path + ["on_failure"]), prompt: Text("where a failed run is reported"))
+            StringListRows(title: "Tools", items: form.strings(path + ["tools"]), prompt: "toolset (empty: the agent's own)", suggestions: [], monospaced: true)
+            HStack {
+                Text("id \(form.get(path + ["id"])?.string ?? "")").font(.caption).foregroundStyle(.tertiary).monospaced()
+                Spacer()
+                Button("Remove Schedule", systemImage: "trash", role: .destructive) { form.remove(path, emptying: ["schedules"]) }
+                    .buttonStyle(.borderless)
+            }
+        } label: {
+            HStack {
+                Text(form.get(path + ["name"])?.string ?? "Schedule").fontWeight(.medium)
+                Text(summary).foregroundStyle(.secondary)
+                Spacer()
+                if form.get(path + ["enabled"])?.bool == false {
+                    Text("paused").font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(.secondary.opacity(0.15)))
+                }
+            }
+        }
+    }
+
+    private var summary: String {
+        if let e = form.get(path + ["every"])?.string { return "every \(e)" }
+        if let c = form.get(path + ["cron"])?.string { return c }
+        return ""
+    }
+}
 
 /// A section's title with a line on what it is for.
 private struct SectionTitle: View {

@@ -90,6 +90,9 @@ public struct CheckedAgent: Codable, Sendable, Equatable {
     public var engine: String
     public var files: Int
     public var skills: Int
+    /// The agent's agent.yaml format and the format-0 keys it still uses (absent from an older stormo).
+    public var format: Int?
+    public var legacy: [String]?
 }
 
 /// `config show` / `config write`: an editable file and the hash of what was read or written.
@@ -132,4 +135,18 @@ public struct AgentOptions: Codable, Sendable, Equatable {
     public var channels: [Channel]
     public var allowBots: [String]
     public var secrets: [String]
+    /// The agent's scripts/ (for schedules) and the reasoning levels its engine accepts; absent from
+    /// an older stormo.
+    public var scripts: [String]?
+    public var reasoning: [String]?
+}
+
+/// One agent `stormo migrate agent` went through.
+public struct MigrateResult: Codable, Sendable, Equatable {
+    public var agent: String
+    public var from: Int
+    public var to: Int
+    public var changes: [String]
+    /// moved | in-place | running (its data stays until it is stopped)
+    public var data: String
 }

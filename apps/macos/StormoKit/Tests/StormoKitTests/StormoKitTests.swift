@@ -372,16 +372,22 @@ final class Steps: @unchecked Sendable {
         await editor.load(with: cli)
         let options = try #require(editor.file?.options)
         #expect(options.units.map(\.id).contains("sales") && options.engines.contains("hermes"))
-        #expect(editor.doc?[["learning", "memory_char_limit"]] == .int(2200) && !editor.isDirty)
+        #expect(editor.doc?[["memory", "agent"]] == .int(2200) && editor.doc?[["format"]] == .int(1) && !editor.isDirty)
 
         editor.doc?.set(["role"], .string("Edited in the form."))
-        editor.doc?.set(["learning", "memory_char_limit"], .int(3000))
+        editor.doc?.set(["memory", "agent"], .int(3000))
         #expect(editor.isFormDirty && !editor.isTextDirty)
         #expect(await editor.save(with: cli))
         let after = try String(contentsOf: manifest, encoding: .utf8)
         let changed = zip(before.split(separator: "\n", omittingEmptySubsequences: false), after.split(separator: "\n", omittingEmptySubsequences: false)).filter { $0 != $1 }
-        #expect(changed.map { String($0.1) } == ["role: Edited in the form.", "  memory_char_limit: 3000"])
+        #expect(changed.map { String($0.1) } == ["role: Edited in the form.", "  agent: 3000"])
         #expect(!editor.isDirty && editor.text == after)
+
+        // The format changes only through stormo migrate agent.
+        editor.doc?.set(["format"], .int(0))
+        #expect(!(await editor.save(with: cli)))
+        #expect(editor.problem?.code == "readonly")
+        editor.revert()
 
         // Form and text edited at once: refused until one is reverted.
         editor.doc?.set(["name"], .string("Atlas II"))
