@@ -13,6 +13,10 @@ import (
 // Version is set by release builds: -ldflags "-X github.com/camfinc/stormo/pkg/version.Version=v0.1.0".
 var Version = ""
 
+// API versions what other programs read from this binary: the core's HTTP API and the CLI's --json
+// output (docs/api.md). Bump it on a breaking change; added fields do not bump it.
+const API = 1
+
 var (
 	once sync.Once
 	rev  string
@@ -48,18 +52,28 @@ func sourceRevision() string {
 	return r
 }
 
+// Exe is this binary's path with symlinks resolved ("" if unknown): a CLI reached through a
+// ~/.local/bin symlink reports the file it points to.
+func Exe() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		return real
+	}
+	return exe
+}
+
 // Source finds the engine's source checkout: STORMO_SRC, or the nearest directory above the binary
 // holding the engine's go.mod. "" for an installed release.
 func Source() string {
 	if s := os.Getenv("STORMO_SRC"); s != "" {
 		return s
 	}
-	exe, err := os.Executable()
-	if err != nil {
+	exe := Exe()
+	if exe == "" {
 		return ""
-	}
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
 	}
 	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
 		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.Contains(string(b), "module github.com/camfinc/stormo\n") {

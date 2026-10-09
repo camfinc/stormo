@@ -87,7 +87,10 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   skill install [--for claude,codex] [--scope user|project] [--force]   user: ~/.claude/skills, ~/.agents/skills
   skill uninstall [--for …] [--scope …] · skill show                   project: the instance's .claude/ and .agents/
 
+  instance                               the instance in use: name, slug, directory
   version                                print the engine version
+
+  --json                                 machine output, one JSON event per line (docs/api.md)
 `
 
 var (
@@ -119,6 +122,7 @@ var (
 	fForce       = fs.Bool("force", false, "")
 	fFor         = fs.String("for", "claude,codex", "")
 	fHelp        = fs.BoolP("help", "h", false, "")
+	fJSON        = fs.Bool("json", false, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -140,10 +144,21 @@ func need(v, what string) (string, error) {
 func main() {
 	fs.Usage = func() {}
 	if err := fs.Parse(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if jsonMode() {
+			emitError(withCode("usage", err))
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(2)
 	}
 	if err := run(fs.Args()); err != nil {
+		if jsonMode() {
+			emitError(err)
+			if errors.Is(err, errUsage) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
 		if errors.Is(err, errUsage) {
 			printUsage()
 			os.Exit(2)
@@ -166,7 +181,8 @@ func run(args []string) error {
 		return nil
 	}
 	if cmd == "version" {
-		fmt.Println(version.String())
+		result(map[string]any{"version": version.String(), "api": version.API, "released": version.Released(), "exe": version.Exe()},
+			func() { fmt.Println(version.String()) })
 		return nil
 	}
 	if cmd == "skill" {
@@ -174,7 +190,12 @@ func run(args []string) error {
 	}
 	inst, err := instance.Current()
 	if err != nil {
-		return err
+		return withCode("instance", err)
+	}
+	if cmd == "instance" {
+		result(map[string]string{"root": inst.Root, "name": inst.Name, "org": inst.Org, "slug": inst.Slug},
+			func() { fmt.Printf("%s (%s)\n%s\n", inst.Name, inst.Slug, inst.Root) })
+		return nil
 	}
 	where, err := ops.PickWhere(*fRemote, *fTarget, os.Getenv)
 	if err != nil {

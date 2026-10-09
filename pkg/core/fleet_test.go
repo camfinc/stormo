@@ -22,6 +22,7 @@ import (
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/place"
+	"github.com/camfinc/stormo/pkg/version"
 )
 
 func write(t *testing.T, p, body string) {
@@ -514,6 +515,26 @@ func TestOfficeRoutes(t *testing.T) {
 		}
 	})
 
+	t.Run("/api/core names the binary and the instance", func(t *testing.T) {
+		r, raw := get("/api/core")
+		var b coreView
+		if err := json.Unmarshal([]byte(raw), &b); err != nil || r.StatusCode != 200 {
+			t.Fatalf("%d %s %v", r.StatusCode, raw, err)
+		}
+		if b.Service != "swarm-core" || b.API != version.API || b.Version != version.String() || b.PID != os.Getpid() || b.Port != c.Addr.Port ||
+			b.Exe == "" || b.StartedAt == "" || b.Instance != (coreInstance{inst.Root, "Acme Swarm", "Acme", "acme"}) {
+			t.Errorf("%+v", b)
+		}
+	})
+
+	t.Run("/api/instance is the page's config", func(t *testing.T) {
+		_, raw := get("/api/instance")
+		want := `{"name":"Acme Swarm","org":"Acme","slug":"acme","clocks":[{"city":"Lisbon","tz":"Europe/Lisbon"}],"units":{"sales":{"hue":"#2dd4bf","wall":"map","floor":"wood","desk":{"app":"records","props":["globe","mug"]}}}}`
+		if raw != want {
+			t.Errorf("got  %s\nwant %s", raw, want)
+		}
+	})
+
 	t.Run("/avatars serves the persona's newest portrait, 404 otherwise", func(t *testing.T) {
 		r, body := get("/avatars/atlas.png")
 		if r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/png" || body != "v2-newest" {
@@ -528,8 +549,12 @@ func TestOfficeRoutes(t *testing.T) {
 
 	t.Run("/health and unknown routes", func(t *testing.T) {
 		r, body := get("/health")
-		if r.StatusCode != 200 || !strings.Contains(body, `"service":"swarm-core"`) || !strings.Contains(body, `"login":"missing"`) {
+		if r.StatusCode != 200 || !strings.Contains(body, `"service":"swarm-core"`) || !strings.Contains(body, `"login":"missing"`) ||
+			!strings.Contains(body, fmt.Sprintf(`"api":%d`, version.API)) || !strings.Contains(body, `"version":"`) {
 			t.Errorf("%d %s", r.StatusCode, body)
+		}
+		if strings.Contains(body, inst.Root) || strings.Contains(body, `"pid"`) {
+			t.Errorf("/health reaches agent containers; no host paths in it: %s", body)
 		}
 		if r, body := get("/nope"); r.StatusCode != 404 || body != `{"error":{"code":"not_found","message":"GET /nope"}}` {
 			t.Errorf("%d %s", r.StatusCode, body)

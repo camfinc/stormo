@@ -58,7 +58,7 @@ func TestBridgeListenerServesOnlyTheGateway(t *testing.T) {
 	}
 	bridge := fmt.Sprintf("http://[::1]:%d", c.Addr.Port)
 	loop := fmt.Sprintf("http://127.0.0.1:%d", c.Addr.Port)
-	for p, want := range map[string]int{"/health": 200, "/v1/models": 401, "/": 404, "/api/fleet": 404, "/api/gateway": 404} {
+	for p, want := range map[string]int{"/health": 200, "/v1/models": 401, "/": 404, "/api/fleet": 404, "/api/gateway": 404, "/api/core": 404, "/api/instance": 404} {
 		if got := status(bridge, p); got != want {
 			t.Errorf("bridge %s: %d, want %d", p, got, want)
 		}

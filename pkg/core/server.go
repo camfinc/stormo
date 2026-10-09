@@ -19,6 +19,7 @@ import (
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/secrets"
+	"github.com/camfinc/stormo/pkg/version"
 )
 
 // The core service (docs/core.md). A host process on loopback; agent containers reach it as
@@ -148,6 +149,34 @@ type fleetView struct {
 	Gateway  gatewayView      `json:"gateway"`
 }
 
+// instanceView is the instance's look: the page's window.STORMO and /api/instance.
+type instanceView struct {
+	Name   string                         `json:"name"`
+	Org    string                         `json:"org"`
+	Slug   string                         `json:"slug"`
+	Clocks []instance.Clock               `json:"clocks"`
+	Units  map[string]instance.OfficeUnit `json:"units"`
+}
+
+type coreInstance struct {
+	Root string `json:"root"`
+	Name string `json:"name"`
+	Org  string `json:"org"`
+	Slug string `json:"slug"`
+}
+
+// coreView is /api/core: the running core's identity.
+type coreView struct {
+	Service   string       `json:"service"`
+	Version   string       `json:"version"`
+	API       int          `json:"api"`
+	PID       int          `json:"pid"`
+	Exe       string       `json:"exe"`
+	Port      int          `json:"port"`
+	StartedAt string       `json:"startedAt"`
+	Instance  coreInstance `json:"instance"`
+}
+
 // StartCore listens on 127.0.0.1 (and o.Bridge) and serves until Close.
 func StartCore(o CoreOptions) (*Core, error) {
 	inst := o.Inst
@@ -213,13 +242,11 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if units == nil {
 		units = map[string]instance.OfficeUnit{}
 	}
-	cfg := marshalCompact(struct {
-		Name   string                         `json:"name"`
-		Org    string                         `json:"org"`
-		Clocks []instance.Clock               `json:"clocks"`
-		Units  map[string]instance.OfficeUnit `json:"units"`
-	}{inst.Name, inst.Org, clocks, units})
+	// The instance's look, for the page (window.STORMO) and other clients (/api/instance).
+	look := instanceView{inst.Name, inst.Org, inst.Slug, clocks, units}
+	cfg := marshalCompact(look)
 	index = strings.Replace(index, "{{instance}}", strings.ReplaceAll(string(cfg), "<", `<`), 1)
+	startedAt := time.Now().UTC().Format(time.RFC3339)
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -233,7 +260,17 @@ func StartCore(o CoreOptions) (*Core, error) {
 		switch {
 		case get && path == "/health":
 			s := gateway.Status()
-			writeJSONBody(w, 200, map[string]any{"status": "ok", "service": "swarm-core", "login": s.Login, "planLimitedUntil": s.PlanLimitedUntil})
+			writeJSONBody(w, 200, map[string]any{"status": "ok", "service": "swarm-core", "login": s.Login, "planLimitedUntil": s.PlanLimitedUntil,
+				"version": version.String(), "api": version.API})
+			return
+		case get && path == "/api/core":
+			// Which binary and which instance this core is, for clients deciding whether to attach.
+			// Loopback only: host paths never reach agent containers (bridge listeners serve no /api).
+			writeJSONBody(w, 200, coreView{"swarm-core", version.String(), version.API, os.Getpid(), version.Exe(), c.Addr.Port, startedAt,
+				coreInstance{inst.Root, inst.Name, inst.Org, inst.Slug}})
+			return
+		case get && path == "/api/instance":
+			writeJSONBody(w, 200, look)
 			return
 		case get && path == "/api/gateway":
 			// Loopback only (bridge listeners never route /api); no secrets in it.
