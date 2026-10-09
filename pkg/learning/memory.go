@@ -7,11 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/camfinc/stormo/pkg/engine"
 )
 
-// Hermes hot-memory files (MEMORY.md / USER.md): entries joined by "\n§\n", budgeted in chars of
-// the joined string (hermes-agent tools/memory_tool_store.py, ENTRY_DELIMITER).
-const EntryDelimiter = "\n§\n"
+// Hot memory is two files in the engine home (engine.Layout.Memory), in the engine's own format
+// (engine.MemoryFormat); budgets count UTF-16 units of the whole file.
 
 // unicodeSpace is every Unicode space and line terminator; normalisation and trimming use it
 // (Go's \s is ASCII only, and a no-break space must not make two entries differ).
@@ -26,9 +27,9 @@ func Trim(s string) string { return strings.Trim(s, unicodeSpace) }
 func UTF16Len(s string) int { return len(utf16.Encode([]rune(s))) }
 
 // ParseEntries splits a hot-memory file into its non-empty, trimmed entries.
-func ParseEntries(raw string) []string {
+func ParseEntries(f engine.MemoryFormat, raw string) []string {
 	out := []string{}
-	for _, e := range strings.Split(raw, EntryDelimiter) {
+	for _, e := range f.Entries(raw) {
 		if e = Trim(e); e != "" {
 			out = append(out, e)
 		}
@@ -36,19 +37,17 @@ func ParseEntries(raw string) []string {
 	return out
 }
 
-func SerializeEntries(entries []string) string { return strings.Join(entries, EntryDelimiter) }
-
 // Normalize is the whitespace/case-folded form used to recognise the same entry across instances
 // and edits.
 func Normalize(entry string) string {
 	return strings.Trim(spaceRun.ReplaceAllString(strings.ToLower(entry), " "), " ")
 }
 
-// Pack greedily keeps entries in priority order while the joined size stays within limit.
-func Pack(entries []string, limit int) (kept, dropped []string) {
+// Pack greedily keeps entries in priority order while the file's size stays within limit.
+func Pack(f engine.MemoryFormat, entries []string, limit int) (kept, dropped []string) {
 	kept, dropped = []string{}, []string{}
 	for _, e := range entries {
-		if UTF16Len(SerializeEntries(append(append([]string{}, kept...), e))) <= limit {
+		if UTF16Len(f.File(append(append([]string{}, kept...), e))) <= limit {
 			kept = append(kept, e)
 		} else {
 			dropped = append(dropped, e)
@@ -60,7 +59,7 @@ func Pack(entries []string, limit int) (kept, dropped []string) {
 // MergeHot is the boot-time merge of live memory (from the latest nap) with the compiled seed:
 // live entries win; entries a human rejected are purged from live memory; seed entries are added
 // only while they fit seedFill of the budget. Whatever does not fit stays in the cold tier skill.
-func MergeHot(live, seed []string, rejected map[string]bool, limit int, seedFill float64) (entries, purged, deferred []string) {
+func MergeHot(f engine.MemoryFormat, live, seed []string, rejected map[string]bool, limit int, seedFill float64) (entries, purged, deferred []string) {
 	purged, kept := []string{}, []string{}
 	for _, e := range live {
 		if rejected[Normalize(e)] {
@@ -79,12 +78,12 @@ func MergeHot(live, seed []string, rejected map[string]bool, limit int, seedFill
 			fresh = append(fresh, e)
 		}
 	}
-	liveKept, liveDropped := Pack(kept, limit)
+	liveKept, liveDropped := Pack(f, kept, limit)
 	ceiling := min(limit, int(math.Floor(float64(limit)*seedFill)))
 	entries = append([]string{}, liveKept...)
 	deferred = append([]string{}, liveDropped...)
 	for _, e := range fresh {
-		if UTF16Len(SerializeEntries(append(append([]string{}, entries...), e))) <= ceiling {
+		if UTF16Len(f.File(append(append([]string{}, entries...), e))) <= ceiling {
 			entries = append(entries, e)
 		} else {
 			deferred = append(deferred, e)

@@ -5,14 +5,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
 )
 
+// sect is a delimited memory format, as Hermes' (budgets count the delimiters).
+const sect = engine.Delimited("\n§\n")
+
 func TestParseAndPack(t *testing.T) {
-	if got := ParseEntries("a" + EntryDelimiter + " b " + EntryDelimiter + EntryDelimiter); !slices.Equal(got, []string{"a", "b"}) {
+	if got := ParseEntries(sect, "a\n§\n b \n§\n\n§\n"); !slices.Equal(got, []string{"a", "b"}) {
 		t.Errorf("ParseEntries = %v", got)
 	}
-	kept, dropped := Pack([]string{"aaaa", "bbbb", "cc"}, 9)
+	kept, dropped := Pack(sect, []string{"aaaa", "bbbb", "cc"}, 9)
 	if !slices.Equal(kept, []string{"aaaa", "cc"}) || !slices.Equal(dropped, []string{"bbbb"}) {
 		t.Errorf("Pack = %v %v", kept, dropped)
 	}
@@ -26,7 +30,7 @@ func TestBudgetsCountUTF16Units(t *testing.T) {
 }
 
 func TestMergeHot(t *testing.T) {
-	entries, purged, deferred := MergeHot([]string{"live one", "bad entry"}, []string{"seed one", "seed two that is long"},
+	entries, purged, deferred := MergeHot(sect, []string{"live one", "bad entry"}, []string{"seed one", "seed two that is long"},
 		map[string]bool{Normalize("Bad   Entry"): true}, 40, 0.5)
 	if !slices.Equal(purged, []string{"bad entry"}) || !slices.Equal(entries, []string{"live one", "seed one"}) || !slices.Equal(deferred, []string{"seed two that is long"}) {
 		t.Errorf("entries=%v purged=%v deferred=%v", entries, purged, deferred)

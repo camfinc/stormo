@@ -70,6 +70,14 @@ func New(inst *instance.Instance) *Hermes {
 		},
 	}
 	l.Memory.Memory, l.Memory.User = "memories/MEMORY.md", "memories/USER.md"
+	l.SkillUsage = "skills/.usage.json"
+	l.Managed = []string{"skills", "plugins", "scripts"}
+	// Hermes reads a listed-but-missing bundled skill as user-deleted and would stop re-seeding it
+	// from the image.
+	l.NotRestored = []string{"skills/.bundled_manifest"}
+	// Secrets arrive as container env. An existing (empty) .env stops the image from seeding its
+	// example file, whose defaults (e.g. TERMINAL_TIMEOUT=60) would override config.yaml.
+	l.Placeholders = []string{".env"}
 	return &Hermes{inst: inst, layout: l}
 }
 
@@ -404,8 +412,8 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 		files["cron/jobs.json"] = body
 	}
 	// Hot-tier seed. Rehydrate merges these with live memory instead of copying them over it.
-	files[h.layout.Memory.Memory] = []byte(strings.Join(ctx.Seed.Memory, "\n§\n"))
-	files[h.layout.Memory.User] = []byte(strings.Join(ctx.Seed.User, "\n§\n"))
+	files[h.layout.Memory.Memory] = []byte(h.Memory().File(ctx.Seed.Memory))
+	files[h.layout.Memory.User] = []byte(h.Memory().File(ctx.Seed.User))
 
 	envReq := []map[string]any{}
 	for _, s := range a.Secrets {
@@ -435,21 +443,21 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	return files, nil
 }
 
-func (h *Hermes) EngineOwnedSkills(homeDir string) (map[string]bool, error) {
+// EngineOwnedSkills reads skills/.bundled_manifest, where Hermes lists the skills it seeded from
+// the image ("name: hash" lines).
+func (h *Hermes) EngineOwnedSkills(read func(path string) []byte) map[string]bool {
 	out := map[string]bool{}
-	body, err := os.ReadFile(filepath.Join(homeDir, "skills", ".bundled_manifest"))
-	if os.IsNotExist(err) {
-		return out, nil
-	} else if err != nil {
-		return nil, err
-	}
-	for _, l := range strings.Split(string(body), "\n") {
+	for _, l := range strings.Split(string(read(h.layout.SkillsDir+"/.bundled_manifest")), "\n") {
 		if name := strings.TrimSpace(strings.SplitN(l, ":", 2)[0]); name != "" {
 			out[name] = true
 		}
 	}
-	return out, nil
+	return out
 }
+
+// Memory is Hermes' hot-memory format: entries joined by "\n§\n", budgeted in chars of the joined
+// string (hermes-agent tools/memory_tool_store.py, ENTRY_DELIMITER).
+func (h *Hermes) Memory() engine.MemoryFormat { return engine.Delimited("\n§\n") }
 
 func (h *Hermes) BenchArgv(prompt string) []string {
 	return []string{"hermes", "chat", "--oneshot", "--format", "stream-json", "--source", "tool", "-q", prompt}

@@ -163,7 +163,7 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			if err != nil {
 				return nil, err
 			}
-			for _, raw := range learning.ParseEntries(deref(blob)) {
+			for _, raw := range learning.ParseEntries(eng.Memory(), deref(blob)) {
 				text, findings := scrubber.Scrub(raw)
 				_, created := learning.Upsert(&ledger, learning.Sighting{Kind: m.kind, Text: text, PII: findings, Agent: agentID,
 					Unit: agent.Unit, Instance: nap.Instance, Nap: nap.ID, At: nap.TakenAt})
@@ -182,15 +182,16 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		return nil, err
 	}
 	if last != nil {
-		bundledBlob, err := learningBlob(s, agentID, last, L.SkillsDir+"/.bundled_manifest")
-		if err != nil {
-			return nil, err
-		}
-		bundled := map[string]bool{}
-		for _, l := range strings.Split(deref(bundledBlob), "\n") {
-			if n := strings.TrimSpace(strings.SplitN(l, ":", 2)[0]); n != "" {
-				bundled[n] = true
+		var readErr error
+		bundled := eng.EngineOwnedSkills(func(p string) []byte {
+			b, err := learningBlob(s, agentID, last, p)
+			if err != nil {
+				readErr = err
 			}
+			return []byte(deref(b))
+		})
+		if readErr != nil {
+			return nil, readErr
 		}
 		learningPaths := []string{}
 		napHashes := map[string]string{}
@@ -272,7 +273,9 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			}
 			report.CronProposal = true
 		}
-		if usage, err := learningBlob(s, agentID, last, L.SkillsDir+"/.usage.json"); err != nil {
+		if L.SkillUsage == "" {
+			// the engine keeps no usage file
+		} else if usage, err := learningBlob(s, agentID, last, L.SkillUsage); err != nil {
 			return nil, err
 		} else if usage != nil {
 			if err := os.WriteFile(filepath.Join(learningsDir(root, agentID), "skill-usage.json"), []byte(*usage), 0o644); err != nil {

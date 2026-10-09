@@ -38,10 +38,22 @@ type Layout struct {
 	// Engine home inside the agent container (shared task volume).
 	Home  string         `json:"home"`
 	Rules []SnapshotRule `json:"rules"`
-	// Hot-memory files relative to home.
+	// Hot-memory files relative to home: the agent's memory and its user profile (Stormo's two hot
+	// tiers); the engine's Memory format reads and writes them.
 	Memory struct{ Memory, User string } `json:"memory"`
 	// Skills root relative to home.
 	SkillsDir string `json:"skillsDir"`
+	// SkillUsage is the engine's skill usage file relative to home, if it keeps one (the dream
+	// copies it next to the learnings).
+	SkillUsage string `json:"skillUsage,omitempty"`
+	// Managed are home dirs rehydrate rebuilds from baseline and nap on every boot (skills and
+	// whatever else Compile writes whole); other runtime dirs (logs, caches) are left alone.
+	Managed []string `json:"managed"`
+	// NotRestored are files a nap keeps that rehydrate never puts back: the engine rebuilds them,
+	// and an old copy would mislead it.
+	NotRestored []string `json:"notRestored,omitempty"`
+	// Placeholders are files rehydrate creates empty (0600) when missing, before the engine starts.
+	Placeholders []string `json:"placeholders,omitempty"`
 	// Root for manifest `state:` entries relative to home; each gets <StateRoot>/<name>.
 	StateRoot string `json:"stateRoot"`
 	// uid/gid the engine runs as; rehydrate (root) hands the home to it so the agent can write.
@@ -91,10 +103,26 @@ type BenchRun struct {
 	Error    string   `json:"error,omitempty"`
 }
 
+// MemoryFormat is how an engine keeps hot-memory entries in a file. Budgets count the UTF-16
+// length of File's output, so they depend on the format.
+type MemoryFormat interface {
+	// Entries splits a file into its entries (untrimmed; empty ones are dropped by the caller).
+	Entries(raw string) []string
+	File(entries []string) string
+}
+
+// Delimited is a MemoryFormat whose entries are joined by a separator.
+type Delimited string
+
+func (d Delimited) Entries(raw string) []string  { return strings.Split(raw, string(d)) }
+func (d Delimited) File(entries []string) string { return strings.Join(entries, string(d)) }
+
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.
 type Engine interface {
 	Kind() string
 	Layout() *Layout
+	// Memory is the format of the hot-memory files (Layout.Memory).
+	Memory() MemoryFormat
 	Image(a *manifest.Agent) string
 	// Compile returns baseline files relative to the engine home (SOUL, config, skills, plugins,
 	// cron, seed memory).
@@ -104,9 +132,10 @@ type Engine interface {
 	Command(a *manifest.Agent) []string
 	Port() int
 	HealthCheck() []string
-	// EngineOwnedSkills are skills the engine ships itself; naps keep them but rehydrate lets the
-	// image own them.
-	EngineOwnedSkills(home string) (map[string]bool, error)
+	// EngineOwnedSkills are the skills (by directory name) the engine's image ships itself, as a
+	// home records them; read returns a home file's content (path relative to the home) or nil.
+	// Naps keep them, but rehydrate and the dream leave them to the image.
+	EngineOwnedSkills(read func(path string) []byte) map[string]bool
 	// BenchArgv is one bench turn executed inside the agent image; ParseBench reads its output.
 	BenchArgv(prompt string) []string
 	ParseBench(stdout string, exitCode int) BenchRun

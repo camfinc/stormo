@@ -158,7 +158,7 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 	if err != nil {
 		return nil, err
 	}
-	ctx, err := learning.CompileLearning(inst, agentID)
+	ctx, err := learning.CompileLearning(inst, agentID, eng.Memory())
 	if err != nil {
 		return nil, err
 	}

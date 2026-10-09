@@ -15,9 +15,9 @@ import (
 	"github.com/camfinc/stormo/pkg/shared"
 )
 
-// Two tiers instead of Hermes' single 2.2k-char memory:
+// Two tiers instead of an engine's single small memory:
 //   - hot:  the highest-ranked accepted learnings, packed into seed_fill of the char budget and
-//     merged into MEMORY.md / USER.md at boot (always in the prompt);
+//     merged into the engine's hot-memory files at boot (always in the prompt);
 //   - cold: every visible accepted learning plus human-authored unit/group knowledge, shipped as the
 //     knowledge skill (stormo.yaml names.knowledge_skill) the agent loads on demand.
 
@@ -70,8 +70,9 @@ func orNone(s string) string {
 	return s
 }
 
-// CompileLearning builds the hot-tier seed and the cold-tier skills for an agent.
-func CompileLearning(inst *instance.Instance, agentID string) (engine.CompileContext, error) {
+// CompileLearning builds the hot-tier seed (packed in the engine's memory format) and the cold-tier
+// skills for an agent.
+func CompileLearning(inst *instance.Instance, agentID string, format engine.MemoryFormat) (engine.CompileContext, error) {
 	var ctx engine.CompileContext
 	agent, err := manifest.Load(inst.Root, agentID, inst.Names.Secret)
 	if err != nil {
@@ -90,7 +91,7 @@ func CompileLearning(inst *instance.Instance, agentID string) (engine.CompileCon
 				texts = append(texts, e.Text)
 			}
 		}
-		kept, _ := Pack(texts, budget(limit))
+		kept, _ := Pack(format, texts, budget(limit))
 		return kept
 	}
 	var own, unit, group []*Learning

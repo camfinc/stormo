@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/build"
@@ -265,14 +266,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	for p := range live {
 		livePaths = append(livePaths, p)
 	}
-	engineOwned := map[string]bool{}
-	if m, ok := live[L.SkillsDir+"/.bundled_manifest"]; ok {
-		for _, l := range strings.Split(string(m.body), "\n") {
-			if n := strings.TrimSpace(strings.SplitN(l, ":", 2)[0]); n != "" {
-				engineOwned[n] = true
-			}
-		}
-	}
+	engineOwned := o.Engine.EngineOwnedSkills(func(p string) []byte { return live[p].body })
 	withheld := map[string]bool{}
 	for _, w := range info.Withheld {
 		withheld[w] = true
@@ -316,10 +310,9 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		}
 		report.RestoredSkills = append(report.RestoredSkills, dir)
 	}
-	// Curator/usage telemetry and the archive come back. .bundled_manifest does not: Hermes reads a
-	// listed-but-missing bundled skill as user-deleted and would stop re-seeding it from the image.
+	// The engine's skill telemetry and archive come back, except what it rebuilds (NotRestored).
 	for p, v := range live {
-		if strings.HasPrefix(p, L.SkillsDir+"/.") && p != L.SkillsDir+"/.bundled_manifest" && v.meta.Class == engine.Learning {
+		if strings.HasPrefix(p, L.SkillsDir+"/.") && !slices.Contains(L.NotRestored, p) && v.meta.Class == engine.Learning {
 			out[p] = v.body
 		}
 	}
@@ -334,8 +327,8 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		path  string
 		limit int
 	}{{learning.KindMemory, L.Memory.Memory, o.Agent.Learning.MemoryCharLimit}, {learning.KindUser, L.Memory.User, o.Agent.Learning.UserCharLimit}} {
-		liveEntries := learning.ParseEntries(string(live[m.path].body))
-		seed := learning.ParseEntries(string(base[m.path]))
+		liveEntries := learning.ParseEntries(o.Engine.Memory(), string(live[m.path].body))
+		seed := learning.ParseEntries(o.Engine.Memory(), string(base[m.path]))
 		rejectedText := map[string]bool{}
 		for _, e := range liveEntries {
 			text, _ := o.Scrubber.Scrub(e)
@@ -343,10 +336,10 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 				rejectedText[learning.Normalize(e)] = true
 			}
 		}
-		entries, purged, deferred := learning.MergeHot(liveEntries, seed, rejectedText, m.limit, o.Agent.Learning.SeedFill)
+		entries, purged, deferred := learning.MergeHot(o.Engine.Memory(), liveEntries, seed, rejectedText, m.limit, o.Agent.Learning.SeedFill)
 		report.PurgedMemories += len(purged)
 		report.DeferredSeed += len(deferred)
-		out[m.path] = []byte(learning.SerializeEntries(entries))
+		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
 	// 4. Cron: merge baseline and runtime-created jobs.
@@ -366,7 +359,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	}
 
 	// Write. Runtime dirs the engine owns but we did not capture (logs, caches) are left alone.
-	for _, d := range []string{L.SkillsDir, "plugins", "scripts"} {
+	for _, d := range L.Managed {
 		if err := os.RemoveAll(filepath.Join(o.Home, d)); err != nil {
 			return nil, err
 		}
@@ -385,11 +378,11 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			return nil, err
 		}
 	}
-	// Secrets arrive as container env. An existing (empty) .env stops the engine image from seeding
-	// its example file, whose defaults (e.g. TERMINAL_TIMEOUT=60) would override config.yaml.
-	if _, err := os.Stat(filepath.Join(o.Home, ".env")); os.IsNotExist(err) {
-		if err := os.WriteFile(filepath.Join(o.Home, ".env"), nil, 0o600); err != nil {
-			return nil, err
+	for _, p := range L.Placeholders {
+		if _, err := os.Stat(filepath.Join(o.Home, p)); os.IsNotExist(err) {
+			if err := os.WriteFile(filepath.Join(o.Home, p), nil, 0o600); err != nil {
+				return nil, err
+			}
 		}
 	}
 	report.RestoredFiles = len(out)

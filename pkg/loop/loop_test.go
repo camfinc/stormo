@@ -116,7 +116,7 @@ func TestLearningLoop(t *testing.T) {
 
 	t.Run("agent learns at runtime, nap captures it once", func(t *testing.T) {
 		h := home1
-		write(t, filepath.Join(h, "memories/MEMORY.md"), strings.Join([]string{"Dana prefers deals grouped by close date.", "Client John Doe phone +1 415 555 0123 wants morning calls."}, learning.EntryDelimiter))
+		write(t, filepath.Join(h, "memories/MEMORY.md"), strings.Join([]string{"Dana prefers deals grouped by close date.", "Client John Doe phone +1 415 555 0123 wants morning calls."}, "\n§\n")) // Hermes' memory format
 		write(t, filepath.Join(h, "memories/USER.md"), "The owner wants voice replies in DMs.")
 		skill := filepath.Join(h, "skills/crm/crm-api/SKILL.md")
 		write(t, skill, read(t, skill)+"\n## Learned\nUse orderBy=segmentDate for check-in sweeps.\n")
