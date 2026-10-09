@@ -34,7 +34,7 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
 | `GET /review` | the review page (no data; reads the owner token from `#t=`) |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
-| `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models`, per-agent `usage` and `active` |
+| `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models` (all of the default ChatGPT connection), per-agent `usage` and `active` (across connections), and `connections` [{`name`, `login`, `account`, `planLimitedUntil`, `inflight`, `queued`, `concurrency`}], one per ChatGPT connection |
 | `GET /avatars/<id>.png` | the agent's newest portrait, 404 when it has none |
 | `/v1/*` | the OpenAI-compatible model gateway, `Authorization: Bearer <SWARM_CORE_KEY>` |
 
@@ -72,8 +72,8 @@ into an `error` event.
 | `core up` | `started` (false when a core already answered), `pid`, `port`, `log`, `login` |
 | `core down` | `stopped`, `pid`; not stopped: `reason` `not_running`, or `not_ours` (a core answers that `core up` did not start; left alone) |
 | `core status` | `running`, `port`, `login` (the gateway's, else the sign-in on disk), `gateway` (as `/api/gateway`) when running |
-| `core login` | `login`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
-| `core logout` | `login` (`missing`), `changed` (tokens were removed) |
+| `core login [--connection name]` | `login`, `connection`, `account`. Emits `{"event":"auth_url","url":…}` with the sign-in page; with `--no-open` it does not open a browser, the caller does |
+| `core logout [--connection name]` | `login` (`missing`), `connection`, `changed` (tokens were removed) |
 | `core activity <agent> [n]` | `agent`, `live`, `entries` (as `/api/agents/<id>/activity`, newest first) |
 | `core messages [agent] [n]` | `threads` (as `/api/messages`) |
 | `core findings [all]` | `findings` (as `/api/findings`) |

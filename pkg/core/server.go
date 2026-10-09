@@ -21,6 +21,7 @@ import (
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
+	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/secrets"
 	"github.com/camfinc/stormo/pkg/shared"
 	"github.com/camfinc/stormo/pkg/version"
@@ -48,6 +49,20 @@ func CoreDir(root string) string { return filepath.Join(root, ".swarm", "core") 
 // AuthDir holds the one ChatGPT sign-in (0600, gitignored under .swarm/), local and under the
 // owner's control.
 func AuthDir(root string) string { return filepath.Join(CoreDir(root), "auth") }
+
+// ChatGPTPaths are a ChatGPT connection's sign-in files: the default connection's are the
+// original ones (auth/chatgpt.json); another's tokens live in auth/<name>/. The registration (the
+// host id and the app's client id) is shared: one app on one host, several accounts signed in to
+// it. Kept in this one function so giving each connection its own registration is a path change.
+func ChatGPTPaths(root, connection string) llm.AuthPaths {
+	dir := AuthDir(root)
+	if connection == "" || connection == instance.DefaultChatGPT {
+		return llm.Paths(dir)
+	}
+	p := llm.Paths(filepath.Join(dir, connection))
+	p.Registration = llm.Paths(dir).Registration
+	return p
+}
 
 var (
 	//go:embed ui/index.html
@@ -115,20 +130,22 @@ type Core struct {
 	Addr    *net.TCPAddr
 	Bridges []*net.TCPAddr
 	bridge  []*http.Server
-	Gateway *llm.Gateway
-	Fleet   *Fleet
-	Office  *Office
-	DB      *DB
-	Monitor *Monitor
-	Bus     *Bus
-	Workdir *Workdir
-	Learner *Learner
-	MCP     *MCP
-	keys    *AgentKeys
-	owner   string
-	ownDB   bool
-	stop    chan struct{}
-	once    sync.Once
+	// Gateway is the default ChatGPT connection's; Gateways routes every agent to its own.
+	Gateway  *llm.Gateway
+	Gateways *llm.Gateways
+	Fleet    *Fleet
+	Office   *Office
+	DB       *DB
+	Monitor  *Monitor
+	Bus      *Bus
+	Workdir  *Workdir
+	Learner  *Learner
+	MCP      *MCP
+	keys     *AgentKeys
+	owner    string
+	ownDB    bool
+	stop     chan struct{}
+	once     sync.Once
 }
 
 // StopOffice stops the office timer (and the fleet's timers if the core started them).
@@ -266,7 +283,16 @@ func StartCore(o CoreOptions) (*Core, error) {
 			g.Concurrency = n
 		}
 	}
-	gateway := llm.NewGateway(g)
+	def := llm.NewGateway(g)
+	names, gws := []string{instance.DefaultChatGPT}, []*llm.Gateway{def}
+	for _, c := range inst.Connections {
+		if c.Kind == instance.KindChatGPT && c.Name != instance.DefaultChatGPT {
+			o := g
+			o.Auth = llm.NewChatGPTAuth(llm.AuthOptions{Paths: ChatGPTPaths(inst.Root, c.Name)})
+			names, gws = append(names, c.Name), append(gws, llm.NewGateway(o))
+		}
+	}
+	gateway := llm.NewGateways(instance.DefaultChatGPT, g.Keys, connectionRoute(inst), names, gws)
 	fleet := o.Fleet
 	startedFleet := false
 	if fleet == nil && !o.NoFleet {
@@ -327,7 +353,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: o.LearnDeps})
-	c := &Core{Gateway: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
+	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
 		keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
@@ -602,4 +628,25 @@ func StartCore(o CoreOptions) (*Core, error) {
 		go serve(b, bl)
 	}
 	return c, nil
+}
+
+// connectionRoute is which ChatGPT connection an agent's calls use: its manifest's
+// model.local.connection, re-read at most every 30 s.
+func connectionRoute(inst *instance.Instance) func(agent string) string {
+	var mu sync.Mutex
+	cache := map[string]string{}
+	at := map[string]time.Time{}
+	return func(agent string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		if t, ok := at[agent]; ok && time.Since(t) < 30*time.Second {
+			return cache[agent]
+		}
+		name := ""
+		if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil && a.Engine.Local != nil {
+			name = a.Engine.Local.ConnectionName()
+		}
+		cache[agent], at[agent] = name, time.Now()
+		return name
+	}
 }

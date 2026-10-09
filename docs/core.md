@@ -93,6 +93,15 @@ from a field the agent fills in. One key covers the gateway, MCP, ingest and API
 
 ## 1. LLM gateway (Phase 1, built)
 
+**Several sign-ins (built).** Each ChatGPT connection (stormo.yaml `connections:`, kind `chatgpt`;
+docs/instances.md) is its own sign-in with its own plan limit, catalog and concurrency: the core runs
+one gateway per connection and routes each agent's calls by its manifest's `model.local.connection`
+(the core decides, from the agent's key; an unknown connection gets the default). The default
+connection `chatgpt` keeps the original files below; another's tokens live in `auth/<name>/`, and the
+registration (host id and the app's client id) is shared, one app with several accounts signed in:
+**unverified with a second real account** (`ChatGPTPaths` is the one place to give each its own).
+`stormo core login|logout --connection <name>`. Open decision 5 applies to every account.
+
 Core holds the one ChatGPT sign-in and serves model calls to every local agent. The sign-in is
 OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage (developers.openai.com/siwc), OpenAI's
 program for open-source, locally hosted apps; whether an instance's use qualifies is its owner's

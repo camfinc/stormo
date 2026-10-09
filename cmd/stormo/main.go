@@ -158,6 +158,7 @@ var (
 	fReplace     = fs.Bool("replace", false, "")
 	fWithActions = fs.Bool("with-actions", false, "")
 	fKind        = fs.String("kind", "", "")
+	fConnection  = fs.String("connection", "", "")
 	fBaseURL     = fs.String("base-url", "", "")
 	fKey         = fs.String("key", "", "")
 	errUsage     = errors.New("usage")

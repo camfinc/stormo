@@ -221,6 +221,8 @@ type Status struct {
 	Models           []ModelInfo           `json:"models"`
 	Usage            map[string]AgentUsage `json:"usage"`
 	Active           map[string]int        `json:"active"`
+	// Every ChatGPT connection the core serves (Gateways); the fields above are the default one's.
+	Connections []ConnectionStatus `json:"connections,omitempty"`
 }
 
 func (g *Gateway) Status() Status {
@@ -726,4 +728,94 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request, agent string) {
 		send([]byte("data: [DONE]\n\n"))
 	}
 	cleanup()
+}
+
+// Gateways serves /v1/* for several ChatGPT sign-ins: each agent's calls go to the gateway of the
+// connection it uses (Route, decided by the core from the agent's manifest, never by the caller);
+// an agent Route does not know goes to the default one. Each gateway keeps its own plan limit,
+// catalog and concurrency, since each sign-in is its own plan.
+type Gateways struct {
+	Default string
+	Keys    KeyResolver
+	Route   func(agent string) string
+	order   []string
+	byName  map[string]*Gateway
+}
+
+// NewGateways routes over gws (by connection name); def is the default connection.
+func NewGateways(def string, keys KeyResolver, route func(agent string) string, names []string, gws []*Gateway) *Gateways {
+	gs := &Gateways{Default: def, Keys: keys, Route: route, byName: map[string]*Gateway{}}
+	for i, n := range names {
+		gs.order = append(gs.order, n)
+		gs.byName[n] = gws[i]
+	}
+	return gs
+}
+
+// Get is the gateway of connection name, the default one when there is none by that name.
+func (gs *Gateways) Get(name string) *Gateway {
+	if g, ok := gs.byName[name]; ok {
+		return g
+	}
+	return gs.byName[gs.Default]
+}
+
+// Handle serves /v1/* through the caller's connection.
+func (gs *Gateways) Handle(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/v1/") {
+		return false
+	}
+	name := gs.Default
+	if agent, ok := gs.Keys.AgentFor(r.Header.Get("Authorization")); ok && gs.Route != nil {
+		if n := gs.Route(agent); n != "" {
+			name = n
+		}
+	}
+	return gs.Get(name).Handle(w, r)
+}
+
+// ConnectionStatus is one sign-in's state in Status.Connections.
+type ConnectionStatus struct {
+	Name             string     `json:"name"`
+	Login            LoginState `json:"login"`
+	Account          *string    `json:"account"`
+	PlanLimitedUntil *string    `json:"planLimitedUntil"`
+	Inflight         int        `json:"inflight"`
+	Queued           int        `json:"queued"`
+	Concurrency      int        `json:"concurrency"`
+}
+
+// Status is the default connection's status (the fields every reader knows), with usage and active
+// calls across all of them and each connection in Connections.
+func (gs *Gateways) Status() Status {
+	s := gs.Get(gs.Default).Status()
+	s.Connections = []ConnectionStatus{}
+	for _, n := range gs.order {
+		cs := gs.byName[n].Status()
+		s.Connections = append(s.Connections, ConnectionStatus{n, cs.Login, cs.Account, cs.PlanLimitedUntil, cs.Inflight, cs.Queued, cs.Concurrency})
+		if n == gs.Default {
+			continue
+		}
+		for k, v := range cs.Usage {
+			if u, ok := s.Usage[k]; ok {
+				u.Requests += v.Requests
+				u.OK += v.OK
+				u.Errors += v.Errors
+				u.RateLimited += v.RateLimited
+				u.InputTokens += v.InputTokens
+				u.CachedTokens += v.CachedTokens
+				u.OutputTokens += v.OutputTokens
+				if v.LastAt > u.LastAt {
+					u.LastAt, u.LastStatus = v.LastAt, v.LastStatus
+				}
+				s.Usage[k] = u
+			} else {
+				s.Usage[k] = v
+			}
+		}
+		for k, v := range cs.Active {
+			s.Active[k] += v
+		}
+	}
+	return s
 }

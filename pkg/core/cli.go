@@ -253,13 +253,17 @@ type CommandOptions struct {
 	NoOpen bool
 	// Force: `core learn` naps busy agents too.
 	Force bool
+	// Connection: the ChatGPT connection `core login` / `core logout` act on (default chatgpt).
+	Connection string
 }
 
 // LoginResult is `core login` and `core logout`'s outcome.
 type LoginResult struct {
-	Login   string `json:"login"`
-	Account string `json:"account,omitempty"`
-	Changed bool   `json:"changed"` // logout: tokens were removed
+	Login string `json:"login"`
+	// Connection is the ChatGPT connection signed in to or out of.
+	Connection string `json:"connection"`
+	Account    string `json:"account,omitempty"`
+	Changed    bool   `json:"changed"` // logout: tokens were removed
 }
 
 // ownerRequest calls the running core as its owner (.swarm/core/owner.token).
@@ -592,11 +596,15 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		})
 		return nil
 	case "login":
+		name, err := chatgptConnection(inst, opts.Connection)
+		if err != nil {
+			return err
+		}
 		port := llm.SIWC.DefaultLoginPort
 		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LOGIN_PORT")); err == nil && n > 0 {
 			port = n
 		}
-		paths := llm.Paths(AuthDir(inst.Root))
+		paths := ChatGPTPaths(inst.Root, name)
 		var open func(string) error // nil: llm opens the default browser
 		if opts.NoOpen || o.JSON {
 			open = func(u string) error {
@@ -611,7 +619,7 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		if err != nil {
 			return err
 		}
-		o.Result(LoginResult{Login: string(llm.LoginOK), Account: conn.Email, Changed: true}, func(w io.Writer) {
+		o.Result(LoginResult{Login: string(llm.LoginOK), Connection: name, Account: conn.Email, Changed: true}, func(w io.Writer) {
 			email := ""
 			if conn.Email != "" {
 				email = " (" + conn.Email + ")"
@@ -622,11 +630,15 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		})
 		return nil
 	case "logout":
-		ok, err := llm.SignOut(llm.Paths(AuthDir(inst.Root)))
+		name, err := chatgptConnection(inst, opts.Connection)
 		if err != nil {
 			return err
 		}
-		o.Result(LoginResult{Login: string(llm.LoginMissing), Changed: ok}, func(w io.Writer) {
+		ok, err := llm.SignOut(ChatGPTPaths(inst.Root, name))
+		if err != nil {
+			return err
+		}
+		o.Result(LoginResult{Login: string(llm.LoginMissing), Connection: name, Changed: ok}, func(w io.Writer) {
 			if ok {
 				fmt.Fprintln(w, "signed out of ChatGPT (local tokens removed)")
 			} else {
@@ -636,4 +648,15 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return nil
 	}
 	return errors.New(`unknown core command "` + sub + "\"\n\n" + Usage)
+}
+
+// chatgptConnection is the ChatGPT connection named name (the default one when empty).
+func chatgptConnection(inst *instance.Instance, name string) (string, error) {
+	if name == "" {
+		name = instance.DefaultChatGPT
+	}
+	if c, ok := inst.Connection(name); !ok || c.Kind != instance.KindChatGPT {
+		return "", fmt.Errorf("%s is not a ChatGPT connection of this instance (stormo connections)", name)
+	}
+	return name, nil
 }
