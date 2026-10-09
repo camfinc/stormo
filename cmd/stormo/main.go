@@ -303,7 +303,12 @@ func run(args []string) error {
 		return nil
 
 	case "check":
-		return check(inst, targets())
+		rows, err := check(inst, targets())
+		if err != nil {
+			return err
+		}
+		result(rows, func(io.Writer) {})
+		return nil
 
 	case "config":
 		return configCmd(inst, sub, rest)
@@ -333,7 +338,7 @@ func run(args []string) error {
 			return err
 		}
 		r, err := agentpack.Import(inst, zipPath, agentpack.ImportOptions{As: *fAs, Unit: *fUnit, Replace: *fReplace, WithActions: *fWithActions},
-			func(id string) error { return check(inst, []string{id}) })
+			func(id string) error { _, err := check(inst, []string{id}); return err })
 		if err != nil {
 			var pe *agentpack.Error
 			if errors.As(err, &pe) {
@@ -387,7 +392,7 @@ func run(args []string) error {
 			}
 			reports = append(reports, r)
 		}
-		if err := check(inst, ids); err != nil {
+		if _, err := check(inst, ids); err != nil {
 			return fmt.Errorf("migrated, but check fails: %w", err)
 		}
 		result(reports, func(io.Writer) {})
@@ -665,23 +670,25 @@ type checked struct {
 	Legacy []string `json:"legacy"`
 }
 
-func check(inst *instance.Instance, ids []string) error {
+// check validates agents (manifest, bridge actions, a full build, Slack ownership, the secrets
+// files) and reports each as a step; the rows are the check command's result.
+func check(inst *instance.Instance, ids []string) ([]checked, error) {
 	registry, err := bridge.Load(inst)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rows := []checked{}
 	for _, id := range ids {
 		a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := bridge.ActionsFor(a, registry); err != nil {
-			return err
+			return nil, err
 		}
 		r, err := build.Agent(inst, id, build.Options{Out: filepath.Join(inst.Root, ".swarm", "check", id)})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rows = append(rows, checked{id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills), a.Format, orNone(a.Legacy)})
 		step("ok  %s  unit=%s engine=%s files=%d skills=%d", id, a.Unit, a.Engine.Kind, len(r.Info.Files), len(r.Info.Skills))
@@ -691,19 +698,18 @@ func check(inst *instance.Instance, ids []string) error {
 	}
 	owners, err := slack.SlashCommandOwners(inst)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(owners) > 1 {
-		return fmt.Errorf("SLACK: slash_commands is set for %s; only one agent's app may own Slack's command names", strings.Join(owners, " and "))
+		return nil, fmt.Errorf("SLACK: slash_commands is set for %s; only one agent's app may own Slack's command names", strings.Join(owners, " and "))
 	}
 	if problems := secrets.FileProblems(inst.Root); len(problems) > 0 {
 		for _, p := range problems {
 			fmt.Fprintln(os.Stderr, "SECRETS: "+p)
 		}
-		return errors.New("secrets file problems")
+		return nil, errors.New("secrets file problems")
 	}
-	result(rows, func(io.Writer) {})
-	return nil
+	return rows, nil
 }
 
 // configCmd shows and replaces configuration files for editors (pkg/config, docs/api.md).
