@@ -44,6 +44,13 @@ public struct CLIError: Error, Equatable, LocalizedError {
     public var status: Int32
     public var stderr: String
 
+    public init(code: String, message: String, status: Int32, stderr: String) {
+        self.code = code
+        self.message = message
+        self.status = status
+        self.stderr = stderr
+    }
+
     public var errorDescription: String? { message.isEmpty ? "stormo exited with status \(status)" : message }
 }
 

@@ -150,3 +150,23 @@ public struct MigrateResult: Codable, Sendable, Equatable {
     /// moved | in-place | running (its data stays until it is stopped)
     public var data: String
 }
+
+/// `export <agent>`.
+public struct ExportResult: Codable, Sendable, Equatable {
+    public var path: String
+    public var agent: String
+    /// config | data
+    public var mode: String
+    public var files: Int
+    public var naps: Int
+    public var containsSecrets: Bool
+}
+
+/// `import <file.zip>`.
+public struct ImportResult: Codable, Sendable, Equatable {
+    public var agent: String
+    /// The source instance's slug.
+    public var from: String
+    public var mode: String
+    public var changes: [String]
+}

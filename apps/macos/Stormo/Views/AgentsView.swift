@@ -1,6 +1,15 @@
 import StormoKit
 import SwiftUI
 
+struct ExportTarget: Identifiable {
+    let id: String
+}
+
+struct ImportTarget: Identifiable {
+    let url: URL
+    var id: String { url.path }
+}
+
 /// An agent's editor, pushed in the Agents section.
 struct AgentRoute: Hashable {
     let id: String
@@ -11,6 +20,9 @@ struct AgentsView: View {
     @State private var selection = Set<FleetAgent.ID>()
     @State private var inspecting = true
     @State private var path: [AgentRoute] = []
+    @State private var exporting: ExportTarget?
+    @State private var choosingImport = false
+    @State private var importing: ImportTarget?
 
     private var agents: [FleetAgent] { model.fleet.fleet?.agents ?? [] }
 
@@ -67,7 +79,7 @@ struct AgentsView: View {
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
-                    AgentActions(ids: Array(ids), edit: edit)
+                    AgentActions(ids: Array(ids), edit: edit, export: { exporting = ExportTarget(id: $0) })
                 } primaryAction: { ids in
                     if ids.count == 1, let id = ids.first { edit(id) }
                 }
@@ -81,13 +93,27 @@ struct AgentsView: View {
             }
         }
         .navigationTitle("Agents")
+        .sheet(item: $exporting) { ExportAgentSheet(agentID: $0.id) }
+        .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.zip]) { result in
+            if case .success(let url) = result { importing = ImportTarget(url: url) }
+        }
+        .sheet(item: $importing) { t in
+            ImportAgentSheet(file: t.url) { edit($0) }
+        }
         #if DEBUG
         .task {
-            // STORMO_EDIT=<agent> opens its editor (with STORMO_SNAPSHOT, a visual check).
+            // STORMO_EDIT=<agent> opens its editor, STORMO_EXPORT=<agent> its export sheet (with
+            // STORMO_SNAPSHOT, a visual check).
             if let id = ProcessInfo.processInfo.environment["STORMO_EDIT"] { edit(id) }
+            if let id = ProcessInfo.processInfo.environment["STORMO_EXPORT"] { exporting = ExportTarget(id: id) }
         }
         #endif
         .toolbar {
+            ToolbarItem {
+                Button("Import Agent…", systemImage: "square.and.arrow.down") { choosingImport = true }
+                    .help("Import an agent exported from an instance (stormo export)")
+                    .disabled(model.cli == nil)
+            }
             ToolbarItem {
                 Button("Inspector", systemImage: "sidebar.trailing") { inspecting.toggle() }
             }
@@ -104,6 +130,7 @@ struct AgentActions: View {
     @Environment(AppModel.self) private var model
     let ids: [String]
     let edit: (String) -> Void
+    let export: (String) -> Void
 
     var body: some View {
         if !ids.isEmpty {
@@ -114,6 +141,7 @@ struct AgentActions: View {
                 Button("Nap Now") { Task { await model.run("nap-now", agents: ids) } }
                 Divider()
                 Button("Edit…") { edit(ids[0]) }
+                Button("Export…") { export(ids[0]) }
             }
             Divider()
             Button("Copy Command") {

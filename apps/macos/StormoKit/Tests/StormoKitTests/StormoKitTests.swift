@@ -396,3 +396,27 @@ final class Steps: @unchecked Sendable {
         #expect(editor.problem?.code == "usage")
     }
 }
+
+/// Export and import through this checkout's bin/stormo, as the app's sheets run them.
+@Suite struct Transfer {
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    func exportThenImportUnderAnotherID() async throws {
+        let s = try Scratch()
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let a = s.url.appending(path: "a"), b = s.url.appending(path: "b")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: a)
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: b)
+        let zip = s.url.appending(path: "atlas.zip")
+        let exported = try await StormoCLI(executable: RealBinary.binary, environment: env, instance: a)
+            .run(["export", "atlas", "-o", zip.path], as: ExportResult.self)
+        #expect(exported.mode == "config" && !exported.containsSecrets && exported.files > 5)
+        // b already has an atlas with Slack slash commands: a second one would not check.
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: b)
+        await #expect(throws: CLIError.self) { _ = try await cli.run(["import", zip.path], as: ImportResult.self) }
+        try FileManager.default.removeItem(at: b.appending(path: "agents/atlas"))
+        let imported = try await cli.run(["import", zip.path, "--as", "orion"], as: ImportResult.self)
+        #expect(imported.agent == "orion" && imported.from == "acme" && imported.changes.first == "added agents/orion")
+        let yaml = try String(contentsOf: b.appending(path: "agents/orion/agent.yaml"), encoding: .utf8)
+        #expect(yaml.contains("id: orion"))
+    }
+}
