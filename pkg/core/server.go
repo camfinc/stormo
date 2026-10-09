@@ -423,6 +423,14 @@ func StartCore(o CoreOptions) (*Core, error) {
 		case get && path == "/api/instance":
 			writeJSONBody(w, 200, look)
 			return
+		case get && path == "/api/gateway/models":
+			// A ChatGPT connection's plan catalog, fetched now if the cached one is stale.
+			name := r.URL.Query().Get("connection")
+			if name == "" {
+				name = instance.DefaultChatGPT
+			}
+			writeJSONBody(w, 200, map[string]any{"connection": name, "models": gateway.Get(name).Models(r.Context())})
+			return
 		case get && path == "/api/gateway":
 			// Loopback only (bridge listeners never route /api); no secrets in it.
 			writeJSONBody(w, 200, gateway.Status())

@@ -783,6 +783,8 @@ type ConnectionStatus struct {
 	Inflight         int        `json:"inflight"`
 	Queued           int        `json:"queued"`
 	Concurrency      int        `json:"concurrency"`
+	// Models is this sign-in's plan catalog (the configured defaults before sign-in).
+	Models []ModelInfo `json:"models"`
 }
 
 // Status is the default connection's status (the fields every reader knows), with usage and active
@@ -792,7 +794,7 @@ func (gs *Gateways) Status() Status {
 	s.Connections = []ConnectionStatus{}
 	for _, n := range gs.order {
 		cs := gs.byName[n].Status()
-		s.Connections = append(s.Connections, ConnectionStatus{n, cs.Login, cs.Account, cs.PlanLimitedUntil, cs.Inflight, cs.Queued, cs.Concurrency})
+		s.Connections = append(s.Connections, ConnectionStatus{n, cs.Login, cs.Account, cs.PlanLimitedUntil, cs.Inflight, cs.Queued, cs.Concurrency, cs.Models})
 		if n == gs.Default {
 			continue
 		}

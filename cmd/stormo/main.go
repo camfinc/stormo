@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/config"
+	"github.com/camfinc/stormo/pkg/core"
+	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/deploy"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/inspect"
@@ -30,6 +33,7 @@ import (
 	"github.com/camfinc/stormo/pkg/local"
 	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
+	"github.com/camfinc/stormo/pkg/models"
 	"github.com/camfinc/stormo/pkg/ops"
 	"github.com/camfinc/stormo/pkg/place"
 	"github.com/camfinc/stormo/pkg/review"
@@ -70,6 +74,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
   config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
   connections [list|kinds]               ways to reach models (stormo.yaml connections:) and who uses them
+  connections models <name> [--agent id] the models a connection offers (its key: the agent's, else shared)
   connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
   connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
@@ -159,6 +164,7 @@ var (
 	fWithActions = fs.Bool("with-actions", false, "")
 	fKind        = fs.String("kind", "", "")
 	fConnection  = fs.String("connection", "", "")
+	fAgent       = fs.String("agent", "", "")
 	fBaseURL     = fs.String("base-url", "", "")
 	fKey         = fs.String("key", "", "")
 	errUsage     = errors.New("usage")
@@ -323,6 +329,21 @@ func run(args []string) error {
 
 	case "connections":
 		switch sub {
+		case "models":
+			name, err := need(strings.Join(rest, " "), "connection name")
+			if err != nil {
+				return err
+			}
+			list, err := connectionModels(inst, name, *fAgent)
+			if err != nil {
+				return withCode("unavailable", err)
+			}
+			result(list, func(w io.Writer) {
+				for _, m := range list {
+					fmt.Fprintln(w, m.ID)
+				}
+			})
+			return nil
 		case "kinds":
 			result(instance.ConnectionKinds, func(w io.Writer) {
 				for _, k := range instance.ConnectionKinds {
@@ -1391,4 +1412,79 @@ func connectionRows(inst *instance.Instance) ([]connectionRow, error) {
 		rows = append(rows, r)
 	}
 	return rows, nil
+}
+
+// connectionModels lists a connection's models: an API asks with its key (the agent's value when
+// --agent is given, else the shared one); a ChatGPT sign-in's plan catalog comes from the core.
+func connectionModels(inst *instance.Instance, name, agent string) ([]models.Model, error) {
+	c, ok := inst.Connection(name)
+	if !ok {
+		return nil, fmt.Errorf("no connection named %s", name)
+	}
+	if !c.API() {
+		client := &http.Client{Timeout: 20 * time.Second}
+		if res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway/models?connection=%s", core.CorePort(), name)); err == nil {
+			var m struct{ Models []llm.ModelInfo }
+			ok := res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&m) == nil
+			res.Body.Close()
+			if ok {
+				out := []models.Model{}
+				for _, x := range m.Models {
+					out = append(out, models.Model{ID: x.ID, Name: x.DisplayName, ContextLength: x.ContextLength})
+				}
+				return out, nil
+			}
+		}
+		// An older core: its status lists the default connection's models.
+		res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway", core.CorePort()))
+		if err != nil {
+			return nil, fmt.Errorf("the core is not running: start it to list %s's plan models", name)
+		}
+		defer res.Body.Close()
+		var g struct {
+			Models      []llm.ModelInfo `json:"models"`
+			Connections []struct {
+				Name   string          `json:"name"`
+				Models []llm.ModelInfo `json:"models"`
+			} `json:"connections"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&g); err != nil {
+			return nil, err
+		}
+		list := g.Models
+		if name != instance.DefaultChatGPT {
+			list = nil
+			for _, cs := range g.Connections {
+				if cs.Name == name {
+					list = cs.Models
+				}
+			}
+			if list == nil {
+				return nil, fmt.Errorf("the core does not serve %s yet: restart it", name)
+			}
+		}
+		out := []models.Model{}
+		for _, m := range list {
+			out = append(out, models.Model{ID: m.ID, Name: m.DisplayName, ContextLength: m.ContextLength})
+		}
+		return out, nil
+	}
+	f, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return nil, err
+	}
+	key := ""
+	if f.Shared != nil {
+		key, _ = f.Shared.Get(c.Key)
+	}
+	if agent != "" {
+		if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil {
+			if v, ok := secrets.Resolve(f, a, manifest.Local).Values.Get(c.Key); ok && v != "" {
+				key = v
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return models.List(ctx, c, key)
 }
