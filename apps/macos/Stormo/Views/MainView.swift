@@ -106,6 +106,7 @@ struct MainToolbar: ToolbarContent {
                 }
             } else {
                 CoreStatusBadge(state: model.core.state)
+                    .padding(.horizontal, 8)
             }
         }
         ToolbarItem(placement: .primaryAction) {
@@ -157,10 +158,10 @@ struct CoreStatusBadge: View {
         Label {
             Text(text)
         } icon: {
-            Circle().fill(color).frame(width: 8, height: 8)
+            Circle().fill(color).frame(width: 10, height: 10)
         }
         .labelStyle(.titleAndIcon)
-        .font(.callout)
+        .font(.body)
         .foregroundStyle(.secondary)
     }
 
