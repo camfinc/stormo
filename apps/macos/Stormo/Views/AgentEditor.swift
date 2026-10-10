@@ -233,6 +233,7 @@ private struct AgentForm: View {
             actions
             secrets
             optionalSecrets
+            SecretValuesSection(agentID: agentID, declared: declaredSecrets)
             environment
             state
             schedules
@@ -433,6 +434,13 @@ private struct AgentForm: View {
         } header: {
             SectionTitle("Bridge actions", note: "Actions of the agent's unit and of group.")
         }
+    }
+
+    /// Declared and optional names as saved on disk, so the values list reloads after a save.
+    private var declaredSecrets: [String] {
+        let doc = editor.file?.doc
+        return (doc?[["secrets"]]?.array ?? []).compactMap(\.string)
+            + (doc?[["optional_secrets"]]?.array ?? []).compactMap { $0[["name"]]?.string }
     }
 
     private var secrets: some View {

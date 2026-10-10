@@ -100,6 +100,7 @@ into an `error` event.
 | `connections kinds` | the kinds a connection can be: `kind`, `label`, `baseUrl` and `key` (its defaults), `api` |
 | `connections add <name> --kind k [--base-url u] [--key NAME]`, `connections remove <name>` | the connections after the change. Codes: `invalid`, `in_use` (an agent uses it) |
 | `secrets set <shared\|agent> NAME` | `scope`, `name`. The value comes on stdin (one line), never in argv, and is never echoed |
+| `secrets status <agent>` | one row per name the agent receives: `name`, `kind` (`required` \| `optional` \| `local`: local-only, e.g. its core key), `source` (the layer with a non-empty value: `agent` \| `unit` \| `shared`, empty when missing), `local` (the `local:` overlay layer overriding it for local runs, or empty). Never values |
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
 | `migrate agent [agent…]` | one row per agent: `agent`, `from`, `to` (agent.yaml formats), `changes` (lines), `data` (`moved`, `in-place`, or `running`: its data stays until it is stopped). Runs `check` after |
 | `export <agent> [--data] [-o file]` | `path`, `agent`, `mode` (`config` \| `data`), `files`, `naps`, `containsSecrets`. A data export carries every secret value the agent resolves in plain text: the zip is written 0600, holds `DATA-EXPORT-CONTAINS-SECRETS.txt`, and a `step` warns. Codes: `legacy` (format 0: migrate first), `tracked` (its data folder is in git) |

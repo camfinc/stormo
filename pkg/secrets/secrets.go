@@ -603,3 +603,54 @@ func SeedAgent(root string, a *manifest.Agent) ([]string, error) {
 	}
 	return minted, WritePrivate(AgentFile(root, a.ID), body)
 }
+
+// NameStatus is where one of an agent's secrets gets its value, never the value itself.
+type NameStatus struct {
+	Name string `json:"name"`
+	// Kind is "required" (declared), "optional" (optional_secrets) or "local" (local-only, e.g. its core key).
+	Kind string `json:"kind"`
+	// Source is the layer with a non-empty value: "agent", "unit", "shared", or "" when none has one.
+	Source string `json:"source"`
+	// Local is the local overlay's layer that overrides it for local runs ("" when none does).
+	Local string `json:"local"`
+}
+
+// source names the most specific layer with a non-empty value for name.
+func (ls *Layers) source(a *manifest.Agent, name string) string {
+	if ls == nil {
+		return ""
+	}
+	for _, s := range []struct {
+		name string
+		l    *Layer
+	}{{"agent", ls.Agents.Get(a.ID)}, {"unit", ls.Units.Get(a.Unit)}, {"shared", ls.Shared}} {
+		if s.l != nil {
+			if v, ok := s.l.Get(name); ok {
+				if v == "" {
+					return ""
+				}
+				return s.name
+			}
+		}
+	}
+	return ""
+}
+
+// Status reports every name the agent receives (declared, optional, local-only) and where its
+// value comes from. An empty value shadows less specific layers, as in Resolve.
+func Status(f *File, a *manifest.Agent) []NameStatus {
+	out := []NameStatus{}
+	add := func(name, kind string) {
+		out = append(out, NameStatus{Name: name, Kind: kind, Source: f.Layers.source(a, name), Local: f.Local.source(a, name)})
+	}
+	for _, n := range a.Secrets {
+		add(n, "required")
+	}
+	for _, o := range a.OptionalSecrets {
+		add(o.Name, "optional")
+	}
+	for _, n := range manifest.LocalOnlySecrets(a.Engine) {
+		add(n, "local")
+	}
+	return out
+}

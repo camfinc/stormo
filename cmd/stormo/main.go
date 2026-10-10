@@ -101,6 +101,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   review [agent...] [--since 24h]        read-only fleet health sweep (.swarm/review/)
   secrets init                           create/extend secrets.local.yaml with every declared name
   secrets set <shared|agent> NAME        set one value, read from stdin (never an argument)
+  secrets status <agent>                 where each of its values comes from (agent, unit, shared, local); never values
   secrets share NAME... [--from <agent>] keep one value under shared: and drop identical per-agent copies
   secrets check [agent...]               report missing values (aws and local) and file problems
   secrets env <agent>                    write agents/<agent>/data/agent.env (local overlay applied)
@@ -1033,6 +1034,33 @@ func secretsCmd(inst *instance.Instance, deps *ops.Deps, sub string, rest []stri
 			return withCode("invalid", err)
 		}
 		result(map[string]string{"scope": rest[0], "name": rest[1]}, func(w io.Writer) { fmt.Fprintf(w, "%s set for %s\n", rest[1], rest[0]) })
+		return nil
+	case "status":
+		// Where each of one agent's values comes from; never the values.
+		if len(rest) != 1 {
+			return withCode("usage", errors.New("usage: stormo secrets status <agent>"))
+		}
+		a, err := manifest.Load(inst.Root, rest[0], inst.Names.Secret)
+		if err != nil {
+			return err
+		}
+		f, err := secrets.Load(path)
+		if err != nil {
+			return err
+		}
+		rows := secrets.Status(f, a)
+		result(rows, func(w io.Writer) {
+			for _, r := range rows {
+				src := r.Source
+				if src == "" {
+					src = "missing"
+				}
+				if r.Local != "" {
+					src += " (local: " + r.Local + ")"
+				}
+				fmt.Fprintf(w, "%-28s %-8s %s\n", r.Name, r.Kind, src)
+			}
+		})
 		return nil
 	case "init":
 		p, added, err := secrets.Init(inst)

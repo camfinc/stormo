@@ -710,7 +710,7 @@ private struct KeysPage: View {
                 HStack {
                     Button("Save Keys") { Task { await save() } }
                         .disabled(busy || values.filter { !$0.value.isEmpty && !saved.contains($0.key) }.isEmpty)
-                    Text("Skip any you don’t have yet; add them later in Settings or with `stormo secrets set \(result.id) NAME`.")
+                    Text("Skip any you don’t have yet; add them later in the agent’s Settings (Secret values) or with `stormo secrets set \(result.id) NAME`.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

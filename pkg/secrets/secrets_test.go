@@ -336,3 +336,29 @@ func TestAgentSecretsLiveInTheAgentsFolder(t *testing.T) {
 		t.Errorf("both places: %v", err)
 	}
 }
+
+func TestStatusNamesSourcesNotValues(t *testing.T) {
+	f, a := setup(t)
+	got := map[string]NameStatus{}
+	for _, s := range Status(f, a) {
+		got[s.Name] = s
+	}
+	for name, want := range map[string][2]string{
+		"OPENROUTER_API_KEY": {"agent", ""},
+		"CRM_API_TOKEN":      {"unit", ""},
+		"ELEVENLABS_API_KEY": {"", "agent"}, // empty agent value shadows; the local overlay has one
+		"SLACK_BOT_TOKEN":    {"agent", "agent"},
+		"SWARM_CORE_KEY":     {"", "agent"},
+	} {
+		s, ok := got[name]
+		if !ok || s.Source != want[0] || s.Local != want[1] {
+			t.Errorf("%s = %+v, want source %q local %q", name, s, want[0], want[1])
+		}
+	}
+	if got["SWARM_CORE_KEY"].Kind != "local" || got["OPENROUTER_API_KEY"].Kind != "required" {
+		t.Errorf("kinds: %+v", got)
+	}
+	if _, ok := got["UNUSED_GLOBAL"]; ok {
+		t.Error("undeclared name listed")
+	}
+}

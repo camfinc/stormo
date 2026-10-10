@@ -218,3 +218,16 @@ public struct ConnectionModel: Codable, Sendable, Equatable, Identifiable {
     public var name: String?
     public var contextLength: Int?
 }
+
+/// One row of `stormo secrets status <agent> --json`: where a value comes from, never the value.
+public struct SecretStatus: Codable, Sendable, Equatable, Identifiable {
+    public var name: String
+    /// `required`, `optional` or `local` (local-only, generated: e.g. its core key).
+    public var kind: String
+    /// `agent`, `unit`, `shared`, or empty when no layer has a value.
+    public var source: String
+    /// The `local:` overlay layer overriding it for local runs, or empty.
+    public var local: String
+    public var id: String { name }
+    public var isSet: Bool { !source.isEmpty || !local.isEmpty }
+}
