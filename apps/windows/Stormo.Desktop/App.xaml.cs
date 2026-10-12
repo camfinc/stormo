@@ -6,11 +6,19 @@ public partial class App : Application
     private Window? window;
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
-    public App() { InitializeComponent(); }
+    public App()
+    {
+        UnhandledException += (_, args) => Console.Error.WriteLine(args.Exception);
+        InitializeComponent();
+    }
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID("CAMF.Stormo.Desktop"));
-        window = new MainWindow();
-        window.Activate();
+        try
+        {
+            window = new MainWindow();
+            window.Activate();
+        }
+        catch (Exception error) { Console.Error.WriteLine(error); throw; }
     }
 }

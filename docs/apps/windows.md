@@ -43,8 +43,9 @@ explicitly. No automatic migration is claimed.
 
 CI builds the actual Windows executable, runs native Go and C# runtime contract tests and exercises create
 instance → detached core up → identity check → refusal to stop another workspace → graceful
-core down → restart, using Windows paths with spaces. It publishes a self-contained WinUI desktop, launches it and captures Setup/Agents/Core in both
-system themes through Windows UI Automation, then builds the per-user setup EXE.
+core down → restart, using Windows paths with spaces. It publishes a self-contained WinUI desktop, builds and installs the per-user setup EXE, then
+launches the installed app and captures Setup/Agents/Core in both system themes through Windows
+UI Automation.
 Linux CI continues to cover the existing engine. Packaging success is not clean-PC acceptance.
 
 Still required: clean Windows 11 + Docker Desktop acceptance, container-to-core networking,

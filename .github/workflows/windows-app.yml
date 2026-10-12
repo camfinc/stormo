@@ -34,13 +34,18 @@ jobs:
           python apps/windows/installer/collect-licenses.py
       - name: Publish self-contained WinUI desktop
         run: dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
-      - name: Exercise native desktop and capture screens
-        run: ./apps/windows/installer/smoke-desktop.ps1
       - name: Build per-user setup EXE
         shell: pwsh
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" apps/windows/installer/stormo.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install per-user preview and exercise native UI
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'Stormo installed preview'
+          $setup = Start-Process apps/windows/build/installer/Stormo-Setup-native-x64-preview.exe -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Setup failed: $($setup.ExitCode)" }
+          ./apps/windows/installer/smoke-desktop.ps1 -Executable (Join-Path $destination 'Stormo.exe')
       - name: Verify app and installer icon resources
         run: |
           python -m pip install pefile==2024.8.26

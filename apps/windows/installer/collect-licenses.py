@@ -22,4 +22,15 @@ for name, metadata in assets["libraries"].items():
                 destination = target / name / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(file, destination)
+# Runtime packs are downloadDependencies rather than normal project libraries.
+for folder in assets["packageFolders"]:
+    pack = Path(folder) / "microsoft.netcore.app.runtime.win-x64"
+    if pack.exists():
+        for version in pack.iterdir():
+            packages.append("Microsoft.NETCore.App.Runtime.win-x64/" + version.name)
+            for file in version.rglob("*"):
+                if file.is_file() and any(word in file.name.lower() for word in ("license", "notice")):
+                    destination = target / "Microsoft.NETCore.App.Runtime.win-x64" / version.name / file.relative_to(version)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(file, destination)
 (target / "PACKAGES.txt").write_text("Resolved build packages (licenses in package subdirectories):\n" + "\n".join(packages) + "\n\n.NET runtime: https://github.com/dotnet/runtime/blob/main/LICENSE.TXT\nWindows App SDK: https://github.com/microsoft/WindowsAppSDK\n", encoding="utf-8")

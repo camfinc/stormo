@@ -1,3 +1,4 @@
+param([string]$Executable)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type @'
@@ -10,7 +11,7 @@ public static class DesktopWindow {
 }
 '@
 $root = Split-Path $PSScriptRoot
-$exe = Join-Path $root 'dist/Stormo/Stormo.exe'
+$exe = if ($Executable) { $Executable } else { Join-Path $root 'dist/Stormo/Stormo.exe' }
 $screens = Join-Path $root 'build/screens'
 New-Item -ItemType Directory -Force $screens | Out-Null
 $themeKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
@@ -19,13 +20,17 @@ New-Item -Path $themeKey -Force | Out-Null
 try {
  foreach ($theme in @('light', 'dark')) {
   Set-ItemProperty -Path $themeKey -Name AppsUseLightTheme -Type DWord -Value ([int]($theme -eq 'light'))
-  $app = Start-Process $exe -PassThru
+  $app = Start-Process $exe -PassThru -RedirectStandardError (Join-Path $screens "$theme-stderr.txt") -RedirectStandardOutput (Join-Path $screens "$theme-stdout.txt")
   try {
    $window = $null
    for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
     $app.Refresh()
-    if ($app.HasExited) { throw "Stormo exited before showing its window: $($app.ExitCode)" }
+    if ($app.HasExited) {
+     Get-Content (Join-Path $screens "$theme-stderr.txt") -ErrorAction SilentlyContinue | Write-Output
+     Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-2)} -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } | Select-Object -First 6 -ExpandProperty Message | Write-Output
+     throw "Stormo exited before showing its window: $($app.ExitCode)"
+    }
     if ($app.MainWindowHandle -ne 0) {
      $window = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
      $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'SetupNav')

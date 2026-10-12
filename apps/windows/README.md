@@ -54,7 +54,8 @@ its obsolete `_internal` payload; user workspaces remain outside the installatio
 
 The runtime contract checks cover ownership, API versions, local-only commands, argument
 handling, stale agents and connection refusal versus an unresponsive/foreign service. Windows CI
-also exercises the real detached core lifecycle and launches the published WinUI app. UI Automation
+also exercises the real detached core lifecycle, installs the preview to a path with spaces,
+and launches the installed WinUI app. UI Automation
 navigates its three sections and captures light/dark screenshots in the build artifact. These
 checks do not prove clean-machine Docker installation, full agent operation, or visual accessibility
 under every Windows display configuration. macOS cannot render or compile this WinUI shell.
