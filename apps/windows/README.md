@@ -9,6 +9,10 @@ parity. [Shared feature ledger](../../docs/apps/README.md) · [Architecture](../
 
 ## Install and use
 
+When upgrading from the Qt preview, use **Core → Stop core** and close the old app first.
+The bundled engine moves to a new path; ownership checks deliberately refuse the old running
+engine until it has stopped. Your workspace is preserved.
+
 1. Run `Stormo-Setup-native-x64-preview.exe`. .NET, Windows App SDK and the native engine are included.
 2. Open Stormo. If needed, **Get Docker Desktop** opens the official installation guide.
    Install/open Docker Desktop and finish its setup, including any restart it requests.
