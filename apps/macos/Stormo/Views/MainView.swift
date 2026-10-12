@@ -2,13 +2,14 @@ import StormoKit
 import SwiftUI
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case office, agents, chat, providers, core
+    case office, agents, review, chat, providers, core
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .office: "Office"
         case .agents: "Agents"
+        case .review: "Review"
         case .chat: "Chat"
         case .providers: "Providers"
         case .core: "Core"
@@ -19,6 +20,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .office: "building.2"
         case .agents: "person.3"
+        case .review: "checklist"
         case .chat: "bubble.left.and.text.bubble.right"
         case .providers: "cpu"
         case .core: "server.rack"
@@ -41,12 +43,14 @@ struct MainView: View {
                 NavigationSplitView {
                     List(SidebarItem.allCases, selection: $section) { s in
                         Label(s.title, systemImage: s.symbol).tag(s)
+                            .badge(s == .review ? model.fleet.summary.toReview : 0)
                     }
                     .navigationSplitViewColumnWidth(min: 160, ideal: 190)
                 } detail: {
                     switch section ?? .agents {
                     case .office: OfficeView()
                     case .agents: AgentsView()
+                    case .review: ReviewSectionView()
                     case .chat: ChatView()
                     case .providers: ProvidersView()
                     case .core: CoreView()

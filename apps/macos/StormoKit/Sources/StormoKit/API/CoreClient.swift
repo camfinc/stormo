@@ -8,6 +8,8 @@ public struct CoreClient: Sendable {
         /// The route does not exist (an older core).
         case notFound
         case status(Int)
+        /// The core answered with an error it explains (401, 400, 409…).
+        case refused(Int, String)
     }
 
     public let base: URL
@@ -38,6 +40,33 @@ public struct CoreClient: Sendable {
     public func fleet() async throws -> Fleet { try await get("api/fleet") }
     public func gateway() async throws -> GatewayStatus { try await get("api/gateway") }
 
+    // MARK: Owner (the token in <instance>/.swarm/core/owner.token)
+
+    public func review(owner: String) async throws -> ReviewView {
+        try JSONDecoder().decode(ReviewView.self, from: try await send(request("api/review", owner: owner)))
+    }
+
+    public func decide(_ decision: ReviewDecision, owner: String) async throws {
+        var r = request("api/review", owner: owner)
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONEncoder().encode(decision)
+        _ = try await send(r)
+    }
+
+    /// Restarts a running local agent so accepted lessons and skills apply (slow: give the client a long timeout).
+    public func restart(agent: String, owner: String) async throws {
+        var r = request("api/agents/\(agent)/restart", owner: owner)
+        r.httpMethod = "POST"
+        _ = try await send(r)
+    }
+
+    private func request(_ path: String, owner: String) -> URLRequest {
+        var r = URLRequest(url: base.appending(path: path))
+        r.setValue("Bearer \(owner)", forHTTPHeaderField: "Authorization")
+        return r
+    }
+
     /// The agent's portrait, nil when it has none.
     public func avatar(agent: String) async throws -> Data? {
         do {
@@ -52,9 +81,13 @@ public struct CoreClient: Sendable {
     }
 
     private func data(_ path: String) async throws -> Data {
+        try await send(URLRequest(url: base.appending(path: path)))
+    }
+
+    private func send(_ request: URLRequest) async throws -> Data {
         let response: (Data, URLResponse)
         do {
-            response = try await session.data(from: base.appending(path: path))
+            response = try await session.data(for: request)
         } catch let error as URLError where error.code != .cancelled {
             throw Failure.unreachable
         }
@@ -62,7 +95,10 @@ public struct CoreClient: Sendable {
         switch http.statusCode {
         case 200: return response.0
         case 404: throw Failure.notFound
-        default: throw Failure.status(http.statusCode)
+        default:
+            struct Body: Decodable { struct E: Decodable { let message: String }; let error: E }
+            if let b = try? JSONDecoder().decode(Body.self, from: response.0) { throw Failure.refused(http.statusCode, b.error.message) }
+            throw Failure.status(http.statusCode)
         }
     }
 }

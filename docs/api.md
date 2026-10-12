@@ -32,7 +32,7 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /api/review` | `autoAccept`, `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`}], `skills` [{`skill`, `pii`, `nap`, `new`, `files` [{`path`, `size`, `text`, `current`}]}]}]. Owner token |
 | `POST /api/review` | `{agent, lessons: [id…] \| skill, decision: accept \| reject \| promote, scope: unit \| group}`; 400 with the reason when refused. Owner token |
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
-| `GET /review` | the review page (no data; reads the owner token from `#t=`) |
+| `GET /review` | the review page (no data; reads the owner token from `#t=`). Only with `core.web_ui: true`, like `/` and `/ui/*`; otherwise 404 |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway/models?connection=<name>` | `connection`, `models` [{`id`, `display_name`, `context_length`}]: that ChatGPT sign-in's plan catalog, fetched when the cached one is older than 10 min (the configured defaults before sign-in) |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models` (all of the default ChatGPT connection), per-agent `usage` and `active` (across connections), and `connections` [{`name`, `login`, `account`, `planLimitedUntil`, `inflight`, `queued`, `concurrency`}], one per ChatGPT connection |

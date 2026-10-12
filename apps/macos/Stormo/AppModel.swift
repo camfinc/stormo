@@ -16,6 +16,8 @@ final class AppModel {
     }
     let core: CoreSupervisor
     let fleet: FleetStore
+    /// The Review section's proposals (in memory only).
+    let review: ReviewStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -39,6 +41,7 @@ final class AppModel {
         let client = CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
+        review = ReviewStore(client: client, instanceRoot: nil)
     }
 
     // MARK: Startup
@@ -50,6 +53,7 @@ final class AppModel {
         let client = CoreClient(port: CoreClient.port(environment: env))
         core.client = client
         fleet.client = client
+        review.client = client
         await activate(instances.active)
         startPolling()
     }
@@ -57,6 +61,7 @@ final class AppModel {
     func activate(_ record: InstanceRecord?) async {
         if let record { instances.activate(record.root) }
         core.instanceRoot = record?.url
+        review.instanceRoot = record?.url
         fleet.clear()
         await core.refresh()
         await resolveBinary()

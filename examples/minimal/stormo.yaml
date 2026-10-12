@@ -38,3 +38,6 @@ deploy:
     registry: ghcr.io/acme
     execution_role_arn: arn:aws:iam::123456789012:role/ecsTaskExecutionRole
     task_role_arn: arn:aws:iam::123456789012:role/acme-stormo-task
+
+core:
+  web_ui: false                   # the office and review pages in a browser; the macOS app needs none of it
