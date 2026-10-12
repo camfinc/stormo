@@ -408,6 +408,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}()
 		path := r.URL.Path
 		get := r.Method == http.MethodGet
+		if !inst.CoreWebUI && (path == "/" || path == "/review" || uiFiles[path].body != nil) {
+			writeJSONBody(w, 404, errBody("not_found", "the browser view is off: use the Stormo app, or set core.web_ui: true in stormo.yaml"))
+			return
+		}
 		switch {
 		case get && path == "/health":
 			s := gateway.Status()

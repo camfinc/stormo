@@ -65,7 +65,7 @@ $EDITOR stormo.yaml units/ agents/
 stormo check                # validate and compile every agent
 stormo secrets init         # secrets.local.yaml (gitignored, 0600): fill in the values
 stormo start                # build, then run every agent locally (Docker compose v2: OrbStack, Docker Desktop, Linux)
-stormo core up              # the office and the model gateway on http://127.0.0.1:18600/
+stormo core up              # the model gateway on http://127.0.0.1:18600/ (the office page with core.web_ui: true)
 ```
 
 Stormo finds the instance from the current directory (or `--instance <dir>`, or

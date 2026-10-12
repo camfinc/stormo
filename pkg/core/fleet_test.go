@@ -357,6 +357,7 @@ func TestNewestAvatarByNumber(t *testing.T) {
 
 func TestOfficeRoutes(t *testing.T) {
 	dir, inst := fixture(t)
+	inst.CoreWebUI = true
 	f := NewFleet(FleetOptions{Inst: inst, ReposDir: dir, Ps: ps})
 	f.Refresh()
 	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, Fleet: f})
@@ -531,5 +532,29 @@ func TestFleetUsage(t *testing.T) {
 	}
 	if u := find(s, "nova").Usage; u != nil {
 		t.Errorf("stopped nova has usage %+v", u)
+	}
+}
+
+func TestWebUIOffByDefault(t *testing.T) {
+	_, inst := fixture(t)
+	if inst.CoreWebUI {
+		t.Fatal("core.web_ui defaults to true, want false")
+	}
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	base := fmt.Sprintf("http://127.0.0.1:%d", c.Addr.Port)
+	for p, want := range map[string]int{"/": 404, "/review": 404, "/ui/app.js": 404, "/ui/style.css": 404, "/ui/review.js": 404,
+		"/health": 200, "/api/core": 200, "/api/instance": 200, "/api/fleet": 200} {
+		r, err := http.Get(base + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != want {
+			t.Errorf("%s: %d, want %d", p, r.StatusCode, want)
+		}
 	}
 }

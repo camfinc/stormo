@@ -131,6 +131,9 @@ type Instance struct {
 	OfficeUnits map[string]OfficeUnit `json:"officeUnits"`
 	// The core's own learning schedule (stormo.yaml core.learning).
 	CoreLearning CoreLearning `json:"coreLearning"`
+	// The core serves its browser pages (office, review) only when true (stormo.yaml core.web_ui);
+	// the macOS app is the default face and uses the core's API either way.
+	CoreWebUI bool `json:"coreWebUI"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -174,6 +177,7 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
+		WebUI    bool `yaml:"web_ui"`
 		Learning struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
@@ -312,6 +316,7 @@ func Load(root string) (*Instance, error) {
 		Clocks:             raw.Office.Clocks,
 		OfficeUnits:        orUnits(raw.Office.Units),
 		CoreLearning:       learning,
+		CoreWebUI:          raw.Core.WebUI,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

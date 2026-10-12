@@ -39,6 +39,7 @@ func TestBridgeListenerServesOnlyTheGateway(t *testing.T) {
 	}
 	probe.Close()
 	_, inst := fixture(t)
+	inst.CoreWebUI = true
 	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, Bridge: []string{"::1"}})
 	if err != nil {
 		t.Fatal(err)

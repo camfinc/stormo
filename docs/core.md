@@ -195,6 +195,10 @@ are pruned after 7 days, and never reach git, S3 or Slack.
 
 ## 3. Web UI
 
+**Off by default.** The macOS app (docs/macos-app.md) is the face; the browser pages (`/`, `/review`,
+`/ui/*`) are served only with `core.web_ui: true` in stormo.yaml, and otherwise answer 404 with that
+hint. The JSON API, the gateway, ingest, MCP and avatars are served either way.
+
 Served by core at `http://127.0.0.1:18600/`, plain HTML + one JS module, no build step, live
 updates over SSE (`/api/events`).
 
@@ -439,7 +443,7 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   promotions always wait for a person. With `auto_restart`, a running agent the cycle found idle
   is restarted (`ops.Restart`, local only) so they apply at once; otherwise they apply on its
   next restart.
-- *Review page* (`stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
+- *Review page* (with `core.web_ui`; `stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
   proposed lessons (scrubbed text, kind, scope, times seen, PII flags), skill proposals with
   their files and the current version when one exists, and the accepted lessons. Accept,
   reject, accept everything auto-acceptable, share an accepted lesson with the unit or every
