@@ -82,6 +82,9 @@ public struct ReviewDecision: Codable, Sendable, Equatable {
         Self(agent: agent, lessons: ids, skill: nil, decision: decision, scope: scope)
     }
 
+    /// What the decision is about (one skill, or a set of lessons), whatever the verdict.
+    public var key: String { agent + "/" + (skill.map { "skill:" + $0 } ?? "lessons:" + (lessons ?? []).joined(separator: ",")) }
+
     public static func skill(_ name: String, of agent: String, _ decision: Verdict) -> Self {
         Self(agent: agent, lessons: nil, skill: name, decision: decision, scope: nil)
     }

@@ -20,7 +20,6 @@ struct ReviewSectionView: View {
                     ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle", description: Text("Proposals appear here after an agent's dream."))
                 } else {
                     Form {
-                        if let problem = review.problem { problemSection(problem) }
                         if view.autoAccept {
                             Section { Text("Auto-accept is on: agent-scoped memory lessons seen \(view.autoAcceptMinSeen)+ times with no PII flag are accepted on their own.").font(.callout).foregroundStyle(.secondary) }
                         }
@@ -35,6 +34,11 @@ struct ReviewSectionView: View {
             }
         }
         .navigationTitle("Review")
+        .alert("Review", isPresented: Binding(get: { review.problem != nil && review.view != nil }, set: { if !$0 { model.review.problem = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(review.problem ?? "")
+        }
         .toolbar {
             ToolbarItem {
                 Toggle("Show All Agents", systemImage: "line.3.horizontal.decrease.circle", isOn: $showAll)
@@ -54,10 +58,6 @@ struct ReviewSectionView: View {
         let running: Bool
         let root: URL?
         let pending: Int
-    }
-
-    private func problemSection(_ problem: String) -> some View {
-        Section { Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
     }
 }
 
@@ -128,9 +128,11 @@ private struct LessonRow: View {
                 if lesson.autoAcceptable, lesson.status == "proposed" { Tag("auto-acceptable", tint: .green) }
                 Spacer()
                 if lesson.status == "proposed" {
+                    if busy { ProgressView().controlSize(.small) }
                     Button("Reject") { decide(.reject) }
+                        .disabled(busy)
                     Button("Accept") { decide(.accept) }
-                        .disabled(!lesson.pii.isEmpty)
+                        .disabled(!lesson.pii.isEmpty || busy)
                         .help(lesson.pii.isEmpty ? "" : "Flagged for personal data: reject it, or fix the ledger with `stormo learn`.")
                 } else if lesson.scope == "agent" || lesson.scope == "unit" {
                     Menu("Promote") {
@@ -145,6 +147,8 @@ private struct LessonRow: View {
         .padding(.vertical, 2)
     }
 
+    private var busy: Bool { model.review.deciding.contains(ReviewDecision.lessons([lesson.id], of: agent, .accept).key) }
+
     private func decide(_ verdict: ReviewDecision.Verdict, scope: String? = nil) {
         Task { await model.review.decide(.lessons([lesson.id], of: agent, verdict, scope: scope)) }
     }
@@ -154,6 +158,9 @@ private struct SkillRow: View {
     @Environment(AppModel.self) private var model
     let agent: String
     let skill: ReviewSkill
+    /// Files whose diff is shown. Not a DisclosureGroup: in a Form row it takes the row's clicks,
+    /// so Reject and Accept toggled the diff instead of deciding.
+    @State private var open: Set<String>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -164,9 +171,11 @@ private struct SkillRow: View {
                 if stale { Tag("older version", tint: .orange) }
                 ForEach(skill.pii, id: \.self) { Tag("PII: \($0)", tint: .red) }
                 Spacer()
+                if busy { ProgressView().controlSize(.small) }
                 Button("Reject") { decide(.reject) }
+                    .disabled(busy)
                 Button("Accept") { decide(.accept) }
-                    .disabled(!skill.pii.isEmpty || stale)
+                    .disabled(!skill.pii.isEmpty || stale || busy)
             }
             .controlSize(.small)
             if stale {
@@ -177,14 +186,16 @@ private struct SkillRow: View {
             }
             ForEach(skill.files) { file in
                 let diff = file.text.map { LineDiff(old: file.current ?? "", new: $0) }
-                DisclosureGroup {
-                    if let diff {
-                        DiffView(diff: diff)
-                    } else {
-                        Text("\(file.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
-                    }
+                let shown = (open ?? Set(skill.files.prefix(1).map(\.path))).contains(file.path)
+                Button {
+                    var set = open ?? Set(skill.files.prefix(1).map(\.path))
+                    if shown { set.remove(file.path) } else { set.insert(file.path) }
+                    open = set
                 } label: {
                     HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(shown ? 90 : 0))
+                            .foregroundStyle(.secondary)
                         Text(file.path).font(.callout.monospaced())
                         if let diff {
                             if diff.added > 0 { Text("+\(diff.added)").foregroundStyle(.green) }
@@ -193,6 +204,15 @@ private struct SkillRow: View {
                         }
                     }
                     .font(.caption.monospaced())
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if shown {
+                    if let diff {
+                        DiffView(diff: diff)
+                    } else {
+                        Text("\(file.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -200,6 +220,8 @@ private struct SkillRow: View {
     }
 
     private var stale: Bool { skill.stale ?? false }
+
+    private var busy: Bool { model.review.deciding.contains(ReviewDecision.skill(skill.skill, of: agent, .accept).key) }
 
     private func decide(_ verdict: ReviewDecision.Verdict) {
         Task { await model.review.decide(.skill(skill.skill, of: agent, verdict)) }

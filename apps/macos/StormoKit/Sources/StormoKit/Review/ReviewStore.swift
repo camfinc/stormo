@@ -8,7 +8,9 @@ public final class ReviewStore {
     public private(set) var view: ReviewView?
     public private(set) var loading = false
     /// The last failure, in the core's words when it gave some.
-    public private(set) var problem: String?
+    public var problem: String?
+    /// Decisions on their way to the core, by `ReviewDecision.key`.
+    public private(set) var deciding: Set<String> = []
     /// Agents restarting now.
     public private(set) var restarting: Set<String> = []
 
@@ -45,7 +47,9 @@ public final class ReviewStore {
     }
 
     public func decide(_ decision: ReviewDecision) async {
-        guard let owner = token() else { return }
+        guard let owner = token(), !deciding.contains(decision.key) else { return }
+        deciding.insert(decision.key)
+        defer { deciding.remove(decision.key) }
         do {
             try await client.decide(decision, owner: owner)
             problem = nil
