@@ -82,6 +82,14 @@ struct AgentsView: View {
                         Text(n > 0 ? "\(n)" : "—").foregroundStyle(n > 0 ? .primary : .tertiary)
                     }
                     .width(min: 60, ideal: 80)
+                    TableColumn("CPU") { a in
+                        Text(a.usage?.cpuText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
+                    }
+                    .width(min: 50, ideal: 60)
+                    TableColumn("Memory") { a in
+                        Text(a.usage?.memText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
+                    }
+                    .width(min: 60, ideal: 80)
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
@@ -191,6 +199,10 @@ struct AgentInspector: View {
                 }
                 LabeledContent("Container", value: agent.state)
                 if let h = agent.health { LabeledContent("Health", value: h) }
+                if let u = agent.usage {
+                    LabeledContent("CPU", value: u.cpuText)
+                    LabeledContent("Memory", value: "\(u.memText) of \(u.memLimitBytes.formatted(.byteCount(style: .memory)))")
+                }
                 if let d = agent.detail, !d.isEmpty { LabeledContent("Detail", value: d) }
                 if let jobs = agent.activity?.runningJobs, !jobs.isEmpty {
                     LabeledContent("Jobs", value: jobs.joined(separator: ", "))

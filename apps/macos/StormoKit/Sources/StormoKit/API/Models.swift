@@ -158,10 +158,28 @@ public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
     public var pendingLearnings: Int?
     public var pendingSkills: Int?
     public var office: OfficeState?
+    /// The agent's containers together (agent + nap), while running locally.
+    public var usage: ContainerUsage?
 
     public init(id: String, name: String, unit: String, state: String, office: OfficeState? = nil) {
         self.id = id; self.name = name; self.unit = unit; self.state = state; self.office = office
     }
+}
+
+public struct ContainerUsage: Codable, Sendable, Equatable {
+    /// Percent of one CPU (200 = two CPUs busy).
+    public var cpuPercent: Double
+    public var memBytes: Int64
+    public var memLimitBytes: Int64
+
+    public init(cpuPercent: Double, memBytes: Int64, memLimitBytes: Int64) {
+        self.cpuPercent = cpuPercent; self.memBytes = memBytes; self.memLimitBytes = memLimitBytes
+    }
+
+    /// "2.4%"
+    public var cpuText: String { cpuPercent.formatted(.number.precision(.fractionLength(1))) + "%" }
+    /// "312 MB"
+    public var memText: String { memBytes.formatted(.byteCount(style: .memory)) }
 }
 
 public struct RobotNote: Codable, Sendable, Equatable {

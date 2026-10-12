@@ -42,7 +42,10 @@ type Paths struct {
 	SharedDir string
 }
 
-func ProjectName(a *manifest.Agent) string { return "swarm-" + a.ID }
+func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
+
+// ProjectPrefix starts every agent's compose project name.
+const ProjectPrefix = "swarm-"
 
 func ComposePath(root string, a *manifest.Agent) string {
 	return filepath.Join(root, ".swarm", "compose", a.ID+".yaml")
