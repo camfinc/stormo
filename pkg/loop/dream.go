@@ -269,7 +269,9 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 				return nil, err
 			}
 			status := "new"
-			if inRepo {
+			if stale {
+				status = "changed (on an older version; merge by hand)"
+			} else if inRepo {
 				status = "changed"
 			}
 			report.SkillProposals = append(report.SkillProposals, SkillProposalReport{dir, status, piiList})

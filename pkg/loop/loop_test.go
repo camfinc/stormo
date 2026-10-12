@@ -305,6 +305,9 @@ func TestLearningLoop(t *testing.T) {
 		// (stale now that the repo changed it too), payment-plan is untouched by the agent.
 		plan := filepath.Join(root, "agents/atlas/skills/crm/payment-plan/SKILL.md")
 		write(t, plan, read(t, plan)+"\n## Reviewed\nRepo edit the agent never saw.\n")
+		// As `stormo restart` does locally: the baseline is rebuilt in place under the running
+		// instance before its last nap. The nap must still record what home1 booted from.
+		baseline("baseline")
 		write(t, filepath.Join(home1, "memories/MEMORY.md"), read(t, filepath.Join(home1, "memories/MEMORY.md"))+"\n§\nA new note so the nap has something new.")
 		opts := NapOptions{Agent: "atlas", Unit: "sales", Engine: eng, Home: home1, Store: store, Instance: "task-a", BaselineDir: filepath.Join(tmp, "baseline"), Now: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)}
 		if m, err := NapOnce(opts); err != nil || m == nil {
@@ -326,6 +329,12 @@ func TestLearningLoop(t *testing.T) {
 		}
 		if _, err := DecideSkill(root, "atlas", "crm/crm-api", "accepted"); err == nil || !strings.Contains(read(t, filepath.Join(root, "agents/atlas/skills/crm/crm-api/SKILL.md")), "Repo edit.") {
 			t.Errorf("accepting a stale proposal: err %v; the repo's edit must stay", err)
+		}
+		// The next boot keeps the repo's newer payment-plan instead of restoring home1's old copy.
+		h := filepath.Join(tmp, "home4")
+		r := rehydrate(h, baseline("baseline"))
+		if slices.Contains(r.RestoredSkills, "crm/payment-plan") || !strings.Contains(read(t, filepath.Join(h, "skills/crm/payment-plan/SKILL.md")), "Repo edit the agent never saw.") {
+			t.Errorf("restored %v: the repo's payment-plan edit was undone", r.RestoredSkills)
 		}
 	})
 }

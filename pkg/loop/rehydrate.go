@@ -278,6 +278,12 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	if err := os.WriteFile(filepath.Join(o.Home, ".swarm", "rehydrate.json"), rep, 0o644); err != nil {
 		return nil, err
 	}
+	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running
+	// instance (locally it is a bind mount), and a nap must not claim the new one.
+	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills})
+	if err := os.WriteFile(filepath.Join(o.Home, BootedPath), booted, 0o644); err != nil {
+		return nil, err
+	}
 	if L.RuntimeUID != 0 && os.Geteuid() == 0 {
 		if _, err := ChownTree(o.Home, L.RuntimeUID, L.RuntimeGID, nil); err != nil {
 			return nil, err
