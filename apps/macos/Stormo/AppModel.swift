@@ -16,6 +16,8 @@ final class AppModel {
     }
     let core: CoreSupervisor
     let fleet: FleetStore
+    /// The Review section's proposals (in memory only).
+    let review: ReviewStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -27,6 +29,10 @@ final class AppModel {
     private(set) var activity: String?
     /// The last failed action, shown as an alert.
     var failure: String?
+    /// A start refused for unset secret values, shown as its own alert that leads to the fix.
+    var missingSecrets: MissingSecrets?
+    /// An agent whose editor the Agents section should open (set from elsewhere, consumed there).
+    var agentToEdit: String?
     /// Agents' portraits (/avatars/<id>.png), for name tags and the inspector.
     private(set) var avatars: [String: NSImage] = [:]
 
@@ -39,6 +45,7 @@ final class AppModel {
         let client = CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
+        review = ReviewStore(client: client, instanceRoot: nil)
     }
 
     // MARK: Startup
@@ -47,9 +54,6 @@ final class AppModel {
     func start() async {
         let env = await ShellEnvironment.current()
         environment = env
-        let client = CoreClient(port: CoreClient.port(environment: env))
-        core.client = client
-        fleet.client = client
         await activate(instances.active)
         startPolling()
     }
@@ -57,9 +61,30 @@ final class AppModel {
     func activate(_ record: InstanceRecord?) async {
         if let record { instances.activate(record.root) }
         core.instanceRoot = record?.url
+        review.instanceRoot = record?.url
         fleet.clear()
+        retarget()
         await core.refresh()
         await resolveBinary()
+        // An instance that never ran a core has no port yet: the engine picks one free of every
+        // other instance's (`core status` resolves and keeps it).
+        if let root = record?.url, CoreClient.pickedPort(root: root) == nil, let cli {
+            try? await cli.perform(["core", "status"])
+            retarget()
+            await core.refresh()
+        }
+    }
+
+    /// Points the clients at the active instance's core port when it changed.
+    func retarget() {
+        let port = CoreClient.port(instanceRoot: instances.active?.url, environment: environment ?? ProcessInfo.processInfo.environment)
+        guard port != core.client.port else { return }
+        let client = CoreClient(port: port)
+        core.client = client
+        fleet.client = client
+        review.client = client
+        fleet.clear()
+        avatars = [:]
     }
 
     // MARK: Binaries
@@ -142,6 +167,10 @@ final class AppModel {
 
     func startCore() async {
         guard let cli else { return failNoBinary() }
+        if let root = instances.active?.url, CoreClient.pickedPort(root: root) == nil {
+            try? await cli.perform(["core", "status"])
+        }
+        retarget()
         await core.start(with: cli)
         if let e = core.lastError { failure = e }
         await fleet.refresh()
@@ -177,7 +206,11 @@ final class AppModel {
                 }
             }
         } catch {
-            failure = error.localizedDescription
+            if let m = MissingSecrets(error: error.localizedDescription) {
+                missingSecrets = m
+            } else {
+                failure = error.localizedDescription
+            }
         }
         await fleet.refresh()
     }
@@ -194,6 +227,7 @@ final class AppModel {
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                self.retarget()
                 await self.core.refresh()
                 if self.core.state.isRunning {
                     await self.fleet.refresh()

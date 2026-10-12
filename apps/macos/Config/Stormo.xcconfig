@@ -11,7 +11,6 @@ SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor
 GENERATE_INFOPLIST_FILE = YES
 INFOPLIST_KEY_CFBundleDisplayName = Stormo
 INFOPLIST_KEY_LSApplicationCategoryType = public.app-category.developer-tools
-INFOPLIST_KEY_NSHumanReadableCopyright = Apache-2.0
 // Release builds set both from the engine tag and the CI run (scripts/build.sh).
 MARKETING_VERSION = 0.0.0
 CURRENT_PROJECT_VERSION = 1

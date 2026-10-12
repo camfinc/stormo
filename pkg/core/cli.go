@@ -37,7 +37,7 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)
   core learn [agent…] [--force]          run a learning cycle now (nap + dream per agent, waits for busy agents unless --force)
   core learning                          the learning schedule (stormo.yaml core.learning) and the last cycles
-  core review [--no-open]                open the review page: proposed lessons and skills, accept/reject, restart to apply`
+  core review [--no-open]                open the review page (needs core.web_ui): proposed lessons and skills, accept/reject, restart to apply`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
 
@@ -237,6 +237,7 @@ func serve(inst *instance.Instance) error {
 		return err
 	}
 	defer cleanup()
+	activePort = inst.CorePort()
 	c, err := StartCore(CoreOptions{Inst: inst, Port: CorePort(), Bridge: BridgeHosts()})
 	if err != nil {
 		return err
@@ -556,6 +557,7 @@ func learningCmd(inst *instance.Instance, o *out.Writer) error {
 
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
+	activePort = inst.CorePort()
 	o := opts.Out
 	if o == nil {
 		o = &out.Writer{W: os.Stdout}
@@ -582,6 +584,9 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 	case "learning":
 		return learningCmd(inst, o)
 	case "review":
+		if !inst.CoreWebUI {
+			return fmt.Errorf("the browser view is off: review proposals in the Stormo app, or set core.web_ui: true in stormo.yaml and restart the core")
+		}
 		if h := health(); h == nil {
 			return fmt.Errorf("the core is not answering on %s: start it with `stormo core up`", base())
 		}

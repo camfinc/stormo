@@ -134,7 +134,11 @@ struct ChatGPTSignInSheet: View {
     }
 
     private func start() {
-        guard let cli = model.cli, task == nil else { return }
+        guard task == nil else { return }
+        guard let cli = model.cli else {
+            failure = "No usable stormo binary for this instance. Choose one in Settings › Command line."
+            return
+        }
         task = Task {
             do {
                 let args = ["core", "login", "--no-open"] + (connection.map { ["--connection", $0] } ?? [])

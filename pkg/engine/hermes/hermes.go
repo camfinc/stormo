@@ -225,7 +225,7 @@ func (h *Hermes) Env(a *manifest.Agent, target manifest.Target) *env.Env {
 // openrouter provider; anything else (OpenAI, Anthropic, an OpenAI-compatible API, OpenRouter on
 // another key) is Hermes' custom provider with the connection's base_url and key_env, so a base
 // config's own base_url never sends the agent elsewhere.
-func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection, target manifest.Target) error {
+func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection, target manifest.Target, core manifest.CoreEndpoints) error {
 	set := func(path string, v any) error { return setPath(cfg, path, v) }
 	if err := set("model.default", a.Engine.Model); err != nil {
 		return err
@@ -254,35 +254,38 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection,
 	if onCore(a, target) {
 		// Locally the swarm core's gateway serves the model on the ChatGPT subscription; the agent
 		// only holds its own core key. Hermes falls back to the AWS model on a 401, a 429 or a dead
-		// core, and retries the core every turn.
-		aws := yamlMap("provider", provider, "model", a.Engine.Model)
-		if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != "" {
-			addKey(aws, "base_url", bu)
-		}
-		if !native {
-			addKey(aws, "key_env", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: conn.Key})
-		}
-		list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{aws}}
-		if prev := getPath(cfg, "fallback_providers"); prev != nil && prev.Kind == yaml.SequenceNode {
-			list.Content = append(list.Content, prev.Content...)
-		}
-		if err := setNode(cfg, "fallback_providers", list); err != nil {
-			return err
+		// core, and retries the core every turn. Without the provider's key (an optional secret left
+		// unset) there is no fallback.
+		if slices.Contains(a.Secrets, conn.Key) {
+			aws := yamlMap("provider", provider, "model", a.Engine.Model)
+			if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != "" {
+				addKey(aws, "base_url", bu)
+			}
+			if !native {
+				addKey(aws, "key_env", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: conn.Key})
+			}
+			list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{aws}}
+			if prev := getPath(cfg, "fallback_providers"); prev != nil && prev.Kind == yaml.SequenceNode {
+				list.Content = append(list.Content, prev.Content...)
+			}
+			if err := setNode(cfg, "fallback_providers", list); err != nil {
+				return err
+			}
 		}
 		// Custom endpoints speak chat_completions; the core translates to Codex Responses itself.
 		deleteKey(getPath(cfg, "model"), "api_mode")
-		for _, kv := range [][2]string{{"model.provider", "custom"}, {"model.base_url", manifest.Core.BaseURL}, {"model.key_env", manifest.Core.KeyEnv}, {"model.default", a.Engine.Local.Model}} {
+		for _, kv := range [][2]string{{"model.provider", "custom"}, {"model.base_url", core.BaseURL}, {"model.key_env", core.KeyEnv}, {"model.default", a.Engine.Local.Model}} {
 			if err := set(kv[0], kv[1]); err != nil {
 				return err
 			}
 		}
-		if err := coreHooks(cfg); err != nil {
+		if err := coreHooks(cfg, core); err != nil {
 			return err
 		}
 		// The core's tools (msg_*, fs_*), registered by Hermes as mcp_core_<tool>. Hermes expands
 		// ${VAR} in MCP server config from the agent's env, where the env file put its core key.
-		if err := setNode(cfg, "mcp_servers."+CoreMCPServer, yamlMap("url", manifest.Core.MCPURL,
-			"headers", yamlMap("Authorization", "Bearer ${"+manifest.Core.KeyEnv+"}"), "timeout", 60, "connect_timeout", 15)); err != nil {
+		if err := setNode(cfg, "mcp_servers."+CoreMCPServer, yamlMap("url", core.MCPURL,
+			"headers", yamlMap("Authorization", "Bearer ${"+core.KeyEnv+"}"), "timeout", 60, "connect_timeout", 15)); err != nil {
 			return err
 		}
 	}
@@ -379,7 +382,7 @@ var CoreHookEvents = []string{"on_session_start", "on_session_end", "pre_tool_ca
 // approval events, signed with the agent's core key, so the core knows what the agent is doing
 // (docs/core.md §2). Delivery is fire-and-forget on Hermes' side and never blocks a turn. Targets
 // the base config already lists are kept; a stale core entry is replaced.
-func coreHooks(cfg *yaml.Node) error {
+func coreHooks(cfg *yaml.Node, core manifest.CoreEndpoints) error {
 	list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	if prev := getPath(cfg, "hooks.outbound"); prev != nil && prev.Kind == yaml.SequenceNode {
 		for _, t := range prev.Content {
@@ -388,8 +391,8 @@ func coreHooks(cfg *yaml.Node) error {
 			}
 		}
 	}
-	list.Content = append(list.Content, yamlMap("name", CoreHookName, "url", manifest.Core.IngestURL+"/hermes", "events", CoreHookEvents,
-		"secret_env", manifest.Core.KeyEnv, "timeout", 5))
+	list.Content = append(list.Content, yamlMap("name", CoreHookName, "url", core.IngestURL+"/hermes", "events", CoreHookEvents,
+		"secret_env", core.KeyEnv, "timeout", 5))
 	return setNode(cfg, "hooks.outbound", list)
 }
 
@@ -472,7 +475,7 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("agents/%s: model.provider %q is not a connection of this instance", a.ID, a.Engine.Provider)
 	}
-	if err := ApplyOverrides(cfg, a, conn, ctx.Target); err != nil {
+	if err := ApplyOverrides(cfg, a, conn, ctx.Target, manifest.CoreAt(ctx.Instance.CorePort())); err != nil {
 		return nil, err
 	}
 	rendered, err := encodeYAML(cfg)

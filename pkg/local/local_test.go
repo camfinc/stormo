@@ -14,6 +14,9 @@ import (
 )
 
 func TestPortsAreStable(t *testing.T) {
+	t.Setenv("STORMO_HOME", t.TempDir())
+	defer func(f func(int) bool) { portFree = f }(portFree)
+	portFree = func(int) bool { return true }
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, ".swarm"), 0o755)
 	os.WriteFile(filepath.Join(root, ".swarm", "ports.json"), []byte(`{"atlas": 18642, "scout": 18643, "nova": 18646}`), 0o644)
@@ -96,5 +99,21 @@ func TestPortConcurrentAllocationsAreDistinct(t *testing.T) {
 		if again, _ := Port(root, ids[i]); again != p {
 			t.Errorf("%s: %d then %d (an entry was lost)", ids[i], p, again)
 		}
+	}
+}
+
+func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
+	t.Setenv("STORMO_HOME", t.TempDir())
+	defer func(f func(int) bool) { portFree = f }(portFree)
+	portFree = func(p int) bool { return p != PortBase+1 }
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "stormo.yaml"), []byte("name: Other\n"), 0o644)
+	os.MkdirAll(filepath.Join(other, ".swarm"), 0o755)
+	os.WriteFile(filepath.Join(other, ".swarm", "ports.json"), []byte(`{"x": 18642}`), 0o644)
+	os.MkdirAll(filepath.Join(os.Getenv("STORMO_HOME"), "instances"), 0o700)
+	os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"),
+		[]byte(`{"root": "`+other+`", "name": "Other", "corePort": 18600}`), 0o600)
+	if got, err := Port(t.TempDir(), "atlas"); err != nil || got != PortBase+2 {
+		t.Errorf("got %d %v, want %d (18642 is the other instance's, 18643 is busy)", got, err, PortBase+2)
 	}
 }

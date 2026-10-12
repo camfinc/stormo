@@ -267,6 +267,9 @@ Agents share and read documents through one EFS file system mounted into every a
   `workdir/<layer>` (gitignored) at the same `/shared/<layer>` paths, only group and their own unit;
   `stormo start` and `stormo shared` move an older `.swarm/shared/<layer>` there once. On the
   swarm core, agents also get locks and change attribution through it (docs/core.md §4).
+- The core's file tools are confined to each layer (no link leaves it) and links that point
+  outside are findings. What every container mounts (home, agent files, shared) and how:
+  [docs/mounts.md](docs/mounts.md).
 
 ## The learning system (nap / dream)
 

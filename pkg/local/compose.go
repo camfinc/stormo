@@ -41,9 +41,14 @@ type Paths struct {
 	// StoreDir is the agent's own local store (loop.LocalStoreDir).
 	StoreDir  string
 	SharedDir string
+	// CorePort is the instance's core (instance.CorePort): agents call it there.
+	CorePort int
 }
 
-func ProjectName(a *manifest.Agent) string { return "swarm-" + a.ID }
+func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
+
+// ProjectPrefix starts every agent's compose project name.
+const ProjectPrefix = "swarm-"
 
 func ComposePath(root string, a *manifest.Agent) string {
 	return filepath.Join(root, ".swarm", "compose", a.ID+".yaml")
@@ -63,7 +68,19 @@ type service struct {
 	Restart     string            `yaml:"restart,omitempty"`
 	ExtraHosts  []string          `yaml:"extra_hosts,omitempty"`
 	Tmpfs       []string          `yaml:"tmpfs,omitempty"`
+	SecurityOpt []string          `yaml:"security_opt,omitempty"`
+	CapDrop     []string          `yaml:"cap_drop,omitempty"`
 }
+
+// hardening applies to every container of an agent. Engine images may boot as root and drop to
+// their runtime user themselves (an init that chowns the home, then setuid), so the user and the
+// capabilities that needs (CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL) stay; nothing in
+// the task needs raw sockets, device nodes, chroot, file capabilities or ports below 1024, and
+// no process may gain privileges through a setuid binary.
+var (
+	securityOpt = []string{"no-new-privileges:true"}
+	capDrop     = []string{"NET_RAW", "MKNOD", "SYS_CHROOT", "SETFCAP", "AUDIT_WRITE", "NET_BIND_SERVICE"}
+)
 
 // Spec is a compose file.
 type Spec struct {
@@ -87,7 +104,9 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		Environment: map[string]string{"SWARM_AGENT": a.ID, "SWARM_STORE": "/store", "SWARM_HOME": "/data"},
 		// The agent's data folder (its secret values, its store) stays out of the sidecars: they get
 		// the store at /store/<id> and nothing else of it.
-		Tmpfs: []string{"/app/agents/" + a.ID + "/data"},
+		Tmpfs:       []string{"/app/agents/" + a.ID + "/data"},
+		SecurityOpt: securityOpt,
+		CapDrop:     capDrop,
 	}
 	rehydrate := sidecar
 	rehydrate.Command = []string{"rehydrate"}
@@ -104,10 +123,14 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 	for _, l := range shared.Layers(a) {
 		volumes = append(volumes, filepath.ToSlash(filepath.Join(p.SharedDir, l.Layer))+":"+l.Path)
 	}
+	environment := eng.Env(a, manifest.Local).Map()
+	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CorePort != 0 {
+		environment["SWARM_CORE_URL"] = manifest.CoreAt(p.CorePort).URL
+	}
 	agent := service{
 		Image:       eng.Image(a),
 		Command:     eng.Command(a),
-		Environment: eng.Env(a, manifest.Local).Map(),
+		Environment: environment,
 		EnvFile:     []string{filepath.ToSlash(p.EnvFile)},
 		Volumes:     volumes,
 		Ports:       []string{fmt.Sprintf("127.0.0.1:%d:%d", port, eng.Port())},
@@ -117,8 +140,10 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 			"rehydrate": map[string]string{"condition": "service_completed_successfully"},
 			"nap":       map[string]string{"condition": "service_started"},
 		},
-		StopGrace: "60s",
-		Restart:   "unless-stopped",
+		StopGrace:   "60s",
+		Restart:     "unless-stopped",
+		SecurityOpt: securityOpt,
+		CapDrop:     capDrop,
 	}
 	if a.Engine.Local != nil && a.Engine.Local.Via == "core" && runtime.GOOS != "windows" {
 		// Windows Docker Desktop supplies host.docker.internal itself. Do not replace
@@ -143,6 +168,9 @@ func ComposeCommand() ([]string, error) {
 // reading the file together would hand out one port twice and lose an entry.
 var portMu sync.Mutex
 
+// portFree checks a candidate agent port (tests replace it).
+var portFree = instance.PortFree
+
 // Port is the agent's stable host port, kept in .swarm/ports.json: an agent keeps its port once it
 // has one, and a new agent takes the lowest free port from PortBase. The file is replaced
 // atomically, so a reader never sees half of it.
@@ -159,12 +187,14 @@ func Port(root, agentID string) (int, error) {
 	if p, ok := ports[agentID]; ok && p != 0 {
 		return p, nil
 	}
-	used := map[int]bool{}
+	// Other instances on this host keep their own ports.json: never take a port one of them holds,
+	// nor one something else listens on now.
+	used := instance.OtherAgentPorts(root)
 	for _, p := range ports {
 		used[p] = true
 	}
 	port := PortBase
-	for used[port] {
+	for used[port] || !portFree(port) {
 		port++
 	}
 	ports[agentID] = port

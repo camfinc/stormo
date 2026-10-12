@@ -4,7 +4,7 @@ Status: native Windows preview. Target: Windows 11 x64. Linux desktop packaging 
 
 ## Architecture
 
-The Qt/PySide6 desktop launches the bundled **Windows `stormo.exe` directly**. The Go core,
+The WinUI 3 desktop launches the bundled **Windows `stormo.exe` directly**. The Go core,
 instance files, configuration, logs and database all live on Windows. Docker Desktop runs the
 Linux agent and sidecar containers. Stormo neither installs nor invokes WSL, imports Linux
 filesystems, manages a Linux user, nor maintains its own Docker daemon.

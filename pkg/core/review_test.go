@@ -17,6 +17,7 @@ import (
 
 func TestReviewPageAndDecisions(t *testing.T) {
 	_, inst := fixture(t)
+	inst.CoreWebUI = true
 	root := inst.Root
 	// A skill proposal from the dream for atlas.
 	prop := filepath.Join(root, "agents/atlas/learnings/proposals/skills/quote-check")

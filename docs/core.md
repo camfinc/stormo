@@ -74,6 +74,15 @@ sidecar and start nothing, so they are outside the rule.
 On AWS (later) the same code runs as an ECS service; only the lifecycle backend changes to the
 `remote` branch of `pkg/ops`, and the gateway is switched off (see Phase 1, scope).
 
+**Several instances, several cores.** Each instance's core has its own port: `SWARM_CORE_PORT`,
+else `core.port` in stormo.yaml, else the one it picked before (`.swarm/core/port`), else the first
+port from 18600 that no other instance on the host claims, that no other instance's core answers
+on and that is free. Claims live in `~/.stormo/instances/<id>.json` (`STORMO_HOME` moves it); one
+whose instance is gone is dropped. Agents are built against their instance's port, and new agent
+ports skip every other instance's `.swarm/ports.json`. Compose projects stay `swarm-<agent id>`:
+a command on an agent whose containers another instance created is refused, so two instances on
+one host need different agent ids.
+
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
 
@@ -194,6 +203,10 @@ Retention: activity previews can hold client data, so they live only in `.swarm/
 are pruned after 7 days, and never reach git, S3 or Slack.
 
 ## 3. Web UI
+
+**Off by default.** The macOS app (docs/macos-app.md) is the face; the browser pages (`/`, `/review`,
+`/ui/*`) are served only with `core.web_ui: true` in stormo.yaml, and otherwise answer 404 with that
+hint. The JSON API, the gateway, ingest, MCP and avatars are served either way.
 
 Served by core at `http://127.0.0.1:18600/`, plain HTML + one JS module, no build step, live
 updates over SSE (`/api/events`).
@@ -439,7 +452,7 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   promotions always wait for a person. With `auto_restart`, a running agent the cycle found idle
   is restarted (`ops.Restart`, local only) so they apply at once; otherwise they apply on its
   next restart.
-- *Review page* (`stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
+- *Review page* (with `core.web_ui`; `stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
   proposed lessons (scrubbed text, kind, scope, times seen, PII flags), skill proposals with
   their files and the current version when one exists, and the accepted lessons. Accept,
   reject, accept everything auto-acceptable, share an accepted lesson with the unit or every

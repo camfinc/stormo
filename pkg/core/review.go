@@ -43,7 +43,11 @@ type ReviewSkill struct {
 	PII   []string `json:"pii"`
 	Nap   string   `json:"nap"`
 	// New skill, or a change to one the agent already has.
-	New   bool         `json:"new"`
+	New bool `json:"new"`
+	// Stale: the agent's change is to an older version than the repo's (built from commit Base);
+	// the diff against the repo shows the repo's newer edits as removals, and accept is refused.
+	Stale bool         `json:"stale"`
+	Base  string       `json:"base,omitempty"`
 	Files []ReviewFile `json:"files"`
 }
 
@@ -155,7 +159,7 @@ func readSmallText(p string) (string, int64, bool) {
 func skillView(root, agent string, p loop.SkillProposal) ReviewSkill {
 	src := filepath.Join(loop.ProposalsDir(root, agent), p.Skill)
 	cur := filepath.Join(manifest.AgentDir(root, agent), "skills", p.Skill)
-	s := ReviewSkill{Skill: p.Skill, PII: p.PII, Nap: p.Nap, Files: []ReviewFile{}}
+	s := ReviewSkill{Skill: p.Skill, PII: p.PII, Nap: p.Nap, Stale: p.Stale, Base: p.Base, Files: []ReviewFile{}}
 	if s.PII == nil {
 		s.PII = []string{}
 	}

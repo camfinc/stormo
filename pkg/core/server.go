@@ -35,8 +35,14 @@ import (
 // Port is the core's default port.
 const Port = 18600
 
-// CorePort is SWARM_CORE_PORT, else Port.
+// activePort is the port of the instance the CLI works on (set by Command and serve).
+var activePort int
+
+// CorePort is the current instance's core port (instance.CorePort), else SWARM_CORE_PORT, else Port.
 func CorePort() int {
+	if activePort > 0 {
+		return activePort
+	}
 	if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_PORT")); err == nil && n > 0 {
 		return n
 	}
@@ -411,6 +417,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}()
 		path := r.URL.Path
 		get := r.Method == http.MethodGet
+		if !inst.CoreWebUI && (path == "/" || path == "/review" || uiFiles[path].body != nil) {
+			writeJSONBody(w, 404, errBody("not_found", "the browser view is off: use the Stormo app, or set core.web_ui: true in stormo.yaml"))
+			return
+		}
 		switch {
 		case get && path == "/health":
 			s := gateway.Status()

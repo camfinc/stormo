@@ -327,3 +327,63 @@ func TestOverlapAndCovers(t *testing.T) {
 		}
 	}
 }
+
+// Agents can plant symlinks in the shared space; the core's file tools never follow one out of
+// its layer, neither to the host nor into another unit's layer.
+func TestFileToolsStayInTheLayer(t *testing.T) {
+	f := newWorkdir(t)
+	outside := t.TempDir()
+	f.file(t, "media/brief.md", "media only")
+	for name, target := range map[string]string{"host": outside, "unit": "../media", "file": filepath.Join(outside, "f.txt")} {
+		if err := os.Symlink(target, filepath.Join(f.root, "group", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"/shared/group/host/pwn.txt", "/shared/group/unit/pwn.txt"} {
+		_, err := f.w.Write("atlas", p, "x", "")
+		wantToolErr(t, err, "leaves its layer")
+		_, err = f.w.Info("atlas", p)
+		wantToolErr(t, err, "leaves its layer")
+	}
+	_, err := f.w.Write("atlas", "/shared/group/file", "x", "append")
+	wantToolErr(t, err, "is a link")
+	_, err = f.w.Ls("atlas", "/shared/group/unit")
+	wantToolErr(t, err, "leaves its layer")
+	for _, p := range []string{filepath.Join(outside, "pwn.txt"), filepath.Join(outside, "f.txt"), filepath.Join(f.root, "media", "pwn.txt")} {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s was written through a link", p)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.root, "media", "brief.md")); string(b) != "media only" {
+		t.Errorf("media/brief.md changed: %q", b)
+	}
+	// Inside the layer, writes still work.
+	if _, err := f.w.Write("atlas", "/shared/group/notes/a.md", "ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The scan reports each escaping link, and not a link that stays in the layer.
+	if err := os.Symlink("notes/a.md", filepath.Join(f.root, "group", "inside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	found, err := f.db.Findings(false, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapes := map[string]bool{}
+	for _, x := range found {
+		if x.Rule == "shared_link_escape" {
+			escapes[x.Evidence] = true
+		}
+	}
+	for _, n := range []string{"host", "unit", "file"} {
+		if !escapes["/shared/group/"+n+" is a link that leaves its layer"] {
+			t.Errorf("no finding for group/%s: %v", n, escapes)
+		}
+	}
+	if len(escapes) != 3 {
+		t.Errorf("findings %v, want exactly host, unit and file", escapes)
+	}
+}

@@ -28,6 +28,9 @@ type NapFile struct {
 	Size   int              `json:"size"`
 }
 
+// BootedPath is where rehydrate records, in the engine home, the baseline the instance booted from.
+const BootedPath = ".swarm/booted.json"
+
 // NapBaseline records which baseline the nap's instance booted from.
 type NapBaseline struct {
 	GitSha string              `json:"gitSha"`
@@ -136,7 +139,14 @@ func NapOnce(o NapOptions) (*Nap, error) {
 		}
 	}
 	var baseline *NapBaseline
-	if o.BaselineDir != "" {
+	if body, err := os.ReadFile(filepath.Join(o.Home, BootedPath)); err == nil {
+		var b NapBaseline
+		if err := json.Unmarshal(body, &b); err != nil {
+			return nil, err
+		}
+		baseline = &b
+	} else if o.BaselineDir != "" {
+		// A home rehydrated before booted.json existed: the baseline dir is the best guess.
 		if body, err := os.ReadFile(filepath.Join(o.BaselineDir, build.InfoPath)); err == nil {
 			var info build.Info
 			if err := json.Unmarshal(body, &info); err != nil {

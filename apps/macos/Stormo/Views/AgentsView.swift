@@ -32,6 +32,11 @@ struct AgentsView: View {
             list
                 .navigationDestination(for: AgentRoute.self) { AgentEditor(agentID: $0.id) }
         }
+        .task(id: model.agentToEdit) {
+            guard let id = model.agentToEdit else { return }
+            model.agentToEdit = nil
+            edit(id)
+        }
     }
 
     private func edit(_ id: String) { path = [AgentRoute(id: id)] }
@@ -80,6 +85,14 @@ struct AgentsView: View {
                     TableColumn("To review") { a in
                         let n = (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0)
                         Text(n > 0 ? "\(n)" : "—").foregroundStyle(n > 0 ? .primary : .tertiary)
+                    }
+                    .width(min: 60, ideal: 80)
+                    TableColumn("CPU") { a in
+                        Text(a.usage?.cpuText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
+                    }
+                    .width(min: 50, ideal: 60)
+                    TableColumn("Memory") { a in
+                        Text(a.usage?.memText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
                     }
                     .width(min: 60, ideal: 80)
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
@@ -191,6 +204,10 @@ struct AgentInspector: View {
                 }
                 LabeledContent("Container", value: agent.state)
                 if let h = agent.health { LabeledContent("Health", value: h) }
+                if let u = agent.usage {
+                    LabeledContent("CPU", value: u.cpuText)
+                    LabeledContent("Memory", value: "\(u.memText) of \(u.memLimitBytes.formatted(.byteCount(style: .memory)))")
+                }
                 if let d = agent.detail, !d.isEmpty { LabeledContent("Detail", value: d) }
                 if let jobs = agent.activity?.runningJobs, !jobs.isEmpty {
                     LabeledContent("Jobs", value: jobs.joined(separator: ", "))
@@ -298,7 +315,7 @@ struct CoreNotRunningView: View {
             }
         } description: {
             switch model.core.state {
-            case .otherInstance(let c): Text("The core on this Mac belongs to \(c.instance.name). One core runs at a time.")
+            case .otherInstance(let c): Text("\(c.instance.name)'s core answers on this instance's port (\(model.core.client.port)). Give one of them its own `core.port` in stormo.yaml, or delete `.swarm/core/port` here so the next start picks a free one.")
             case .incompatible: Text("The running core is older than this app. Restarting it with the pinned stormo takes a few seconds; agents keep running.")
             default: Text("Start the core to see the fleet.")
             }

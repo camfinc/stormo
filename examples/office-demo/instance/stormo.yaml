@@ -32,3 +32,6 @@ office:
       wall: shelves
       floor: library
       desk: {app: charts, screens: 1, props: [books, chart, magnifier, lamp], side: shelf}
+
+core:
+  web_ui: true                    # the demo is the office in a browser

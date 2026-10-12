@@ -23,6 +23,11 @@ import Testing
         #expect(ChatProblem(CLIError(code: "not_running", message: "x", status: 1, stderr: "")).kind == .notRunning)
         #expect(ChatProblem(CLIError(code: "busy", message: "x", status: 1, stderr: "")).kind == .busy)
         #expect(ChatProblem(CLIError(code: "failed", message: "boom", status: 1, stderr: "")).message == "boom")
+        let eof = #"nova: Get "http://127.0.0.1:18649/api/sessions/api_1/messages?limit=500&order=latest": EOF"#
+        #expect(ChatProblem(CLIError(code: "failed", message: eof, status: 1, stderr: "")).kind == .starting)
+        let refused = #"nova: Post "http://127.0.0.1:18649/api/sessions": dial tcp 127.0.0.1:18649: connect: connection refused"#
+        #expect(ChatProblem(CLIError(code: "failed", message: refused, status: 1, stderr: "")).kind == .starting)
+        #expect(ChatProblem(CLIError(code: "failed", message: "openrouter: EOF", status: 1, stderr: "")).kind == .other)
     }
 
     @Test func titles() {

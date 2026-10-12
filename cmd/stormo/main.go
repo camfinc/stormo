@@ -25,7 +25,6 @@ import (
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/config"
-	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/deploy"
 	"github.com/camfinc/stormo/pkg/engines"
@@ -1518,7 +1517,7 @@ func connectionModels(inst *instance.Instance, name, agent string) ([]models.Mod
 	}
 	if !c.API() {
 		client := &http.Client{Timeout: 20 * time.Second}
-		if res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway/models?connection=%s", core.CorePort(), name)); err == nil {
+		if res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway/models?connection=%s", inst.CorePort(), name)); err == nil {
 			var m struct{ Models []llm.ModelInfo }
 			ok := res.StatusCode == http.StatusOK && json.NewDecoder(res.Body).Decode(&m) == nil
 			res.Body.Close()
@@ -1531,7 +1530,7 @@ func connectionModels(inst *instance.Instance, name, agent string) ([]models.Mod
 			}
 		}
 		// An older core: its status lists the default connection's models.
-		res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway", core.CorePort()))
+		res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/gateway", inst.CorePort()))
 		if err != nil {
 			return nil, fmt.Errorf("the core is not running: start it to list %s's plan models", name)
 		}

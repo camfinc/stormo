@@ -157,6 +157,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		withheld[w] = true
 	}
 	baseSkills := info.Skills.Map()
+	rejectedSkills := info.RejectedSkills.Map()
 	var napSkills map[string]string
 	if nap != nil && nap.Baseline != nil {
 		napSkills = nap.Baseline.Skills.Map()
@@ -168,6 +169,16 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			continue // left out of this build: an optional secret it needs is absent
 		}
 		baseHash, inBaseline := baseSkills[dir]
+		liveHashes := map[string]string{}
+		for _, p := range paths {
+			liveHashes[p] = live[p].meta.Sha256
+		}
+		if h, ok := rejectedSkills[dir]; ok && h == build.SkillHash(liveHashes, paths) {
+			if inBaseline {
+				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
+			}
+			continue // a reviewer rejected this runtime version
+		}
 		leaf := dir[strings.LastIndex(dir, "/")+1:]
 		if !inBaseline && engineOwned[leaf] {
 			continue // the image ships its own copy
@@ -177,11 +188,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
 				continue
 			}
-			hashes := map[string]string{}
-			for _, p := range paths {
-				hashes[p] = live[p].meta.Sha256
-			}
-			if build.SkillHash(hashes, paths) == baseHash {
+			if build.SkillHash(liveHashes, paths) == baseHash {
 				continue // unchanged at runtime
 			}
 			for p := range out {
@@ -276,6 +283,12 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(o.Home, ".swarm", "rehydrate.json"), rep, 0o644); err != nil {
+		return nil, err
+	}
+	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running
+	// instance (locally it is a bind mount), and a nap must not claim the new one.
+	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills})
+	if err := os.WriteFile(filepath.Join(o.Home, BootedPath), booted, 0o644); err != nil {
 		return nil, err
 	}
 	if L.RuntimeUID != 0 && os.Geteuid() == 0 {

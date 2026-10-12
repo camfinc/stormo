@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -302,7 +301,7 @@ func Collect(inst *instance.Instance, ids []string, since string) (*Report, erro
 	}
 	client := http.Client{Timeout: 5 * time.Second}
 	coreUp := false
-	if res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/fleet", core.CorePort())); err == nil {
+	if res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/fleet", inst.CorePort())); err == nil {
 		coreUp = json.NewDecoder(res.Body).Decode(&fleet) == nil
 		res.Body.Close()
 	}

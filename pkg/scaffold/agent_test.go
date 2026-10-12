@@ -58,8 +58,11 @@ func TestNewAgentFromDefaults(t *testing.T) {
 			t.Errorf("secrets %v lack %s", r.Secrets, n)
 		}
 	}
-	if !slices.Contains(r.Missing, "SLACK_BOT_TOKEN") || slices.Contains(r.Missing, "API_SERVER_KEY") {
-		t.Errorf("missing %v: want the channel's tokens, not the engine key it mints", r.Missing)
+	if slices.Contains(r.Missing, "API_SERVER_KEY") {
+		t.Errorf("missing %v: the engine key is minted", r.Missing)
+	}
+	if !slices.Contains(r.Optional, "SLACK_BOT_TOKEN") || slices.Contains(r.Missing, "SLACK_BOT_TOKEN") {
+		t.Errorf("optional %v, missing %v: a channel's tokens are good to have, not required", r.Optional, r.Missing)
 	}
 	if fi, err := os.Stat(filepath.Join(inst.Root, "agents", "front-desk", "data", "secrets.yaml")); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("data/secrets.yaml: %v %v", fi, err)
@@ -103,6 +106,10 @@ func TestNewAgentInANewUnit(t *testing.T) {
 	a := checkAgent(t, inst, "ada")
 	if a.Engine.Local == nil || a.Engine.Local.Model != "gpt-5.6-luna" {
 		t.Errorf("local %+v", a.Engine.Local)
+	}
+	// On the ChatGPT route the provider's key is only the fallback: good to have, not required.
+	if !slices.Contains(r.Optional, "OPENROUTER_API_KEY") || slices.Contains(r.Missing, "OPENROUTER_API_KEY") || slices.Contains(a.Secrets, "OPENROUTER_API_KEY") {
+		t.Errorf("optional %v, missing %v, secrets %v", r.Optional, r.Missing, a.Secrets)
 	}
 }
 
