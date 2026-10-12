@@ -169,30 +169,80 @@ private struct SkillRow: View {
             }
             .controlSize(.small)
             ForEach(skill.files) { file in
+                let diff = file.text.map { LineDiff(old: file.current ?? "", new: $0) }
                 DisclosureGroup {
-                    if let current = file.current {
-                        Text(current.isEmpty ? "Now: (not in the skill)" : "Now:").font(.caption).foregroundStyle(.secondary)
-                        if !current.isEmpty { code(current).opacity(0.7) }
-                        Text("Proposed:").font(.caption).foregroundStyle(.secondary)
+                    if let diff {
+                        DiffView(diff: diff)
+                    } else {
+                        Text("\(file.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
                     }
-                    code(file.text ?? "(\(file.size) bytes, not shown)")
                 } label: {
-                    Text(file.path).font(.callout.monospaced())
+                    HStack(spacing: 8) {
+                        Text(file.path).font(.callout.monospaced())
+                        if let diff {
+                            if diff.added > 0 { Text("+\(diff.added)").foregroundStyle(.green) }
+                            if diff.removed > 0 { Text("−\(diff.removed)").foregroundStyle(.red) }
+                            if diff.isEmpty { Text("unchanged").foregroundStyle(.secondary) }
+                        }
+                    }
+                    .font(.caption.monospaced())
                 }
             }
         }
         .padding(.vertical, 2)
     }
 
-    private func code(_ s: String) -> some View {
-        ScrollView(.horizontal) {
-            Text(s).font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
-        }
-        .frame(maxHeight: 260)
-    }
-
     private func decide(_ verdict: ReviewDecision.Verdict) {
         Task { await model.review.decide(.skill(skill.skill, of: agent, verdict)) }
+    }
+}
+
+/// A unified diff: removed lines red, added green, a few lines of context, the rest collapsed.
+private struct DiffView: View {
+    let diff: LineDiff
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(diff.hunks) { hunk in
+                    if hunk.skippedBefore > 0 { skipped(hunk.skippedBefore) }
+                    ForEach(hunk.lines) { row($0) }
+                }
+                if diff.skippedAfter > 0 { skipped(diff.skippedAfter) }
+            }
+            .font(.caption.monospaced())
+            .textSelection(.enabled)
+        }
+        .frame(maxHeight: 420)
+        .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func row(_ l: LineDiff.Line) -> some View {
+        HStack(spacing: 0) {
+            Text(l.old.map(String.init) ?? "").frame(width: 34, alignment: .trailing).foregroundStyle(.tertiary)
+            Text(l.new.map(String.init) ?? "").frame(width: 34, alignment: .trailing).foregroundStyle(.tertiary)
+            Text(sign(l.kind)).frame(width: 18).foregroundStyle(tint(l.kind) ?? .secondary)
+            Text(l.text.isEmpty ? " " : l.text).fixedSize()
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
+        .background(tint(l.kind)?.opacity(0.14) ?? .clear)
+    }
+
+    private func skipped(_ n: Int) -> some View {
+        Text("⋯ \(n) unchanged line\(n == 1 ? "" : "s")")
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 3).padding(.leading, 86)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.5))
+    }
+
+    private func sign(_ k: LineDiff.Kind) -> String {
+        switch k { case .same: " "; case .removed: "−"; case .added: "+" }
+    }
+
+    private func tint(_ k: LineDiff.Kind) -> Color? {
+        switch k { case .same: nil; case .removed: .red; case .added: .green }
     }
 }
 

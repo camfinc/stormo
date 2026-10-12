@@ -58,3 +58,24 @@ import Testing
         await supervisor.stop(with: cli)
     }
 }
+
+@Suite struct Diffing {
+    @Test func hunksKeepContextAndCollapseTheRest() {
+        let old = (1...20).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        let new = old.replacingOccurrences(of: "line 10\n", with: "line ten\n") + "line 21\n"
+        let d = LineDiff(old: old, new: new, context: 2)
+        #expect(d.added == 2 && d.removed == 1)
+        #expect(d.hunks.count == 2)
+        #expect(d.hunks[0].skippedBefore == 7)
+        #expect(d.hunks[0].lines.map(\.kind) == [.same, .same, .removed, .added, .same, .same])
+        #expect(d.hunks[0].lines[2].old == 10 && d.hunks[0].lines[3].new == 10)
+        #expect(d.hunks[1].skippedBefore == 6 && d.hunks[1].lines.last == .init(kind: .added, text: "line 21", old: nil, new: 21))
+        #expect(d.skippedAfter == 0)
+    }
+
+    @Test func newFileIsAllAdded() {
+        let d = LineDiff(old: "", new: "a\nb\n")
+        #expect(d.added == 2 && d.removed == 0 && d.hunks.count == 1)
+        #expect(LineDiff(old: "same\n", new: "same\n").isEmpty)
+    }
+}
