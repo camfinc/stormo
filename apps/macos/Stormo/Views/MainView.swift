@@ -42,8 +42,9 @@ struct MainView: View {
             } else {
                 NavigationSplitView {
                     List(SidebarItem.allCases, selection: $section) { s in
-                        Label(s.title, systemImage: s.symbol).tag(s)
+                        Label(s.title, systemImage: s.symbol)
                             .badge(s == .review ? model.fleet.summary.toReview : 0)
+                            .tag(s)
                     }
                     .navigationSplitViewColumnWidth(min: 160, ideal: 190)
                 } detail: {
