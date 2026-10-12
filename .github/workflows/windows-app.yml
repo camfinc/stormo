@@ -33,7 +33,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python apps/windows/installer/collect-licenses.py
       - name: Publish self-contained WinUI desktop
-        run: dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
+        run: |
+          dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path apps/windows/dist/Stormo/resources.pri)) { throw 'WinUI resource index is missing from the published app' }
       - name: Build per-user setup EXE
         shell: pwsh
         run: |
