@@ -336,6 +336,26 @@ func TestLearningLoop(t *testing.T) {
 		if slices.Contains(r.RestoredSkills, "crm/payment-plan") || !strings.Contains(read(t, filepath.Join(h, "skills/crm/payment-plan/SKILL.md")), "Repo edit the agent never saw.") {
 			t.Errorf("restored %v: the repo's payment-plan edit was undone", r.RestoredSkills)
 		}
+		// Rigoberto's case: an instance booted from the current baseline holds an old copy of a
+		// skill (restored by the bug above). It reads as the agent's change; rejecting it must keep
+		// it from coming back on the next boot.
+		h4plan := filepath.Join(h, "skills/crm/payment-plan/SKILL.md")
+		write(t, h4plan, strings.Replace(read(t, h4plan), "Repo edit the agent never saw.", "Old copy.", 1))
+		opts = NapOptions{Agent: "atlas", Unit: "sales", Engine: eng, Home: h, Store: store, Instance: "task-b", BaselineDir: filepath.Join(tmp, "baseline"), Now: time.Date(2026, 10, 6, 13, 0, 0, 0, time.UTC)}
+		if m, err := NapOnce(opts); err != nil || m == nil {
+			t.Fatalf("nap: %v %v", m, err)
+		}
+		if _, err := Dream(inst, "atlas", store); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecideSkill(root, "atlas", "crm/payment-plan", "rejected"); err != nil {
+			t.Fatal(err)
+		}
+		h = filepath.Join(tmp, "home5")
+		r = rehydrate(h, baseline("baseline"))
+		if slices.Contains(r.RestoredSkills, "crm/payment-plan") || !strings.Contains(read(t, filepath.Join(h, "skills/crm/payment-plan/SKILL.md")), "Repo edit the agent never saw.") {
+			t.Errorf("restored %v: a rejected skill version came back", r.RestoredSkills)
+		}
 	})
 }
 

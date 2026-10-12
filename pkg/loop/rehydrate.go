@@ -157,6 +157,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		withheld[w] = true
 	}
 	baseSkills := info.Skills.Map()
+	rejectedSkills := info.RejectedSkills.Map()
 	var napSkills map[string]string
 	if nap != nil && nap.Baseline != nil {
 		napSkills = nap.Baseline.Skills.Map()
@@ -168,6 +169,16 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			continue // left out of this build: an optional secret it needs is absent
 		}
 		baseHash, inBaseline := baseSkills[dir]
+		liveHashes := map[string]string{}
+		for _, p := range paths {
+			liveHashes[p] = live[p].meta.Sha256
+		}
+		if h, ok := rejectedSkills[dir]; ok && h == build.SkillHash(liveHashes, paths) {
+			if inBaseline {
+				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
+			}
+			continue // a reviewer rejected this runtime version
+		}
 		leaf := dir[strings.LastIndex(dir, "/")+1:]
 		if !inBaseline && engineOwned[leaf] {
 			continue // the image ships its own copy
@@ -177,11 +188,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
 				continue
 			}
-			hashes := map[string]string{}
-			for _, p := range paths {
-				hashes[p] = live[p].meta.Sha256
-			}
-			if build.SkillHash(hashes, paths) == baseHash {
+			if build.SkillHash(liveHashes, paths) == baseHash {
 				continue // unchanged at runtime
 			}
 			for p := range out {
