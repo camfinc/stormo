@@ -302,7 +302,7 @@ class Window(QMainWindow):
 
 def install_wsl():
     # Fixed command only; UAC applies to WSL installation, not the app.
-    script = "$p = Start-Process wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+    script = "$ErrorActionPreference = 'Stop'; $p = Start-Process wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], timeout=1800)

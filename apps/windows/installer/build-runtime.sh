@@ -12,7 +12,7 @@ trap cleanup EXIT
 # CI builds a clean commit; this intentionally does not include uncommitted changes.
 git archive HEAD | tar -x -C "$context"
 mkdir -p "$context/apps/windows/build" apps/windows/assets
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$context/apps/windows/build/stormo" ./cmd/stormo
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -C "$context" -trimpath -o "$context/apps/windows/build/stormo" ./cmd/stormo
 docker build --platform linux/amd64 -f "$context/apps/windows/installer/runtime.Dockerfile" \
   -t stormo-windows-runtime:preview "$context"
 container=$(docker create --platform linux/amd64 stormo-windows-runtime:preview)
