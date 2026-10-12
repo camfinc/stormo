@@ -62,7 +62,19 @@ type service struct {
 	Restart     string            `yaml:"restart,omitempty"`
 	ExtraHosts  []string          `yaml:"extra_hosts,omitempty"`
 	Tmpfs       []string          `yaml:"tmpfs,omitempty"`
+	SecurityOpt []string          `yaml:"security_opt,omitempty"`
+	CapDrop     []string          `yaml:"cap_drop,omitempty"`
 }
+
+// hardening applies to every container of an agent. Engine images may boot as root and drop to
+// their runtime user themselves (an init that chowns the home, then setuid), so the user and the
+// capabilities that needs (CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL) stay; nothing in
+// the task needs raw sockets, device nodes, chroot, file capabilities or ports below 1024, and
+// no process may gain privileges through a setuid binary.
+var (
+	securityOpt = []string{"no-new-privileges:true"}
+	capDrop     = []string{"NET_RAW", "MKNOD", "SYS_CHROOT", "SETFCAP", "AUDIT_WRITE", "NET_BIND_SERVICE"}
+)
 
 // Spec is a compose file.
 type Spec struct {
@@ -86,7 +98,9 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		Environment: map[string]string{"SWARM_AGENT": a.ID, "SWARM_STORE": "/store", "SWARM_HOME": "/data"},
 		// The agent's data folder (its secret values, its store) stays out of the sidecars: they get
 		// the store at /store/<id> and nothing else of it.
-		Tmpfs: []string{"/app/agents/" + a.ID + "/data"},
+		Tmpfs:       []string{"/app/agents/" + a.ID + "/data"},
+		SecurityOpt: securityOpt,
+		CapDrop:     capDrop,
 	}
 	rehydrate := sidecar
 	rehydrate.Command = []string{"rehydrate"}
@@ -116,8 +130,10 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 			"rehydrate": map[string]string{"condition": "service_completed_successfully"},
 			"nap":       map[string]string{"condition": "service_started"},
 		},
-		StopGrace: "60s",
-		Restart:   "unless-stopped",
+		StopGrace:   "60s",
+		Restart:     "unless-stopped",
+		SecurityOpt: securityOpt,
+		CapDrop:     capDrop,
 	}
 	if a.Engine.Local != nil && a.Engine.Local.Via == "core" {
 		// OrbStack / Docker Desktop resolve host.docker.internal already; plain Docker Engine needs this.

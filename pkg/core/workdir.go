@@ -183,6 +183,42 @@ func (w *Workdir) resolve(agent, p string, allowRoot bool) (key, layer string, e
 
 func (w *Workdir) host(key string) string { return filepath.Join(w.o.Root, filepath.FromSlash(key)) }
 
+// open gives key's layer as an os.Root and key's path inside it ("." for the layer itself). Every
+// file operation the core does for an agent goes through it: agents can plant symlinks in the
+// shared space, and the root refuses any path that resolves outside the layer (the host, another
+// unit's layer). The caller closes the root.
+func (w *Workdir) open(key string) (*os.Root, string, error) {
+	layer, rel, _ := strings.Cut(key, "/")
+	dir := filepath.Join(w.o.Root, layer)
+	if err := os.MkdirAll(dir, 0o775); err != nil {
+		return nil, "", err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, "", err
+	}
+	if rel == "" {
+		rel = "."
+	}
+	return root, filepath.FromSlash(rel), nil
+}
+
+// confined turns a refusal of root (a path through a link that leaves the layer) into a tool
+// error the agent can act on; other errors pass through.
+func confined(root *os.Root, key, rel string, err error) error {
+	if err == nil {
+		return nil
+	}
+	for p := rel; p != "." && p != string(filepath.Separator); p = filepath.Dir(p) {
+		if st, lerr := root.Lstat(p); lerr == nil && st.Mode()&fs.ModeSymlink != 0 {
+			if _, serr := root.Stat(p); serr != nil {
+				return toolErr("%s goes through a link that leaves its layer; the core does not follow it", shown(key))
+			}
+		}
+	}
+	return err
+}
+
 func shown(key string) string { return shared.Root + "/" + key }
 
 func hasMeta(p string) bool { return strings.ContainsAny(p, "*?[{") }
@@ -430,11 +466,18 @@ func (w *Workdir) Info(agent, p string) (*FileInfo, error) {
 		return nil, err
 	}
 	info := &FileInfo{Path: shown(key), Locks: []Lock{}}
-	if st, err := os.Stat(w.host(key)); err == nil {
+	root, rel, err := w.open(key)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	if st, err := root.Stat(rel); err == nil {
 		info.Exists, info.Dir = true, st.IsDir()
 		if !st.IsDir() {
 			info.Size, info.Modified = st.Size(), isoMs(st.ModTime().UnixMilli())
 		}
+	} else if cerr := confined(root, key, rel, err); cerr != err {
+		return nil, cerr
 	}
 	var created, changed int64
 	err = w.o.DB.QueryRow(`SELECT creator, writer, how, created, changed FROM files WHERE path = ?`, key).Scan(&info.Creator, &info.LastWriter, &info.How, &created, &changed)
@@ -465,8 +508,16 @@ func (w *Workdir) Ls(agent, p string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	des, err := os.ReadDir(w.host(key))
+	root, rel, err := w.open(key)
 	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	des, err := fs.ReadDir(root.FS(), filepath.ToSlash(rel))
+	if err != nil {
+		if cerr := confined(root, key, rel, err); cerr != err {
+			return nil, cerr
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, toolErr("%s does not exist", shown(key))
 		}
@@ -538,31 +589,40 @@ func (w *Workdir) Write(agent, p, content, mode string) (*WriteResult, error) {
 		}
 		res.Warnings = append(res.Warnings, describe(r))
 	}
-	file := w.host(key)
-	st, statErr := os.Stat(file)
+	root, rel, err := w.open(key)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	// A link in place of the file itself is replaced, never written through.
+	st, statErr := root.Lstat(rel)
 	exists := statErr == nil
+	if exists && st.Mode()&fs.ModeSymlink != 0 {
+		return nil, toolErr("%s is a link; the core does not write through links", shown(key))
+	}
 	if exists && st.IsDir() {
 		return nil, toolErr("%s is a directory", shown(key))
 	}
 	if exists && mode == "create" {
 		return nil, toolErr("%s already exists (mode create)", shown(key))
 	}
-	if err := os.MkdirAll(filepath.Dir(file), 0o775); err != nil {
-		return nil, err
+	if err := root.MkdirAll(filepath.Dir(rel), 0o775); err != nil {
+		return nil, confined(root, key, rel, err)
 	}
 	data := []byte(content)
 	if mode == "append" && exists {
-		old, err := os.ReadFile(file)
+		old, err := root.ReadFile(rel)
 		if err != nil {
-			return nil, err
+			return nil, confined(root, key, rel, err)
 		}
 		data = append(old, data...)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(file), ".fs_write-*")
+	tmpName := filepath.Join(filepath.Dir(rel), fmt.Sprintf(".fs_write-%d", time.Now().UnixNano()))
+	tmp, err := root.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o664)
 	if err != nil {
-		return nil, err
+		return nil, confined(root, key, rel, err)
 	}
-	defer os.Remove(tmp.Name())
+	defer root.Remove(tmpName)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return nil, err
@@ -574,9 +634,10 @@ func (w *Workdir) Write(agent, p, content, mode string) (*WriteResult, error) {
 	if err := tmp.Close(); err != nil {
 		return nil, err
 	}
-	if err := os.Rename(tmp.Name(), file); err != nil {
-		return nil, err
+	if err := root.Rename(tmpName, rel); err != nil {
+		return nil, confined(root, key, rel, err)
 	}
+	file := w.host(key)
 	res.Created = !exists
 	kind := "modified"
 	if !exists {
@@ -785,6 +846,10 @@ func (w *Workdir) Scan() error {
 			}
 			return nil // unreadable entry: skip it
 		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			w.checkLink(p)
+			return nil
+		}
 		if d.IsDir() || !d.Type().IsRegular() || strings.HasPrefix(d.Name(), ".fs_write-") {
 			return nil
 		}
@@ -840,6 +905,34 @@ func (w *Workdir) Scan() error {
 		}
 	}
 	return nil
+}
+
+// checkLink raises a finding for a link in the shared space that resolves outside its layer (to
+// the host, or to a unit layer other agents of the group do not mount). The core never follows
+// one (open), but agents' own tools in other containers might, and nobody should plant one.
+func (w *Workdir) checkLink(p string) {
+	rel, err := filepath.Rel(w.o.Root, p)
+	if err != nil {
+		return
+	}
+	key := filepath.ToSlash(rel)
+	layer, _, _ := strings.Cut(key, "/")
+	base, err := filepath.EvalSymlinks(filepath.Join(w.o.Root, layer))
+	if err != nil {
+		return
+	}
+	target, err := filepath.EvalSymlinks(p)
+	if err == nil && (target == base || strings.HasPrefix(target, base+string(filepath.Separator))) {
+		return
+	}
+	if err != nil {
+		if dest, rerr := os.Readlink(p); rerr == nil && !filepath.IsAbs(dest) && filepath.IsLocal(dest) {
+			return // a dangling link that stays inside the layer
+		}
+	}
+	if err := w.o.DB.RaiseFinding("unknown", "shared_link_escape", "high", shown(key)+" is a link that leaves its layer", w.o.Now().UnixMilli()); err != nil {
+		log.Printf("workdir: finding: %v", err)
+	}
 }
 
 // attribute names who changed key at ms: a claim (file tool or fs_note), else the one agent
