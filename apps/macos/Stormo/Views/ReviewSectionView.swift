@@ -244,7 +244,9 @@ private struct DiffView: View {
             .font(.caption.monospaced())
             .textSelection(.enabled)
         }
-        .frame(maxHeight: 420)
+        // Its full height: it scrolls only sideways, and a Form row sizes to what it reports (a
+        // flexible height let the row collapse and the diff draw over the rows above).
+        .fixedSize(horizontal: false, vertical: true)
         .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
     }
 
