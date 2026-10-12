@@ -36,7 +36,8 @@ jobs:
         run: |
           dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (!(Test-Path apps/windows/dist/Stormo/resources.pri)) { throw 'WinUI resource index is missing from the published app' }
+          if (!(Test-Path apps/windows/dist/Stormo/Stormo.pri) -and !(Test-Path apps/windows/dist/Stormo/resources.pri)) { throw 'WinUI resource index is missing from the published app' }
+          Get-ChildItem apps/windows/dist/Stormo -Filter *.pri | Select-Object Name, Length
       - name: Build per-user setup EXE
         shell: pwsh
         run: |
