@@ -40,6 +40,8 @@ type Paths struct {
 	// StoreDir is the agent's own local store (loop.LocalStoreDir).
 	StoreDir  string
 	SharedDir string
+	// CorePort is the instance's core (instance.CorePort): agents call it there.
+	CorePort int
 }
 
 func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
@@ -120,10 +122,14 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 	for _, l := range shared.Layers(a) {
 		volumes = append(volumes, filepath.Join(p.SharedDir, l.Layer)+":"+l.Path)
 	}
+	environment := eng.Env(a, manifest.Local).Map()
+	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CorePort != 0 {
+		environment["SWARM_CORE_URL"] = manifest.CoreAt(p.CorePort).URL
+	}
 	agent := service{
 		Image:       eng.Image(a),
 		Command:     eng.Command(a),
-		Environment: eng.Env(a, manifest.Local).Map(),
+		Environment: environment,
 		EnvFile:     []string{p.EnvFile},
 		Volumes:     volumes,
 		Ports:       []string{fmt.Sprintf("127.0.0.1:%d:%d", port, eng.Port())},
@@ -160,6 +166,9 @@ func ComposeCommand() ([]string, error) {
 // reading the file together would hand out one port twice and lose an entry.
 var portMu sync.Mutex
 
+// portFree checks a candidate agent port (tests replace it).
+var portFree = instance.PortFree
+
 // Port is the agent's stable host port, kept in .swarm/ports.json: an agent keeps its port once it
 // has one, and a new agent takes the lowest free port from PortBase. The file is replaced
 // atomically, so a reader never sees half of it.
@@ -176,12 +185,14 @@ func Port(root, agentID string) (int, error) {
 	if p, ok := ports[agentID]; ok && p != 0 {
 		return p, nil
 	}
-	used := map[int]bool{}
+	// Other instances on this host keep their own ports.json: never take a port one of them holds,
+	// nor one something else listens on now.
+	used := instance.OtherAgentPorts(root)
 	for _, p := range ports {
 		used[p] = true
 	}
 	port := PortBase
-	for used[port] {
+	for used[port] || !portFree(port) {
 		port++
 	}
 	ports[agentID] = port

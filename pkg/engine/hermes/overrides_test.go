@@ -23,7 +23,7 @@ func overridden(t *testing.T, base string, local bool, target manifest.Target) *
 	if local {
 		a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-6-luna"}
 	}
-	if err := ApplyOverrides(doc.Content[0], a, openrouter, target); err != nil {
+	if err := ApplyOverrides(doc.Content[0], a, openrouter, target, manifest.Core); err != nil {
 		t.Fatal(err)
 	}
 	return doc.Content[0]
@@ -117,7 +117,7 @@ func TestLimitsReachTheConfig(t *testing.T) {
 	}
 	a := &manifest.Agent{ID: "atlas", Unit: "sales", Limits: manifest.Limits{Turns: 80, ScriptTimeout: 900}}
 	a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
-	if err := ApplyOverrides(doc.Content[0], a, openrouter, manifest.AWS); err != nil {
+	if err := ApplyOverrides(doc.Content[0], a, openrouter, manifest.AWS, manifest.Core); err != nil {
 		t.Fatal(err)
 	}
 	cfg := doc.Content[0]
@@ -142,7 +142,7 @@ func TestAnOpenAIConnectionLeavesNoOpenRouterBehind(t *testing.T) {
 		if local {
 			a.Engine.Local, target = &manifest.EngineLocal{Via: "core", Model: "gpt-5.6-sol"}, manifest.Local
 		}
-		if err := ApplyOverrides(doc.Content[0], a, conn, target); err != nil {
+		if err := ApplyOverrides(doc.Content[0], a, conn, target, manifest.Core); err != nil {
 			t.Fatal(err)
 		}
 		cfg := doc.Content[0]

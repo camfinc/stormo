@@ -67,19 +67,28 @@ var ChannelSecrets = map[string][]string{
 	"telegram": {"TELEGRAM_BOT_TOKEN"},
 }
 
-// Core is the swarm core's model gateway as local agent containers see it. Each agent
+// CoreEndpoints are the swarm core's addresses as local agent containers see it. Each agent
 // authenticates with its own key, a local-only secret (never pushed to AWS).
-var Core = struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }{
-	KeyEnv: "SWARM_CORE_KEY",
-	// The core runs on the host (it drives the local compose projects), so containers reach it here.
-	URL:     "http://host.docker.internal:18600",
-	BaseURL: "http://host.docker.internal:18600/v1",
-	// An engine's hooks post to IngestURL/<engine kind>, signed with the agent's core key
-	// (docs/core.md §2).
-	IngestURL: "http://host.docker.internal:18600/ingest",
-	// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
-	MCPURL: "http://host.docker.internal:18600/mcp",
+type CoreEndpoints struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }
+
+// CoreAt is the core on a host port: it runs on the host (it drives the local compose projects),
+// so containers reach it at host.docker.internal. Each instance's core has its own port.
+func CoreAt(port int) CoreEndpoints {
+	u := fmt.Sprintf("http://host.docker.internal:%d", port)
+	return CoreEndpoints{
+		KeyEnv:  "SWARM_CORE_KEY",
+		URL:     u,
+		BaseURL: u + "/v1",
+		// An engine's hooks post to IngestURL/<engine kind>, signed with the agent's core key
+		// (docs/core.md §2).
+		IngestURL: u + "/ingest",
+		// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
+		MCPURL: u + "/mcp",
+	}
 }
+
+// Core is the core on the default port; its KeyEnv is the same for every instance.
+var Core = CoreAt(18600)
 
 // OptionalSecret is a secret the agent can run without; when absent, what it gates is left out.
 type OptionalSecret struct {

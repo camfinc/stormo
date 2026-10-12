@@ -134,6 +134,8 @@ type Instance struct {
 	// The core serves its browser pages (office, review) only when true (stormo.yaml core.web_ui);
 	// the macOS app is the default face and uses the core's API either way.
 	CoreWebUI bool `json:"coreWebUI"`
+	// The core's port as stormo.yaml pins it (core.port); 0 lets CorePort pick and keep one.
+	CorePortSetting int `json:"corePortSetting,omitempty"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -178,6 +180,7 @@ type rawFile struct {
 	} `yaml:"office"`
 	Core struct {
 		WebUI    bool `yaml:"web_ui"`
+		Port     int  `yaml:"port"`
 		Learning struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
@@ -254,6 +257,9 @@ func Load(root string) (*Instance, error) {
 			}
 		}
 	}
+	if raw.Core.Port != 0 && (raw.Core.Port < 1024 || raw.Core.Port > 65535) {
+		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
+	}
 	cl := raw.Core.Learning
 	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
 		AutoAccept: cl.AutoAccept, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
@@ -317,6 +323,7 @@ func Load(root string) (*Instance, error) {
 		OfficeUnits:        orUnits(raw.Office.Units),
 		CoreLearning:       learning,
 		CoreWebUI:          raw.Core.WebUI,
+		CorePortSetting:    raw.Core.Port,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

@@ -33,6 +33,9 @@ func compose(root string, a *manifest.Agent, quiet bool, args ...string) (string
 	if err != nil {
 		return "", err
 	}
+	if other := projectOwner(cc[0], ProjectName(a)); other != "" && other != ComposePath(root, a) {
+		return "", fmt.Errorf("agent %s: containers named %s belong to another instance (%s); two instances on one host need different agent ids", a.ID, ProjectName(a), other)
+	}
 	argv := append(append(cc, "-p", ProjectName(a), "-f", ComposePath(root, a)), args...)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	var out bytes.Buffer
@@ -154,7 +157,7 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if interval == 0 {
 		interval = 900
 	}
-	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir}, port, interval, image)
+	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CorePort: inst.CorePort()}, port, interval, image)
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
@@ -278,4 +281,23 @@ func apiCall(id, endpoint, key string) engine.APICall {
 		raw, err := io.ReadAll(io.LimitReader(res.Body, 32<<20))
 		return res.StatusCode, raw, err
 	}
+}
+
+// projectOwner is the compose file that created a project's containers ("" when none exist or
+// Docker cannot say): a project of the same name from another instance is not this one's to touch.
+func projectOwner(docker, project string) string {
+	if filepath.Base(docker) != "docker" {
+		return ""
+	}
+	out, err := exec.Command(docker, "ps", "-a", "--filter", "label=com.docker.compose.project="+project,
+		"--format", `{{.Label "com.docker.compose.project.config_files"}}`).Output()
+	if err != nil {
+		return ""
+	}
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return strings.Split(l, ",")[0]
+		}
+	}
+	return ""
 }

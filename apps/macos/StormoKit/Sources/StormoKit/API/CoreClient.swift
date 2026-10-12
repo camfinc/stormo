@@ -17,9 +17,25 @@ public struct CoreClient: Sendable {
 
     /// The core's default port, or `SWARM_CORE_PORT` from the given environment.
     public static func port(environment: [String: String]) -> Int {
+        port(instanceRoot: nil, environment: environment)
+    }
+
+    /// The instance's core port: `SWARM_CORE_PORT`, else the one the engine picked and keeps in
+    /// `<instance>/.swarm/core/port` (several instances, several cores), else 18600.
+    public static func port(instanceRoot: URL?, environment: [String: String]) -> Int {
         if let s = environment["SWARM_CORE_PORT"], let n = Int(s), n > 0 { return n }
+        if let root = instanceRoot, let n = pickedPort(root: root) { return n }
         return 18600
     }
+
+    /// `<instance>/.swarm/core/port`, nil until the engine has picked one.
+    public static func pickedPort(root: URL) -> Int? {
+        guard let s = try? String(contentsOf: root.appending(path: ".swarm/core/port"), encoding: .utf8),
+              let n = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)), n > 0 else { return nil }
+        return n
+    }
+
+    public var port: Int { base.port ?? 18600 }
 
     public init(port: Int, timeout: TimeInterval = 2) {
         self.init(base: URL(string: "http://127.0.0.1:\(port)")!, timeout: timeout)

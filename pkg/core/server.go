@@ -35,8 +35,14 @@ import (
 // Port is the core's default port.
 const Port = 18600
 
-// CorePort is SWARM_CORE_PORT, else Port.
+// activePort is the port of the instance the CLI works on (set by Command and serve).
+var activePort int
+
+// CorePort is the current instance's core port (instance.CorePort), else SWARM_CORE_PORT, else Port.
 func CorePort() int {
+	if activePort > 0 {
+		return activePort
+	}
 	if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_PORT")); err == nil && n > 0 {
 		return n
 	}

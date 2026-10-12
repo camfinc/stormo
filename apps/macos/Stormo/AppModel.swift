@@ -50,10 +50,6 @@ final class AppModel {
     func start() async {
         let env = await ShellEnvironment.current()
         environment = env
-        let client = CoreClient(port: CoreClient.port(environment: env))
-        core.client = client
-        fleet.client = client
-        review.client = client
         await activate(instances.active)
         startPolling()
     }
@@ -63,8 +59,28 @@ final class AppModel {
         core.instanceRoot = record?.url
         review.instanceRoot = record?.url
         fleet.clear()
+        retarget()
         await core.refresh()
         await resolveBinary()
+        // An instance that never ran a core has no port yet: the engine picks one free of every
+        // other instance's (`core status` resolves and keeps it).
+        if let root = record?.url, CoreClient.pickedPort(root: root) == nil, let cli {
+            try? await cli.perform(["core", "status"])
+            retarget()
+            await core.refresh()
+        }
+    }
+
+    /// Points the clients at the active instance's core port when it changed.
+    func retarget() {
+        let port = CoreClient.port(instanceRoot: instances.active?.url, environment: environment ?? ProcessInfo.processInfo.environment)
+        guard port != core.client.port else { return }
+        let client = CoreClient(port: port)
+        core.client = client
+        fleet.client = client
+        review.client = client
+        fleet.clear()
+        avatars = [:]
     }
 
     // MARK: Binaries
@@ -147,6 +163,10 @@ final class AppModel {
 
     func startCore() async {
         guard let cli else { return failNoBinary() }
+        if let root = instances.active?.url, CoreClient.pickedPort(root: root) == nil {
+            try? await cli.perform(["core", "status"])
+        }
+        retarget()
         await core.start(with: cli)
         if let e = core.lastError { failure = e }
         await fleet.refresh()
@@ -199,6 +219,7 @@ final class AppModel {
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                self.retarget()
                 await self.core.refresh()
                 if self.core.state.isRunning {
                     await self.fleet.refresh()

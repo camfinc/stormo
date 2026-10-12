@@ -310,7 +310,7 @@ struct CoreNotRunningView: View {
             }
         } description: {
             switch model.core.state {
-            case .otherInstance(let c): Text("The core on this Mac belongs to \(c.instance.name). One core runs at a time.")
+            case .otherInstance(let c): Text("\(c.instance.name)'s core answers on this instance's port (\(model.core.client.port)). Give one of them its own `core.port` in stormo.yaml, or delete `.swarm/core/port` here so the next start picks a free one.")
             case .incompatible: Text("The running core is older than this app. Restarting it with the pinned stormo takes a few seconds; agents keep running.")
             default: Text("Start the core to see the fleet.")
             }

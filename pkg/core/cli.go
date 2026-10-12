@@ -231,6 +231,7 @@ func printStatus(w io.Writer, s llm.Status) {
 }
 
 func serve(inst *instance.Instance) error {
+	activePort = inst.CorePort()
 	c, err := StartCore(CoreOptions{Inst: inst, Port: CorePort(), Bridge: BridgeHosts()})
 	if err != nil {
 		return err
@@ -546,6 +547,7 @@ func learningCmd(inst *instance.Instance, o *out.Writer) error {
 
 // Command runs `stormo core <sub>`.
 func Command(inst *instance.Instance, sub string, args []string, opts CommandOptions) error {
+	activePort = inst.CorePort()
 	o := opts.Out
 	if o == nil {
 		o = &out.Writer{W: os.Stdout}
