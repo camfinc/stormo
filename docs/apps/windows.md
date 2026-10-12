@@ -14,9 +14,15 @@ The engine runs in WSL 2. `pkg/core/cli.go` uses Unix session/process signals, a
 need Linux containers. Do not claim a native Windows engine or just cross-compile the CLI.
 Keep instance data in the Linux filesystem; use Windows localhost forwarding for API reads.
 
-Runtime ownership (guided Docker Desktop versus a dedicated Stormo distribution) is being
-resolved before implementing installation. Setup must request elevation only for the actual
-OS operation, explain a possible restart, and re-detect reality on each launch/retry.
+Owner decision: guided Docker Desktop setup initially. Bundle a dedicated `Stormo` WSL 2
+filesystem with the Linux CLI, then guide users to enable Docker Desktop integration for it.
+No separately installed Ubuntu/user-account setup and no private Docker daemon. The desktop
+opens Docker's official installation guide; users retain control of its license acceptance.
+Elevation is requested only for WSL installation. Restart and retry re-detect actual state.
+
+Implemented first slice: prerequisite checks, archive integrity/ownership guards, import,
+container execution probe, default empty instance, core start/stop and fleet actions.
+See [the Windows README](../../apps/windows/README.md) for build commands and current limits.
 
 ## Delivery gates
 

@@ -21,12 +21,12 @@ Status is based on source inspection, not a claim of runtime verification on eve
 
 | Capability | macOS (`apps/macos`) | Windows (`apps/windows`) |
 |---|---|---|
-| Desktop shell | SwiftUI | Planned: Qt 6 / PySide6 |
-| Runtime installation / repair | External local container runtime | In progress: guided first run |
-| New/open instance | Implemented | Planned |
-| Binary selection / API compatibility | Implemented | Planned |
-| Core start / stop / restart | Implemented | Planned |
-| Fleet / selected agent actions | Implemented | Planned |
+| Desktop shell | SwiftUI | Initial: Qt 6 / PySide6 |
+| Runtime installation / repair | External local container runtime | Initial: WSL + Docker checklist |
+| New/open instance | Implemented | Initial: create default empty workspace only |
+| Binary selection / API compatibility | Implemented | Initial: fixed bundled engine / API check |
+| Core start / stop / restart | Implemented | Initial: start / stop, ownership guard |
+| Fleet / selected agent actions | Implemented | Initial: table, start / stop / restart / nap |
 | Native animated office | Implemented (SpriteKit) | Planned |
 | Chat / conversations | Implemented | Planned |
 | Providers / sign-in | Implemented | Planned |
@@ -34,7 +34,7 @@ Status is based on source inspection, not a claim of runtime verification on eve
 | Import / export | Implemented | Planned |
 | Menu bar / tray | Implemented on macOS | Planned |
 | Learning / review dedicated UI | Planned (CLI/web available) | Planned |
-| Packaged installer | DMG build pipeline | Planned |
+| Packaged installer | DMG build pipeline | Initial: per-user Inno Setup + CI |
 | Signed release / clean-machine acceptance | Release credentials required | Planned |
 | Remote/cloud instances | Deferred | Deferred |
 

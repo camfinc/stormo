@@ -1,0 +1,68 @@
+name: windows-app
+
+on:
+  pull_request:
+    paths: ['apps/windows/**', 'docs/apps/**', '.github/workflows/windows-app.yml', 'pkg/**', 'cmd/**', 'go.mod', 'go.sum']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the bundled Linux runtime
+        run: apps/windows/installer/build-runtime.sh
+      - name: Check bundled engine
+        run: |
+          docker run --rm --platform linux/amd64 stormo-windows-runtime:preview /opt/stormo/bin/stormo version --json
+          docker run --rm --platform linux/amd64 --user stormo stormo-windows-runtime:preview /opt/stormo/bin/stormo new instance /home/stormo/Instances/test --name Test --no-git --json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime
+          path: |
+            apps/windows/assets/runtime.tar.gz
+            apps/windows/assets/runtime.sha256
+          retention-days: 7
+
+  desktop:
+    runs-on: windows-2025
+    needs: runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-runtime
+          path: apps/windows/assets
+      - name: Install build dependencies
+        run: python -m pip install -r apps/windows/requirements-build.txt
+      - name: Test runtime adapter and desktop
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s apps/windows/tests -v
+      - name: Collect dependency notices
+        run: python apps/windows/installer/collect-licenses.py
+      - name: Freeze the desktop (no Python installation needed)
+        working-directory: apps/windows
+        run: >-
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Stormo
+          --add-data "assets;assets" --add-data "../../LICENSE;licenses"
+          --add-data "../../NOTICE;licenses" main.py
+      - name: Build per-user setup EXE
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" apps/windows/installer/stormo.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stormo-Windows-x64-preview-unsigned
+          path: apps/windows/build/installer/*.exe
+          retention-days: 14
