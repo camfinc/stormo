@@ -9,8 +9,10 @@ Stormo owners on Windows, including people who do not know Docker. Install the a
 guided runtime setup, and operate their local agents without a terminal.
 
 ## Stack
-Qt 6 / PySide6, selected to support Windows first and a later Linux desktop. The Go engine runs natively as stormo.exe on Windows. User confirmed guided Docker Desktop setup for the initial version.
-The installer bundles Python, Qt and the Windows engine. Docker Desktop runs the Linux agent containers.
+C# and WinUI 3 with standard Fluent controls, matching Windows conventions. The owner explicitly
+selected native platform UI, as on macOS; cross-platform UI reuse is not a goal. The Go engine
+runs natively as stormo.exe. Guided Docker Desktop setup remains the initial container path.
+The per-user installer bundles .NET, Windows App SDK and the Windows engine.
 
 ## Constraints
 Preserve the CLI/API contract used by macOS. Local only. Shared parity ledger in docs/apps.

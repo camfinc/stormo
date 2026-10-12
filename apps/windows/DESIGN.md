@@ -1,12 +1,20 @@
 # Windows desktop direction
 
-Extend Stormo's existing native desktop approach: system typography and controls, a persistent
-sidebar, a fleet table and restrained teal/indigo brand assets from docs/brand. This is an
-Operate surface. First run is a sequential checklist with one next action and a separate retry;
-errors and restart instructions stay visible. Inherit the operating-system light/dark palette,
-keyboard focus and accessibility roles rather than applying a custom website theme.
+Mode: Operate. Use genuine WinUI 3 / Fluent components, as explicitly selected by the owner.
+The design baseline is Windows 11 Settings: calm system typography, native NavigationView,
+standard spacing, restrained surfaces, system light/dark mode and high-contrast resources.
+Preserve Stormo's approved app icon. Do not skin generic cross-platform widgets to mimic Windows.
 
-Primary hierarchy: page title → plain-language status → next action → diagnostic detail.
-No office illustration, fabricated agents or decorative metrics in first run. Native dialogs
-are reserved for destructive operations and OS elevation. Long setup/CLI operations run off
-the UI thread, show an indeterminate busy state, and prevent duplicate operations.
+First viewport: Mica window frame, left navigation (Setup, Agents, Core), page heading and
+plain-language introduction, completed prerequisite rows, and one next-step panel. One primary
+action advances setup; Check again remains separate. No decorative metrics or invented agents.
+
+Use standard InfoBar for recoverable errors, CommandBar and ListView for fleet actions,
+ContentDialog with Cancel as default for interruptions, and Expander for operation details.
+Agent name/model/unit and state/health are grouped for scanning. The native empty-state InfoBar
+states the preview's actual limits. Windows supplies keyboard focus, control motion, fonts,
+accessibility roles and theme colors. Content scrolls and NavigationView collapses on narrow windows.
+
+Async operations keep the UI responsive, prevent duplicate actions and block close until done.
+The progress bar describes ongoing work; errors remain visible with recovery guidance. Selection
+is keyed by agent ID and cleared when that agent disappears. Closing normally keeps the core alive.

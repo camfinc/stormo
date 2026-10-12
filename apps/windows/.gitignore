@@ -3,3 +3,5 @@ build/
 *.spec
 assets/engine/
 assets/licenses/
+**/bin/
+**/obj/

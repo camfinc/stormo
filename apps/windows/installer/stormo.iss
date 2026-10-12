@@ -1,4 +1,4 @@
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 [Setup]
 AppId={{8A3B478E-7A5D-4AB6-A35C-07671EBF1B56}
 AppName=Stormo Preview
@@ -24,7 +24,8 @@ LicenseFile=..\..\..\LICENSE
 Source: "..\dist\Stormo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
-; Remove only obsolete application payloads from the earlier preview, never its user data.
+; Remove the superseded Qt payload only, never user workspaces.
+Type: filesandordirs; Name: "{app}\_internal"
 Type: files; Name: "{app}\_internal\assets\runtime.tar.gz"
 Type: files; Name: "{app}\_internal\assets\runtime.sha256"
 

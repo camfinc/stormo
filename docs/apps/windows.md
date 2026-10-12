@@ -14,7 +14,8 @@ The owner selected guided Docker Desktop setup initially. The app links Docker's
 installer instructions and checks the `desktop-linux` context, Compose and container execution.
 It does not silently accept Docker's license terms or change Windows virtualization settings.
 
-Qt remains reusable for a later Linux UI. SwiftUI remains the macOS UI. Engine behavior stays
+The Windows shell uses C# and WinUI 3 with native Fluent controls. SwiftUI remains the macOS UI.
+Linux UI selection is deferred. Engine behavior stays
 in Go and actions use the same versioned JSON CLI/API contracts on every platform.
 
 ## Native implementation
@@ -40,9 +41,10 @@ explicitly. No automatic migration is claimed.
 
 ## Validation and remaining gates
 
-CI builds the actual Windows executable, runs native Go and Qt tests and exercises create
+CI builds the actual Windows executable, runs native Go and C# runtime contract tests and exercises create
 instance → detached core up → identity check → refusal to stop another workspace → graceful
-core down → restart, using Windows paths with spaces. It then builds the per-user setup EXE.
+core down → restart, using Windows paths with spaces. It publishes a self-contained WinUI desktop, launches it and captures Setup/Agents/Core in both
+system themes through Windows UI Automation, then builds the per-user setup EXE.
 Linux CI continues to cover the existing engine. Packaging success is not clean-PC acceptance.
 
 Still required: clean Windows 11 + Docker Desktop acceptance, container-to-core networking,

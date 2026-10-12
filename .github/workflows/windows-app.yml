@@ -1,13 +1,10 @@
 name: windows-app
-
 on:
   pull_request:
     paths: ['apps/windows/**', 'docs/apps/**', '.github/workflows/windows-app.yml', 'pkg/**', 'cmd/**', 'go.mod', 'go.sum']
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   desktop:
     runs-on: windows-2025
@@ -16,38 +13,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Test desktop runtime contracts
+        run: dotnet run --project apps/windows/Stormo.Runtime.Tests -c Release
       - name: Build native Windows engine
         run: python apps/windows/installer/build-engine.py
       - name: Exercise native core lifecycle
         run: python apps/windows/installer/smoke-engine.py
       - name: Test Windows engine and paths
         run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold ./pkg/privatefs
-      - name: Install build dependencies
-        run: python -m pip install -r apps/windows/requirements-build.txt
-      - name: Test runtime adapter and desktop
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s apps/windows/tests -v
-      - name: Collect dependency notices
-        run: python apps/windows/installer/collect-licenses.py
-      - name: Freeze the desktop (no Python installation needed)
-        working-directory: apps/windows
-        run: >-
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Stormo --icon assets/stormo.ico
-          --add-data "assets;assets" --add-data "../../LICENSE;licenses"
-          --add-data "../../NOTICE;licenses" main.py
+      - name: Restore native desktop and collect notices
+        run: |
+          dotnet restore apps/windows/Stormo.Desktop -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python apps/windows/installer/collect-licenses.py
+      - name: Publish self-contained WinUI desktop
+        run: dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
+      - name: Exercise native desktop and capture screens
+        run: ./apps/windows/installer/smoke-desktop.ps1
       - name: Build per-user setup EXE
         shell: pwsh
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" apps/windows/installer/stormo.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify app and installer icon resources
-        run: python apps/windows/installer/check-icons.py
+        run: |
+          python -m pip install pefile==2024.8.26
+          python apps/windows/installer/check-icons.py
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: Stormo-Windows-native-x64-preview-unsigned
-          path: apps/windows/build/installer/*.exe
+          name: Stormo-Windows-WinUI-x64-preview-unsigned
+          path: |
+            apps/windows/build/installer/*.exe
+            apps/windows/build/screens/*
           retention-days: 14
