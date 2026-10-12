@@ -1,3 +1,5 @@
 // The app's identity: the publisher's bundle identifier and Apple team. A fork changes these lines.
 PRODUCT_BUNDLE_IDENTIFIER = com.camfsolutions.stormo
 DEVELOPMENT_TEAM =
+// Shown in About Stormo.
+INFOPLIST_KEY_NSHumanReadableCopyright = Copyright © 2026 CAMF Solutions Inc. Licensed under the Apache License 2.0.
