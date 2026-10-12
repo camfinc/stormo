@@ -51,6 +51,9 @@ func DeleteAgent(d *Deps, id string, o DeleteOptions) (*DeleteResult, error) {
 		case "stopped":
 			r.Notes = append(r.Notes, "its ECS service (stopped) and Secrets Manager entry stay: remove them in AWS if no longer needed")
 		case "unknown":
+			if strings.Contains(detail, "ClusterNotFoundException") {
+				break // never deployed
+			}
 			r.Notes = append(r.Notes, "could not check ECS ("+detail+"): if it runs there, it keeps running from its deployed image")
 		}
 	}

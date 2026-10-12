@@ -21,6 +21,9 @@ struct AgentsView: View {
     @State private var inspecting = true
     @State private var path: [AgentRoute] = []
     @State private var exporting: ExportTarget?
+    @State private var deleting: ExportTarget?
+    /// Export First… from the delete sheet: back to it once the export sheet closes.
+    @State private var deleteAfterExport: String?
     @State private var choosingImport = false
     @State private var importing: ImportTarget?
     @State private var creating = false
@@ -98,13 +101,13 @@ struct AgentsView: View {
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
-                    AgentActions(ids: Array(ids), edit: edit, export: { exporting = ExportTarget(id: $0) })
+                    AgentActions(ids: Array(ids), edit: edit, export: { exporting = ExportTarget(id: $0) }, delete: { deleting = ExportTarget(id: $0) })
                 } primaryAction: { ids in
                     if ids.count == 1, let id = ids.first { edit(id) }
                 }
                 .inspector(isPresented: $inspecting) {
                     if selection.count == 1, let id = selection.first, let agent = model.fleet.agent(id) {
-                        AgentInspector(agent: agent, edit: edit)
+                        AgentInspector(agent: agent, edit: edit, delete: { deleting = ExportTarget(id: $0) })
                     } else {
                         ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
                     }
@@ -112,7 +115,19 @@ struct AgentsView: View {
             }
         }
         .navigationTitle("Agents")
-        .sheet(item: $exporting) { ExportAgentSheet(agentID: $0.id) }
+        .sheet(item: $exporting, onDismiss: {
+            if let id = deleteAfterExport {
+                deleteAfterExport = nil
+                deleting = ExportTarget(id: id)
+            }
+        }) { ExportAgentSheet(agentID: $0.id) }
+        .sheet(item: $deleting) { t in
+            DeleteAgentSheet(agentID: t.id, exportFirst: {
+                deleteAfterExport = t.id
+                deleting = nil
+                exporting = ExportTarget(id: t.id)
+            }, deleted: { selection.remove(t.id); path.removeAll() })
+        }
         .sheet(isPresented: $creating) { NewAgentWizard(open: edit) }
         .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.zip]) { result in
             if case .success(let url) = result { importing = ImportTarget(url: url) }
@@ -158,6 +173,7 @@ struct AgentActions: View {
     let ids: [String]
     let edit: (String) -> Void
     let export: (String) -> Void
+    let delete: (String) -> Void
 
     var body: some View {
         if !ids.isEmpty {
@@ -169,6 +185,8 @@ struct AgentActions: View {
                 Divider()
                 Button("Edit…") { edit(ids[0]) }
                 Button("Export…") { export(ids[0]) }
+                Divider()
+                Button("Delete…", role: .destructive) { delete(ids[0]) }
             }
             Divider()
             Button("Copy Command") {
@@ -183,6 +201,8 @@ struct AgentInspector: View {
     let agent: FleetAgent
     /// Opens the agent's editor; no button without it.
     var edit: ((String) -> Void)?
+    /// Asks to delete the agent; no button without it.
+    var delete: ((String) -> Void)?
 
     var body: some View {
         Form {
@@ -229,6 +249,9 @@ struct AgentInspector: View {
             Section {
                 HStack {
                     AgentActionsBar(id: agent.id, running: agent.state == "running")
+                }
+                if let delete {
+                    Button("Delete Agent…", systemImage: "trash", role: .destructive) { delete(agent.id) }
                 }
             }
         }
