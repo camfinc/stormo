@@ -299,6 +299,35 @@ func TestLearningLoop(t *testing.T) {
 			t.Errorf("kept=%v body=%q", r.KeptRepoSkills, body)
 		}
 	})
+
+	t.Run("a repo edit the running agent has not booted with is no proposal; a change on top of an old version is stale", func(t *testing.T) {
+		// home1 booted from "baseline" before both repo edits: crm-api carries the agent's own patch
+		// (stale now that the repo changed it too), payment-plan is untouched by the agent.
+		plan := filepath.Join(root, "agents/atlas/skills/crm/payment-plan/SKILL.md")
+		write(t, plan, read(t, plan)+"\n## Reviewed\nRepo edit the agent never saw.\n")
+		write(t, filepath.Join(home1, "memories/MEMORY.md"), read(t, filepath.Join(home1, "memories/MEMORY.md"))+"\n§\nA new note so the nap has something new.")
+		opts := NapOptions{Agent: "atlas", Unit: "sales", Engine: eng, Home: home1, Store: store, Instance: "task-a", BaselineDir: filepath.Join(tmp, "baseline"), Now: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)}
+		if m, err := NapOnce(opts); err != nil || m == nil {
+			t.Fatalf("nap: %v %v", m, err)
+		}
+		if _, err := Dream(inst, "atlas", store); err != nil {
+			t.Fatal(err)
+		}
+		props, _ := ListSkillProposals(root, "atlas")
+		byName := map[string]SkillProposal{}
+		for _, p := range props {
+			byName[p.Skill] = p
+		}
+		if _, ok := byName["crm/payment-plan"]; ok {
+			t.Error("a repo edit the agent has not booted with was proposed as the agent's revert")
+		}
+		if p, ok := byName["crm/crm-api"]; !ok || !p.Stale {
+			t.Fatalf("crm/crm-api = %+v, want a stale proposal", p)
+		}
+		if _, err := DecideSkill(root, "atlas", "crm/crm-api", "accepted"); err == nil || !strings.Contains(read(t, filepath.Join(root, "agents/atlas/skills/crm/crm-api/SKILL.md")), "Repo edit.") {
+			t.Errorf("accepting a stale proposal: err %v; the repo's edit must stay", err)
+		}
+	})
 }
 
 func TestChownTree(t *testing.T) {

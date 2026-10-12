@@ -161,13 +161,20 @@ private struct SkillRow: View {
                 Image(systemName: "wand.and.stars").foregroundStyle(.secondary)
                 Text(skill.skill).fontWeight(.medium)
                 Tag(skill.new ? "new skill" : "change")
+                if stale { Tag("older version", tint: .orange) }
                 ForEach(skill.pii, id: \.self) { Tag("PII: \($0)", tint: .red) }
                 Spacer()
                 Button("Reject") { decide(.reject) }
                 Button("Accept") { decide(.accept) }
-                    .disabled(!skill.pii.isEmpty)
+                    .disabled(!skill.pii.isEmpty || stale)
             }
             .controlSize(.small)
+            if stale {
+                Label("The agent changed a version of this skill from before the repo's latest edit\(skill.base.map { " (it booted from \($0))" } ?? ""). Red lines below include the repo's newer edits, not only the agent's. Accepting would undo them, so merge what you want by hand, then reject this.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(skill.files) { file in
                 let diff = file.text.map { LineDiff(old: file.current ?? "", new: $0) }
                 DisclosureGroup {
@@ -191,6 +198,8 @@ private struct SkillRow: View {
         }
         .padding(.vertical, 2)
     }
+
+    private var stale: Bool { skill.stale ?? false }
 
     private func decide(_ verdict: ReviewDecision.Verdict) {
         Task { await model.review.decide(.skill(skill.skill, of: agent, verdict)) }

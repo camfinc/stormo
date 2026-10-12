@@ -50,6 +50,10 @@ public struct ReviewSkill: Codable, Sendable, Equatable, Identifiable {
     public var pii: [String]
     public var nap: String
     public var new: Bool
+    /// The agent changed an older version than the repo's (built from commit `base`): the diff shows
+    /// the repo's newer edits as removals, and the core refuses to accept it.
+    public var stale: Bool?
+    public var base: String?
     public var files: [ReviewFile]
     public var id: String { skill }
 }

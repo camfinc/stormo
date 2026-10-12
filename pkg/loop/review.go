@@ -78,6 +78,10 @@ type SkillProposal struct {
 	NapHash string   `json:"napHash"`
 	Nap     string   `json:"nap"`
 	PII     []string `json:"pii"`
+	// Stale: the agent changed the version it booted with (commit Base), and the repo's copy has
+	// changed since. Accepting would overwrite that change, so it is refused; merge by hand.
+	Stale bool   `json:"stale,omitempty"`
+	Base  string `json:"base,omitempty"`
 }
 
 func ProposalsDir(root, agent string) string {
@@ -125,6 +129,9 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 		return nil, fmt.Errorf("%s: no skill proposal %s", agent, skill)
 	}
 	src := filepath.Join(ProposalsDir(root, agent), skill)
+	if decision == "accepted" && prop.Stale {
+		return nil, fmt.Errorf("%s: %s was changed by the agent from an older version (%s); the repo's copy has changed since, so accepting would undo that. Merge it by hand from %s, then reject the proposal", agent, skill, or(prop.Base, "an earlier build"), src)
+	}
 	if decision == "accepted" {
 		dest := filepath.Join(manifest.AgentDir(root, agent), "skills", skill)
 		if err := os.RemoveAll(dest); err != nil {
@@ -205,4 +212,11 @@ func AutoAccept(root, agent string, minSeen int) ([]string, error) {
 	accepted := learning.Accepted
 	_, err = Decide(root, agent, ids, Change{Status: &accepted, Note: "accepted automatically (core.learning.auto_accept)"})
 	return ids, err
+}
+
+func or(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

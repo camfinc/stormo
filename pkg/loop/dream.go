@@ -204,6 +204,14 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			}
 		}
 		repoSkills := filepath.Join(manifest.AgentDir(root, agentID), "skills")
+		// What the nap's instance booted with: a skill still at that hash is not the agent's change,
+		// however far the repo has moved since (an edit not yet deployed would read as a revert).
+		booted := map[string]string{}
+		baseSha := ""
+		if last.Baseline != nil {
+			booted = last.Baseline.Skills.Map()
+			baseSha = last.Baseline.GitSha
+		}
 		dirs := build.SkillDirs(learningPaths, L.SkillsDir)
 		for _, dir := range sortedKeys(dirs) {
 			paths := dirs[dir]
@@ -223,6 +231,13 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			if d, ok := wm.SkillDecisions[dir]; ok && d.Hash == napHash {
 				continue // already decided
 			}
+			bootHash, wasBooted := booted[dir]
+			if wasBooted && bootHash == napHash {
+				continue // unchanged since boot
+			}
+			// The agent changed a version the repo has since moved past: accepting it would undo
+			// the repo's change, so the proposal says so and accept refuses it.
+			stale := inRepo && wasBooted && repoSkillHash(filepath.Join(repoSkills, dir), L.SkillsDir+"/"+dir) != bootHash
 			bodies := map[string]string{}
 			for _, p := range paths {
 				b, err := learningBlob(s, agentID, last, p)
@@ -249,7 +264,7 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 				}
 			}
 			piiList := sortedKeys(pii)
-			meta, _ := learning.MarshalIndent(SkillProposal{Skill: dir, NapHash: napHash, Nap: last.ID, PII: piiList})
+			meta, _ := learning.MarshalIndent(SkillProposal{Skill: dir, NapHash: napHash, Nap: last.ID, PII: piiList, Stale: stale, Base: baseSha})
 			if err := os.WriteFile(filepath.Join(proposals, "skills", dir, ".proposal.json"), meta, 0o644); err != nil {
 				return nil, err
 			}
@@ -322,6 +337,27 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 }
 
 // repoSame: the nap's copy of a skill has exactly the repo's files with the same contents.
+// repoSkillHash hashes a skill dir in the repo as the build does (its files are copied verbatim).
+func repoSkillHash(repoDir, prefix string) string {
+	hashes := map[string]string{}
+	paths := []string{}
+	_ = filepath.WalkDir(repoDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(repoDir, p)
+		key := prefix + "/" + filepath.ToSlash(rel)
+		paths = append(paths, key)
+		hashes[key] = build.Sha256(b)
+		return nil
+	})
+	return build.SkillHash(hashes, paths)
+}
+
 func repoSame(repoDir, prefix string, bodies map[string]string) bool {
 	n := 0
 	same := true
