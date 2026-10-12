@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -90,15 +91,15 @@ type Spec struct {
 
 // Render builds the compose project for an agent; sidecarImage is the engine's sidecar image.
 func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int, sidecarImage string) Spec {
-	ro := func(rel string) string { return filepath.Join(p.Root, rel) + ":/app/" + rel + ":ro" }
+	ro := func(rel string) string { return filepath.ToSlash(filepath.Join(p.Root, rel)) + ":/app/" + rel + ":ro" }
 	sidecar := service{
 		Image:      sidecarImage,
 		WorkingDir: "/app",
 		// Exactly what the ECS instance layer carries: stormo.yaml, units, this agent and its baseline.
 		Volumes: []string{
 			ro(instance.File), ro("units"), ro("agents/" + a.ID),
-			p.BaselineDir + ":/app/dist/" + a.ID + "/baseline:ro",
-			"home:/data", p.StoreDir + ":/store/" + a.ID,
+			filepath.ToSlash(p.BaselineDir) + ":/app/dist/" + a.ID + "/baseline:ro",
+			"home:/data", filepath.ToSlash(p.StoreDir) + ":/store/" + a.ID,
 		},
 		Environment: map[string]string{"SWARM_AGENT": a.ID, "SWARM_STORE": "/store", "SWARM_HOME": "/data"},
 		// The agent's data folder (its secret values, its store) stays out of the sidecars: they get
@@ -120,7 +121,7 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 
 	volumes := []string{"home:" + eng.Layout().Home}
 	for _, l := range shared.Layers(a) {
-		volumes = append(volumes, filepath.Join(p.SharedDir, l.Layer)+":"+l.Path)
+		volumes = append(volumes, filepath.ToSlash(filepath.Join(p.SharedDir, l.Layer))+":"+l.Path)
 	}
 	environment := eng.Env(a, manifest.Local).Map()
 	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CorePort != 0 {
@@ -130,7 +131,7 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		Image:       eng.Image(a),
 		Command:     eng.Command(a),
 		Environment: environment,
-		EnvFile:     []string{p.EnvFile},
+		EnvFile:     []string{filepath.ToSlash(p.EnvFile)},
 		Volumes:     volumes,
 		Ports:       []string{fmt.Sprintf("127.0.0.1:%d:%d", port, eng.Port())},
 		Healthcheck: map[string]any{"test": eng.HealthCheck(), "interval": "30s", "timeout": "5s", "retries": 3, "start_period": "120s"},
@@ -144,8 +145,9 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		SecurityOpt: securityOpt,
 		CapDrop:     capDrop,
 	}
-	if a.Engine.Local != nil && a.Engine.Local.Via == "core" {
-		// OrbStack / Docker Desktop resolve host.docker.internal already; plain Docker Engine needs this.
+	if a.Engine.Local != nil && a.Engine.Local.Via == "core" && runtime.GOOS != "windows" {
+		// Windows Docker Desktop supplies host.docker.internal itself. Do not replace
+		// it with the Linux VM gateway. Preserve existing Unix host-gateway behavior.
 		agent.ExtraHosts = []string{"host.docker.internal:host-gateway"}
 	}
 	return Spec{Name: ProjectName(a), Services: map[string]service{"rehydrate": rehydrate, "nap": nap, "agent": agent}, Volumes: map[string]any{"home": map[string]any{}}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -105,6 +106,10 @@ func NewInstance(dir string, o Options, example fs.FS) (Result, error) {
 			clear(root)
 		}
 		return Result{}, err
+	}
+
+	if err := privatefs.ProtectWindows(root); err != nil {
+		return fail(err)
 	}
 
 	files := map[string]string{".gitignore": gitignore}

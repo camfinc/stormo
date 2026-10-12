@@ -165,6 +165,8 @@ docker/              the sidecar image and the per-agent ECS layer
 examples/minimal/    a complete example instance: the template and the test fixture
 examples/office-demo the office with simulated activity (the screenshot above)
 apps/macos/          the macOS app (SwiftUI) and StormoKit; scripts/dmg.sh builds the installer
+apps/windows/        Windows preview (WinUI 3), native engine and guided Docker setup and per-user installer
+docs/apps/           shared desktop feature parity and platform acceptance plans
 docs/                instances, the core and the office; docs/brand: the logo
 tools/brandgen/      generates the logo files
 scripts/             release builds of the CLI
