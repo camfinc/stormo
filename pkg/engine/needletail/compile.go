@@ -1,0 +1,179 @@
+package needletail
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/manifest"
+	"go.yaml.in/yaml/v3"
+)
+
+// grantRe is the Luau capability grammar (docs/needletail.md §5.4).
+var grantRe = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?)$`)
+
+var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// agentConfig is engine/needletail/config.yaml.
+type agentConfig struct {
+	Luau struct {
+		Grants      []string          `yaml:"grants"`
+		HTTPSecrets []wire.HTTPSecret `yaml:"http_secrets"`
+	} `yaml:"luau"`
+}
+
+func readAgentConfig(dir string) (*agentConfig, error) {
+	c := &agentConfig{}
+	body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)))
+	if os.IsNotExist(err) {
+		return c, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(body))
+	dec.KnownFields(true)
+	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s: %w", ConfigFile, err)
+	}
+	for _, g := range c.Luau.Grants {
+		if !grantRe.MatchString(g) {
+			return nil, fmt.Errorf("%s: luau grant %q is not a capability (fs.read:home, fs.write:home[/glob], fs.*:shared, http:<host>, core:<tool>)", ConfigFile, g)
+		}
+	}
+	for _, s := range c.Luau.HTTPSecrets {
+		if s.Host == "" || s.Header == "" || !envNameRe.MatchString(s.Env) {
+			return nil, fmt.Errorf("%s: http_secrets entries need host, header and an env var name", ConfigFile)
+		}
+	}
+	return c, nil
+}
+
+// onCore: a local run routed through the swarm core (engine.local), as for Hermes.
+func onCore(a *manifest.Agent, target manifest.Target) bool {
+	return target == manifest.Local && a.Engine.Local != nil
+}
+
+// renderConfig is needletail.yaml. The model connection resolves as Hermes' does: on the core, the
+// core's gateway first and the agent's connection as the fallback; elsewhere the connection alone.
+func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.Target, ac *agentConfig) wire.Config {
+	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
+	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
+		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout},
+		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit}}
+	c.Model.Primary = cloud
+	grants := []string{"fs.read:home", "fs.write:home"}
+	if onCore(a, target) {
+		c.Model.Primary = wire.Endpoint{BaseURL: manifest.Core.BaseURL, KeyEnv: manifest.Core.KeyEnv, Model: a.Engine.Local.Model}
+		c.Model.Fallbacks = []wire.Endpoint{cloud}
+		c.Core = &wire.CoreConfig{MCPURL: manifest.Core.MCPURL, IngestURL: manifest.Core.IngestURL, KeyEnv: manifest.Core.KeyEnv}
+		grants = append(grants, "core:msg_*")
+	}
+	for _, g := range ac.Luau.Grants {
+		if !slices.Contains(grants, g) {
+			grants = append(grants, g)
+		}
+	}
+	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
+	for _, ch := range a.Channels {
+		if ch.Kind == "slack" { // the only gateway in the MVP
+			c.Channels = append(c.Channels, ch.Kind)
+		}
+	}
+	return c
+}
+
+// readTree adds every file under dir as <prefix>/<rel>, skipping caches, node_modules and the
+// skipped skill dirs (the same walk as Hermes').
+func readTree(dir, prefix string, out map[string][]byte, skip []string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		if strings.Contains(rel, "__pycache__") || strings.HasSuffix(rel, ".pyc") || strings.HasSuffix(rel, ".DS_Store") || slices.Contains(strings.Split(rel, "/"), "node_modules") {
+			return nil
+		}
+		for _, s := range skip {
+			if strings.HasPrefix(rel, s+"/") {
+				return nil
+			}
+		}
+		if !d.Type().IsRegular() {
+			if info, err := os.Stat(p); err != nil || !info.Mode().IsRegular() {
+				return nil
+			}
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		out[prefix+"/"+rel] = body
+		return nil
+	})
+}
+
+// Compile returns the baseline files relative to the engine home. Skills stay in Stormo's form
+// (the runtime resolves ${SKILL_DIR} itself). A new engine has no format 0, so there is no legacy
+// schedules file to reconcile: schedules come from agent.yaml only.
+func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[string][]byte, error) {
+	if r := a.Limits.Reasoning; r != "" && !slices.Contains(n.Reasoning(), r) {
+		return nil, fmt.Errorf("agents/%s: limits.reasoning %q is not a needletail level (%s)", a.ID, r, strings.Join(n.Reasoning(), ", "))
+	}
+	dir := manifest.AgentDir(ctx.Instance.Root, a.ID)
+	files := map[string][]byte{}
+	soul, err := os.ReadFile(filepath.Join(dir, "SOUL.md"))
+	if err != nil {
+		return nil, err
+	}
+	files["SOUL.md"] = soul
+	conn, ok := ctx.Instance.Connection(a.Engine.Provider)
+	if !ok {
+		return nil, fmt.Errorf("agents/%s: model.provider %q is not a connection of this instance", a.ID, a.Engine.Provider)
+	}
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
+	cfg, err := yaml.Marshal(renderConfig(a, conn, ctx.Target, ac))
+	if err != nil {
+		return nil, err
+	}
+	files["needletail.yaml"] = append([]byte(fmt.Sprintf("# GENERATED by %s from agents/%s/agent.yaml and %s. Do not edit here.\n", ctx.Instance.Names.Resource, a.ID, ConfigFile)), cfg...)
+
+	if err := readTree(filepath.Join(dir, "skills"), "skills", files, ctx.SkipSkills); err != nil {
+		return nil, err
+	}
+	if err := readTree(filepath.Join(dir, "scripts"), "scripts", files, nil); err != nil {
+		return nil, err
+	}
+	for p, body := range ctx.Knowledge {
+		files["skills/"+p] = []byte(body)
+	}
+	if a.Schedules != nil {
+		if files[n.layout.Schedules], err = renderJobs(a.Schedules); err != nil {
+			return nil, err
+		}
+	}
+	// Hot-tier seed. Rehydrate merges these with live memory instead of copying them over it.
+	files[n.layout.Memory.Memory] = []byte(n.Memory().File(ctx.Seed.Memory))
+	files[n.layout.Memory.User] = []byte(n.Memory().File(ctx.Seed.User))
+	return files, nil
+}

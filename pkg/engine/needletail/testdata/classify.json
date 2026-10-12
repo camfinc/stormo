@@ -1,0 +1,100 @@
+{
+ "stateDir": "acme-state",
+ "cases": [
+  {
+   "path": "memories/MEMORY.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/USER.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/OTHER.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/.usage.json",
+   "class": "learning",
+   "glob": "skills/.usage.json"
+  },
+  {
+   "path": "skills/.hidden/x",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/crm/crm-api/SKILL.md",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm/lookup/tools/lookup_fare.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/jobs.json",
+   "class": "learning",
+   "glob": "cron/jobs.json"
+  },
+  {
+   "path": "sessions/index.json",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "sessions/cron-a1-20261012T090000.jsonl",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "logs/audit/slack-C1-1.jsonl",
+   "class": "raw",
+   "glob": "logs/audit/**"
+  },
+  {
+   "path": "logs/needletail.log",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "acme-state/news-radar/seen.json",
+   "class": "state",
+   "glob": "acme-state/**"
+  },
+  {
+   "path": "state/needletail/idem.json",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "state/needletail/monitor/a1.out",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "needletail.yaml",
+   "class": "state",
+   "glob": "needletail.yaml"
+  },
+  {
+   "path": "SOUL.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/digest.py",
+   "class": null,
+   "glob": null
+  }
+ ]
+}
