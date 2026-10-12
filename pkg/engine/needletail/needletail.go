@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -78,12 +79,16 @@ func (n *Needletail) Reasoning() []string {
 	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 }
 
-// Image is the pinned image: image_tag, else v<version>. ValidVersion refuses empty and latest,
-// and build checks it before anything uses the image.
+// Image is the pinned image: image_tag, else the version as the tag, with a "v" added only to a
+// semver written without one (0.1.0 and v0.1.0 are both :v0.1.0; a tag such as stable stays as
+// it is). ValidVersion refuses empty and latest, and build checks it before anything uses the image.
 func (n *Needletail) Image(a *manifest.Agent) string {
 	tag := a.Engine.ImageTag
 	if tag == "" {
-		tag = "v" + a.Engine.Version
+		tag = a.Engine.Version
+		if semverRe.MatchString(tag) && !strings.HasPrefix(tag, "v") {
+			tag = "v" + tag
+		}
 	}
 	return Repository + ":" + tag
 }

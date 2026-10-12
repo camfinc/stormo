@@ -39,7 +39,11 @@ func (runtime) Activity(ctx context.Context, get func(ctx context.Context, path 
 	if err != nil {
 		return nil, nil, err
 	}
-	return ActivityFrom(v, now), nil, nil
+	a := ActivityFrom(v, now)
+	if a == nil {
+		return nil, nil, errors.New("needletail /v1/activity: unexpected body")
+	}
+	return a, nil, nil
 }
 
 // ActivityFrom reads a /v1/activity body (decoded JSON); nil when it is not one.

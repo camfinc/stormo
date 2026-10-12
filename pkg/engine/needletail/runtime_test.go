@@ -57,7 +57,8 @@ func TestParseHook(t *testing.T) {
 	if !reflect.DeepEqual(e, want) {
 		t.Errorf("event = %+v", e)
 	}
-	// A retried delivery parses to the same id, which the core dedups on.
+	// Only the parse is tested here: a retried body yields the same delivery id. Verifying the
+	// signature and dropping the repeat are the core's (pkg/core TestVerifySignature, TestIngestLiveStateAndTimeline).
 	if again, _ := rt.ParseHook(body); again.Delivery != e.Delivery {
 		t.Error("delivery id not stable")
 	}
@@ -110,6 +111,16 @@ func TestActivity(t *testing.T) {
 	}
 	if ActivityFrom(nil, now) != nil {
 		t.Error("nil body")
+	}
+	for _, body := range []string{`[1,2]`, `"ok"`, `{"active_turns":"two"}`} {
+		bad := func(context.Context, string) (any, error) {
+			var v any
+			_ = json.Unmarshal([]byte(body), &v)
+			return v, nil
+		}
+		if a, _, err := NewRuntime().Activity(context.Background(), bad, nil, now); err == nil || a != nil {
+			t.Errorf("%s: accepted (%v)", body, a)
+		}
 	}
 }
 

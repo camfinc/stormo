@@ -25,6 +25,12 @@ func TestImagePinned(t *testing.T) {
 	if got := n.Image(a); got != Repository+":v0.1.0" {
 		t.Errorf("image = %s", got)
 	}
+	for v, want := range map[string]string{"v0.1.0": ":v0.1.0", "v2026.10.12": ":v2026.10.12", "stable": ":stable"} {
+		a.Engine.Version = v
+		if got := n.Image(a); got != Repository+want {
+			t.Errorf("version %s: image = %s", v, got)
+		}
+	}
 	a.Engine.ImageTag = "latest"
 	if engine.CheckVersion(n, a) == nil {
 		t.Error("image_tag latest passed the build check")
