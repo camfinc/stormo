@@ -104,6 +104,7 @@ into an `error` event.
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
 | `migrate agent [agent…]` | one row per agent: `agent`, `from`, `to` (agent.yaml formats), `changes` (lines), `data` (`moved`, `in-place`, or `running`: its data stays until it is stopped). Runs `check` after |
 | `export <agent> [--data] [-o file]` | `path`, `agent`, `mode` (`config` \| `data`), `files`, `naps`, `containsSecrets`. A data export carries every secret value the agent resolves in plain text: the zip is written 0600, holds `DATA-EXPORT-CONTAINS-SECRETS.txt`, and a `step` warns. Codes: `legacy` (format 0: migrate first), `tracked` (its data folder is in git) |
+| `delete agent <agent> [--with-persona] --yes` | `agent`, `removed` (what went), `notes` (what stays: a persona another agent uses, a stopped ECS service, an emptied unit). A `step` per item. Stops a local container first; refused (`refused`) while the agent runs on ECS. Without `--yes` it asks on a terminal |
 | `import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]` | `agent`, `from` (the source instance's slug), `mode`, `changes`. Every member is checked against the zip's manifest; the result must pass `check`, else nothing is kept. Codes: `invalid`, `exists` (pass `--replace` or `--as`), `unknown_unit`, `missing_actions` (pass `--with-actions`), `tracked` |
 | `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |
 

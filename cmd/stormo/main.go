@@ -84,6 +84,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
   connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
+  delete agent <agent> [--with-persona] [--yes]
+                                         remove it from the instance (stops it locally; refused while it
+                                         runs on ECS). Its folder, naps and secret values go: export first
   import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]
                                          an exported agent into this instance; checked, undone if it fails
   migrate agent [agent...]               bring agents to agent.yaml format 1 (docs/agent-standard.md);
@@ -171,6 +174,7 @@ var (
 	fUnit        = fs.String("unit", "", "")
 	fReplace     = fs.Bool("replace", false, "")
 	fWithActions = fs.Bool("with-actions", false, "")
+	fWithPersona = fs.Bool("with-persona", false, "")
 	fKind        = fs.String("kind", "", "")
 	fConnection  = fs.String("connection", "", "")
 	fAgent       = fs.String("agent", "", "")
@@ -457,6 +461,27 @@ func run(args []string) error {
 			step("WARNING: %s contains %s's secret values in plain text and its naps (client data). Keep it private, delete it once imported, rotate the values if it leaks.", r.Path, id)
 		}
 		result(r, func(w io.Writer) { fmt.Fprintf(w, "exported %s (%s, %d files) to %s\n", id, r.Mode, r.Files, r.Path) })
+		return nil
+
+	case "delete":
+		if sub != "agent" || len(rest) != 1 {
+			return withCode("usage", errors.New("delete agent <agent> [--with-persona] [--yes]"))
+		}
+		id := rest[0]
+		if !*fYes && !deps.Confirm([]string{"delete " + id + ": its folder (definition, skills, learnings, naps, secret values) and generated files go; this cannot be undone (stormo export " + id + " --data keeps a copy)"}) {
+			return withCode("usage", errors.New("not deleted"))
+		}
+		r, err := ops.DeleteAgent(deps, id, ops.DeleteOptions{Persona: *fWithPersona})
+		if err != nil {
+			return withCode("refused", err)
+		}
+		for _, c := range r.Removed {
+			step("%s: removed %s", id, c)
+		}
+		for _, n := range r.Notes {
+			step("%s: %s", id, n)
+		}
+		result(r, func(w io.Writer) { fmt.Fprintf(w, "deleted %s\n", id) })
 		return nil
 
 	case "import":

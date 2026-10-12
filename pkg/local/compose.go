@@ -169,6 +169,28 @@ var portMu sync.Mutex
 // portFree checks a candidate agent port (tests replace it).
 var portFree = instance.PortFree
 
+// ReleasePort frees a deleted agent's port in .swarm/ports.json.
+func ReleasePort(root, agentID string) error {
+	portMu.Lock()
+	defer portMu.Unlock()
+	path := filepath.Join(root, ".swarm", "ports.json")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	ports := map[string]int{}
+	if err := json.Unmarshal(b, &ports); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if _, ok := ports[agentID]; !ok {
+		return nil
+	}
+	delete(ports, agentID)
+	return writePorts(path, ports)
+}
+
 // Port is the agent's stable host port, kept in .swarm/ports.json: an agent keeps its port once it
 // has one, and a new agent takes the lowest free port from PortBase. The file is replaced
 // atomically, so a reader never sees half of it.
@@ -196,6 +218,10 @@ func Port(root, agentID string) (int, error) {
 		port++
 	}
 	ports[agentID] = port
+	return port, writePorts(path, ports)
+}
+
+func writePorts(path string, ports map[string]int) error {
 	ids := make([]string, 0, len(ports))
 	for id := range ports {
 		ids = append(ids, id)
@@ -211,23 +237,23 @@ func Port(root, agentID string) (int, error) {
 	}
 	body += "\n}\n"
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return 0, err
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".ports-*.json")
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(body); err != nil {
 		tmp.Close()
-		return 0, err
+		return err
 	}
 	if err := tmp.Chmod(0o644); err != nil {
 		tmp.Close()
-		return 0, err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return 0, err
+		return err
 	}
-	return port, os.Rename(tmp.Name(), path)
+	return os.Rename(tmp.Name(), path)
 }
