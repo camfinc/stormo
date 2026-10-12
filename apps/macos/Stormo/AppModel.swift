@@ -29,6 +29,10 @@ final class AppModel {
     private(set) var activity: String?
     /// The last failed action, shown as an alert.
     var failure: String?
+    /// A start refused for unset secret values, shown as its own alert that leads to the fix.
+    var missingSecrets: MissingSecrets?
+    /// An agent whose editor the Agents section should open (set from elsewhere, consumed there).
+    var agentToEdit: String?
     /// Agents' portraits (/avatars/<id>.png), for name tags and the inspector.
     private(set) var avatars: [String: NSImage] = [:]
 
@@ -202,7 +206,11 @@ final class AppModel {
                 }
             }
         } catch {
-            failure = error.localizedDescription
+            if let m = MissingSecrets(error: error.localizedDescription) {
+                missingSecrets = m
+            } else {
+                failure = error.localizedDescription
+            }
         }
         await fleet.refresh()
     }

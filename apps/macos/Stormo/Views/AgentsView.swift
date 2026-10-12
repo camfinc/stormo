@@ -32,6 +32,11 @@ struct AgentsView: View {
             list
                 .navigationDestination(for: AgentRoute.self) { AgentEditor(agentID: $0.id) }
         }
+        .task(id: model.agentToEdit) {
+            guard let id = model.agentToEdit else { return }
+            model.agentToEdit = nil
+            edit(id)
+        }
     }
 
     private func edit(_ id: String) { path = [AgentRoute(id: id)] }

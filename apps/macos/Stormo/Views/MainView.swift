@@ -72,10 +72,34 @@ struct MainView: View {
         } message: {
             Text(model.failure ?? "")
         }
+        .alert(missingTitle, isPresented: Binding(get: { model.missingSecrets != nil }, set: { if !$0 { model.missingSecrets = nil } }), presenting: model.missingSecrets) { m in
+            Button("Open Agent Settings") {
+                model.agentToEdit = m.agent
+                section = .agents
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}
+        } message: { m in
+            Text(missingMessage(m))
+        }
     }
 }
 
 extension MainView {
+    private func agentName(_ id: String) -> String { model.fleet.agent(id)?.name ?? id }
+
+    private var missingTitle: String {
+        guard let m = model.missingSecrets else { return "" }
+        return "\(agentName(m.agent)) can't start yet"
+    }
+
+    private func missingMessage(_ m: MissingSecrets) -> String {
+        let count = m.names.count == 1 ? "a secret value that isn't" : "\(m.names.count) secret values that aren't"
+        return "\(agentName(m.agent)) needs \(count) set on this Mac:\n\n"
+            + m.names.joined(separator: "\n")
+            + "\n\nAdd them under Secret values in the agent's settings, then start it again."
+    }
+
     static var initialSection: SidebarItem {
         #if DEBUG
         if let s = ProcessInfo.processInfo.environment["STORMO_SECTION"].flatMap(SidebarItem.init(rawValue:)) { return s }
