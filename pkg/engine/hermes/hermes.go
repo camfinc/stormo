@@ -254,20 +254,23 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection,
 	if onCore(a, target) {
 		// Locally the swarm core's gateway serves the model on the ChatGPT subscription; the agent
 		// only holds its own core key. Hermes falls back to the AWS model on a 401, a 429 or a dead
-		// core, and retries the core every turn.
-		aws := yamlMap("provider", provider, "model", a.Engine.Model)
-		if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != "" {
-			addKey(aws, "base_url", bu)
-		}
-		if !native {
-			addKey(aws, "key_env", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: conn.Key})
-		}
-		list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{aws}}
-		if prev := getPath(cfg, "fallback_providers"); prev != nil && prev.Kind == yaml.SequenceNode {
-			list.Content = append(list.Content, prev.Content...)
-		}
-		if err := setNode(cfg, "fallback_providers", list); err != nil {
-			return err
+		// core, and retries the core every turn. Without the provider's key (an optional secret left
+		// unset) there is no fallback.
+		if slices.Contains(a.Secrets, conn.Key) {
+			aws := yamlMap("provider", provider, "model", a.Engine.Model)
+			if bu := getPath(cfg, "model.base_url"); bu != nil && bu.Value != "" {
+				addKey(aws, "base_url", bu)
+			}
+			if !native {
+				addKey(aws, "key_env", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: conn.Key})
+			}
+			list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{aws}}
+			if prev := getPath(cfg, "fallback_providers"); prev != nil && prev.Kind == yaml.SequenceNode {
+				list.Content = append(list.Content, prev.Content...)
+			}
+			if err := setNode(cfg, "fallback_providers", list); err != nil {
+				return err
+			}
 		}
 		// Custom endpoints speak chat_completions; the core translates to Codex Responses itself.
 		deleteKey(getPath(cfg, "model"), "api_mode")

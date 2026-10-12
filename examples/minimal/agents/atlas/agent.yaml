@@ -31,14 +31,16 @@ channels:
     # allowed_users: [123456789]
 
 secrets:
-  - OPENROUTER_API_KEY
-  - SLACK_BOT_TOKEN
-  - SLACK_APP_TOKEN
   - APIFY_API_TOKEN
   - ELEVENLABS_API_KEY
   - API_SERVER_KEY
 
+# Good to have: locally the core's ChatGPT route serves the model (OpenRouter is its fallback), and
+# people can reach Atlas in chat without Slack.
 optional_secrets:
+  - name: OPENROUTER_API_KEY
+  - name: SLACK_BOT_TOKEN
+  - name: SLACK_APP_TOKEN
   - name: CRM_API_TOKEN
     skills:
       - crm/crm-api

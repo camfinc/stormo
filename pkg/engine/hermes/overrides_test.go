@@ -136,7 +136,7 @@ func TestAnOpenAIConnectionLeavesNoOpenRouterBehind(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(base), &doc); err != nil {
 			t.Fatal(err)
 		}
-		a := &manifest.Agent{ID: "atlas", Unit: "sales"}
+		a := &manifest.Agent{ID: "atlas", Unit: "sales", Secrets: []string{"OPENAI_API_KEY"}}
 		a.Engine.Model, a.Engine.Provider = "gpt-6", "openai"
 		target := manifest.AWS
 		if local {
@@ -164,5 +164,25 @@ func TestAnOpenAIConnectionLeavesNoOpenRouterBehind(t *testing.T) {
 				t.Errorf("fallback %s = %v, want %s", k, n, want)
 			}
 		}
+	}
+}
+
+func TestNoFallbackWithoutTheProvidersKey(t *testing.T) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte("model:\n  default: x\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	a := &manifest.Agent{ID: "nova", Unit: "support"}
+	a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
+	a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-5.6-luna"}
+	conn := instance.Connection{Name: "openrouter", Kind: instance.KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY"}
+	if err := ApplyOverrides(doc.Content[0], a, conn, manifest.Local, manifest.Core); err != nil {
+		t.Fatal(err)
+	}
+	if fb := getPath(doc.Content[0], "fallback_providers"); fb != nil {
+		t.Errorf("fallback without OPENROUTER_API_KEY: %v", fb.Content)
+	}
+	if n := getPath(doc.Content[0], "model.default"); n == nil || n.Value != "gpt-5.6-luna" {
+		t.Errorf("model.default = %v, want the core's model", n)
 	}
 }

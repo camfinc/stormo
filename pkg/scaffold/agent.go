@@ -135,8 +135,11 @@ type AgentResult struct {
 	Files []string `json:"files"`
 	// Secrets are the declared names; values go in with `stormo secrets set <id> NAME`.
 	Secrets []string `json:"secrets"`
-	// Missing are the declared names with no local value yet (the generated keys are minted).
+	// Missing are the required names with no local value yet (the generated keys are minted).
 	Missing []string `json:"missing"`
+	// Optional are the names it runs without (channel tokens, a fallback model key); what they gate
+	// stays off until they have a value.
+	Optional []string `json:"optional"`
 }
 
 // NewAgent writes agents/<id>/ (agent.yaml at the current format, SOUL.md, data/secrets.yaml with
@@ -185,16 +188,27 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 		return AgentResult{}, err
 	}
 
-	declared := append([]string{}, s.Secrets...)
+	// Required: the extra names, the engine key and the model provider's key unless the core's
+	// ChatGPT route serves the agent locally (the key is then the fallback). Channels are good to
+	// have: without their tokens the channel stays off and the agent is still reachable in chat.
+	required := append([]string{}, s.Secrets...)
+	optional := []string{}
 	if c, ok := inst.Connection(s.Model.Provider); ok && c.Key != "" {
-		declared = append(declared, c.Key)
+		if s.Model.LocalName != "" {
+			optional = append(optional, c.Key)
+		} else {
+			required = append(required, c.Key)
+		}
 	}
 	for _, c := range s.Channels {
-		declared = append(declared, manifest.ChannelSecrets[c.Kind]...)
+		optional = append(optional, manifest.ChannelSecrets[c.Kind]...)
 	}
-	declared = append(declared, eng.Runtime().APIKeyName())
-	sort.Strings(declared)
-	declared = slices.Compact(declared)
+	required = append(required, eng.Runtime().APIKeyName())
+	sort.Strings(required)
+	required = slices.Compact(required)
+	sort.Strings(optional)
+	optional = slices.DeleteFunc(slices.Compact(optional), func(n string) bool { return slices.Contains(required, n) })
+	declared := append(append([]string{}, required...), optional...)
 
 	var personaDir, personaText string
 	if s.Look != nil {
@@ -222,7 +236,7 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 		unitFile = filepath.Join(inst.Root, "units", u.ID, "unit.yaml")
 	}
 
-	body, err := agentYAML(s, declared)
+	body, err := agentYAML(s, required, optional)
 	if err != nil {
 		return AgentResult{}, err
 	}
@@ -265,7 +279,7 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	if err := manifest.CheckConnections(a, inst); err != nil {
 		return fail(err)
 	}
-	r := AgentResult{ID: s.ID, Name: s.Name, Unit: s.Unit, Secrets: declared,
+	r := AgentResult{ID: s.ID, Name: s.Name, Unit: s.Unit, Secrets: declared, Optional: optional,
 		Files: []string{"agents/" + s.ID + "/agent.yaml", "agents/" + s.ID + "/SOUL.md"}}
 	if unitFile != "" {
 		r.Files = append(r.Files, "units/"+s.Unit+"/unit.yaml")
@@ -283,7 +297,7 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 		return fail(err)
 	}
 	values := secrets.Resolve(file, a, manifest.Local).Values
-	for _, n := range declared {
+	for _, n := range required {
 		if v, _ := values.Get(n); v == "" {
 			r.Missing = append(r.Missing, n)
 		}
@@ -306,7 +320,7 @@ func or(a, b string) string {
 }
 
 // agentYAML renders agent.yaml in the order people read it, with a comment on each part.
-func agentYAML(s AgentSpec, secrets []string) (string, error) {
+func agentYAML(s AgentSpec, secrets, optional []string) (string, error) {
 	type local struct {
 		Via        string `yaml:"via"`
 		Name       string `yaml:"name"`
@@ -379,6 +393,16 @@ func agentYAML(s AgentSpec, secrets []string) (string, error) {
 		comment string
 		v       any
 	}{"# Names only: values go in with `stormo secrets set " + s.ID + " NAME`.", map[string]any{"secrets": secrets}})
+	if len(optional) > 0 {
+		entries := []map[string]string{}
+		for _, n := range optional {
+			entries = append(entries, map[string]string{"name": n})
+		}
+		rest = append(rest, struct {
+			comment string
+			v       any
+		}{"# Good to have: without a value, what each one gates (a channel, the fallback model) stays off.", map[string]any{"optional_secrets": entries}})
+	}
 	for _, r := range rest {
 		text, err := part(r.v)
 		if err != nil {

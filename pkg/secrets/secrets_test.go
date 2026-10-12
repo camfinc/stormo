@@ -355,7 +355,7 @@ func TestStatusNamesSourcesNotValues(t *testing.T) {
 			t.Errorf("%s = %+v, want source %q local %q", name, s, want[0], want[1])
 		}
 	}
-	if got["SWARM_CORE_KEY"].Kind != "local" || got["OPENROUTER_API_KEY"].Kind != "required" {
+	if got["SWARM_CORE_KEY"].Kind != "local" || got["APIFY_API_TOKEN"].Kind != "required" || got["OPENROUTER_API_KEY"].Kind != "optional" {
 		t.Errorf("kinds: %+v", got)
 	}
 	if _, ok := got["UNUSED_GLOBAL"]; ok {
