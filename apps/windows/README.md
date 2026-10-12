@@ -57,6 +57,20 @@ Windows CI runs native engine/Qt checks and the detached core lifecycle smoke te
 PyInstaller and Inno Setup produce a per-user installer. The installer is not an admin service.
 It doesn't install Docker silently or create/manage a WSL distribution.
 
+## Windows icon
+
+`assets/stormo.ico` is rasterized from the approved `docs/brand/mark.svg` with
+16, 24, 32, 48, 64, 128 and 256 px frames. Qt, PyInstaller and Inno Setup use this
+same icon. The process and Start menu shortcut share `CAMF.Stormo.Desktop` as their
+Windows application identity. CI checks both final EXEs contain the exact icon frames.
+
+To regenerate with librsvg and ImageMagick from the repository root:
+
+```sh
+rsvg-convert -w 256 -h 256 docs/brand/mark.svg -o /tmp/stormo-icon.png
+magick /tmp/stormo-icon.png -define icon:auto-resize=256,128,64,48,32,24,16 apps/windows/assets/stormo.ico
+```
+
 ## Release gates
 
 Clean-Windows/Docker Desktop verification of mounts, networking and agent startup; full

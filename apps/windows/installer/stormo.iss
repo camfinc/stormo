@@ -16,6 +16,7 @@ OutputBaseFilename=Stormo-Setup-native-x64-preview
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\assets\stormo.ico
 UninstallDisplayIcon={app}\Stormo.exe
 LicenseFile=..\..\..\LICENSE
 
@@ -28,7 +29,7 @@ Type: files; Name: "{app}\_internal\assets\runtime.tar.gz"
 Type: files; Name: "{app}\_internal\assets\runtime.sha256"
 
 [Icons]
-Name: "{group}\Stormo"; Filename: "{app}\Stormo.exe"
+Name: "{group}\Stormo"; Filename: "{app}\Stormo.exe"; IconFilename: "{app}\Stormo.exe"; AppUserModelID: "CAMF.Stormo.Desktop"
 
 [Run]
 Filename: "{app}\Stormo.exe"; Description: "Open Stormo and set up your workspace"; Flags: nowait postinstall skipifsilent

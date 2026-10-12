@@ -36,7 +36,7 @@ jobs:
       - name: Freeze the desktop (no Python installation needed)
         working-directory: apps/windows
         run: >-
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Stormo
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name Stormo --icon assets/stormo.ico
           --add-data "assets;assets" --add-data "../../LICENSE;licenses"
           --add-data "../../NOTICE;licenses" main.py
       - name: Build per-user setup EXE
@@ -44,6 +44,8 @@ jobs:
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" apps/windows/installer/stormo.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify app and installer icon resources
+        run: python apps/windows/installer/check-icons.py
       - uses: actions/upload-artifact@v4
         with:
           name: Stormo-Windows-native-x64-preview-unsigned

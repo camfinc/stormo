@@ -35,6 +35,7 @@ Status is based on source inspection, not a claim of runtime verification on eve
 | Import / export | Implemented | Planned |
 | Menu bar / tray | Implemented on macOS | Planned |
 | Learning / review dedicated UI | Planned (CLI/web available) | Planned |
+| App / installer icon | Branded app icon | Multi-resolution Stormo icon in app, taskbar, shortcut and setup |
 | Packaged installer | DMG build pipeline | Initial: per-user Inno Setup + CI |
 | Signed release / clean-machine acceptance | Release credentials required | Planned |
 | Remote/cloud instances | Deferred | Deferred |

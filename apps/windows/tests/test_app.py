@@ -26,6 +26,14 @@ class AppTests(unittest.TestCase):
         self.app.processEvents()
         self.window.close()
 
+    def test_window_icon_renders_at_windows_shell_sizes(self):
+        icon = self.window.windowIcon()
+        self.assertFalse(icon.isNull())
+        self.assertEqual({(s.width(), s.height()) for s in icon.availableSizes()},
+                         {(s, s) for s in (16, 24, 32, 48, 64, 128, 256)})
+        for size in (16, 32, 48, 256):
+            self.assertFalse(icon.pixmap(size, size).isNull())
+
     def test_setup_actions_disabled_until_detected(self):
         self.window.show_checks([Check("docker", "Docker Desktop", False, "Restart Windows, then check again.")])
         self.assertEqual(self.window.next_button.text(), "Get Docker Desktop…")

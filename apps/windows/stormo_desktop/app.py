@@ -41,7 +41,7 @@ class Window(QMainWindow):
         self.ready = False
         self.checks = []
         self.setWindowTitle("Stormo — Windows preview")
-        self.setWindowIcon(QIcon(str(assets_path() / "mark.svg")))
+        self.setWindowIcon(QIcon(str(assets_path() / "stormo.ico")))
         self.resize(1080, 720)
         self.setMinimumSize(820, 560)
         self.pool = QThreadPool(self)
@@ -295,7 +295,16 @@ class Window(QMainWindow):
 
 
 def main():
+    if sys.platform == "win32":
+        import ctypes
+        set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        set_app_id.argtypes = [ctypes.c_wchar_p]
+        set_app_id.restype = ctypes.c_long
+        result = set_app_id("CAMF.Stormo.Desktop")
+        if result < 0:
+            raise OSError(f"Could not set Stormo taskbar identity: HRESULT {result:#x}")
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(assets_path() / "stormo.ico")))
     app.setApplicationName("Stormo")
     app.setOrganizationName("CAMF")
     window = Window()
