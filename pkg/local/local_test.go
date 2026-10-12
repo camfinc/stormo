@@ -1,6 +1,7 @@
 package local
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -111,8 +112,13 @@ func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
 	os.MkdirAll(filepath.Join(other, ".swarm"), 0o755)
 	os.WriteFile(filepath.Join(other, ".swarm", "ports.json"), []byte(`{"x": 18642}`), 0o644)
 	os.MkdirAll(filepath.Join(os.Getenv("STORMO_HOME"), "instances"), 0o700)
-	os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"),
-		[]byte(`{"root": "`+other+`", "name": "Other", "corePort": 18600}`), 0o600)
+	claim, err := json.Marshal(instance.Claim{Root: other, Name: "Other", CorePort: 18600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"), claim, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := Port(t.TempDir(), "atlas"); err != nil || got != PortBase+2 {
 		t.Errorf("got %d %v, want %d (18642 is the other instance's, 18643 is busy)", got, err, PortBase+2)
 	}
