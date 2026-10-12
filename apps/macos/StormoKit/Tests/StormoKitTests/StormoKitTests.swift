@@ -450,3 +450,9 @@ final class Steps: @unchecked Sendable {
     #expect(ops == MissingSecrets(agent: "nova", names: ["APIFY_API_TOKEN"]))
     #expect(MissingSecrets(error: "atlas: container exited") == nil)
 }
+
+@MainActor @Test func aForgottenAgentStaysHiddenUntilTheCoreDropsIt() {
+    let store = FleetStore(client: CoreClient(base: URL(string: "http://127.0.0.1:1")!))
+    store.forget("nova")
+    #expect(store.agent("nova") == nil)
+}

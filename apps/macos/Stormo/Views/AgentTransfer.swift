@@ -227,7 +227,7 @@ struct DeleteAgentSheet: View {
         failure = nil
         do {
             let r = try await cli.run(["delete", "agent", agentID, "--yes"] + (withPersona ? ["--with-persona"] : []), as: DeleteResult.self)
-            await model.fleet.refresh()
+            model.fleet.forget(agentID)
             deleted()
             dismiss()
             if !r.notes.isEmpty {

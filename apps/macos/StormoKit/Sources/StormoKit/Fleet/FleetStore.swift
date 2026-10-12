@@ -57,6 +57,8 @@ public final class FleetStore {
     /// The instance's look (/api/instance); nil on a core without it.
     public private(set) var look: InstanceLook?
     public var client: CoreClient
+    /// Deleted agents, hidden until the core's registry (rescanned on a timer) drops them too.
+    private var deleted: Set<String> = []
 
     public init(client: CoreClient) {
         self.client = client
@@ -64,7 +66,9 @@ public final class FleetStore {
 
     public func refresh() async {
         do {
-            let f = try await client.fleet()
+            var f = try await client.fleet()
+            deleted.formIntersection(f.agents.map(\.id))
+            f.agents.removeAll { deleted.contains($0.id) }
             fleet = f
             summary = FleetSummary(f)
             clockOffset = f.now - Int64(Date().timeIntervalSince1970 * 1000)
@@ -73,6 +77,13 @@ public final class FleetStore {
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    /// Drops a deleted agent at once instead of at the core's next rescan.
+    public func forget(_ id: String) {
+        deleted.insert(id)
+        fleet?.agents.removeAll { $0.id == id }
+        if let fleet { summary = FleetSummary(fleet) }
     }
 
     public func clear() {
