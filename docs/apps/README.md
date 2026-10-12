@@ -26,7 +26,7 @@ Status is based on source inspection, not a claim of runtime verification on eve
 | New/open instance | Implemented | Initial: create default empty workspace only |
 | Binary selection / API compatibility | Implemented | Initial: fixed bundled engine / API check |
 | Core start / stop / restart | Implemented | Initial: start / stop, ownership guard |
-| Fleet / selected agent actions | Implemented | Initial: table, start / stop / restart / nap |
+| Fleet / selected agent actions | Implemented | Initial: table, start / stop / restart / nap; selection tracked by agent ID |
 | Native animated office | Implemented (SpriteKit) | Planned |
 | Chat / conversations | Implemented | Planned |
 | Providers / sign-in | Implemented | Planned |

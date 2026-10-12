@@ -51,3 +51,11 @@ class AppTests(unittest.TestCase):
         self.assertFalse(self.window.next_button.isEnabled())
         self.assertFalse(self.window.core_buttons[0].isEnabled())
         self.window.busy = False
+
+    def test_removed_agent_does_not_select_replacement(self):
+        self.window.show_checks([Check("instance", "Workspace", True, "Ready")])
+        self.window.show_fleet({"agents": [{"id": "atlas", "name": "Atlas"}]})
+        self.window.table.selectRow(0)
+        self.window.show_fleet({"agents": [{"id": "byte", "name": "Byte"}]})
+        self.assertIsNone(self.window.selected_agent())
+        self.assertFalse(self.window.agent_buttons[0].isEnabled())

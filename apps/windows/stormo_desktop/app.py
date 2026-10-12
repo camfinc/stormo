@@ -260,6 +260,8 @@ class Window(QMainWindow):
     def show_fleet(self, fleet):
         selected = self.selected_agent()
         agents = fleet.get("agents", [])
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
         self.table.setRowCount(len(agents))
         for row, agent in enumerate(agents):
             for col, key in enumerate(("name", "unit", "state", "health", "model")):
