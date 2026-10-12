@@ -450,11 +450,17 @@ private struct ProblemBanner: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: problem.kind == .busy ? "hourglass" : "exclamationmark.triangle.fill")
-                .foregroundStyle(problem.kind == .busy ? Color.secondary : Color.orange)
-            Text(problem.message).font(.callout).lineLimit(3)
+            if problem.kind == .starting {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: problem.kind == .busy ? "hourglass" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(problem.kind == .busy ? Color.secondary : Color.orange)
+            }
+            Text(message).font(.callout).lineLimit(3)
             Spacer()
-            if problem.kind == .notRunning, let agent {
+            if problem.kind == .starting {
+                EmptyView()
+            } else if problem.kind == .notRunning, let agent {
                 Button("Start Agent") {
                     Task {
                         await model.run("start", agents: [agent])
@@ -477,6 +483,12 @@ private struct ProblemBanner: View {
                 .buttonStyle(.borderless)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(.orange.opacity(0.08))
+        .background(problem.kind == .starting ? Color.secondary.opacity(0.08) : Color.orange.opacity(0.08))
+    }
+
+    private var message: String {
+        guard problem.kind == .starting else { return problem.message }
+        let name = agent.flatMap { model.fleet.agent($0)?.name } ?? "The agent"
+        return "\(name) is still starting up. The chat connects on its own as soon as it's ready."
     }
 }

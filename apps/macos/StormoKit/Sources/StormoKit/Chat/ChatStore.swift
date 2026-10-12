@@ -15,9 +15,23 @@ extension StormoCLI: ChatBackend {}
 
 /// Why the chat could not do something, by the CLI's error code (docs/api.md).
 public struct ChatProblem: Equatable, Sendable {
-    public enum Kind: Sendable { case notRunning, busy, notFound, other }
+    /// The agent's API on this Mac did not answer: its container is up but the server inside is not
+    /// listening yet (or is restarting), so the request was refused or cut off.
+    static func unreachable(_ message: String) -> Bool {
+        let m = message.lowercased()
+        guard m.contains("127.0.0.1") || m.contains("localhost") else { return false }
+        return m.hasSuffix(": eof") || m.contains("connection refused") || m.contains("connection reset")
+            || m.contains("server closed") || m.contains("empty reply")
+    }
+
+    public enum Kind: Sendable { case notRunning, starting, busy, notFound, other }
     public var kind: Kind
     public var message: String
+
+    public init(kind: Kind, message: String) {
+        self.kind = kind
+        self.message = message
+    }
 
     public init(_ error: any Error) {
         let code = (error as? CLIError)?.code
@@ -25,10 +39,11 @@ public struct ChatProblem: Equatable, Sendable {
         case "not_running": .notRunning
         case "busy": .busy
         case "not_found": .notFound
-        default: .other
+        default: Self.unreachable(error.localizedDescription) ? .starting : .other
         }
         message = switch kind {
         case .notRunning: "The agent is not running here. Start it to chat."
+        case .starting: "The agent isn't ready yet. It is still starting up; the chat connects on its own when it is."
         case .busy: "The agent is busy with other turns. Try again in a moment."
         default: error.localizedDescription
         }
@@ -55,7 +70,13 @@ public final class ChatStore {
     public private(set) var transcript: Transcript?
     public private(set) var loadingTranscript = false
     public private(set) var pending: PendingTurn?
-    public var problem: ChatProblem?
+    public var problem: ChatProblem? {
+        didSet { if problem?.kind == .starting { retryWhileStarting() } }
+    }
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+
+    /// How often, and for how long, a starting agent is tried again before the problem stays.
+    public var startingRetry: (every: Duration, for: Duration) = (.seconds(2), .seconds(120))
 
     /// How often a running turn's transcript is re-read, to show its tool calls as they happen.
     public var progressInterval: Duration = .seconds(2.5)
@@ -138,6 +159,7 @@ public final class ChatStore {
             let t = try await backend.transcript(agent, id)
             guard agent == self.agent, selection == id else { return }
             transcript = t
+            if problem?.kind == .starting { problem = nil }
         } catch {
             guard agent == self.agent, selection == id else { return }
             let p = ChatProblem(error)
@@ -198,6 +220,26 @@ public final class ChatStore {
                 self.pending = nil
                 if !(error is CancellationError) { self.problem = ChatProblem(error) }
                 if self.agent == agent, let id = conversation, self.selection == id { await self.reloadTranscript(id) }
+            }
+        }
+    }
+
+    /// Tries the agent again until it answers (which clears the problem) or the time runs out.
+    private func retryWhileStarting() {
+        guard retryTask == nil else { return }
+        let (every, limit) = startingRetry
+        retryTask = Task { [weak self] in
+            let end = ContinuousClock.now + limit
+            while ContinuousClock.now < end {
+                try? await Task.sleep(for: every)
+                guard !Task.isCancelled, let self, self.problem?.kind == .starting else { break }
+                await self.refreshList()
+                if let id = self.selection, self.problem == nil { await self.reloadTranscript(id) }
+            }
+            guard let self else { return }
+            self.retryTask = nil
+            if !Task.isCancelled, self.problem?.kind == .starting {
+                self.problem = ChatProblem(kind: .other, message: "The agent did not come up. Its logs say why (stormo logs).")
             }
         }
     }
