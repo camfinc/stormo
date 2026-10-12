@@ -1,21 +1,15 @@
 <?xml version="1.0"?>
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:runtime="using:Stormo.Runtime" x:Class="Stormo.Desktop.MainWindow" Title="Stormo">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:runtime="using:Stormo.Runtime" x:Class="Stormo.Desktop.MainWindow" Title="Stormo Preview">
   <Window.SystemBackdrop>
     <MicaBackdrop/>
   </Window.SystemBackdrop>
   <Grid x:Name="Root" Loaded="OnLoaded">
-    <NavigationView x:Name="Navigation" IsBackButtonVisible="Collapsed" IsSettingsVisible="False" PaneDisplayMode="Auto" OpenPaneLength="224" SelectionChanged="OnNavigationChanged" PaneTitle="Stormo">
+    <NavigationView x:Name="Navigation" IsBackButtonVisible="Collapsed" IsSettingsVisible="False" PaneDisplayMode="Auto" ExpandedModeThresholdWidth="900" CompactModeThresholdWidth="640" OpenPaneLength="224" SelectionChanged="OnNavigationChanged" PaneTitle="Stormo Preview">
       <NavigationView.MenuItems>
         <NavigationViewItem x:Name="SetupItem" Content="Setup" Tag="setup" Icon="Home" AutomationProperties.AutomationId="SetupNav"/>
         <NavigationViewItem Content="Agents" Tag="agents" Icon="People" AutomationProperties.AutomationId="AgentsNav"/>
         <NavigationViewItem Content="Core" Tag="core" Icon="Setting" AutomationProperties.AutomationId="CoreNav"/>
       </NavigationView.MenuItems>
-      <NavigationView.PaneFooter>
-        <StackPanel Margin="16,12" Spacing="4">
-          <TextBlock Text="Windows preview" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-          <TextBlock Text="Local workspace" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-        </StackPanel>
-      </NavigationView.PaneFooter>
       <Grid Padding="32,24,32,24" RowSpacing="16" Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="8,0,0,0">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
@@ -41,7 +35,7 @@
                       </Grid.ColumnDefinitions>
                       <FontIcon Glyph="&#xE73E;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" Visibility="{x:Bind Ready}"/>
                       <TextBlock Grid.Column="1" Text="{x:Bind Title}" VerticalAlignment="Center"/>
-                      <TextBlock Grid.Column="2" Text="{x:Bind Key}" Visibility="Collapsed"/>
+                      <TextBlock Grid.Column="2" Text="{x:Bind StateLabel}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center"/>
                     </Grid>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
@@ -54,6 +48,9 @@
                     <Button x:Name="NextButton" Content="Checking&#x2026;" Style="{ThemeResource AccentButtonStyle}" Click="OnNext" IsEnabled="False" AutomationProperties.AutomationId="NextStep"/>
                     <Button x:Name="CheckButton" AutomationProperties.AutomationId="CheckAgain" Content="Check again" Click="OnCheck" IsEnabled="False"/>
                   </StackPanel>
+                  <Expander x:Name="SetupDiagnostics" Header="Setup details" Visibility="Collapsed" HorizontalAlignment="Stretch">
+                    <TextBlock x:Name="SetupDetails" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+                  </Expander>
                 </StackPanel>
               </Border>
               <TextBlock Text="Docker Desktop is a separate app with its own license terms. Setup may need administrator approval, internet access or a restart. Your workspace stays on this PC when Stormo is uninstalled." TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="680" HorizontalAlignment="Left"/>

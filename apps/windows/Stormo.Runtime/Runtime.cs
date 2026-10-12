@@ -4,7 +4,10 @@ using System.Text.Json;
 
 namespace Stormo.Runtime;
 
-public record SetupCheck(string Key, string Title, bool Ready, string Detail);
+public record SetupCheck(string Key, string Title, bool Ready, string Detail, string Diagnostic = "")
+{
+    public string StateLabel => Ready ? "Ready" : "Next";
+}
 public record Agent(string Id, string Name, string Unit, string State, string Health, string Model);
 public delegate Task<string> CommandRunner(string executable, IReadOnlyList<string> args, int timeout);
 
@@ -117,7 +120,7 @@ public sealed class LocalRuntime
         catch (Exception error)
         {
             verified = false;
-            checks.Add(new("docker", "Docker Desktop", false, "Docker Desktop runs your agents in the background. Install it, open it and finish its setup, then check again. A Windows restart may be needed.\n\n" + error.Message));
+            checks.Add(new("docker", "Docker Desktop", false, "Docker Desktop runs your agents in the background. Install it, open it and finish its setup, then check again. A Windows restart may be needed.", error.Message));
             return checks;
         }
         checks.Add(new("docker", "Docker Desktop", true, "The container engine is ready."));
@@ -127,7 +130,7 @@ public sealed class LocalRuntime
             var version = await Command("version");
             if (version.GetProperty("api").GetInt32() != 1) throw new InvalidOperationException("The bundled engine is incompatible. Reinstall the preview.");
         }
-        catch (Exception error) { checks.Add(new("repair", "Stormo engine", false, error.Message)); return checks; }
+        catch (Exception error) { checks.Add(new("repair", "Stormo engine", false, "The engine could not be verified. Reinstall the complete preview build, then check again.", error.Message)); return checks; }
         checks.Add(new("engine", "Stormo engine", true, "The native engine is ready."));
         if (!verified) { checks.Add(new("verify", "Test the runtime", false, "Run a small, disposable test container before starting agents. The first check downloads Docker’s hello-world image.")); return checks; }
         checks.Add(new("verify", "Runtime test", true, "A test container ran successfully."));
@@ -135,7 +138,7 @@ public sealed class LocalRuntime
         catch (Exception error)
         {
             // Never suggest creating over an existing but unreadable/broken workspace.
-            if (Directory.Exists(Instance)) checks.Add(new("repair", "Your workspace", false, "The existing workspace could not be opened. Its files have been left unchanged.\n\n" + error.Message));
+            if (Directory.Exists(Instance)) checks.Add(new("repair", "Your workspace", false, "The existing workspace could not be opened. Its files have been left unchanged. Open setup details for the error.", error.Message));
             else checks.Add(new("instance", "Your workspace", false, "Create a private workspace on this PC. It starts empty; setup won’t run agents or use a paid model."));
             return checks;
         }

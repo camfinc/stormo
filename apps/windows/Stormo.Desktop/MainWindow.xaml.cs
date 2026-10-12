@@ -25,6 +25,7 @@ public sealed partial class MainWindow : Window
         int width = Math.Min(1120, area.Width - 32), height = Math.Min(800, area.Height - 32);
         AppWindow.MoveAndResize(new RectInt32(area.X + (area.Width - width) / 2,
             area.Y + (area.Height - height) / 2, width, height));
+        AppWindow.TitleBar.PreferredTheme = TitleBarTheme.UseDefaultAppMode;
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "assets", "stormo.ico"));
         WorkspacePath.Text = runtime.Instance;
         Navigation.SelectedItem = SetupItem;
@@ -89,6 +90,8 @@ public sealed partial class MainWindow : Window
         var next = checks.LastOrDefault();
         NextTitle.Text = ready ? "Your workspace is ready" : next?.Title ?? "Check setup";
         Instructions.Text = next?.Detail ?? "Could not check this PC. Try again.";
+        SetupDetails.Text = next?.Diagnostic ?? "";
+        SetupDiagnostics.Visibility = string.IsNullOrWhiteSpace(next?.Diagnostic) ? Visibility.Collapsed : Visibility.Visible;
         NextButton.Content = ready ? "Open workspace" : next?.Key switch { "docker" => "Get Docker Desktop", "verify" => "Test runtime", "instance" => "Create workspace", "repair" => "Repair needed", "windows" => "Unsupported PC", _ => "Check again" };
     }
     private async void OnCheck(object sender, RoutedEventArgs args) => await Detect();

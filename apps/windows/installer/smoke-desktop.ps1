@@ -5,6 +5,7 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class DesktopWindow {
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
  public struct RECT { public int Left, Top, Right, Bottom; }
@@ -47,6 +48,14 @@ try {
    }
    if (!$ready) { throw 'Initial setup detection did not finish' }
    [DesktopWindow]::SetForegroundWindow($app.MainWindowHandle) | Out-Null
+   $rect = New-Object DesktopWindow+RECT
+   [DesktopWindow]::GetWindowRect($app.MainWindowHandle, [ref]$rect) | Out-Null
+   [DesktopWindow]::SetCursorPos(($rect.Right - 40), ($rect.Bottom - 40)) | Out-Null
+   foreach ($name in @('coreclr.dll', 'Microsoft.UI.Xaml.dll')) {
+    $module = $app.Modules | Where-Object ModuleName -EQ $name | Select-Object -First 1
+    if (!$module -or !$module.FileName.StartsWith((Split-Path $exe), [StringComparison]::OrdinalIgnoreCase)) { throw "$name did not load from the self-contained installation" }
+    Write-Output "PASS private runtime: $name"
+   }
    foreach ($page in @('Setup', 'Agents', 'Core')) {
     $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, ($page + 'Nav'))
     $item = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)

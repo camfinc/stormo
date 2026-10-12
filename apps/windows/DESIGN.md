@@ -13,7 +13,8 @@ Use standard InfoBar for recoverable errors, CommandBar and ListView for fleet a
 ContentDialog with Cancel as default for interruptions, and Expander for operation details.
 Agent name/model/unit and state/health are grouped for scanning. The native empty-state InfoBar
 states the preview's actual limits. Windows supplies keyboard focus, control motion, fonts,
-accessibility roles and theme colors. Content scrolls and NavigationView collapses on narrow windows.
+accessibility roles and theme colors. Content scrolls and NavigationView collapses below 900 px; no free-form footer text in its icon rail.
+Technical setup failures live in a native expander, keeping the primary instructions actionable.
 
 Async operations keep the UI responsive, prevent duplicate actions and block close until done.
 The progress bar describes ongoing work; errors remain visible with recovery guidance. Selection

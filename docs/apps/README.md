@@ -23,7 +23,7 @@ Status is based on source inspection, not a claim of runtime verification on eve
 | Capability | macOS (`apps/macos`) | Windows (`apps/windows`) |
 |---|---|---|
 | Desktop shell | SwiftUI | Initial: native WinUI 3 / C# (Fluent controls, system themes) |
-| Runtime installation / repair | External local container runtime | Initial: native Windows engine + Docker Desktop checklist |
+| Runtime installation / repair | External local container runtime | Initial: native Windows engine + Docker Desktop checklist; diagnostics in an expander |
 | New/open instance | Implemented | Initial: create default empty workspace only |
 | Binary selection / API compatibility | Implemented | Initial: bundled stormo.exe / API and Windows path identity checks |
 | Core start / stop / restart | Implemented | Initial: native detached core / graceful stop, ownership guard |
