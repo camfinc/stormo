@@ -3,8 +3,8 @@ package privatefs
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -31,9 +31,31 @@ func TestWindowsPrivateACLInheritance(t *testing.T) {
 		if err != nil || acl == nil || acl.AceCount != 2 {
 			t.Fatalf("unexpected DACL on %s: %v %v", path, acl, err)
 		}
-		descriptor := sd.String()
-		if !strings.Contains(descriptor, ";;;SY)") || !strings.Contains(descriptor, ";;;"+user.User.Sid.String()+")") {
-			t.Fatalf("unexpected trustees: %s", descriptor)
+		seenUser, seenSystem := false, false
+		system, err := windows.StringToSid("S-1-5-18")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := uint32(0); i < uint32(acl.AceCount); i++ {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(acl, i, &ace); err != nil {
+				t.Fatal(err)
+			}
+			if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+				t.Fatal("unexpected ACE type")
+			}
+			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			switch {
+			case sid.Equals(user.User.Sid):
+				seenUser = true
+			case sid.Equals(system):
+				seenSystem = true
+			default:
+				t.Fatalf("unexpected trustee %s", sid.String())
+			}
+		}
+		if !seenUser || !seenSystem {
+			t.Fatal("missing user or SYSTEM access")
 		}
 	}
 }
