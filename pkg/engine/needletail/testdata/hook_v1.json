@@ -1,0 +1,1 @@
+{"v":1,"event":"tool_done","delivery":"0192f3a4-5b6c-7d8e-9f00-112233445566","at":"2026-10-12T09:00:01.250Z","session":"slack-C0000000001-1791337000.000100","tool":"write_file","input":{"path":"/shared/group/notes.md"},"call_id":"call_abc123","approval_id":"","platform":"slack","status":"ok","duration_ms":1250}

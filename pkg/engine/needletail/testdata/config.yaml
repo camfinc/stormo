@@ -1,0 +1,8 @@
+# engine/needletail/config.yaml as an agent would commit it (grants are outside skills/).
+luau:
+  grants: [http:api.example.com, fs.read:shared, fs.read:home]
+  http_secrets:
+    - host: api.example.com
+      env: CRM_API_TOKEN
+      header: Authorization
+      template: "Bearer {value}"
