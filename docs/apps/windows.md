@@ -23,6 +23,8 @@ in Go and actions use the same versioned JSON CLI/API contracts on every platfor
 - Graceful stop uses a Windows named event scoped to the logon session, instance and process;
   shutdown calls the same `Core.Close` as Unix. A missing event refuses to stop a reused/unowned
   PID. Unix keeps its existing process-session and signal implementation.
+- Windows private directories use protected, inheritable current-user/SYSTEM ACLs; Unix
+  retains its POSIX permissions. Native CI checks ACL inheritance.
 - Instance data: `%LOCALAPPDATA%\Stormo\Instances\default`, outside the install directory.
 - The app forces local target, its explicit instance and Docker Desktop's Linux context. It
   clears inherited remote Docker and core-bind overrides. Core API reads stay on loopback.

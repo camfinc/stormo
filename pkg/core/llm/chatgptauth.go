@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"html"
 	"io"
 	"math/big"
@@ -164,7 +165,7 @@ func writeAtomic(path string, v any) error {
 	if err := enc.Encode(v); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := privatefs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
@@ -180,7 +181,7 @@ func writeAtomic(path string, v any) error {
 // WithLock holds an exclusive lock (a directory, created atomically) across processes on this host.
 func WithLock[T any](lockDir string, timeout time.Duration, fn func() (T, error)) (T, error) {
 	var zero T
-	if err := os.MkdirAll(filepath.Dir(lockDir), 0o700); err != nil {
+	if err := privatefs.MkdirAll(filepath.Dir(lockDir), 0o700); err != nil {
 		return zero, err
 	}
 	start := time.Now()

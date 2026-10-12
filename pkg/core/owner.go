@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,7 +26,7 @@ func EnsureOwnerToken(root string) (string, error) {
 	if t := ReadOwnerToken(root); t != "" {
 		return t, nil
 	}
-	if err := os.MkdirAll(CoreDir(root), 0o700); err != nil {
+	if err := privatefs.MkdirAll(CoreDir(root), 0o700); err != nil {
 		return "", err
 	}
 	b := make([]byte, 32)

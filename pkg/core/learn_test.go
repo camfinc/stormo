@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -116,7 +117,7 @@ func TestManualCycleNapsDreamsAndDigests(t *testing.T) {
 			t.Errorf("digest lacks %q:\n%s", want, d)
 		}
 	}
-	if info, _ := os.Stat(c.Digest); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(c.Digest); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("digest mode %v", info.Mode().Perm())
 	}
 }

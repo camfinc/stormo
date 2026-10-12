@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"io"
 	"net/http"
 	"os"
@@ -96,7 +97,7 @@ func up(inst *instance.Instance, o *out.Writer) error {
 		o.Result(UpResult{Port: CorePort(), Login: h.Login}, func(w io.Writer) { fmt.Fprintf(w, "core already running on %s\n", base()) })
 		return nil
 	}
-	if err := os.MkdirAll(CoreDir(root), 0o700); err != nil {
+	if err := privatefs.MkdirAll(CoreDir(root), 0o700); err != nil {
 		return err
 	}
 	logf, err := os.OpenFile(logPath(root), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

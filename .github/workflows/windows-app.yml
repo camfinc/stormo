@@ -22,7 +22,7 @@ jobs:
       - name: Build native Windows engine
         run: python apps/windows/installer/build-engine.py
       - name: Test Windows engine and paths
-        run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold
+        run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold ./pkg/privatefs
       - name: Exercise native core lifecycle
         run: python apps/windows/installer/smoke-engine.py
       - name: Install build dependencies

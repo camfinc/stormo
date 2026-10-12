@@ -11,6 +11,7 @@ feature backlog. Windows is the next delivery priority; Linux desktop packaging 
 - Check API compatibility and instance identity before attaching or enabling actions.
 - One active instance/core. Quitting the UI does not stop agents or the core.
 - Never persist response bodies, credentials or process output in desktop settings.
+- Private engine state uses POSIX permissions on Unix and current-user/SYSTEM ACLs on Windows.
 - Setup must explain missing prerequisites in ordinary language, handle restart/retry, and
   never describe a dependency check or installer exit as verified runtime readiness.
 
