@@ -52,7 +52,7 @@
                   <TextBlock x:Name="Instructions" Text="Looking for your workspace and container runtime&#x2026;" TextWrapping="Wrap" MaxWidth="640" HorizontalAlignment="Left"/>
                   <StackPanel Orientation="Horizontal" Spacing="12">
                     <Button x:Name="NextButton" Content="Checking&#x2026;" Style="{ThemeResource AccentButtonStyle}" Click="OnNext" IsEnabled="False" AutomationProperties.AutomationId="NextStep"/>
-                    <Button x:Name="CheckButton" Content="Check again" Click="OnCheck" IsEnabled="False"/>
+                    <Button x:Name="CheckButton" AutomationProperties.AutomationId="CheckAgain" Content="Check again" Click="OnCheck" IsEnabled="False"/>
                   </StackPanel>
                 </StackPanel>
               </Border>

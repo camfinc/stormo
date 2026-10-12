@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Controls;
 using Stormo.Runtime;
 using Windows.System;
@@ -18,14 +19,12 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
-        try { InitializeComponent(); }
-        catch
-        {
-            Console.Error.WriteLine($"XAML loaded controls: navigation={Navigation != null}, setup={SetupPage != null}, next={NextButton != null}, agents={AgentsPage != null}, list={AgentList != null}, core={CorePage != null}, status={Status != null}");
-            throw;
-        }
+        InitializeComponent();
         initialized = true;
-        AppWindow.Resize(new SizeInt32(1120, 800));
+        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        int width = Math.Min(1120, area.Width - 32), height = Math.Min(800, area.Height - 32);
+        AppWindow.MoveAndResize(new RectInt32(area.X + (area.Width - width) / 2,
+            area.Y + (area.Height - height) / 2, width, height));
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "assets", "stormo.ico"));
         WorkspacePath.Text = runtime.Instance;
         Navigation.SelectedItem = SetupItem;

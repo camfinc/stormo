@@ -38,6 +38,14 @@ try {
     }
    }
    if (!$window) { throw 'Stormo did not show a native window' }
+   $ready = $false
+   $checkCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'CheckAgain')
+   for ($i = 0; $i -lt 90; $i++) {
+    $check = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $checkCondition)
+    if ($check -and $check.Current.IsEnabled) { $ready = $true; break }
+    Start-Sleep -Milliseconds 500
+   }
+   if (!$ready) { throw 'Initial setup detection did not finish' }
    [DesktopWindow]::SetForegroundWindow($app.MainWindowHandle) | Out-Null
    foreach ($page in @('Setup', 'Agents', 'Core')) {
     $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, ($page + 'Nav'))
