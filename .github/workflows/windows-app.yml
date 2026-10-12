@@ -9,39 +9,22 @@ permissions:
   contents: read
 
 jobs:
-  runtime:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - name: Build the bundled Linux runtime
-        run: apps/windows/installer/build-runtime.sh
-      - name: Check bundled engine
-        run: |
-          docker run --rm --platform linux/amd64 stormo-windows-runtime:preview /opt/stormo/bin/stormo version --json
-          docker run --rm --platform linux/amd64 --user stormo stormo-windows-runtime:preview /opt/stormo/bin/stormo new instance /home/stormo/Instances/test --name Test --no-git --json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-runtime
-          path: |
-            apps/windows/assets/runtime.tar.gz
-            apps/windows/assets/runtime.sha256
-          retention-days: 7
-
   desktop:
     runs-on: windows-2025
-    needs: runtime
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          name: windows-runtime
-          path: apps/windows/assets
+          go-version-file: go.mod
+      - name: Build native Windows engine
+        run: python apps/windows/installer/build-engine.py
+      - name: Test Windows engine and paths
+        run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold
+      - name: Exercise native core lifecycle
+        run: python apps/windows/installer/smoke-engine.py
       - name: Install build dependencies
         run: python -m pip install -r apps/windows/requirements-build.txt
       - name: Test runtime adapter and desktop
@@ -63,6 +46,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: Stormo-Windows-x64-preview-unsigned
+          name: Stormo-Windows-native-x64-preview-unsigned
           path: apps/windows/build/installer/*.exe
           retention-days: 14

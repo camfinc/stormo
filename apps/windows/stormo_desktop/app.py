@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 import sys
 
@@ -10,7 +9,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHe
     QLabel, QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QStackedWidget, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
-from .runtime import Runtime, RuntimeFailure, run
+from .runtime import Runtime
 
 
 def assets_path() -> Path:
@@ -223,7 +222,7 @@ class Window(QMainWindow):
         self.instruction.setText(checks[-1].detail if checks else "Could not check setup.")
         key = checks[-1].key if checks else "repair"
         self.next_button.setText("Start core and open Agents" if self.ready else {
-            "wsl": "Prepare Windows…", "import": "Prepare Stormo", "docker": "Get Docker Desktop…",
+            "docker": "Get Docker Desktop…",
             "verify": "Verify runtime", "instance": "Create workspace", "repair": "Repair required",
             "windows": "Unsupported PC"}.get(key, "Check again"))
         self.update_controls()
@@ -238,17 +237,10 @@ class Window(QMainWindow):
         key = self.checks[-1].key
         if key == "docker":
             QDesktopServices.openUrl(QUrl("https://docs.docker.com/desktop/setup/install/windows-install/"))
-        elif key == "wsl":
-            self.submit("Preparing Windows. Approve the Windows prompt if you want to continue…", install_wsl, self.wsl_finished)
-        elif key == "import":
-            self.submit("Preparing Stormo's workspace…", self.runtime.import_runtime, lambda _: self.check_setup())
         elif key == "verify":
             self.submit("Testing the container runtime. The first check downloads a small test image…", self.runtime.verify_container, lambda _: self.check_setup())
         elif key == "instance":
             self.submit("Creating your workspace…", self.runtime.create_instance, lambda _: self.check_setup())
-
-    def wsl_finished(self, _):
-        self.instruction.setText("Windows setup has finished. Restart Windows if requested, then reopen Stormo and select Check again. No automatic restart will occur.")
 
     def poll(self):
         if not self.busy and self.ready and self.pages.currentIndex() == 1:
@@ -300,16 +292,6 @@ class Window(QMainWindow):
             event.ignore()
         else:
             event.accept()
-
-
-def install_wsl():
-    # Fixed command only; UAC applies to WSL installation, not the app.
-    script = "$ErrorActionPreference = 'Stop'; $p = Start-Process wsl.exe -ArgumentList '--install','--no-distribution' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    try:
-        run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], timeout=1800)
-    except RuntimeFailure as exc:
-        raise RuntimeFailure("Windows setup did not finish, or approval was cancelled. If Windows requested a restart, restart and check again. Otherwise retry Prepare Windows.\n" + str(exc)) from exc
 
 
 def main():

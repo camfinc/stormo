@@ -22,4 +22,4 @@ root.mkdir(parents=True, exist_ok=True)
     "Qt for Python 6.8.3: https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.8.3-src/\n"
     "Qt 6.8.3: https://download.qt.io/official_releases/qt/6.8/6.8.3/single/\n"
     "Qt DLLs are distributed separately in this onedir build.\n"
-    "Runtime Ubuntu notices: /usr/share/doc inside the Stormo WSL filesystem.\n", encoding="utf-8")
+    "Stormo engine runs natively on Windows; no Linux distribution is bundled.\n", encoding="utf-8")

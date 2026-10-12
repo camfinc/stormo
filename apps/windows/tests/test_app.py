@@ -17,7 +17,7 @@ class AppTests(unittest.TestCase):
     def setUp(self):
         class FakeRuntime:
             def detect(self):
-                return [Check("wsl", "Windows runtime", False, "Restart Windows, then check again.")]
+                return [Check("docker", "Docker Desktop", False, "Restart Windows, then check again.")]
         self.window = Window(FakeRuntime(), start_checks=False)
         self.window.timer.stop()
 
@@ -27,8 +27,8 @@ class AppTests(unittest.TestCase):
         self.window.close()
 
     def test_setup_actions_disabled_until_detected(self):
-        self.window.show_checks([Check("wsl", "Windows runtime", False, "Restart Windows, then check again.")])
-        self.assertEqual(self.window.next_button.text(), "Prepare Windows…")
+        self.window.show_checks([Check("docker", "Docker Desktop", False, "Restart Windows, then check again.")])
+        self.assertEqual(self.window.next_button.text(), "Get Docker Desktop…")
         self.assertFalse(self.window.core_buttons[0].isEnabled())
         self.assertFalse(self.window.agent_buttons[0].isEnabled())
 

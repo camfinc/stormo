@@ -3,6 +3,7 @@ package local
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -37,12 +38,16 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 	}
 	p := Paths{Root: inst.Root, BaselineDir: "/x/.swarm/local/atlas/baseline", EnvFile: "/x/agents/atlas/data/agent.env", StoreDir: "/x/agents/atlas/data/store", SharedDir: "/x/.swarm/shared"}
 	spec := Render(a, hermes.New(inst), p, 18642, 120, "stormo-sidecar:test")
-	if got := spec.Services["agent"].ExtraHosts; !slices.Equal(got, []string{"host.docker.internal:host-gateway"}) {
+	wantHosts := []string{"host.docker.internal:host-gateway"}
+	if runtime.GOOS == "windows" {
+		wantHosts = nil
+	}
+	if got := spec.Services["agent"].ExtraHosts; !slices.Equal(got, wantHosts) {
 		t.Errorf("extra_hosts = %v", got)
 	}
 	for _, name := range []string{"rehydrate", "nap"} {
 		s := spec.Services[name]
-		if s.Image != "stormo-sidecar:test" || !slices.Contains(s.Volumes, p.BaselineDir+":/app/dist/atlas/baseline:ro") || !slices.Contains(s.Volumes, filepath.Join(inst.Root, "stormo.yaml")+":/app/stormo.yaml:ro") {
+		if s.Image != "stormo-sidecar:test" || !slices.Contains(s.Volumes, p.BaselineDir+":/app/dist/atlas/baseline:ro") || !slices.Contains(s.Volumes, filepath.ToSlash(filepath.Join(inst.Root, "stormo.yaml"))+":/app/stormo.yaml:ro") {
 			t.Errorf("%s: %+v", name, s)
 		}
 		// Its own store only, and none of the agent's data folder (secret values) through agents/atlas.

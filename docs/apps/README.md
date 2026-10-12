@@ -22,10 +22,10 @@ Status is based on source inspection, not a claim of runtime verification on eve
 | Capability | macOS (`apps/macos`) | Windows (`apps/windows`) |
 |---|---|---|
 | Desktop shell | SwiftUI | Initial: Qt 6 / PySide6 |
-| Runtime installation / repair | External local container runtime | Initial: WSL + Docker checklist |
+| Runtime installation / repair | External local container runtime | Initial: native Windows engine + Docker Desktop checklist |
 | New/open instance | Implemented | Initial: create default empty workspace only |
-| Binary selection / API compatibility | Implemented | Initial: fixed bundled engine / API check |
-| Core start / stop / restart | Implemented | Initial: start / stop, ownership guard |
+| Binary selection / API compatibility | Implemented | Initial: bundled stormo.exe / API and Windows path identity checks |
+| Core start / stop / restart | Implemented | Initial: native detached core / graceful stop, ownership guard |
 | Fleet / selected agent actions | Implemented | Initial: table, start / stop / restart / nap; selection tracked by agent ID |
 | Native animated office | Implemented (SpriteKit) | Planned |
 | Chat / conversations | Implemented | Planned |

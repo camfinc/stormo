@@ -1,19 +1,16 @@
 """No Qt dependency: runtime checks and mutations are independently testable."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import ntpath
+import shutil
 from pathlib import Path
 import platform
 import subprocess
 from dataclasses import dataclass
 from urllib.request import build_opener, ProxyHandler, HTTPRedirectHandler
 
-DISTRO = "Stormo"
-INSTANCE = "/home/stormo/Instances/default"
-ENGINE = "/opt/stormo/bin/stormo"
-MARKER = "stormo-desktop-runtime-v1"
 
 
 class RuntimeFailure(Exception):
@@ -21,15 +18,20 @@ class RuntimeFailure(Exception):
 
 
 def decode(data: bytes) -> str:
-    # wsl.exe's inventory is UTF-16LE on Windows, command output is UTF-8.
+    # Native engine/Docker output is UTF-8; tolerate BOM-marked Windows diagnostics.
     return data.decode("utf-16" if data.startswith(b"\xff\xfe") else
                        "utf-16-le" if b"\0" in data else "utf-8", errors="replace").strip()
 
 
 def run(argv: list[str], timeout: int = 30) -> str:
     env = dict(os.environ)
-    for key in ("SWARM_TARGET", "STORMO_INSTANCE", "WSLENV"):
+    for key in ("SWARM_TARGET", "STORMO_INSTANCE", "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "STORMO_SRC", "SWARM_CORE_BIND"):
         env.pop(key, None)
+    env["SWARM_CORE_PORT"] = "18600"
+    env["DOCKER_CONTEXT"] = "desktop-linux"
+    docker = docker_executable()
+    if docker:
+        env["PATH"] = str(Path(docker).parent) + os.pathsep + env.get("PATH", "")
     try:
         result = subprocess.run(argv, input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, timeout=timeout, check=False,
@@ -44,14 +46,21 @@ def run(argv: list[str], timeout: int = 30) -> str:
     return decode(result.stdout)
 
 
-def wsl(*args: str) -> list[str]:
-    return ["wsl.exe", "--distribution", DISTRO, "--user", "stormo", "--exec", *args]
+def docker_executable() -> str | None:
+    for folder in (Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Docker/Docker/resources/bin",
+                   Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/DockerDesktop/resources/bin"):
+        candidate = folder / "docker.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("docker.exe")
 
 
-def cli_args(*command: str) -> list[str]:
-    return wsl("env", "-u", "SWARM_TARGET", "-u", "STORMO_INSTANCE",
-               "SWARM_CORE_PORT=18600", ENGINE, "--json", "--target", "local",
-               "--instance", INSTANCE, *command)
+def cli_args(engine: Path, instance: Path, *command: str) -> list[str]:
+    return [str(engine), "--json", "--target", "local", "--instance", str(instance), *command]
+
+
+def same_path(a: str, b: str) -> bool:
+    return ntpath.normcase(ntpath.normpath(a)) == ntpath.normcase(ntpath.normpath(b))
 
 
 def parse_result(output: str):
@@ -86,10 +95,10 @@ def read_api(route: str):
         return json.load(response)
 
 
-def check_core(core: dict) -> None:
+def check_core(core: dict, engine: Path, instance: Path) -> None:
     if core.get("service") != "swarm-core" or core.get("api") != 1:
         raise RuntimeFailure("Another service or an incompatible Stormo version is using the core port.")
-    if core.get("instance", {}).get("root") != INSTANCE or core.get("exe") != ENGINE:
+    if not same_path(core.get("instance", {}).get("root", ""), str(instance)) or not same_path(core.get("exe", ""), str(engine)):
         raise RuntimeFailure("Another workspace owns the core. Stop it from its own app before continuing.")
 
 
@@ -102,17 +111,20 @@ class Check:
 
 
 class Runtime:
-    def __init__(self, assets: Path, runner=run, reader=read_api):
+    def __init__(self, assets: Path, runner=run, reader=read_api, instance: Path | None = None):
         self.assets, self.run, self.read = assets, runner, reader
+        self.engine = (assets / "engine/bin/stormo.exe").resolve()
+        self.instance = (instance or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Stormo/Instances/default").resolve()
         self.verified = False
 
-    def owned(self):
-        if self.run(wsl("cat", "/etc/stormo-runtime")) != MARKER:
-            raise RuntimeFailure("A different WSL distribution is named Stormo. It has been left unchanged.")
-
     def command(self, *args: str, timeout: int = 300):
-        self.owned()
-        return parse_result(self.run(cli_args(*args), timeout=timeout))
+        return parse_result(self.run(cli_args(self.engine, self.instance, *args), timeout=timeout))
+
+    def docker(self, *args: str, timeout: int = 30):
+        executable = docker_executable()
+        if not executable:
+            raise RuntimeFailure("Docker Desktop is not installed yet. Install it, open it and check again.")
+        return self.run([executable, "--context", "desktop-linux", *args], timeout=timeout)
 
     def detect(self) -> list[Check]:
         checks = []
@@ -120,29 +132,16 @@ class Runtime:
             return [Check("windows", "Windows 11", False, "This preview needs Windows 11 on an Intel or AMD 64-bit PC.")]
         checks.append(Check("windows", "Windows 11", True, "This PC meets the app's OS target."))
         try:
-            self.run(["wsl.exe", "--status"])
-            names = self.run(["wsl.exe", "--list", "--quiet"]).splitlines()
-        except RuntimeFailure:
-            return checks + [Check("wsl", "Windows runtime", False, "Enable Windows Subsystem for Linux. Windows may request administrator access and a restart. Reopen Stormo afterward.")]
-        checks.append(Check("wsl", "Windows runtime", True, "Windows Subsystem for Linux is available."))
-        if DISTRO not in [name.strip() for name in names]:
-            return checks + [Check("import", "Stormo runtime", False, "Prepare Stormo's private Linux workspace. Your other Linux distributions stay unchanged.")]
-        try:
-            self.owned()
-            release = self.run(wsl("uname", "-r"))
-            if "wsl2" not in release.lower():
-                raise RuntimeFailure("Stormo needs WSL 2. This distribution is not running a WSL 2 kernel.")
-        except RuntimeFailure as exc:
-            return checks + [Check("repair", "Stormo runtime", False, str(exc))]
-        checks.append(Check("import", "Stormo runtime", True, "Stormo's WSL 2 workspace is available."))
-        try:
-            info = json.loads(self.run(wsl("docker", "info", "--format", "{{json .}}")))
+            info = json.loads(self.docker("info", "--format", "{{json .}}"))
             if info.get("OSType") != "linux":
                 raise RuntimeFailure("Switch Docker Desktop to Linux containers.")
-            self.run(wsl("docker", "compose", "version"))
+            self.docker("compose", "version")
         except (RuntimeFailure, ValueError) as exc:
-            return checks + [Check("docker", "Container runtime", False, "Install and open Docker Desktop. In Settings → Resources → WSL Integration, enable Stormo and select Apply & restart. Then check again.\n" + str(exc))]
-        checks.append(Check("docker", "Container runtime", True, "Docker's Linux engine and Compose answer inside Stormo."))
+            self.verified = False
+            return checks + [Check("docker", "Docker Desktop", False, "Install and open Docker Desktop, finish its setup, then check again. Docker manages the Linux containers for your agents. Stormo itself runs directly on Windows.\n" + str(exc))]
+        checks.append(Check("docker", "Docker Desktop", True, "Docker's Linux engine and Compose are ready."))
+        if not self.engine.is_file():
+            return checks + [Check("repair", "Stormo engine", False, "The bundled Windows engine is missing. Reinstall the complete preview build.")]
         try:
             version = self.command("version")
             if version.get("api") != 1:
@@ -158,33 +157,15 @@ class Runtime:
             return checks + [Check("instance", "Your workspace", False, "Create your first workspace. It starts empty; no agents run or use a paid model during setup.")]
         return checks + [Check("instance", "Your workspace", True, "Your workspace is ready. Open Agents to start the core.")]
 
-    def import_runtime(self):
-        names = self.run(["wsl.exe", "--list", "--quiet"]).splitlines()
-        if DISTRO in [name.strip() for name in names]:
-            raise RuntimeFailure("Stormo is already registered. Check again; it will not be overwritten.")
-        archive = self.assets / "runtime.tar.gz"
-        digest = self.assets / "runtime.sha256"
-        if not archive.is_file() or not digest.is_file():
-            raise RuntimeFailure("The runtime bundle is missing. Install a complete Windows preview build.")
-        with archive.open("rb") as stream:
-            actual = hashlib.file_digest(stream, "sha256").hexdigest()
-        if actual != digest.read_text().split()[0]:
-            raise RuntimeFailure("The runtime bundle failed its integrity check. Download the installer again.")
-        destination = Path(os.environ["LOCALAPPDATA"]) / "Stormo" / "Runtime"
-        destination.mkdir(parents=True, exist_ok=True)
-        self.run(["wsl.exe", "--import", DISTRO, str(destination), str(archive), "--version", "2"], timeout=600)
-        self.owned()
-
     def verify_container(self):
-        self.owned()
-        self.run(wsl("docker", "run", "--rm", "--network", "none", "hello-world:latest"), timeout=300)
+        self.docker("run", "--rm", "--network", "none", "hello-world:latest", timeout=300)
         self.verified = True
 
     def create_instance(self):
-        return self.command("new", "instance", INSTANCE, "--name", "My Stormo", "--slug", "my-stormo", "--template", "empty", "--no-git")
+        return self.command("new", "instance", str(self.instance), "--name", "My Stormo", "--slug", "my-stormo", "--template", "empty", "--no-git")
 
     def fleet(self):
-        check_core(self.read("/api/core"))
+        check_core(self.read("/api/core"), self.engine, self.instance)
         return self.read("/api/fleet")
 
     def action(self, action: str, agent: str | None = None):
@@ -202,10 +183,10 @@ class Runtime:
             except SocketTimeout as exc:
                 raise RuntimeFailure("The core port is not responding. It was left unchanged.") from exc
             else:
-                check_core(core)
+                check_core(core, self.engine, self.instance)
             return self.command("core", "up")
         core = self.read("/api/core")
-        check_core(core)
+        check_core(core, self.engine, self.instance)
         if action == "core down":
             return self.command("core", "down")
         if not agent or agent.startswith("-"):

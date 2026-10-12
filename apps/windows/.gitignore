@@ -1,6 +1,5 @@
 .venv/
 build/
 *.spec
-assets/runtime.tar.gz
-assets/runtime.sha256
+assets/engine/
 assets/licenses/

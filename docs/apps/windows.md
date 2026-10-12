@@ -1,46 +1,55 @@
 # Stormo for Windows
 
-Status: first implementation in progress. Target: Windows 11 x64. Linux packaging follows later.
+Status: native Windows preview. Target: Windows 11 x64. Linux desktop packaging follows later.
 
-## Architecture decision
+## Architecture
 
-Use Qt 6 through its official PySide6 bindings for the desktop. It supports Windows and Linux,
-provides accessible native desktop controls without a web server/WebView, and lets the later
-Linux port reuse the UI and protocol adapter. Python and Qt ship inside the installer: users
-must not install Python, Go, Git, or run a terminal. Keep UI and process/runtime logic separate.
-GTK is a better fit for a Linux-first GNOME app; WinUI would require a separate Linux UI.
+The Qt/PySide6 desktop launches the bundled **Windows `stormo.exe` directly**. The Go core,
+instance files, configuration, logs and database all live on Windows. Docker Desktop runs the
+Linux agent and sidecar containers. Stormo neither installs nor invokes WSL, imports Linux
+filesystems, manages a Linux user, nor maintains its own Docker daemon.
 
-The engine runs in WSL 2. `pkg/core/cli.go` uses Unix session/process signals, and the agents
-need Linux containers. Do not claim a native Windows engine or just cross-compile the CLI.
-Keep instance data in the Linux filesystem; use Windows localhost forwarding for API reads.
+Docker Desktop may use WSL 2 or Hyper-V internally; Docker owns that setup and lifecycle.
+The owner selected guided Docker Desktop setup initially. The app links Docker's official
+installer instructions and checks the `desktop-linux` context, Compose and container execution.
+It does not silently accept Docker's license terms or change Windows virtualization settings.
 
-Owner decision: guided Docker Desktop setup initially. Bundle a dedicated `Stormo` WSL 2
-filesystem with the Linux CLI, then guide users to enable Docker Desktop integration for it.
-No separately installed Ubuntu/user-account setup and no private Docker daemon. The desktop
-opens Docker's official installation guide; users retain control of its license acceptance.
-Elevation is requested only for WSL installation. Restart and retry re-detect actual state.
+Qt remains reusable for a later Linux UI. SwiftUI remains the macOS UI. Engine behavior stays
+in Go and actions use the same versioned JSON CLI/API contracts on every platform.
 
-Implemented first slice: prerequisite checks, archive integrity/ownership guards, import,
-container execution probe, default empty instance, core start/stop and fleet actions.
-See [the Windows README](../../apps/windows/README.md) for build commands and current limits.
+## Native implementation
 
-## Delivery gates
+- Windows core startup uses a detached process and writes stdout/stderr to the instance log.
+- Graceful stop uses a Windows named event scoped to the logon session, instance and process;
+  shutdown calls the same `Core.Close` as Unix. A missing event refuses to stop a reused/unowned
+  PID. Unix keeps its existing process-session and signal implementation.
+- Instance data: `%LOCALAPPDATA%\Stormo\Instances\default`, outside the install directory.
+- The app forces local target, its explicit instance and Docker Desktop's Linux context. It
+  clears inherited remote Docker and core-bind overrides. Core API reads stay on loopback.
+- Windows host bind paths in Compose use forward slashes, retaining drive letters/spaces;
+  container paths remain Linux paths. Docker Desktop supplies `host.docker.internal` without
+  an override to the Linux VM gateway.
+- The development installer bundles tracked source so the engine can build its Linux sidecar
+  using Docker. A tagged release must use a matching published sidecar image instead.
 
-1. Testable runtime detection, command adapter, installer skeleton and shared feature ledger.
-2. First-run UI, guided prerequisite setup, create instance, core lifecycle and fleet actions.
-3. Windows CI produces a per-user setup EXE including Python/Qt and the matching engine.
-4. Clean Windows VM acceptance: absent WSL, restart, cancelled UAC, no virtualization,
-   no network, already-installed runtime, wrong core, interrupted setup, repair and upgrade.
-5. Signed binaries/installer and published runtime artifacts before calling this a release.
+The earlier separate Stormo WSL prototype is superseded. This app does not unregister it or
+copy/delete its data; any tester with data in that prototype must preserve it and migrate it
+explicitly. No automatic migration is claimed.
 
-Uninstall must preserve instances and agent data. Deleting them is a separate explicit action.
-Do not silently accept third-party license terms, modify someone else's WSL distribution,
-expose Docker TCP, or bind the core on all interfaces.
+## Validation and remaining gates
 
-## Sources for the platform decision
+CI builds the actual Windows executable, runs native Go and Qt tests and exercises create
+instance → detached core up → identity check → refusal to stop another workspace → graceful
+core down → restart, using Windows paths with spaces. It then builds the per-user setup EXE.
+Linux CI continues to cover the existing engine. Packaging success is not clean-PC acceptance.
 
-- [Qt for Python deployment](https://doc.qt.io/qtforpython-6/deployment/index.html)
-- [Microsoft WSL installation](https://learn.microsoft.com/en-us/windows/wsl/install)
-- [Windows-to-WSL localhost networking](https://learn.microsoft.com/en-us/windows/wsl/networking)
-- [Docker Desktop terms](https://docs.docker.com/subscription-billing/desktop-license/)
-- [Inno Setup per-user installation](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm)
+Still required: clean Windows 11 + Docker Desktop acceptance, container-to-core networking,
+Windows filesystem bind/write behavior, agent/provider onboarding parity, signing, update and
+repair UX, dependency distribution compliance, and release/tag/sidecar version wiring.
+Uninstall must preserve instances. Deleting user data is always a separate explicit action.
+
+See [build/setup instructions](../../apps/windows/README.md) and [shared parity](README.md).
+
+Platform references: [Windows process flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
+[Docker Desktop networking](https://docs.docker.com/desktop/features/networking/networking-how-tos/),
+[Windows file sharing](https://docs.docker.com/desktop/setup/install/windows-permission-requirements/).
