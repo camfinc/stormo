@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/camfinc/stormo/pkg/config"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -182,6 +183,9 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	}
 	eng, err := engines.Get(s.Engine.Kind, inst)
 	if err != nil {
+		return AgentResult{}, err
+	}
+	if err := engine.CheckVersion(eng, &manifest.Agent{ID: s.ID, Engine: manifest.EngineSpec{Version: s.Engine.Version, ImageTag: s.Engine.ImageTag}}); err != nil {
 		return AgentResult{}, err
 	}
 
