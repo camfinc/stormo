@@ -19,12 +19,12 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Test desktop runtime contracts
-        run: dotnet run --project apps/windows/Stormo.Runtime.Tests -c Release
       - name: Build native Windows engine
         run: python apps/windows/installer/build-engine.py
       - name: Exercise native core lifecycle
         run: python apps/windows/installer/smoke-engine.py
+      - name: Test desktop contracts and native adapter lifecycle
+        run: dotnet run --project apps/windows/Stormo.Runtime.Tests -c Release -- apps/windows/assets
       - name: Test Windows engine and paths
         run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold ./pkg/privatefs
       - name: Restore native desktop and collect notices

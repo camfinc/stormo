@@ -54,3 +54,35 @@ await Refuses(() => malformed.Action("core up"), "unknown service left unchanged
 await Refuses(() => LocalRuntime.ReadApi("https://example.com"), "API route allowlist");
 if (OperatingSystem.IsWindows()) Check(LocalRuntime.SamePath(instance.ToUpperInvariant().Replace('\\', '/'), instance), "Windows identity ignores case and slash style");
 Console.WriteLine("All runtime contract checks passed.");
+
+if (args.Length == 1)
+{
+    var workspace = Path.Combine(Path.GetTempPath(), "Stormo native adapter " + Guid.NewGuid().ToString("N"));
+    var native = new LocalRuntime(Path.GetFullPath(args[0]), workspace);
+    var started = false;
+    System.Diagnostics.Process? coreProcess = null;
+    try
+    {
+        await native.CreateInstance();
+        await native.Action("core up");
+        started = true;
+        var info = await LocalRuntime.ReadApi("/api/core");
+        coreProcess = System.Diagnostics.Process.GetProcessById(info.GetProperty("pid").GetInt32());
+        Check((await native.Fleet()).Count == 0, "C# adapter opens real native core and reads empty fleet");
+        await native.Action("core down");
+        started = false;
+        Check(Directory.Exists(workspace), "stopping core preserves workspace");
+    }
+    finally
+    {
+        if (started) await native.Action("core down");
+        if (coreProcess != null)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await coreProcess.WaitForExitAsync(timeout.Token);
+            coreProcess.Dispose();
+        }
+        // This is a fresh test-owned workspace, never the user's default instance.
+        if (Directory.Exists(workspace)) Directory.Delete(workspace, true);
+    }
+}

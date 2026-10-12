@@ -11,13 +11,20 @@ public sealed partial class MainWindow : Window
     private readonly LocalRuntime runtime = new(Path.Combine(AppContext.BaseDirectory, "assets"));
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(5) };
     private IReadOnlyList<SetupCheck> checks = [];
+    private bool initialized;
     private bool busy;
     private bool ready;
     private string page = "setup";
 
     public MainWindow()
     {
-        InitializeComponent();
+        try { InitializeComponent(); }
+        catch
+        {
+            Console.Error.WriteLine($"XAML loaded controls: navigation={Navigation != null}, setup={SetupPage != null}, next={NextButton != null}, agents={AgentsPage != null}, list={AgentList != null}, core={CorePage != null}, status={Status != null}");
+            throw;
+        }
+        initialized = true;
         AppWindow.Resize(new SizeInt32(1120, 800));
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "assets", "stormo.ico"));
         WorkspacePath.Text = runtime.Instance;
@@ -37,7 +44,7 @@ public sealed partial class MainWindow : Window
     private async void OnLoaded(object sender, RoutedEventArgs args) { timer.Start(); await Detect(); }
     private void OnNavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        if (args.SelectedItem is not NavigationViewItem item || SetupPage == null) return;
+        if (!initialized || args.SelectedItem is not NavigationViewItem item) return;
         page = (string)item.Tag;
         SetupPage.Visibility = page == "setup" ? Visibility.Visible : Visibility.Collapsed;
         AgentsPage.Visibility = page == "agents" ? Visibility.Visible : Visibility.Collapsed;
@@ -111,7 +118,7 @@ public sealed partial class MainWindow : Window
         EmptyFleet.IsOpen = agents.Count == 0;
     }
     private async void OnRefresh(object sender, RoutedEventArgs args) => await Refresh();
-    private void OnAgentSelection(object sender, SelectionChangedEventArgs args) { if (StartAgent != null) UpdateControls(); }
+    private void OnAgentSelection(object sender, SelectionChangedEventArgs args) { if (initialized) UpdateControls(); }
     private async Task<bool> Confirm(string title, string message, string action)
     {
         var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = title, Content = message, PrimaryButtonText = action, CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };

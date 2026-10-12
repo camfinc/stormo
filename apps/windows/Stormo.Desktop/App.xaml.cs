@@ -9,6 +9,8 @@ public partial class App : Application
     public App()
     {
         UnhandledException += (_, args) => Console.Error.WriteLine(args.Exception);
+        DebugSettings.IsXamlResourceReferenceTracingEnabled = true;
+        DebugSettings.XamlResourceReferenceFailed += (_, args) => Console.Error.WriteLine(args.Message);
         InitializeComponent();
     }
     protected override void OnLaunched(LaunchActivatedEventArgs args)
