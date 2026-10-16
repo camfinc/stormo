@@ -40,8 +40,10 @@ type Paths struct {
 	// StoreDir is the agent's own local store (loop.LocalStoreDir).
 	StoreDir  string
 	SharedDir string
-	// CoreURL is where the agent calls its core (manifest.CoreFor(inst, Local).URL).
+	// CoreURL is where the agent's sidecar dials its core (manifest.CoreFor(inst, Local).URL).
 	CoreURL string
+	// LinkEnvFile holds the sidecar's link secrets (secrets.WriteLinkEnv); "" leaves the link off.
+	LinkEnvFile string
 }
 
 func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
@@ -123,8 +125,22 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		volumes = append(volumes, filepath.Join(p.SharedDir, l.Layer)+":"+l.Path)
 	}
 	environment := eng.Env(a, manifest.Local).Map()
-	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CoreURL != "" {
-		environment["SWARM_CORE_URL"] = p.CoreURL
+	// The agent's own calls to its core (the workdir helper) go through the sidecar's relay.
+	if _, ok := environment["SWARM_CORE_URL"]; ok {
+		environment["SWARM_CORE_URL"] = manifest.RelayURL(manifest.Local)
+	}
+	volumesTop := map[string]any{"home": map[string]any{}}
+	if p.LinkEnvFile != "" && p.CoreURL != "" {
+		// The sidecar is the agent's link to the core (pkg/link): its relay, the live wire, a spool
+		// of its own (never under the home, which naps snapshot).
+		nap.EnvFile = []string{p.LinkEnvFile}
+		nap.Environment["SWARM_CORE_URL"] = p.CoreURL
+		nap.Environment["SWARM_AGENT_API"] = fmt.Sprintf("http://agent:%d", eng.Port())
+		nap.Environment["SWARM_PLACEMENT"] = string(manifest.Local)
+		nap.Environment["SWARM_LINK_DIR"] = "/link"
+		nap.Volumes = append(append([]string{}, nap.Volumes...), "link:/link")
+		nap.ExtraHosts = []string{"host.docker.internal:host-gateway"}
+		volumesTop["link"] = map[string]any{}
 	}
 	agent := service{
 		Image:       eng.Image(a),
@@ -148,7 +164,7 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		// OrbStack / Docker Desktop resolve host.docker.internal already; plain Docker Engine needs this.
 		agent.ExtraHosts = []string{"host.docker.internal:host-gateway"}
 	}
-	return Spec{Name: ProjectName(a), Services: map[string]service{"rehydrate": rehydrate, "nap": nap, "agent": agent}, Volumes: map[string]any{"home": map[string]any{}}}
+	return Spec{Name: ProjectName(a), Services: map[string]service{"rehydrate": rehydrate, "nap": nap, "agent": agent}, Volumes: volumesTop}
 }
 
 // ComposeCommand is `docker compose` (v2 plugin) with a `docker-compose` fallback.

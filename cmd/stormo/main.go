@@ -774,6 +774,7 @@ func run(args []string) error {
 			if v := os.Getenv("SWARM_NAP_INTERVAL"); v != "" {
 				fmt.Sscan(v, &interval)
 			}
+			startLink(a, eng, sc, o)
 			loop.NapLoop(o, time.Duration(interval)*time.Second, 90*time.Second)
 			return nil
 		}

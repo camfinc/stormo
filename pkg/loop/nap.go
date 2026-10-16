@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -97,6 +98,9 @@ func fingerprint(files []NapFile) string {
 func IsoMillis(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 // NapOptions describe one agent instance to snapshot.
+// napMu keeps one nap at a time in a process (the interval loop and one the core asked for).
+var napMu sync.Mutex
+
 type NapOptions struct {
 	Agent, Unit string
 	Engine      engine.Engine
@@ -111,6 +115,8 @@ type NapOptions struct {
 
 // NapOnce snapshots the home; returns nil when nothing changed since the latest nap.
 func NapOnce(o NapOptions) (*Nap, error) {
+	napMu.Lock()
+	defer napMu.Unlock()
 	files, err := TakeSnapshot(o.Home, o.Engine.Layout().Rules)
 	if err != nil {
 		return nil, err

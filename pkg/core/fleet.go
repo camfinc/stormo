@@ -99,6 +99,8 @@ type FleetAgent struct {
 	// The agent's containers together (agent + nap sidecar), from `docker stats`; nil when not
 	// running locally or docker did not answer.
 	Usage *ContainerUsage `json:"usage,omitempty"`
+	// Link is the agent's live wire to the core (pkg/link), nil when it never linked.
+	Link *LinkInfo `json:"link,omitempty"`
 }
 
 // ContainerUsage is what an agent's local containers use right now.
@@ -413,7 +415,9 @@ type Fleet struct {
 	naps    map[string]*loop.Nap
 	events  []NapEvent
 	avatars map[string]string
-	keys    apiKeys
+	// links: agents' live wires; their status wins over compose and local polling.
+	links *LinkHub
+	keys  apiKeys
 
 	pollMu   sync.Mutex
 	running  chan struct{}
@@ -560,6 +564,19 @@ func (f *Fleet) fetchJSON(ctx context.Context, url, key string) (any, error) {
 	return v, nil
 }
 
+// SetLinks gives the fleet the agents' links.
+func (f *Fleet) SetLinks(h *LinkHub) {
+	f.mu.Lock()
+	f.links = h
+	f.mu.Unlock()
+}
+
+func (f *Fleet) linkHub() *LinkHub {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.links
+}
+
 // PollActivity is one activity round over the agents the last compose poll saw running.
 func (f *Fleet) PollActivity() {
 	f.actMu.Lock()
@@ -585,6 +602,11 @@ func (f *Fleet) PollActivity() {
 				} else {
 					f.activity[a.ID] = act
 				}
+			}
+			// A linked agent reports its own activity; no need to reach its API from here.
+			if st := f.linkHub().Status(a.ID); st != nil {
+				set(sanitize(st.Activity))
+				return
 			}
 			if a.State != "running" && a.State != "starting" {
 				set(nil)
@@ -830,6 +852,14 @@ func (f *Fleet) pollAgent(id string, store loop.Store) *FleetAgent {
 	}
 	if m.Engine.Local != nil {
 		a.LocalModel = m.Engine.Local.Model
+	}
+	if h := f.linkHub(); h != nil {
+		a.Link = h.Info(id)
+		// Running elsewhere (or not seen by local compose): its link says how it is.
+		if st := h.Status(id); st != nil && a.State != "running" {
+			a.State, a.Health = st.State, ""
+			a.Detail = "linked from " + or(a.Link.Placement, "elsewhere")
+		}
 	}
 	if nap != nil {
 		a.LastNap = nap.TakenAt

@@ -221,6 +221,35 @@ func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	return p, r, nil
 }
 
+// LinkEnvFile is the sidecar's env file: only what its link needs (the agent's core key and its
+// engine API key), never the agent's other secrets.
+func LinkEnvFile(root, id string) string {
+	return filepath.Join(manifest.AgentDir(root, id), "data", "link.env")
+}
+
+// WriteLinkEnv writes the link's env file from resolved values; apiKeyName is the engine's API key
+// name (engine.Runtime.APIKeyName). Missing values are left out (the link then stays off).
+func WriteLinkEnv(root string, a *manifest.Agent, r Resolved, apiKeyName string) (string, error) {
+	vals := env.New()
+	if r.Values != nil {
+		if v, ok := r.Values.Get(manifest.Core.KeyEnv); ok && v != "" {
+			vals.Set(manifest.Core.KeyEnv, v)
+		}
+		if v, ok := r.Values.Get(apiKeyName); ok && v != "" {
+			vals.Set("SWARM_AGENT_API_KEY", v)
+		}
+	}
+	body, err := RenderEnvFile(vals)
+	if err != nil {
+		return "", err
+	}
+	p := LinkEnvFile(root, a.ID)
+	if err := WritePrivate(p, []byte(body)); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
 // PerAgent names belong to one agent by design (its engine API key, its own bot/app tokens).
 func PerAgent(name string) bool {
 	if slices.Contains(engines.APIKeyNames(), name) {

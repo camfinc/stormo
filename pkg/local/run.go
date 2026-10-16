@@ -106,7 +106,11 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if err != nil {
 		return 0, nil, err
 	}
-	envFile, _, err := secrets.WriteLocalEnv(root, a)
+	envFile, resolvedEnv, err := secrets.WriteLocalEnv(root, a)
+	if err != nil {
+		return 0, nil, err
+	}
+	linkEnv, err := secrets.WriteLinkEnv(root, a, resolvedEnv, eng.Runtime().APIKeyName())
 	if err != nil {
 		return 0, nil, err
 	}
@@ -157,7 +161,7 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if interval == 0 {
 		interval = 900
 	}
-	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CoreURL: manifest.CoreFor(inst, manifest.Local).URL}, port, interval, image)
+	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CoreURL: manifest.CoreFor(inst, manifest.Local).URL, LinkEnvFile: linkEnv}, port, interval, image)
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)

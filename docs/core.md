@@ -83,6 +83,18 @@ ports skip every other instance's `.swarm/ports.json`. Compose projects stay `sw
 a command on an agent whose containers another instance created is refused, so two instances on
 one host need different agent ids.
 
+**The agent link (built, docs/remote-core.md §1a, §4).** Each agent's `nap` sidecar dials its core
+at `/link` (a WebSocket, the agent's core key) and keeps it up: status every 10 s from the agent's
+own engine API (so the core sees agents it cannot reach, wherever they run), wake runs and naps
+down. The sidecar also runs a relay on `:18690` that the engine's hooks, MCP calls and the workdir
+helper use instead of the core: it forwards them, holds hook deliveries and `msg_send` calls in a
+bounded spool of its own (`SWARM_LINK_DIR`, never under the home) while the core is away and
+delivers them in order when it is back, and fails other MCP calls fast. The model gateway is
+called directly; Hermes falls back on its own. The sidecar gets only its core key and the agent's
+engine API key (`agents/<id>/data/link.env`), never the agent's other secrets. The core prefers
+the link for status, wakes and naps, and falls back to compose and the local API port without
+one; a link gone for 10 minutes is a `link_lost` finding. `/api/fleet` shows each agent's `link`.
+
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
 

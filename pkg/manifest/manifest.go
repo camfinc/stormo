@@ -93,11 +93,26 @@ func coreAtURL(u string) CoreEndpoints {
 
 // CoreFor is the instance's core as agents in a placement reach it: core.urls[target], else
 // core.url, else the local core on its port (docs/remote-core.md §2).
+//
+// The model gateway (BaseURL) is called directly; hooks and MCP go to the agent's sidecar relay
+// (RelayURL), which forwards them to URL and holds them while the core is away (pkg/link).
 func CoreFor(inst *instance.Instance, target Target) CoreEndpoints {
+	e := CoreAt(inst.CorePort())
 	if u := inst.CoreURLFor(string(target)); u != "" {
-		return coreAtURL(u)
+		e = coreAtURL(u)
 	}
-	return CoreAt(inst.CorePort())
+	relay := RelayURL(target)
+	e.IngestURL, e.MCPURL = relay+"/ingest", relay+"/mcp"
+	return e
+}
+
+// RelayURL is the agent's sidecar relay as its engine reaches it: the nap service by name in a
+// local compose project, localhost in an ECS task (one network namespace).
+func RelayURL(target Target) string {
+	if target == Local {
+		return "http://nap:18690"
+	}
+	return "http://localhost:18690"
 }
 
 // Core is the core on the default port; its KeyEnv is the same for every instance.

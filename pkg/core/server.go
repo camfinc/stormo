@@ -2,11 +2,14 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/link"
+	"github.com/camfinc/stormo/pkg/local"
 	"io"
 	"log"
 	"net"
@@ -152,8 +155,10 @@ type Core struct {
 	Workdir  *Workdir
 	Learner  *Learner
 	MCP      *MCP
-	keys     *AgentKeys
-	owner    string
+	// Links are the agents' live wires (pkg/link).
+	Links *LinkHub
+	keys  *AgentKeys
+	owner string
 	// loopbackTrust: direct loopback requests may read the open views without a token.
 	loopbackTrust bool
 	ownDB         bool
@@ -169,6 +174,9 @@ func (c *Core) Close() error {
 	c.StopOffice()
 	if c.publicServer != nil {
 		_ = c.publicServer.Close()
+	}
+	if c.Links != nil {
+		c.Links.Close()
 	}
 	for _, b := range c.bridge {
 		_ = b.Close()
@@ -345,6 +353,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 			a.Activity != nil && (a.Activity.ActiveAgents > 0 || a.Activity.GatewayBusy || len(a.Activity.RunningJobs) > 0) ||
 			gateway.Status().Active[a.ID] > 0
 	}
+	links := NewLinkHub(db)
+	if fleet != nil {
+		fleet.SetLinks(links)
+	}
 	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror}
 	if bo.Roster == nil {
 		bo.Roster = func() []BusAgent {
@@ -359,7 +371,14 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	if bo.Wake == nil && fleet != nil {
-		bo.Wake = EngineWake(inst, fleet.APIKey, nil)
+		// Over the agent's link when it has one (wherever it runs), else its local API port.
+		direct := EngineWake(inst, fleet.APIKey, nil)
+		bo.Wake = func(ctx context.Context, a BusAgent, input, session, idempotency string) error {
+			if links.Connected(a.ID) {
+				return links.Command(ctx, a.ID, link.TypeWake, link.Wake{Input: input, Session: session, Idempotency: idempotency})
+			}
+			return direct(ctx, a, input, session, idempotency)
+		}
 	}
 	if bo.Mirror == nil && !o.NoMirror {
 		bo.Mirror = SlackMirror(inst, nil)
@@ -371,12 +390,25 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
-	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: o.LearnDeps})
-	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
+	deps := o.LearnDeps
+	if deps.NapNow == nil {
+		// A nap now: the agent's sidecar takes it over the link, else `docker compose exec` locally.
+		deps.NapNow = func(id string) error {
+			if links.Connected(id) {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer cancel()
+				return links.Command(ctx, id, link.TypeNap, link.Nap{Reason: "learn"})
+			}
+			return local.NapNow(inst, id)
+		}
+	}
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps})
+	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links,
 		keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
 	go learner.Run(c.stop, time.Minute)
+	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -502,6 +534,13 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case path == "/mcp":
 			mcp.Handle(w, r)
+			return
+		case path == link.Path:
+			if who.Agent == "" {
+				writeJSONBody(w, 401, errBody("unauthorized", "the link takes an agent's core key"))
+				return
+			}
+			links.Handle(w, r, who.Agent)
 			return
 		case get && path == "/review":
 			// The page holds no data: it reads the owner token from its URL fragment and asks /api/review.

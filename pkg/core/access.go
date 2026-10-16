@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"github.com/camfinc/stormo/pkg/link"
 	"io"
 	"net/http"
 	"strconv"
@@ -31,7 +32,7 @@ func openView(path string) bool {
 }
 
 func agentRoute(path string) bool {
-	return path == "/mcp" || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/ingest/")
+	return path == "/mcp" || path == link.Path || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/ingest/")
 }
 
 // needs reports the scope a request needs and whether the caller has it.
