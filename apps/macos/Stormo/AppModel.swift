@@ -60,15 +60,16 @@ final class AppModel {
 
     func activate(_ record: InstanceRecord?) async {
         if let record { instances.activate(record.root) }
-        core.instanceRoot = record?.url
-        review.instanceRoot = record?.url
+        core.instanceRoot = record?.folder
+        core.remoteSlug = record?.isRemote == true ? record?.slug : nil
+        review.instanceRoot = record?.folder
         fleet.clear()
         retarget()
         await core.refresh()
         await resolveBinary()
         // An instance that never ran a core has no port yet: the engine picks one free of every
         // other instance's (`core status` resolves and keeps it).
-        if let root = record?.url, CoreClient.pickedPort(root: root) == nil, let cli {
+        if let root = record?.folder, CoreClient.pickedPort(root: root) == nil, let cli {
             try? await cli.perform(["core", "status"])
             retarget()
             await core.refresh()
@@ -77,9 +78,16 @@ final class AppModel {
 
     /// Points the clients at the active instance's core port when it changed.
     func retarget() {
-        let port = CoreClient.port(instanceRoot: instances.active?.url, environment: environment ?? ProcessInfo.processInfo.environment)
-        guard port != core.client.port else { return }
-        let client = CoreClient(port: port)
+        let client: CoreClient
+        if let active = instances.active, let remote = active.remote, let base = URL(string: remote) {
+            // A remote core: its URL, the token in the Keychain, the certificate the user trusted.
+            client = CoreClient(base: base, token: CoreTokens.get(active.id), pin: active.pin, timeout: 8)
+        } else {
+            let root = instances.active?.folder
+            let port = CoreClient.port(instanceRoot: root, environment: environment ?? ProcessInfo.processInfo.environment)
+            client = CoreClient(port: port, token: root.flatMap { ReviewStore.ownerToken(root: $0) })
+        }
+        guard client.base != core.client.base || client.token != core.client.token else { return }
         core.client = client
         fleet.client = client
         review.client = client
@@ -97,7 +105,7 @@ final class AppModel {
     /// Probes the binaries and pins Auto's choice the first time an instance is seen.
     func resolveBinary() async {
         let active = instances.active
-        candidates = await resolver.candidates(instance: active?.url)
+        candidates = await resolver.candidates(instance: active?.folder)
         guard let active, active.binary == nil else { return }
         if let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) {
             instances.pin(active.root, binary: choice.resolved.path, choice: "auto")
@@ -117,8 +125,51 @@ final class AppModel {
 
     /// The CLI for the active instance through its pinned binary.
     var cli: StormoCLI? {
-        guard let active = instances.active, let pinned, let environment else { return nil }
+        guard let active = instances.active, !active.isRemote, let pinned, let environment else { return nil }
         return StormoCLI(executable: pinned.url, environment: environment, instance: active.url)
+    }
+
+    // MARK: Remote cores
+
+    /// The Connect to Remote Core sheet is open.
+    var connectingRemote = false
+
+    enum RemoteProbe: Equatable {
+        case connected
+        /// The certificate is not trusted by this Mac: its fingerprint, to trust on first use.
+        case untrusted(String)
+        case failed(String)
+    }
+
+    /// Checks a remote core with the token (`/api/core` needs read) and, when it answers, adds it
+    /// and makes it active. The token goes to the Keychain.
+    func connectRemote(url raw: String, token: String, pin: String?) async -> RemoteProbe {
+        let text = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let base = URL(string: text), let scheme = base.scheme, ["https", "http"].contains(scheme), base.host != nil else {
+            return .failed("Enter the core's URL, like https://core.example:18600.")
+        }
+        let client = CoreClient(base: base, token: token, pin: pin, timeout: 8)
+        do {
+            let info = try await client.core()
+            let record = instances.addRemote(url: text, name: info.instance.name, slug: info.instance.slug, pin: pin)
+            CoreTokens.set(token, for: record.id)
+            await activate(record)
+            return .connected
+        } catch CoreClient.Failure.unreachable {
+            if scheme == "https", pin == nil, let fp = client.pinning.lastFingerprint { return .untrusted(fp) }
+            return .failed("Nothing answers at \(text). Check the address and that a tunnel or VPN is up if one is needed.")
+        } catch CoreClient.Failure.refused(let code, let message) {
+            return .failed(code == 401 ? "The core refused the token: \(message)" : message)
+        } catch {
+            return .failed("That is not a Stormo core, or it is too old: \(error.localizedDescription)")
+        }
+    }
+
+    /// Forgets a remote core and its token.
+    func forgetRemote(_ record: InstanceRecord) async {
+        CoreTokens.delete(record.id)
+        instances.remove(record.root)
+        await activate(instances.active)
     }
 
     // MARK: Instances
@@ -167,7 +218,7 @@ final class AppModel {
 
     func startCore() async {
         guard let cli else { return failNoBinary() }
-        if let root = instances.active?.url, CoreClient.pickedPort(root: root) == nil {
+        if let root = instances.active?.folder, CoreClient.pickedPort(root: root) == nil {
             try? await cli.perform(["core", "status"])
         }
         retarget()

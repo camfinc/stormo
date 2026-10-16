@@ -10,17 +10,29 @@ public struct InstanceRecord: Codable, Sendable, Equatable, Identifiable {
     public var binary: String?
     /// How it was chosen: auto, or a fixed source picked in Settings.
     public var binaryChoice: String?
+    /// A remote core's URL (no folder on this Mac): the app reaches it with a token from the Keychain.
+    public var remote: String?
+    /// SHA-256 of a remote core's certificate the user chose to trust (one no CA vouches for).
+    public var pin: String?
 
     public var id: String { root }
     public var url: URL { URL(filePath: root) }
+    public var isRemote: Bool { remote != nil }
+    /// The instance's folder on this Mac; nil for a remote core.
+    public var folder: URL? { isRemote ? nil : url }
 
-    public init(root: String, name: String, slug: String, binary: String? = nil, binaryChoice: String? = nil) {
+    public init(root: String, name: String, slug: String, binary: String? = nil, binaryChoice: String? = nil, remote: String? = nil, pin: String? = nil) {
         self.root = root
         self.name = name
         self.slug = slug
         self.binary = binary
         self.binaryChoice = binaryChoice
+        self.remote = remote
+        self.pin = pin
     }
+
+    /// The record id of a remote core.
+    public static func remoteID(_ url: String) -> String { "remote:" + url }
 }
 
 /// The instances the user opened, and which one is active (one at a time: one core per machine).
@@ -54,6 +66,19 @@ public final class InstanceStore {
             instances.append(InstanceRecord(root: info.root, name: info.name, slug: info.slug))
         }
         activate(info.root)
+    }
+
+    /// Adds or refreshes a remote core and makes it active. Its token goes to the Keychain separately.
+    public func addRemote(url: String, name: String, slug: String, pin: String?) -> InstanceRecord {
+        let id = InstanceRecord.remoteID(url)
+        let record = InstanceRecord(root: id, name: name, slug: slug, remote: url, pin: pin)
+        if let i = instances.firstIndex(where: { $0.root == id }) {
+            instances[i] = record
+        } else {
+            instances.append(record)
+        }
+        activate(id)
+        return record
     }
 
     public func activate(_ root: String) {

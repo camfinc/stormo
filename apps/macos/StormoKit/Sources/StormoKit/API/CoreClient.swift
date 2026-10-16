@@ -13,6 +13,9 @@ public struct CoreClient: Sendable {
     }
 
     public let base: URL
+    /// Sent as `Authorization: Bearer` on every request: the owner token locally, a personal token remotely.
+    public let token: String?
+    public let pinning: PinningDelegate
     private let session: URLSession
 
     /// The core's default port, or `SWARM_CORE_PORT` from the given environment.
@@ -37,17 +40,24 @@ public struct CoreClient: Sendable {
 
     public var port: Int { base.port ?? 18600 }
 
-    public init(port: Int, timeout: TimeInterval = 2) {
-        self.init(base: URL(string: "http://127.0.0.1:\(port)")!, timeout: timeout)
+    public init(port: Int, token: String? = nil, timeout: TimeInterval = 2) {
+        self.init(base: URL(string: "http://127.0.0.1:\(port)")!, token: token, timeout: timeout)
     }
 
-    public init(base: URL, timeout: TimeInterval = 2) {
+    public init(base: URL, token: String? = nil, pin: String? = nil, timeout: TimeInterval = 2) {
         self.base = base
+        self.token = token
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
-        self.session = URLSession(configuration: config)
+        pinning = PinningDelegate(pin: pin)
+        self.session = URLSession(configuration: config, delegate: pinning, delegateQueue: nil)
+    }
+
+    /// The same core with a longer timeout (restarts, slow calls).
+    public func with(timeout: TimeInterval) -> CoreClient {
+        CoreClient(base: base, token: token, pin: pinning.pin, timeout: timeout)
     }
 
     public func health() async throws -> Health { try await get("health") }
@@ -101,6 +111,10 @@ public struct CoreClient: Sendable {
     }
 
     private func send(_ request: URLRequest) async throws -> Data {
+        var request = request
+        if let token, request.value(forHTTPHeaderField: "Authorization") == nil {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         let response: (Data, URLResponse)
         do {
             response = try await session.data(for: request)
@@ -109,7 +123,7 @@ public struct CoreClient: Sendable {
         }
         guard let http = response.1 as? HTTPURLResponse else { throw Failure.unreachable }
         switch http.statusCode {
-        case 200: return response.0
+        case 200, 201: return response.0
         case 404: throw Failure.notFound
         default:
             struct Body: Decodable { struct E: Decodable { let message: String }; let error: E }

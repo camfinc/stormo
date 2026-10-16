@@ -64,6 +64,7 @@ struct MainView: View {
         .focusedSceneValue(\.openInstance, { importing = true })
         .focusedSceneValue(\.newInstance, { creating = true })
         .sheet(isPresented: $creating) { NewInstanceSheet().environment(model) }
+        .sheet(isPresented: $model.connectingRemote) { RemoteCoreSheet().environment(model) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.open(folder: url) } }
         }
@@ -122,6 +123,7 @@ struct MainToolbar: ToolbarContent {
                 Divider()
                 Button("New Instance…", action: newInstance)
                 Button("Open Instance…", action: openInstance)
+                Button("Connect to Remote Core…") { model.connectingRemote = true }
             } label: {
                 Label(model.instances.active?.name ?? "Instance", systemImage: "square.stack.3d.up")
                     .labelStyle(.titleAndIcon)
@@ -139,7 +141,8 @@ struct MainToolbar: ToolbarContent {
             }
         }
         ToolbarItem(placement: .primaryAction) {
-            CoreToggleButton()
+            // A remote core is started and stopped where it runs.
+            if model.instances.active?.isRemote != true { CoreToggleButton() }
         }
     }
 }

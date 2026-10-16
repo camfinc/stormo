@@ -64,7 +64,7 @@ public final class ReviewStore {
         restarting.insert(agent)
         defer { restarting.remove(agent) }
         do {
-            try await CoreClient(base: client.base, timeout: 180).restart(agent: agent, owner: owner)
+            try await client.with(timeout: 180).restart(agent: agent, owner: owner)
             problem = nil
         } catch {
             problem = Self.describe(error)
@@ -78,6 +78,7 @@ public final class ReviewStore {
     }
 
     private func token() -> String? {
+        if let t = client.token { return t }
         guard let root = instanceRoot else { return nil }
         guard let t = Self.ownerToken(root: root) else {
             problem = "No owner token yet: start the core once to mint it."
