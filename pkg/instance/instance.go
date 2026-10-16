@@ -136,6 +136,9 @@ type Instance struct {
 	CoreWebUI bool `json:"coreWebUI"`
 	// The core's port as stormo.yaml pins it (core.port); 0 lets CorePort pick and keep one.
 	CorePortSetting int `json:"corePortSetting,omitempty"`
+	// Requests that reach the core's loopback listener directly may read the fleet's open views
+	// without a token (stormo.yaml core.loopback_trust, default true). Everything else needs one.
+	CoreLoopbackTrust bool `json:"coreLoopbackTrust"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -179,9 +182,10 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
-		WebUI    bool `yaml:"web_ui"`
-		Port     int  `yaml:"port"`
-		Learning struct {
+		WebUI         bool  `yaml:"web_ui"`
+		Port          int   `yaml:"port"`
+		LoopbackTrust *bool `yaml:"loopback_trust"`
+		Learning      struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
 			StaggerMinutes    *int     `yaml:"stagger_minutes"`
@@ -324,6 +328,7 @@ func Load(root string) (*Instance, error) {
 		CoreLearning:       learning,
 		CoreWebUI:          raw.Core.WebUI,
 		CorePortSetting:    raw.Core.Port,
+		CoreLoopbackTrust:  raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

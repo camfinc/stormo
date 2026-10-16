@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -36,6 +37,9 @@ const Usage = `  core (the core service on this machine, docs/core.md):
   core workdir [n]                       the shared workdir: live locks and the last n changes with who made them (default 30)
   core learn [agent…] [--force]          run a learning cycle now (nap + dream per agent, waits for busy agents unless --force)
   core learning                          the learning schedule (stormo.yaml core.learning) and the last cycles
+  core token add <name> [scope] [days]   a personal token for the API (scope read|operate|admin, default read; days 0 = never expires); shown once
+  core token list | revoke <name>        the live tokens (never their values) / revoke one at once
+  core audit [n]                         the last n things people did through the core (default 30)
   core review [--no-open]                open the review page (needs core.web_ui): proposed lessons and skills, accept/reject, restart to apply`
 
 func base() string { return fmt.Sprintf("http://127.0.0.1:%d", CorePort()) }
@@ -573,6 +577,10 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return learn(inst, args, opts.Force, o)
 	case "learning":
 		return learningCmd(inst, o)
+	case "token":
+		return tokenCmd(inst, args, o)
+	case "audit":
+		return auditCmd(inst, args, o)
 	case "review":
 		if !inst.CoreWebUI {
 			return fmt.Errorf("the browser view is off: review proposals in the Stormo app, or set core.web_ui: true in stormo.yaml and restart the core")
@@ -664,4 +672,100 @@ func chatgptConnection(inst *instance.Instance, name string) (string, error) {
 		return "", fmt.Errorf("%s is not a ChatGPT connection of this instance (stormo connections)", name)
 	}
 	return name, nil
+}
+
+// TokenAdded is `core token add`'s result: the value is shown this once.
+type TokenAdded struct {
+	Token string    `json:"token"`
+	Info  TokenInfo `json:"info"`
+}
+
+func tokenCmd(inst *instance.Instance, args []string, o *out.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: core token add <name> [scope] [days] | list | revoke <name>")
+	}
+	switch args[0] {
+	case "add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: core token add <name> [read|operate|admin] [days]")
+		}
+		scope, days := "read", 0
+		if len(args) > 2 {
+			scope = args[2]
+		}
+		if len(args) > 3 {
+			v, err := strconv.Atoi(args[3])
+			if err != nil || v < 0 {
+				return fmt.Errorf("days must be 0 or more, got %q", args[3])
+			}
+			days = v
+		}
+		body, _ := json.Marshal(map[string]any{"name": args[1], "scope": scope, "days": days})
+		var r TokenAdded
+		if err := ownerJSON(inst.Root, http.MethodPost, "/api/tokens", bytes.NewReader(body), &r); err != nil {
+			return err
+		}
+		o.Result(r, func(w io.Writer) {
+			fmt.Fprintf(w, "token %s (%s) — shown once, keep it in a password manager:\n%s\n", r.Info.Name, r.Info.Scope, r.Token)
+		})
+		return nil
+	case "list":
+		var r struct {
+			Tokens []TokenInfo `json:"tokens"`
+		}
+		if err := ownerJSON(inst.Root, http.MethodGet, "/api/tokens", nil, &r); err != nil {
+			return err
+		}
+		o.Result(r, func(w io.Writer) {
+			if len(r.Tokens) == 0 {
+				fmt.Fprintln(w, "no tokens (the owner token file is the only credential)")
+			}
+			for _, t := range r.Tokens {
+				exp, used := "never", "never"
+				if t.Expires != nil {
+					exp = time.UnixMilli(*t.Expires).Format("2006-01-02")
+				}
+				if t.LastUsed != nil {
+					used = time.UnixMilli(*t.LastUsed).Format("2006-01-02 15:04")
+				}
+				fmt.Fprintf(w, "%-20s %-8s expires %-10s last used %s\n", t.Name, t.Scope, exp, used)
+			}
+		})
+		return nil
+	case "revoke":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: core token revoke <name>")
+		}
+		var r map[string]string
+		if err := ownerJSON(inst.Root, http.MethodDelete, "/api/tokens/"+url.PathEscape(args[1]), nil, &r); err != nil {
+			return err
+		}
+		o.Result(r, func(w io.Writer) { fmt.Fprintf(w, "revoked %s\n", args[1]) })
+		return nil
+	}
+	return fmt.Errorf("core token: add, list or revoke, not %q", args[0])
+}
+
+func auditCmd(inst *instance.Instance, args []string, o *out.Writer) error {
+	n := 30
+	if len(args) > 0 {
+		v, err := strconv.Atoi(args[0])
+		if err != nil || v <= 0 {
+			return fmt.Errorf("n must be a positive number, got %q", args[0])
+		}
+		n = v
+	}
+	var r struct {
+		Entries []AuditEntry `json:"entries"`
+	}
+	if err := ownerJSON(inst.Root, http.MethodGet, fmt.Sprintf("/api/audit?limit=%d", n), nil, &r); err != nil {
+		return err
+	}
+	o.Result(r, func(w io.Writer) {
+		for i := len(r.Entries) - 1; i >= 0; i-- {
+			e := r.Entries[i]
+			fmt.Fprintf(w, "%s  %-14s %-16s %-14s %s\n", time.UnixMilli(e.At).Format("2006-01-02 15:04"), e.Actor, e.Action, e.Target, e.Detail)
+		}
+	})
+	return nil
 }

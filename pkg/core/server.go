@@ -149,9 +149,11 @@ type Core struct {
 	MCP      *MCP
 	keys     *AgentKeys
 	owner    string
-	ownDB    bool
-	stop     chan struct{}
-	once     sync.Once
+	// loopbackTrust: direct loopback requests may read the open views without a token.
+	loopbackTrust bool
+	ownDB         bool
+	stop          chan struct{}
+	once          sync.Once
 }
 
 // StopOffice stops the office timer (and the fleet's timers if the core started them).
@@ -171,7 +173,7 @@ func (c *Core) Close() error {
 }
 
 // caller is who a request comes from: the owner (owner token) or an agent (its core key).
-func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys) }
+func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys, c.DB) }
 
 func marshalCompact(v any) []byte {
 	var b bytes.Buffer
@@ -360,7 +362,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: o.LearnDeps})
 	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
-		keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+		keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
 	go learner.Run(c.stop, time.Minute)
@@ -414,6 +416,18 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}()
 		path := r.URL.Path
 		get := r.Method == http.MethodGet
+		who := c.caller(r)
+		if need, ok := c.needs(r, who); !ok {
+			if who.Owner {
+				writeJSONBody(w, 403, errBody("forbidden", "this needs the "+need.String()+" scope"))
+			} else {
+				writeJSONBody(w, 401, errBody("unauthorized", "a token is required (Authorization: Bearer …)"))
+			}
+			return
+		}
+		if c.handleAdmin(w, r, who) {
+			return
+		}
 		if !inst.CoreWebUI && (path == "/" || path == "/review" || uiFiles[path].body != nil) {
 			writeJSONBody(w, 404, errBody("not_found", "the browser view is off: use the Stormo app, or set core.web_ui: true in stormo.yaml"))
 			return
@@ -515,6 +529,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 				writeJSONBody(w, 400, errBody("bad_request", err.Error()))
 				return
 			}
+			c.DB.Audit(who.Actor(), "learn.start", strings.Join(req.Agents, " "), fmt.Sprintf("cycle=%d force=%v", id, req.Force))
 			writeJSONBody(w, 202, map[string]any{"cycle": id})
 			return
 		case get && path == "/api/workdir":

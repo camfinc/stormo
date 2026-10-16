@@ -273,6 +273,7 @@ func (c *Core) handleReview(w http.ResponseWriter, r *http.Request, roster func(
 			return
 		}
 		c.Learner.markApplied(id)
+		c.DB.Audit(c.caller(r).Actor(), "agent.restart", id, "review")
 		writeJSONBody(w, 200, map[string]any{"restarted": id})
 		return
 	}
@@ -294,6 +295,7 @@ func (c *Core) handleReview(w http.ResponseWriter, r *http.Request, roster func(
 			writeJSONBody(w, 400, errBody("refused", err.Error()))
 			return
 		}
+		c.DB.Audit(c.caller(r).Actor(), "review."+d.Decision, d.Agent, strings.Join(append(append([]string{}, d.Lessons...), d.Skill), " "))
 		writeJSONBody(w, 200, map[string]any{"ok": true})
 	default:
 		writeJSONBody(w, 405, errBody("method_not_allowed", "GET or POST"))

@@ -398,8 +398,9 @@ func TestOfficeRoutes(t *testing.T) {
 				t.Errorf("%s: %d", asset, r.StatusCode)
 			}
 		}
+		// Not served: without a token, not even whether it exists (401).
 		for _, p := range []string{"/ui/../server.go", "/ui/fleet.go"} {
-			if r, _ := get(p); r.StatusCode != 404 {
+			if r, _ := get(p); r.StatusCode != 401 {
 				t.Errorf("%s: %d", p, r.StatusCode)
 			}
 		}
@@ -482,10 +483,11 @@ func TestOfficeRoutes(t *testing.T) {
 		if r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/png" || body != "v2-newest" {
 			t.Errorf("%d %s %q", r.StatusCode, r.Header.Get("Content-Type"), body)
 		}
-		for _, p := range []string{"/avatars/nova.png", "/avatars/..%2F..%2Fsecrets.png"} {
-			if r, _ := get(p); r.StatusCode != 404 {
-				t.Errorf("%s: %d", p, r.StatusCode)
-			}
+		if r, _ := get("/avatars/nova.png"); r.StatusCode != 404 {
+			t.Errorf("nova: %d", r.StatusCode)
+		}
+		if r, _ := get("/avatars/..%2F..%2Fsecrets.png"); r.StatusCode != 401 {
+			t.Errorf("traversal: %d", r.StatusCode)
 		}
 	})
 
@@ -498,8 +500,19 @@ func TestOfficeRoutes(t *testing.T) {
 		if strings.Contains(body, inst.Root) || strings.Contains(body, `"pid"`) {
 			t.Errorf("/health reaches agent containers; no host paths in it: %s", body)
 		}
-		if r, body := get("/nope"); r.StatusCode != 404 || body != `{"error":{"code":"not_found","message":"GET /nope"}}` {
-			t.Errorf("%d %s", r.StatusCode, body)
+		if r, _ := get("/nope"); r.StatusCode != 401 {
+			t.Errorf("unknown route without a token: %d", r.StatusCode)
+		}
+		req, _ := http.NewRequest("GET", base+"/nope", nil)
+		req.Header.Set("Authorization", "Bearer "+ReadOwnerToken(inst.Root))
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 404 || string(b) != `{"error":{"code":"not_found","message":"GET /nope"}}` {
+			t.Errorf("%d %s", r.StatusCode, b)
 		}
 	})
 }

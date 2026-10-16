@@ -58,14 +58,37 @@ func ReadOwnerToken(root string) string {
 
 // Caller is who a request comes from.
 type Caller struct {
+	// Owner: a person (the owner token or a personal token), at Scope.
 	Owner bool
+	// Name is the person's principal for the audit log: "owner" or the token's name.
+	Name  string
+	Scope Scope
 	Agent string // set when an agent's core key authenticated it
 }
 
-func callerOf(r *http.Request, owner string, keys *AgentKeys) Caller {
+// Can reports whether the caller holds at least the scope.
+func (c Caller) Can(s Scope) bool { return c.Owner && c.Scope >= s }
+
+// Actor names the caller in the audit log.
+func (c Caller) Actor() string {
+	switch {
+	case c.Owner:
+		return c.Name
+	case c.Agent != "":
+		return "agent:" + c.Agent
+	}
+	return "anonymous"
+}
+
+func callerOf(r *http.Request, owner string, keys *AgentKeys, db *DB) Caller {
 	h := r.Header.Get("Authorization")
-	if m := bearer.FindStringSubmatch(h); m != nil && owner != "" && subtle.ConstantTimeCompare([]byte(m[1]), []byte(owner)) == 1 {
-		return Caller{Owner: true}
+	if m := bearer.FindStringSubmatch(h); m != nil {
+		if owner != "" && subtle.ConstantTimeCompare([]byte(m[1]), []byte(owner)) == 1 {
+			return Caller{Owner: true, Name: "owner", Scope: ScopeAdmin}
+		}
+		if c, ok := db.tokenCaller(m[1]); ok {
+			return c
+		}
 	}
 	if keys != nil {
 		if a, ok := keys.AgentFor(h); ok {

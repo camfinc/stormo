@@ -7,13 +7,24 @@ and refuse what you do not understand.
 
 ## The core's HTTP API
 
-`stormo core` listens on `127.0.0.1:$SWARM_CORE_PORT` (18600). Reads of the fleet and the office
-need no key. The bind is not a full boundary: on OrbStack and Docker Desktop agent containers reach
-loopback ports through `host.docker.internal`. So reads that return message bodies, activity
-previews or file history need `Authorization: Bearer <owner token>` (the value in
-`.swarm/core/owner.token`, 0600, minted when the core starts; containers never mount `.swarm/core`)
-or the agent's own `SWARM_CORE_KEY`, which sees only its own part. On Linux, agent containers reach
-the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and `/ingest/*`.
+`stormo core` listens on the instance's core port (`127.0.0.1`, 18600 for the first instance on a
+host; docs/core.md). **Every route except `/health` needs a credential** (docs/remote-core.md §3):
+
+- a person: `Authorization: Bearer <token>`, either the owner token (`.swarm/core/owner.token`,
+  0600, minted when the core starts, scope admin; containers never mount `.swarm/core`) or a
+  personal token from `stormo core token add` (`stc_…`, scope `read`, `operate` or `admin`,
+  optionally expiring, revocable). GET needs `read`, anything that changes state `operate`,
+  `/api/tokens` and `/api/audit` `admin`. A token without the scope gets 403, no token 401.
+- an agent: its own `SWARM_CORE_KEY` on `/v1/*`, `/ingest/*`, `/mcp` and its own
+  `/api/agents/<id>/activity`, nothing else.
+
+While `core.loopback_trust` is on (the default), a request that reaches the loopback listener
+directly (no `X-Forwarded-For`/`Forwarded`) still reads the views that were always open locally
+without a token: `/`, `/review`, `/ui/*`, `/api/core`, `/api/instance`, `/api/fleet`,
+`/api/gateway[/models]`, `/api/learning`, timelines and avatars. On OrbStack and Docker Desktop agent
+containers reach loopback ports through `host.docker.internal`, so nothing that holds client data is
+among them. On Linux, agent containers reach the core through bridge listeners that serve only
+`/health`, `/v1/*`, `/mcp` and `/ingest/*`.
 
 | route | body |
 |---|---|
@@ -32,6 +43,10 @@ the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and
 | `GET /api/review` | `autoAccept`, `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`}], `skills` [{`skill`, `pii`, `nap`, `new`, `files` [{`path`, `size`, `text`, `current`}]}]}]. Owner token |
 | `POST /api/review` | `{agent, lessons: [id…] \| skill, decision: accept \| reject \| promote, scope: unit \| group}`; 400 with the reason when refused. Owner token |
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
+| `GET /api/tokens[?all=1]` | `tokens` [{`id`, `name`, `scope`, `created`, `expires`, `lastUsed`, `revoked`}], never values. Admin |
+| `POST /api/tokens` | `{name, scope: read \| operate \| admin, days}` (0 days never expires) → 201 `{token, info}`; the value is shown this once. Admin |
+| `DELETE /api/tokens/<name or id>` | revokes at once. Admin |
+| `GET /api/audit[?limit=n]` | `entries` [{`at`, `actor` (owner, a token's name, `agent:<id>`), `action`, `target`, `detail`}], newest first. Admin |
 | `GET /review` | the review page (no data; reads the owner token from `#t=`). Only with `core.web_ui: true`, like `/` and `/ui/*`; otherwise 404 |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway/models?connection=<name>` | `connection`, `models` [{`id`, `display_name`, `context_length`}]: that ChatGPT sign-in's plan catalog, fetched when the cached one is older than 10 min (the configured defaults before sign-in) |

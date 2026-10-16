@@ -137,6 +137,26 @@ var migrations = []string{
 	`ALTER TABLE learn_runs ADD COLUMN auto_accepted INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN restarted INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN restart_note TEXT NOT NULL DEFAULT '';`,
+	// 7: personal access tokens (only a hash is kept) and the audit log of what principals did.
+	`CREATE TABLE tokens (
+		id        TEXT PRIMARY KEY,
+		name      TEXT NOT NULL UNIQUE,
+		scope     TEXT NOT NULL,
+		hash      TEXT NOT NULL,
+		created   INTEGER NOT NULL,
+		expires   INTEGER,
+		last_used INTEGER,
+		revoked   INTEGER
+	);
+	CREATE TABLE audit (
+		id     INTEGER PRIMARY KEY,
+		at     INTEGER NOT NULL,
+		actor  TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX audit_at ON audit(at);`,
 }
 
 // DB is core.db.

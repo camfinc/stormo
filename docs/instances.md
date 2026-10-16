@@ -69,6 +69,7 @@ office:
 
 core:
   port: 18600                     # pin the core's port (default: picked once, free of every other instance on this host, kept in .swarm/core/port)
+  loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host)
   web_ui: false                   # serve the office and review pages in a browser (default false: the macOS app is the face)
   learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`
     at: "03:00"                   # daily start, 24-hour time; each agent is napped, then dreamed
