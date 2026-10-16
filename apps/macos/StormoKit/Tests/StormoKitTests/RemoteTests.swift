@@ -39,8 +39,17 @@ import Testing
         let supervisor = CoreSupervisor(client: CoreClient(port: port), instanceRoot: instance)
         await supervisor.start(with: cli)
         #expect(supervisor.state.isRunning, "\(supervisor.state) \(supervisor.lastError ?? "")")
-        defer { Task { await supervisor.stop(with: cli) } }
+        // Stopped before the test returns, whatever happens: a detached stop can outlive the run
+        // and leave a core holding the port.
+        do {
+            try await checkTokens(port: port, instance: instance)
+        } catch {
+            Issue.record(error)
+        }
+        await supervisor.stop(with: cli)
+    }
 
+    @MainActor private func checkTokens(port: Int, instance: URL) async throws {
         let owner = try #require(ReviewStore.ownerToken(root: instance))
         let anonymous = CoreClient(port: port)
         await #expect(throws: CoreClient.Failure.self) { try await anonymous.review(owner: "stc_000000000000_" + String(repeating: "0", count: 48)) }
@@ -59,5 +68,12 @@ import Testing
         #expect(remote.state.isRunning, "\(remote.state)")
         let view = try await remote.client.review(owner: token)
         #expect(view.agents.contains { $0.id == "atlas" })
+
+        // Placements are readable; acting needs operate, which a read token lacks.
+        let placements = try await remote.client.placements()
+        #expect(placements.map(\.name).starts(with: ["local", "remote"]))
+        await #expect(throws: CoreClient.Failure.refused(403, "this needs the operate scope")) {
+            _ = try await remote.client.lifecycle(agent: "atlas", action: "stop", placement: "local", confirm: false)
+        }
     }
 }

@@ -186,3 +186,48 @@ func TestNoFallbackWithoutTheProvidersKey(t *testing.T) {
 		t.Errorf("model.default = %v, want the core's model", n)
 	}
 }
+
+func TestPlacementsDecideGatewayAndLink(t *testing.T) {
+	inst := &instance.Instance{Name: "Acme", CorePortSetting: 18600, CoreURLs: map[string]string{"vps": "https://core.example", "remote": "https://core.internal"},
+		Placements: []instance.Placement{{Name: "local", Kind: instance.PlacementLocal}, {Name: "remote", Kind: instance.PlacementECS}, {Name: "vps", Kind: instance.PlacementRunner}}}
+	t.Setenv("SWARM_CORE_PORT", "18600")
+	apply := func(target manifest.Target, placement string) *yaml.Node {
+		t.Helper()
+		var doc yaml.Node
+		_ = yaml.Unmarshal([]byte("{}"), &doc)
+		a := &manifest.Agent{ID: "atlas", Unit: "sales", Secrets: []string{"OPENROUTER_API_KEY"}}
+		a.Engine.Model, a.Engine.Provider = "openai/gpt-6-luna", "openrouter"
+		a.Engine.Local = &manifest.EngineLocal{Via: "core", Model: "gpt-6-luna"}
+		if err := ApplyOverrides(doc.Content[0], a, openrouter, target, manifest.CoreForPlacement(inst, target, placement)); err != nil {
+			t.Fatal(err)
+		}
+		return doc.Content[0]
+	}
+	// Local: the subscription gateway, hooks and tools through the relay.
+	cfg := apply(manifest.Local, "")
+	if v := getPath(cfg, "model.base_url"); v == nil || v.Value != "http://host.docker.internal:18600/v1" {
+		t.Errorf("local gateway %v", v)
+	}
+	if v := getPath(cfg, "mcp_servers.core.url"); v == nil || v.Value != "http://nap:18690/mcp" {
+		t.Errorf("local MCP %v", v)
+	}
+	// A runner placement: no subscription; hooks and tools still through the relay.
+	cfg = apply(manifest.Local, "vps")
+	if v := getPath(cfg, "model.base_url"); v != nil && strings.Contains(v.Value, "18600") {
+		t.Errorf("vps uses the gateway: %s", v.Value)
+	}
+	if v := getPath(cfg, "model.provider"); v == nil || v.Value != "openrouter" {
+		t.Errorf("vps provider %v", v)
+	}
+	if v := getPath(cfg, "mcp_servers.core.url"); v == nil || v.Value != "http://nap:18690/mcp" {
+		t.Errorf("vps MCP %v", v)
+	}
+	// ECS with a core named for it: linked through localhost, no gateway.
+	cfg = apply(manifest.AWS, "")
+	if v := getPath(cfg, "mcp_servers.core.url"); v == nil || v.Value != "http://localhost:18690/mcp" {
+		t.Errorf("ecs MCP %v", v)
+	}
+	if v := getPath(cfg, "model.base_url"); v != nil && strings.Contains(v.Value, "18600") {
+		t.Errorf("ecs uses the gateway: %s", v.Value)
+	}
+}

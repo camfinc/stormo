@@ -158,6 +158,8 @@ func Out(root, agentID string, target manifest.Target) string {
 type Options struct {
 	Out    string
 	Target manifest.Target
+	// Placement names where it runs (instance placements:); "" is the target's default.
+	Placement string
 	// Present names the secrets with values (deciding optional secrets); nil reads them from
 	// secrets.local.yaml for the target.
 	Present []string
@@ -201,6 +203,7 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 		return nil, err
 	}
 	ctx.Target = o.Target
+	ctx.Placement = o.Placement
 	ctx.SkipSkills = eff.SkipSkills
 	if o.Target == manifest.Local && eff.Agent.Engine.Local != nil {
 		// On the swarm core the shared space is coordinated by it: locks, attribution, workdir.py.

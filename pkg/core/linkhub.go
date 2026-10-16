@@ -56,6 +56,12 @@ func NewLinkHub(db *DB) *LinkHub {
 
 // Handle accepts an agent's link (authenticated by its core key, already resolved to agent).
 func (h *LinkHub) Handle(w http.ResponseWriter, r *http.Request, agent string) {
+	h.Accept(w, r, "agent:"+agent, func(hello link.Hello) (string, bool) { return agent, hello.Agent == agent })
+}
+
+// Accept takes a link whose hello keyOf turns into the hub's key (an agent id, or a runner's
+// placement); actor names the credential in the audit log.
+func (h *LinkHub) Accept(w http.ResponseWriter, r *http.Request, actor string, keyOf func(link.Hello) (string, bool)) {
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -67,8 +73,12 @@ func (h *LinkHub) Handle(w http.ResponseWriter, r *http.Request, agent string) {
 	cancel()
 	var env link.Envelope
 	var hello link.Hello
-	if err != nil || json.Unmarshal(data, &env) != nil || env.Type != link.TypeHello || json.Unmarshal(env.Body, &hello) != nil || hello.Agent != agent {
-		c.Close(websocket.StatusPolicyViolation, "first message is hello, for the key's own agent")
+	agent, ok := "", false
+	if err == nil && json.Unmarshal(data, &env) == nil && env.Type == link.TypeHello && json.Unmarshal(env.Body, &hello) == nil {
+		agent, ok = keyOf(hello)
+	}
+	if !ok {
+		c.Close(websocket.StatusPolicyViolation, "first message is hello, for what the credential allows")
 		return
 	}
 	now := time.Now().UnixMilli()
@@ -80,7 +90,7 @@ func (h *LinkHub) Handle(w http.ResponseWriter, r *http.Request, agent string) {
 	}
 	h.conns[agent] = lc
 	h.mu.Unlock()
-	h.db.Audit("agent:"+agent, "link.connect", agent, hello.Placement)
+	h.db.Audit(actor, "link.connect", agent, hello.Placement)
 
 	defer func() {
 		h.mu.Lock()
@@ -154,6 +164,17 @@ func (h *LinkHub) Close() {
 	}
 }
 
+// Keys are the live links' keys (agents, or runners' placements).
+func (h *LinkHub) Keys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, 0, len(h.conns))
+	for k := range h.conns {
+		out = append(out, k)
+	}
+	return out
+}
+
 // Connected reports whether the agent has a live link.
 func (h *LinkHub) Connected(agent string) bool {
 	if h == nil {
@@ -206,21 +227,27 @@ var ErrNoLink = errors.New("no live link")
 
 // Command sends a command down an agent's link and waits for its answer.
 func (h *LinkHub) Command(ctx context.Context, agent, typ string, body any) error {
+	_, err := h.Call(ctx, agent, typ, body)
+	return err
+}
+
+// Call is Command returning the answer's body.
+func (h *LinkHub) Call(ctx context.Context, agent, typ string, body any) (json.RawMessage, error) {
 	if h == nil {
-		return ErrNoLink
+		return nil, ErrNoLink
 	}
 	h.mu.Lock()
 	lc := h.conns[agent]
 	h.mu.Unlock()
 	if lc == nil {
-		return ErrNoLink
+		return nil, ErrNoLink
 	}
 	idb := make([]byte, 8)
 	_, _ = rand.Read(idb)
 	id := hex.EncodeToString(idb)
 	msg, err := link.Marshal(typ, id, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ch := make(chan link.Envelope, 1)
 	lc.pmu.Lock()
@@ -235,19 +262,19 @@ func (h *LinkHub) Command(ctx context.Context, agent, typ string, body any) erro
 		lc.pmu.Lock()
 		delete(lc.pending, id)
 		lc.pmu.Unlock()
-		return fmt.Errorf("link to %s: %w", agent, err)
+		return nil, fmt.Errorf("link to %s: %w", agent, err)
 	}
 	select {
 	case res := <-ch:
 		if res.Error != "" {
-			return fmt.Errorf("%s: %s", agent, res.Error)
+			return nil, fmt.Errorf("%s: %s", agent, res.Error)
 		}
-		return nil
+		return res.Body, nil
 	case <-ctx.Done():
 		lc.pmu.Lock()
 		delete(lc.pending, id)
 		lc.pmu.Unlock()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 

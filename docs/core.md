@@ -95,6 +95,18 @@ engine API key (`agents/<id>/data/link.env`), never the agent's other secrets. T
 the link for status, wakes and naps, and falls back to compose and the local API port without
 one; a link gone for 10 minutes is a `link_lost` finding. `/api/fleet` shows each agent's `link`.
 
+**Lifecycle and runners (built, docs/remote-core.md §6a).** The core starts, stops and restarts
+agents for any client (`POST /api/agents/<id>/start|stop|restart`, operate scope, audited) in a
+placement: `local` (compose on the core's host), `remote` (ECS through the AWS CLI with the core's
+credentials; the exact plan comes back as 428 until the caller confirms it), or a `runner`
+placement declared in stormo.yaml (`placements: {vps: {kind: runner}}`), served by `stormo runner
+vps` on that host with `SWARM_CORE_URL` and an operate token (`STORMO_RUNNER_TOKEN`). The runner
+dials the core (`/runner`) and carries out orders with its own checkout, as `stormo start` would
+there; agents it starts are built for the placement (its `core.urls.<name>`, no ChatGPT gateway).
+On ECS, an agent on its core links when the instance names a core for it (`core.urls.remote`):
+the task definition gives the nap sidecar its core URL and, from Secrets Manager, only its core key
+and engine API key, and `secrets push` then sends the agent's `SWARM_CORE_KEY`.
+
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
 

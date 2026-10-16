@@ -102,7 +102,9 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	}
 
 	// Optional secrets without a value leave out what they gate (skills, actions, channels).
-	r, err := build.Agent(inst, id, build.Options{Target: manifest.Local, Present: resolved.Values.Keys()})
+	// A runner (`stormo runner <placement>`) runs agents for its placement on its own host.
+	placement := Placement()
+	r, err := build.Agent(inst, id, build.Options{Target: manifest.Local, Placement: placement, Present: resolved.Values.Keys()})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -161,7 +163,7 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if interval == 0 {
 		interval = 900
 	}
-	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CoreURL: manifest.CoreFor(inst, manifest.Local).URL, LinkEnvFile: linkEnv}, port, interval, image)
+	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CoreURL: manifest.CoreForPlacement(inst, manifest.Local, placement).URL, LinkEnvFile: linkEnv, Placement: placement}, port, interval, image)
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
@@ -304,4 +306,12 @@ func projectOwner(docker, project string) string {
 		}
 	}
 	return ""
+}
+
+// Placement is where this host runs agents: SWARM_PLACEMENT (a runner sets it), else local.
+func Placement() string {
+	if p := os.Getenv("SWARM_PLACEMENT"); p != "" {
+		return p
+	}
+	return "local"
 }

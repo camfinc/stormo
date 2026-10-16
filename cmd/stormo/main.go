@@ -681,6 +681,12 @@ func run(args []string) error {
 	case "core":
 		return runCore(inst, sub, rest)
 
+	case "runner":
+		if sub == "" {
+			return errUsage
+		}
+		return runRunner(inst, sub)
+
 	case "chat":
 		return chatCmd(inst, sub, rest)
 
@@ -1208,6 +1214,9 @@ func secretsCmd(inst *instance.Instance, deps *ops.Deps, sub string, rest []stri
 				return err
 			}
 			r := secrets.Resolve(f, a, manifest.AWS)
+			if deploy.Linked(a, deps.Target) {
+				secrets.WithCoreKey(f, a, &r)
+			}
 			plan, err := secrets.PlanPush(a, r, deps.Target.Region, deps.AWS)
 			if err != nil {
 				return err

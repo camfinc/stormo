@@ -271,14 +271,16 @@ func (a *Agent) drainLoop(ctx context.Context) {
 }
 
 // wsURL turns the core's base URL into the link's ws(s) URL.
-func wsURL(base string) string {
+func wsURL(base string) string { return wsURLAt(base, Path) }
+
+func wsURLAt(base, path string) string {
 	switch {
 	case strings.HasPrefix(base, "https://"):
-		return "wss://" + strings.TrimPrefix(base, "https://") + Path
+		return "wss://" + strings.TrimPrefix(base, "https://") + path
 	case strings.HasPrefix(base, "http://"):
-		return "ws://" + strings.TrimPrefix(base, "http://") + Path
+		return "ws://" + strings.TrimPrefix(base, "http://") + path
 	}
-	return base + Path
+	return base + path
 }
 
 // linkLoop keeps the link up: dial, serve, and on loss back off (1 s doubling to 30 s, jittered).

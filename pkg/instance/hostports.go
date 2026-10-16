@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -104,6 +105,12 @@ func (i *Instance) CorePort() int {
 	corePortMu.Lock()
 	defer corePortMu.Unlock()
 	port := i.CorePortSetting
+	// Under `go test` without STORMO_HOME, nothing is claimed or written: tests build example
+	// instances and must leave neither the host registry nor the checkout changed.
+	ephemeral := testing.Testing() && os.Getenv("STORMO_HOME") == ""
+	if port == 0 && ephemeral {
+		return DefaultCorePort
+	}
 	if port == 0 {
 		if b, err := os.ReadFile(corePortFile(i.Root)); err == nil {
 			port, _ = strconv.Atoi(strings.TrimSpace(string(b)))
@@ -115,7 +122,9 @@ func (i *Instance) CorePort() int {
 			_ = os.WriteFile(corePortFile(i.Root), []byte(strconv.Itoa(port)+"\n"), 0o600)
 		}
 	}
-	_ = writeClaim(Claim{Root: i.Root, Name: i.Name, CorePort: port})
+	if !ephemeral {
+		_ = writeClaim(Claim{Root: i.Root, Name: i.Name, CorePort: port})
+	}
 	return port
 }
 

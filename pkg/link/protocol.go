@@ -33,7 +33,24 @@ const (
 	TypeResult = "result" // either way: the answer to a command
 	TypeWake   = "wake"   // core → agent: Wake
 	TypeNap    = "nap"    // core → agent: Nap
+	TypeOrder  = "order"  // core → runner: Order (its answer's body is an OrderResult)
 )
+
+// RunnerPath is where a runner dials the core (a person's token with the operate scope; its
+// hello's Agent and Placement name the placement it serves).
+const RunnerPath = "/runner"
+
+// Order is a lifecycle action for a runner: start, stop, restart or status of an agent.
+type Order struct {
+	Action string `json:"action"`
+	Agent  string `json:"agent"`
+}
+
+// OrderResult is what a runner did: its log lines, and the agent's state after.
+type OrderResult struct {
+	Log   []string `json:"log"`
+	State string   `json:"state,omitempty"`
+}
 
 // Hello introduces the agent.
 type Hello struct {

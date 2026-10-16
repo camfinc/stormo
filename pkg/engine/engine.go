@@ -93,6 +93,8 @@ type CompileContext struct {
 	Instance *instance.Instance
 	// Where the baseline will run; local applies the manifest's engine.local model.
 	Target manifest.Target
+	// Placement names where exactly (instance placements:); "" is the target's default.
+	Placement string
 	// Hot-tier seed entries, ranked, already within budget.
 	Seed struct{ Memory, User []string }
 	// Cold-tier knowledge skill files (path relative to the skills dir → content).

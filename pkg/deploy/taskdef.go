@@ -28,6 +28,9 @@ type Target struct {
 	// Resource is the instance's names.resource (ECS family/service, log group, image prefix).
 	Resource   string
 	SidecarTag string
+	// Core is the core the agents on ECS link to (stormo.yaml core.urls.remote/aws, or core.url);
+	// nil runs them without one, as before (docs/remote-core.md §6a).
+	Core *manifest.CoreEndpoints
 }
 
 // DefaultTarget is the instance's AWS target (stormo.yaml deploy.aws) with sidecar tag "latest".
@@ -38,7 +41,17 @@ func DefaultTarget(inst *instance.Instance) Target {
 		aps[k] = v
 	}
 	aws.Efs.AccessPoints = aps
-	return Target{AwsTarget: aws, Resource: inst.Names.Resource, SidecarTag: "latest"}
+	t := Target{AwsTarget: aws, Resource: inst.Names.Resource, SidecarTag: "latest"}
+	if c := manifest.CoreForPlacement(inst, manifest.AWS, "remote"); c.Remote {
+		t.Core = &c
+	}
+	return t
+}
+
+// Linked reports whether an agent on ECS links to the instance's core: the instance names one
+// for it, and the agent is on its core (model.local via core).
+func Linked(a *manifest.Agent, t Target) bool {
+	return t.Core != nil && a.Engine.Local != nil
 }
 
 // AccessPointID is the EFS access point of a layer, or <unset>.
@@ -203,6 +216,21 @@ func RenderTaskDef(a *manifest.Agent, eng engine.Engine, t Target) TaskDef {
 		agentMounts = append(agentMounts, MountPoint{"shared-" + l.Layer, l.Path})
 	}
 	agentEnv := eng.Env(a, manifest.AWS).Pairs()
+	var napSecrets *[]Secret
+	if Linked(a, t) {
+		// The nap sidecar is the agent's link (pkg/link): the core's URL, the agent's own API on
+		// localhost (one network namespace), and only its core key and engine API key. The agent's
+		// hooks and the core's tools go to the sidecar's relay.
+		napEnv = append(napEnv,
+			env.NameValue{Name: "SWARM_CORE_URL", Value: t.Core.URL},
+			env.NameValue{Name: "SWARM_AGENT_API", Value: fmt.Sprintf("http://localhost:%d", eng.Port())},
+			env.NameValue{Name: "SWARM_PLACEMENT", Value: "remote"})
+		ns := []Secret{{manifest.Core.KeyEnv, fmt.Sprintf("%s:%s::", secretArn, manifest.Core.KeyEnv)},
+			{"SWARM_AGENT_API_KEY", fmt.Sprintf("%s:%s::", secretArn, eng.Runtime().APIKeyName())}}
+		napSecrets = &ns
+		secrets = append(secrets, Secret{manifest.Core.KeyEnv, fmt.Sprintf("%s:%s::", secretArn, manifest.Core.KeyEnv)})
+		agentEnv = append(agentEnv, env.NameValue{Name: "SWARM_CORE_URL", Value: manifest.RelayURL(manifest.AWS)})
+	}
 	return TaskDef{
 		Family:                  t.Resource + "-" + a.ID,
 		NetworkMode:             "awsvpc",
@@ -222,7 +250,7 @@ func RenderTaskDef(a *manifest.Agent, eng engine.Engine, t Target) TaskDef {
 			},
 			{
 				Name: "nap", Image: sidecar, Essential: false, Command: []string{"nap", "--loop"},
-				Environment: napEnv, MountPoints: []MountPoint{{volume, "/data"}},
+				Environment: napEnv, Secrets: napSecrets, MountPoints: []MountPoint{{volume, "/data"}},
 				DependsOn:   []DependsOn{{"rehydrate", "SUCCESS"}},
 				StopTimeout: 120, LogConfiguration: logs(a, t, "nap"),
 			},

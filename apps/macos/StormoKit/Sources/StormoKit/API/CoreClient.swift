@@ -16,7 +16,7 @@ public struct CoreClient: Sendable {
     /// Sent as `Authorization: Bearer` on every request: the owner token locally, a personal token remotely.
     public let token: String?
     public let pinning: PinningDelegate
-    private let session: URLSession
+    let session: URLSession
 
     /// The core's default port, or `SWARM_CORE_PORT` from the given environment.
     public static func port(environment: [String: String]) -> Int {

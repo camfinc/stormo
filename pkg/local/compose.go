@@ -44,6 +44,8 @@ type Paths struct {
 	CoreURL string
 	// LinkEnvFile holds the sidecar's link secrets (secrets.WriteLinkEnv); "" leaves the link off.
 	LinkEnvFile string
+	// Placement this host runs agents for ("" is local).
+	Placement string
 }
 
 func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
@@ -137,6 +139,9 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		nap.Environment["SWARM_CORE_URL"] = p.CoreURL
 		nap.Environment["SWARM_AGENT_API"] = fmt.Sprintf("http://agent:%d", eng.Port())
 		nap.Environment["SWARM_PLACEMENT"] = string(manifest.Local)
+		if p.Placement != "" {
+			nap.Environment["SWARM_PLACEMENT"] = p.Placement
+		}
 		nap.Environment["SWARM_LINK_DIR"] = "/link"
 		nap.Volumes = append(append([]string{}, nap.Volumes...), "link:/link")
 		nap.ExtraHosts = []string{"host.docker.internal:host-gateway"}

@@ -221,6 +221,17 @@ func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	return p, r, nil
 }
 
+// WithCoreKey adds the agent's core key (minted under local.agents.<id>, local-only until now)
+// to what an AWS push sends: for an agent on ECS that links to a core (deploy.Linked), whose
+// sidecar and engine read it from Secrets Manager (docs/remote-core.md decision 3).
+func WithCoreKey(f *File, a *manifest.Agent, r *Resolved) {
+	if v, ok := f.Local.lookup(a, manifest.Core.KeyEnv); ok && v != "" {
+		r.Values.Set(manifest.Core.KeyEnv, v)
+		return
+	}
+	r.Missing = append(r.Missing, manifest.Core.KeyEnv)
+}
+
 // LinkEnvFile is the sidecar's env file: only what its link needs (the agent's core key and its
 // engine API key), never the agent's other secrets.
 func LinkEnvFile(root, id string) string {

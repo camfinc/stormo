@@ -120,6 +120,8 @@ type CoreOptions struct {
 	DB *DB
 	// Keys map core keys to agents; nil reads the instance's secrets file.
 	Keys *AgentKeys
+	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
+	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
 	OwnerToken string
 	// The bus's view of the fleet, wake runs and Slack mirror; nil takes the fleet's, a run through
@@ -155,10 +157,13 @@ type Core struct {
 	Workdir  *Workdir
 	Learner  *Learner
 	MCP      *MCP
-	// Links are the agents' live wires (pkg/link).
-	Links *LinkHub
-	keys  *AgentKeys
-	owner string
+	// Links are the agents' live wires (pkg/link); Runners the runners' (keyed by placement).
+	Links     *LinkHub
+	Runners   *LinkHub
+	keys      *AgentKeys
+	inst      *instance.Instance
+	lifecycle LifecycleOps
+	owner     string
 	// loopbackTrust: direct loopback requests may read the open views without a token.
 	loopbackTrust bool
 	ownDB         bool
@@ -177,6 +182,9 @@ func (c *Core) Close() error {
 	}
 	if c.Links != nil {
 		c.Links.Close()
+	}
+	if c.Runners != nil {
+		c.Runners.Close()
 	}
 	for _, b := range c.bridge {
 		_ = b.Close()
@@ -403,12 +411,22 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps})
-	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links,
-		keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
+	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: NewLinkHub(db),
+		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
 	go learner.Run(c.stop, time.Minute)
 	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
+	c.lifecycle = o.Lifecycle
+	if c.lifecycle.Local == nil || c.lifecycle.Remote == nil {
+		def := defaultLifecycle(inst, learner.o.Deps.Restart)
+		if c.lifecycle.Local == nil {
+			c.lifecycle.Local = def.Local
+		}
+		if c.lifecycle.Remote == nil {
+			c.lifecycle.Remote = def.Remote
+		}
+	}
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -549,8 +567,18 @@ func StartCore(o CoreOptions) (*Core, error) {
 			w.Header().Set("Referrer-Policy", "no-referrer")
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
 			return
-		case path == "/api/review" || (r.Method == http.MethodPost && strings.HasPrefix(path, "/api/agents/") && strings.HasSuffix(path, "/restart")):
+		case path == "/api/review":
 			c.handleReview(w, r, bo.Roster)
+			return
+		case r.Method == http.MethodPost && lifecyclePath.MatchString(path):
+			m := lifecyclePath.FindStringSubmatch(path)
+			c.handleLifecycle(w, r, who, m[1], m[2], bo.Roster)
+			return
+		case get && path == "/api/placements":
+			writeJSONBody(w, 200, map[string]any{"placements": c.placements()})
+			return
+		case path == link.RunnerPath:
+			c.handleRunner(w, r, who)
 			return
 		case get && path == "/api/learning":
 			// Schedule and counts per agent: no lesson text, so no key.

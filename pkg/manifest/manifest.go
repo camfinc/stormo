@@ -70,7 +70,13 @@ var ChannelSecrets = map[string][]string{
 
 // CoreEndpoints are the swarm core's addresses as local agent containers see it. Each agent
 // authenticates with its own key, a local-only secret (never pushed to AWS).
-type CoreEndpoints struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }
+type CoreEndpoints struct {
+	KeyEnv, URL, BaseURL, IngestURL, MCPURL string
+	// NoGateway: the ChatGPT subscription is not for this placement (it stays on local cores).
+	NoGateway bool
+	// Remote: an AWS agent linked to a core (the instance names one for the remote placement).
+	Remote bool
+}
 
 // CoreAt is the core on a host port: it runs on the host (it drives the local compose projects),
 // so containers reach it at host.docker.internal. Each instance's core has its own port.
@@ -97,12 +103,35 @@ func coreAtURL(u string) CoreEndpoints {
 // The model gateway (BaseURL) is called directly; hooks and MCP go to the agent's sidecar relay
 // (RelayURL), which forwards them to URL and holds them while the core is away (pkg/link).
 func CoreFor(inst *instance.Instance, target Target) CoreEndpoints {
+	return CoreForPlacement(inst, target, "")
+}
+
+// CoreForPlacement is CoreFor for a named placement (instance placements:): its own core.urls
+// entry, no ChatGPT gateway outside local, and ECS linked only when the instance names a core
+// for it (core.urls.remote, or aws).
+func CoreForPlacement(inst *instance.Instance, target Target, placement string) CoreEndpoints {
+	if placement == "" {
+		placement = "local"
+		if target == AWS {
+			placement = "remote"
+		}
+	}
 	e := CoreAt(inst.CorePort())
-	if u := inst.CoreURLFor(string(target)); u != "" {
+	if u := inst.CoreURLFor(placement); u != "" {
 		e = coreAtURL(u)
+	} else if placement == "remote" {
+		if u := inst.CoreURLFor("aws"); u != "" {
+			e = coreAtURL(u)
+		}
 	}
 	relay := RelayURL(target)
 	e.IngestURL, e.MCPURL = relay+"/ingest", relay+"/mcp"
+	if p, ok := inst.PlacementNamed(placement); ok && p.Kind != instance.PlacementLocal {
+		e.NoGateway = true
+	}
+	if target == AWS {
+		e.Remote = inst.CoreURLs["remote"] != "" || inst.CoreURLs["aws"] != "" || inst.CoreURL != ""
+	}
 	return e
 }
 

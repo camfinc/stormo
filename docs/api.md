@@ -43,6 +43,10 @@ among them. On Linux, agent containers reach the core through bridge listeners t
 | `GET /api/review` | `autoAccept`, `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`}], `skills` [{`skill`, `pii`, `nap`, `new`, `files` [{`path`, `size`, `text`, `current`}]}]}]. Owner token |
 | `POST /api/review` | `{agent, lessons: [id…] \| skill, decision: accept \| reject \| promote, scope: unit \| group}`; 400 with the reason when refused. Owner token |
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
+| `POST /api/agents/<id>/start\|stop\|restart` | `{placement, confirm}` (placement: as asked, else where its link runs, else local). local runs compose here; remote (ECS) answers 428 `{plan}` until `confirm: true`; a runner placement goes to its runner (503 when none serves it). → `{action, agent, placement, log, state}`. Operate; audited |
+| `GET /api/placements` | `placements` [{`name`, `kind`: local \| ecs \| runner, `available`}]. Read |
+| `GET /link` (WebSocket) | an agent's live wire (pkg/link): hello, status, wake/nap commands. The agent's core key |
+| `GET /runner` (WebSocket) | a runner's link: lifecycle orders for its placement. An operate token |
 | `GET /api/tokens[?all=1]` | `tokens` [{`id`, `name`, `scope`, `created`, `expires`, `lastUsed`, `revoked`}], never values. Admin |
 | `POST /api/tokens` | `{name, scope: read \| operate \| admin, days}` (0 days never expires) → 201 `{token, info}`; the value is shown this once. Admin |
 | `DELETE /api/tokens/<name or id>` | revokes at once. Admin |

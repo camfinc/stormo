@@ -190,7 +190,8 @@ struct AgentActions: View {
             Button("Start") { Task { await model.run("start", agents: ids) } }
             Button("Stop") { Task { await model.run("stop", agents: ids) } }
             Button("Restart") { Task { await model.run("restart", agents: ids) } }
-            if ids.count == 1 {
+            // A remote instance's files and commands live where its core runs.
+            if ids.count == 1, model.instances.active?.isRemote != true {
                 Button("Nap Now") { Task { await model.run("nap-now", agents: ids) } }
                 Divider()
                 Button("Edit…") { edit(ids[0]) }
@@ -288,7 +289,9 @@ struct AgentActionsBar: View {
     var body: some View {
         if running {
             Button("Restart") { Task { await model.run("restart", agents: [id]) } }
-            Button("Nap Now") { Task { await model.run("nap-now", agents: [id]) } }
+            if model.instances.active?.isRemote != true {
+                Button("Nap Now") { Task { await model.run("nap-now", agents: [id]) } }
+            }
             Button("Stop", role: .destructive) { Task { await model.run("stop", agents: [id]) } }
         } else {
             Button("Start") { Task { await model.run("start", agents: [id]) } }

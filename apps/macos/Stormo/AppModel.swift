@@ -246,6 +246,7 @@ final class AppModel {
 
     /// Runs a lifecycle command (start, stop, restart, nap-now) for agents through the pinned binary.
     func run(_ action: String, agents: [String]) async {
+        if instances.active?.isRemote == true { return await runRemote(action, agents: agents) }
         guard let cli else { return failNoBinary() }
         let label = agents.count == 1 ? agents[0] : "\(agents.count) agents"
         activity = "\(action.capitalized) \(label)…"
@@ -261,6 +262,44 @@ final class AppModel {
                 missingSecrets = m
             } else {
                 failure = error.localizedDescription
+            }
+        }
+        await fleet.refresh()
+    }
+
+    /// A production change waiting for the person to confirm its exact plan.
+    struct PendingConfirm: Identifiable {
+        let id = UUID()
+        let action: String
+        let agent: String
+        let placement: String?
+        let plan: [String]
+    }
+
+    var pendingConfirm: PendingConfirm?
+
+    /// Start, stop or restart through the core (a remote instance has no CLI here): where the
+    /// agent's link says it runs, else the first placement available. ECS asks for confirmation.
+    func runRemote(_ action: String, agents: [String], placement: String? = nil, confirm: Bool = false) async {
+        let label = agents.count == 1 ? agents[0] : "\(agents.count) agents"
+        activity = "\(action.capitalized) \(label)…"
+        defer { activity = nil }
+        var available: [PlacementInfo] = []
+        if placement == nil { available = (try? await core.client.placements())?.filter(\.available) ?? [] }
+        for id in agents {
+            let agent = fleet.fleet?.agents.first { $0.id == id }
+            let where_ = placement ?? agent?.link?.placement ?? available.first(where: { $0.kind == "runner" })?.name ?? available.first?.name
+            do {
+                switch try await core.client.lifecycle(agent: id, action: action, placement: where_, confirm: confirm) {
+                case .done: break
+                case .needsConfirm(let plan):
+                    pendingConfirm = PendingConfirm(action: action, agent: id, placement: where_, plan: plan)
+                    return
+                }
+            } catch CoreClient.Failure.refused(_, let message) {
+                failure = "\(action.capitalized) \(id): \(message)"
+            } catch {
+                failure = "\(action.capitalized) \(id): \(error.localizedDescription)"
             }
         }
         await fleet.refresh()

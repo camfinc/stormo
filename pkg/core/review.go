@@ -262,21 +262,6 @@ func (c *Core) handleReview(w http.ResponseWriter, r *http.Request, roster func(
 	for _, a := range roster() {
 		byID[a.ID] = a
 	}
-	if id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/api/agents/"), "/restart"); ok && r.Method == http.MethodPost {
-		a, known := byID[id]
-		if !known || !a.Running {
-			writeJSONBody(w, 409, errBody("conflict", id+" is not running here; it picks up decisions when it starts"))
-			return
-		}
-		if err := c.Learner.o.Deps.Restart(id); err != nil {
-			writeJSONBody(w, 500, errBody("failed", clip(err.Error(), 300)))
-			return
-		}
-		c.Learner.markApplied(id)
-		c.DB.Audit(c.caller(r).Actor(), "agent.restart", id, "review")
-		writeJSONBody(w, 200, map[string]any{"restarted": id})
-		return
-	}
 	switch r.Method {
 	case http.MethodGet:
 		v, err := c.Learner.review(byID)

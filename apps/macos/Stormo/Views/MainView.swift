@@ -65,6 +65,15 @@ struct MainView: View {
         .focusedSceneValue(\.newInstance, { creating = true })
         .sheet(isPresented: $creating) { NewInstanceSheet().environment(model) }
         .sheet(isPresented: $model.connectingRemote) { RemoteCoreSheet().environment(model) }
+        .alert("Change production?", isPresented: Binding(get: { model.pendingConfirm != nil }, set: { if !$0 { model.pendingConfirm = nil } }),
+               presenting: model.pendingConfirm) { p in
+            Button("\(p.action.capitalized) \(p.agent)", role: .destructive) {
+                Task { await model.runRemote(p.action, agents: [p.agent], placement: p.placement, confirm: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { p in
+            Text("The core will run, on \(p.placement ?? "its placement"):\n\n" + p.plan.joined(separator: "\n"))
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.open(folder: url) } }
         }

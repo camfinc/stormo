@@ -251,7 +251,8 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection,
 			}
 		}
 	}
-	if onCore(a, target) {
+	gateway := onCore(a, target) && !core.NoGateway
+	if gateway {
 		// Locally the swarm core's gateway serves the model on the ChatGPT subscription; the agent
 		// only holds its own core key. Hermes falls back to the AWS model on a 401, a 429 or a dead
 		// core, and retries the core every turn. Without the provider's key (an optional secret left
@@ -279,6 +280,9 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection,
 				return err
 			}
 		}
+	}
+	if onCore(a, target) || core.Remote && a.Engine.Local != nil {
+		// Hooks and the core's tools go through the sidecar's relay (pkg/link), wherever it runs.
 		if err := coreHooks(cfg, core); err != nil {
 			return err
 		}
@@ -332,7 +336,7 @@ func ApplyOverrides(cfg *yaml.Node, a *manifest.Agent, conn instance.Connection,
 			pass = append(pass, s.Env)
 		}
 	}
-	if onCore(a, target) {
+	if onCore(a, target) || core.Remote && a.Engine.Local != nil {
 		// workdir.py runs from the terminal and calls the core as this agent.
 		for _, n := range []string{manifest.Core.KeyEnv, "SWARM_CORE_URL"} {
 			if !slices.Contains(pass, n) {
@@ -475,7 +479,7 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("agents/%s: model.provider %q is not a connection of this instance", a.ID, a.Engine.Provider)
 	}
-	if err := ApplyOverrides(cfg, a, conn, ctx.Target, manifest.CoreFor(ctx.Instance, ctx.Target)); err != nil {
+	if err := ApplyOverrides(cfg, a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement)); err != nil {
 		return nil, err
 	}
 	rendered, err := encodeYAML(cfg)

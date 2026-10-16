@@ -145,8 +145,10 @@ type Instance struct {
 	CoreTLS    CoreTLS `json:"coreTLS"`
 	// Where agents and clients reach the core (core.url), and per placement (core.urls: local,
 	// aws, vps…), which win over it. Empty: a local core at host.docker.internal.
-	CoreURL  string            `json:"coreURL,omitempty"`
-	CoreURLs map[string]string `json:"coreURLs,omitempty"`
+	CoreURL string `json:"coreURL,omitempty"`
+	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
+	Placements []Placement       `json:"placements"`
+	CoreURLs   map[string]string `json:"coreURLs,omitempty"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -209,7 +211,10 @@ type rawFile struct {
 		} `yaml:"learning"`
 	} `yaml:"core"`
 	Connections []rawConnection `yaml:"connections"`
-	Deploy      struct {
+	Placements  map[string]struct {
+		Kind string `yaml:"kind"`
+	} `yaml:"placements"`
+	Deploy struct {
 		Aws struct {
 			Account          any    `yaml:"account"`
 			Region           string `yaml:"region"`
@@ -272,6 +277,10 @@ func Load(root string) (*Instance, error) {
 				return nil, &Error{fmt.Sprintf("%s: scrub.rules[%d] (%s): invalid pattern %q", path, i, r.Kind, p)}
 			}
 		}
+	}
+	placements, err := parsePlacements(raw.Placements)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
 	}
 	coreTLS, err := parseCoreTLS(&raw.Core.TLS, raw.Core.Listen)
 	if err != nil {
@@ -357,6 +366,7 @@ func Load(root string) (*Instance, error) {
 		CoreTLS:            coreTLS,
 		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
 		CoreURLs:           trimURLs(raw.Core.URLs),
+		Placements:         placements,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),
