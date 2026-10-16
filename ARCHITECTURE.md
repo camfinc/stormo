@@ -173,10 +173,12 @@ is always the AWS build, so the local route can never ship.
 
 Why the core and not each agent: the plan's refresh tokens rotate on every refresh, so two holders
 of one sign-in, or a restored older copy, race and lose it. The core is the only process that
-holds or refreshes it; agents hold nothing but their own `SWARM_CORE_KEY` (a local-only secret:
-`secrets init` mints it under `local.agents.<id>`, `secrets push` never sends it). The core is a
-host process (it drives the local compose projects itself), so agent containers reach it at
-`host.docker.internal:18600` (`extra_hosts: host-gateway` covers plain Docker Engine). Moving an
+holds or refreshes it; agents hold nothing but their own `SWARM_CORE_KEY` (`secrets init` mints it
+under `local.agents.<id>`; `secrets push` sends it only for an agent on ECS that links to a core the
+instance names for it, docs/remote-core.md). A local core is a host process (it drives the local
+compose projects itself), so agent containers reach it at `host.docker.internal:<instance port>`
+(`extra_hosts: host-gateway` covers plain Docker Engine); a core elsewhere is reached at its
+`core.url`, and only a local core serves the ChatGPT gateway. Moving an
 agent between local and ECS therefore hands over memory, skills and history and never a
 credential. The sign-in is OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage, OpenAI's
 program for open-source, locally hosted apps (whether an instance's use qualifies is its owner's
