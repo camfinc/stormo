@@ -107,6 +107,17 @@ On ECS, an agent on its core links when the instance names a core for it (`core.
 the task definition gives the nap sidecar its core URL and, from Secrets Manager, only its core key
 and engine API key, and `secrets push` then sends the agent's `SWARM_CORE_KEY`.
 
+**Shared space across machines (built, docs/remote-core.md §5).** The core's workdir is the source
+of truth. A runner keeps its host's `workdir/` in step with it (`/api/sync/<layer>`, its operate
+token, every 15 s): only group and the units of the agents its placement runs. Per file, the side
+that changed since they last agreed wins; when both changed, the core's version stays and the
+host's comes back as `<name>.conflict-<placement>-<time><ext>` on both. A write lands only if the
+file is still what the runner last saw, and never under a hard or temp lock of an agent outside
+the placement. Synced changes are attributed by the core's scan, with the agents' `fs_note`
+claims, like terminal writes. `core.storage: s3://bucket/prefix` mirrors the workdir to S3: pulled
+when the core starts, pushed every 5 minutes and when it stops, with deletions only after a
+successful pull. On ECS the agents keep sharing EFS directly.
+
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
 

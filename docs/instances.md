@@ -75,6 +75,7 @@ core:
   # tls: {cert: certs/core.pem, key: certs/core.key}   # or `off`, allowed only on a private address (a tunnel or VPN encrypts)
   # url: https://core.example:18600   # where agents and clients reach this core (default: a local core at host.docker.internal)
   # urls: {remote: "https://core.internal:18600", vps: "http://10.0.0.5:18600"}   # per placement (remote = ECS; aws also accepted), wins over url
+  # storage: s3://acme-shared/workdir   # mirror the shared space to S3 too (pulled at start, pushed every 5 min); default: workdir/ alone (a disk or an EFS mount)
   loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host)
   web_ui: false                   # serve the office and review pages in a browser (default false: the macOS app is the face)
   learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`

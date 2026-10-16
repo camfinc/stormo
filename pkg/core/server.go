@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/aws"
 	"github.com/camfinc/stormo/pkg/link"
 	"github.com/camfinc/stormo/pkg/local"
 	"io"
@@ -415,6 +416,13 @@ func StartCore(o CoreOptions) (*Core, error) {
 		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
+	if inst.CoreStorage != "" && o.WorkdirRoot == "" {
+		m := &Mirror{Dir: wroot, URI: inst.CoreStorage, Region: inst.Aws.Region, CLI: aws.Exec}
+		if m.Region == instance.Unset {
+			m.Region = ""
+		}
+		go m.Run(c.stop, 5*time.Minute)
+	}
 	go learner.Run(c.stop, time.Minute)
 	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
 	c.lifecycle = o.Lifecycle
@@ -579,6 +587,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case path == link.RunnerPath:
 			c.handleRunner(w, r, who)
+			return
+		case strings.HasPrefix(path, "/api/sync/"):
+			c.handleSync(w, r, who, bo.Roster)
 			return
 		case get && path == "/api/learning":
 			// Schedule and counts per agent: no lesson text, so no key.

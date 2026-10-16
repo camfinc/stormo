@@ -49,3 +49,12 @@ func TestCoreURLForPlacements(t *testing.T) {
 		t.Errorf("local: %s", u)
 	}
 }
+
+func TestCoreStorageIsAnS3URI(t *testing.T) {
+	if i, err := loadCore(t, "  storage: s3://acme-shared/workdir/\n"); err != nil || i.CoreStorage != "s3://acme-shared/workdir" {
+		t.Errorf("%v %+v", err, i)
+	}
+	if _, err := loadCore(t, "  storage: /mnt/efs\n"); err == nil || !strings.Contains(err.Error(), "s3://bucket/prefix") {
+		t.Errorf("a path: %v", err)
+	}
+}

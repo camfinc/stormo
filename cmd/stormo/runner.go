@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/link"
+	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/ops"
 	"github.com/camfinc/stormo/pkg/place"
+	"github.com/camfinc/stormo/pkg/shared"
 	"github.com/camfinc/stormo/pkg/version"
 )
 
@@ -37,6 +42,11 @@ func runRunner(inst *instance.Instance, placement string) error {
 	os.Setenv("SWARM_PLACEMENT", placement)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// This host's copy of the shared space follows the core's (the layers its agents use).
+	syncer := &link.Syncer{CoreURL: coreURL, Token: token, Placement: placement, Dir: shared.LocalDir(inst.Root),
+		Layers:    func() []string { return append([]string{"group"}, manifest.UnitIDs(inst.Root)...) },
+		StateFile: filepath.Join(inst.Root, ".swarm", "runner", "sync-"+placement+".json"), Logf: log.Printf}
+	go syncer.Run(ctx, 15*time.Second)
 	link.RunRunner(ctx, link.RunnerOptions{
 		CoreURL: coreURL, Token: token, Placement: placement, Version: version.String(),
 		Act: func(_ context.Context, action, agent string, log func(string)) (string, error) {

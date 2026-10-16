@@ -146,6 +146,9 @@ type Instance struct {
 	// Where agents and clients reach the core (core.url), and per placement (core.urls: local,
 	// aws, vps…), which win over it. Empty: a local core at host.docker.internal.
 	CoreURL string `json:"coreURL,omitempty"`
+	// Where the core keeps the shared space besides its workdir/ (core.storage): "" for the
+	// directory alone (a local disk, or an EFS mount), or s3://bucket/prefix mirrored to S3.
+	CoreStorage string `json:"coreStorage,omitempty"`
 	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
 	Placements []Placement       `json:"placements"`
 	CoreURLs   map[string]string `json:"coreURLs,omitempty"`
@@ -199,6 +202,7 @@ type rawFile struct {
 		TLS           yaml.Node         `yaml:"tls"`
 		URL           string            `yaml:"url"`
 		URLs          map[string]string `yaml:"urls"`
+		Storage       string            `yaml:"storage"`
 		Learning      struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
@@ -291,6 +295,9 @@ func Load(root string) (*Instance, error) {
 			return nil, &Error{fmt.Sprintf("%s: core.urls.%s must be an http(s) URL", path, k)}
 		}
 	}
+	if st := raw.Core.Storage; st != "" && (!strings.HasPrefix(st, "s3://") || len(st) <= len("s3://")) {
+		return nil, &Error{fmt.Sprintf("%s: core.storage is s3://bucket/prefix (leave it out for the workdir directory alone)", path)}
+	}
 	if u := raw.Core.URL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 		return nil, &Error{fmt.Sprintf("%s: core.url must be an http(s) URL", path)}
 	}
@@ -367,6 +374,7 @@ func Load(root string) (*Instance, error) {
 		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
 		CoreURLs:           trimURLs(raw.Core.URLs),
 		Placements:         placements,
+		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),
