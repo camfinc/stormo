@@ -160,10 +160,28 @@ public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
     public var office: OfficeState?
     /// The agent's containers together (agent + nap), while running locally.
     public var usage: ContainerUsage?
+    /// Its live wire to the core (pkg/link); nil when it never linked.
+    public var link: AgentLink?
 
     public init(id: String, name: String, unit: String, state: String, office: OfficeState? = nil) {
         self.id = id; self.name = name; self.unit = unit; self.state = state; self.office = office
     }
+}
+
+/// An agent's link to the core: `connected`, or `lost` since a time; where it runs; what it holds.
+public struct AgentLink: Codable, Sendable, Equatable {
+    public var state: String
+    public var placement: String?
+    /// Epoch milliseconds: connected or lost since.
+    public var since: Int64
+    public var lastSeen: Int64
+    /// Hook deliveries and queued messages waiting in the agent's spool.
+    public var buffered: Int
+
+    public var isConnected: Bool { state == "connected" }
+
+    /// "connected · vps", "lost · local"
+    public var summary: String { [state, placement].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
 }
 
 public struct ContainerUsage: Codable, Sendable, Equatable {

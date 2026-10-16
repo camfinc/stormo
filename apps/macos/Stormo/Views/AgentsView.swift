@@ -98,6 +98,16 @@ struct AgentsView: View {
                         Text(a.usage?.memText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
                     }
                     .width(min: 60, ideal: 80)
+                    TableColumn("Link") { a in
+                        if let l = a.link {
+                            Label(l.placement ?? l.state, systemImage: l.isConnected ? "link" : "link.badge.plus")
+                                .foregroundStyle(l.isConnected ? Color.secondary : Color.orange)
+                                .help(l.isConnected ? "Linked to the core" : "Link lost")
+                        } else {
+                            Text("—").foregroundStyle(.tertiary)
+                        }
+                    }
+                    .width(min: 60, ideal: 80)
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
@@ -227,6 +237,16 @@ struct AgentInspector: View {
                 if let u = agent.usage {
                     LabeledContent("CPU", value: u.cpuText)
                     LabeledContent("Memory", value: "\(u.memText) of \(u.memLimitBytes.formatted(.byteCount(style: .memory)))")
+                }
+                if let l = agent.link {
+                    LabeledContent("Link") {
+                        HStack(spacing: 4) {
+                            Text(l.summary).foregroundStyle(l.isConnected ? Color.primary : Color.orange)
+                            Text("since").foregroundStyle(.secondary)
+                            Text(Date(timeIntervalSince1970: Double(l.since) / 1000), format: .relative(presentation: .named))
+                        }
+                    }
+                    if l.buffered > 0 { LabeledContent("Held for the core", value: "\(l.buffered)") }
                 }
                 if let d = agent.detail, !d.isEmpty { LabeledContent("Detail", value: d) }
                 if let jobs = agent.activity?.runningJobs, !jobs.isEmpty {
