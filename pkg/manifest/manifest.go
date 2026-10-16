@@ -116,13 +116,16 @@ func CoreForPlacement(inst *instance.Instance, target Target, placement string) 
 			placement = "remote"
 		}
 	}
-	e := CoreAt(inst.CorePort())
-	if u := inst.CoreURLFor(placement); u != "" {
+	// The local port only when no URL names the core: a runner host never claims one.
+	u := inst.CoreURLFor(placement)
+	if u == "" && placement == "remote" {
+		u = inst.CoreURLFor("aws")
+	}
+	var e CoreEndpoints
+	if u != "" {
 		e = coreAtURL(u)
-	} else if placement == "remote" {
-		if u := inst.CoreURLFor("aws"); u != "" {
-			e = coreAtURL(u)
-		}
+	} else {
+		e = CoreAt(inst.CorePort())
 	}
 	relay := RelayURL(target)
 	e.IngestURL, e.MCPURL = relay+"/ingest", relay+"/mcp"
