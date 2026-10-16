@@ -40,16 +40,31 @@ const (
 // hello's Agent and Placement name the placement it serves).
 const RunnerPath = "/runner"
 
-// Order is a lifecycle action for a runner: start, stop, restart or status of an agent.
+// Order is a runner's work: a lifecycle action (start, stop, restart, status) on an agent, or
+// "capability": a capability's container run for an agent (Job set).
 type Order struct {
 	Action string `json:"action"`
 	Agent  string `json:"agent"`
+	Job    *Job   `json:"job,omitempty"`
 }
 
-// OrderResult is what a runner did: its log lines, and the agent's state after.
+// Job is a capability container to run: the input JSON on stdin, its JSON answer on stdout.
+// Secrets are env var names the runner fills from its own secrets file.
+type Job struct {
+	ID             int64           `json:"id"`
+	Capability     string          `json:"capability"`
+	Image          string          `json:"image"`
+	Command        []string        `json:"command,omitempty"`
+	Secrets        []string        `json:"secrets,omitempty"`
+	Input          json.RawMessage `json:"input"`
+	TimeoutMinutes int             `json:"timeoutMinutes"`
+}
+
+// OrderResult is what a runner did: its log lines, the agent's state after, a job's output.
 type OrderResult struct {
-	Log   []string `json:"log"`
-	State string   `json:"state,omitempty"`
+	Log    []string        `json:"log"`
+	State  string          `json:"state,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
 }
 
 // Hello introduces the agent.

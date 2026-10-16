@@ -16,6 +16,7 @@ import (
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/ops"
 	"github.com/camfinc/stormo/pkg/place"
+	"github.com/camfinc/stormo/pkg/secrets"
 	"github.com/camfinc/stormo/pkg/shared"
 	"github.com/camfinc/stormo/pkg/version"
 )
@@ -49,7 +50,11 @@ func runRunner(inst *instance.Instance, placement string) error {
 	go syncer.Run(ctx, 15*time.Second)
 	link.RunRunner(ctx, link.RunnerOptions{
 		CoreURL: coreURL, Token: token, Placement: placement, Version: version.String(),
-		Act: func(_ context.Context, action, agent string, log func(string)) (string, error) {
+		Act: func(ctx context.Context, o link.Order, log func(string)) (link.OrderResult, error) {
+			if o.Action == "capability" && o.Job != nil {
+				return runJob(ctx, inst, o)
+			}
+			action, agent := o.Action, o.Agent
 			d := ops.DefaultDeps(inst, true)
 			d.Log = log
 			var err error
@@ -62,15 +67,40 @@ func runRunner(inst *instance.Instance, placement string) error {
 				err = ops.Restart(place.Local, agent, d)
 			case "status":
 			default:
-				return "", fmt.Errorf("unknown order %q", action)
+				return link.OrderResult{}, fmt.Errorf("unknown order %q", action)
 			}
 			st, serr := ops.AgentStatus(place.Local, d, []string{agent})
 			state := ""
 			if serr == nil && len(st) == 1 {
 				state = st[0].State
 			}
-			return state, err
+			return link.OrderResult{State: state}, err
 		},
 	})
 	return nil
+}
+
+// runJob runs a capability's container here for the core, with the secrets it names from this
+// host's secrets file (shared layer).
+func runJob(ctx context.Context, inst *instance.Instance, o link.Order) (link.OrderResult, error) {
+	j := o.Job
+	env := map[string]string{}
+	if len(j.Secrets) > 0 {
+		f, err := secrets.Load(secrets.Path(inst.Root))
+		if err != nil {
+			return link.OrderResult{}, err
+		}
+		for _, n := range j.Secrets {
+			if v, ok := secrets.SharedValue(f, n); ok {
+				env[n] = v
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(j.TimeoutMinutes)*time.Minute)
+	defer cancel()
+	out, err := link.RunContainer(ctx, j.Image, j.Command, env, j.Input)
+	if err != nil {
+		return link.OrderResult{}, err
+	}
+	return link.OrderResult{Output: out}, nil
 }

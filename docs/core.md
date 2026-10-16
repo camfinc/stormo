@@ -118,6 +118,21 @@ claims, like terminal writes. `core.storage: s3://bucket/prefix` mirrors the wor
 when the core starts, pushed every 5 minutes and when it stops, with deletions only after a
 successful pull. On ECS the agents keep sharing EFS directly.
 
+**Capabilities (built, docs/remote-core.md §6).** Heavy or shared calls an instance declares
+(`capabilities:` in stormo.yaml) and grants per agent (`capabilities: [media.bake]` in agent.yaml;
+`stormo check` refuses an undeclared one). Agents use MCP tools: `cap_list` (their grants),
+`cap_start {capability, input}` (a job number) and `cap_status {job}` (queued, running, done with
+its output, failed with why). The core queues jobs in core.db, keeps each capability to its
+`concurrency`, and runs them through a worker that is never the core itself: `http` POSTs
+`{job, agent, input}` with headers whose `${NAME}` come from the core's secrets; `container` runs
+`docker run --rm -i` (no capabilities, no new privileges) with the input on stdin and the secrets
+it names in its environment, here or on a runner placement, which fills them from its own secrets
+file. The worker's credential stays with the core or the runner; agents hold only their grant.
+Jobs that were running when the core stopped fail; jobs are kept 30 days. The owner sees the
+registry, grants, queue, this month's spend per agent (`cost_usd` per job that did not fail) and the
+latest jobs with scrubbed previews (`GET /api/capabilities`, `/api/capabilities/jobs`, the app's
+Capabilities page); every start is audited.
+
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
 

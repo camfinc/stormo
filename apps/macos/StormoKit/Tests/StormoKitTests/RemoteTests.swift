@@ -70,6 +70,9 @@ import Testing
         #expect(view.agents.contains { $0.id == "atlas" })
 
         // Placements are readable; acting needs operate, which a read token lacks.
+        let caps = try await remote.client.capabilities()
+        #expect(caps.capabilities.isEmpty && caps.spend.isEmpty)
+        #expect(try await remote.client.capabilityJobs().isEmpty)
         let placements = try await remote.client.placements()
         #expect(placements.map(\.name).starts(with: ["local", "remote"]))
         await #expect(throws: CoreClient.Failure.refused(403, "this needs the operate scope")) {

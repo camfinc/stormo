@@ -21,8 +21,9 @@ type RunnerOptions struct {
 	Token     string // a person's token with the operate scope
 	Placement string
 	Version   string
-	// Act carries out an order; log lines go back to whoever asked. state is the agent's after.
-	Act    func(ctx context.Context, action, agent string, log func(string)) (state string, err error)
+	// Act carries out an order; log lines go back to whoever asked; the result's state is the
+	// agent's after, its output a job's answer.
+	Act    func(ctx context.Context, o Order, log func(string)) (OrderResult, error)
 	Client *http.Client
 	Logf   func(format string, args ...any)
 }
@@ -102,7 +103,7 @@ func runnerSession(ctx context.Context, o RunnerOptions) error {
 			}
 		}
 	}()
-	// One order at a time: lifecycle actions on one host do not overlap.
+	// Lifecycle actions on one host do not overlap.
 	var omu sync.Mutex
 	for {
 		_, data, err := c.Read(sctx)
@@ -114,17 +115,23 @@ func runnerSession(ctx context.Context, o RunnerOptions) error {
 			continue
 		}
 		go func(env Envelope) {
-			omu.Lock()
-			defer omu.Unlock()
 			res := Envelope{Type: TypeResult, Reply: env.ID}
 			var ord Order
-			if err := json.Unmarshal(env.Body, &ord); err != nil {
+			err := json.Unmarshal(env.Body, &ord)
+			// Lifecycle orders one at a time; capability jobs run beside them (the core caps them).
+			if ord.Action != "capability" {
+				omu.Lock()
+				defer omu.Unlock()
+			}
+			if err != nil {
 				res.Error = err.Error()
 			} else {
 				var mu sync.Mutex
-				out := OrderResult{Log: []string{}}
-				state, err := o.Act(sctx, ord.Action, ord.Agent, func(l string) { mu.Lock(); out.Log = append(out.Log, l); mu.Unlock() })
-				out.State = state
+				logs := []string{}
+				out, err := o.Act(sctx, ord, func(l string) { mu.Lock(); logs = append(logs, l); mu.Unlock() })
+				mu.Lock()
+				out.Log = append(logs, out.Log...)
+				mu.Unlock()
 				if err != nil {
 					res.Error = err.Error()
 				}

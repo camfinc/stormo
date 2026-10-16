@@ -47,6 +47,9 @@ among them. On Linux, agent containers reach the core through bridge listeners t
 | `GET /api/placements` | `placements` [{`name`, `kind`: local \| ecs \| runner, `available`}]. Read |
 | `GET /link` (WebSocket) | an agent's live wire (pkg/link): hello, status, wake/nap commands. The agent's core key |
 | `GET /runner` (WebSocket) | a runner's link: lifecycle orders for its placement. An operate token |
+| `GET /api/capabilities` | `capabilities` [{`name`, `description`, `kind`, `placement`, `concurrency`, `costUSD`, `queued`, `running`, `agents` (granted)}], `spend` [{`agent`, `capability`, `jobs`, `failed`, `usd`}] this month, `since`. Read |
+| `GET /api/capabilities/jobs[?limit=n]` | `jobs` [{`job`, `capability`, `agent`, `status`, `error`, `preview` (scrubbed), `costUSD`, `created`, `started`, `finished`}], never inputs or outputs. Read |
+| `/api/sync/<layer>[/<path>]` | a runner's sync (operate token, `X-Stormo-Placement`): GET lists `files` [{`path`, `sha256`, `size`}] or reads one; PUT/DELETE with `X-Base-SHA256` (409 stale, 423 locked). Only group and its agents' units |
 | `GET /api/tokens[?all=1]` | `tokens` [{`id`, `name`, `scope`, `created`, `expires`, `lastUsed`, `revoked`}], never values. Admin |
 | `POST /api/tokens` | `{name, scope: read \| operate \| admin, days}` (0 days never expires) → 201 `{token, info}`; the value is shown this once. Admin |
 | `DELETE /api/tokens/<name or id>` | revokes at once. Admin |

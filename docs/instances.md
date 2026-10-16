@@ -67,6 +67,16 @@ office:
   clocks:                         # lobby wall of the office UI
     - { city: Lisbon, tz: Europe/Lisbon }
 
+capabilities:                     # heavy or shared calls the core runs for agents (docs/core.md): granted in agent.yaml capabilities:
+  # media.bake:
+  #   description: Render an image from a prompt; input {prompt, size}, answers {url}
+  #   kind: http                    # http: the core POSTs {job, agent, input}; or container: image + command, input on stdin
+  #   url: https://render.example/jobs
+  #   headers: {Authorization: "Bearer ${RENDER_KEY}"}   # ${NAME}: the core's secret (secrets.local.yaml shared)
+  #   concurrency: 2                # jobs at once (default 1)
+  #   timeout_minutes: 20           # default 15
+  #   cost_usd: 0.4                 # estimated cost of one job, for metering
+  # gpu.render: {kind: container, image: "acme/render:1", command: [render], secrets: [RENDER_KEY], placement: gpu}   # placement: local or a runner
 placements:                       # where agents run besides local (compose here) and remote (ECS): docs/remote-core.md §6a
   # vps: {kind: runner}           # a host running `stormo runner vps`; its agents reach the core at core.urls.vps
 core:

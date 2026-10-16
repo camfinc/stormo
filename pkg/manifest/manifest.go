@@ -279,6 +279,8 @@ type Agent struct {
 	Secrets         []string         `json:"secrets"`
 	OptionalSecrets []OptionalSecret `json:"optional_secrets"`
 	Actions         []string         `json:"actions"`
+	// Capabilities the core may run for this agent (instance capabilities:).
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Non-secret settings exported to the agent's container as-is; never a credential.
 	Env      *env.Env `json:"env"`
 	State    []State  `json:"state"`
@@ -428,6 +430,7 @@ type raw struct {
 	Secrets         []any            `yaml:"secrets"`
 	OptionalSecrets []map[string]any `yaml:"optional_secrets"`
 	Actions         []any            `yaml:"actions"`
+	Capabilities    []any            `yaml:"capabilities"`
 	Env             yaml.Node        `yaml:"env"`
 	State           []State          `yaml:"state"`
 	Learning        map[string]any   `yaml:"learning"`
@@ -539,6 +542,12 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	for _, a := range actions {
 		au := strings.SplitN(a, ".", 2)[0]
 		if err := req(au == unit || au == "group", `%s: action "%s" belongs to unit "%s", not "%s"`, where, a, au, unit); err != nil {
+			return nil, err
+		}
+	}
+	capabilities := strs(m.Capabilities)
+	for _, c := range capabilities {
+		if err := req(instance.CapabilityName.MatchString(c), `%s: capability "%s" is lowercase words joined by dots`, where, c); err != nil {
 			return nil, err
 		}
 	}
@@ -726,7 +735,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	}
 	return &Agent{
 		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Engine: engine,
-		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Env: envs,
+		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Capabilities: capabilities, Env: envs,
 		State: state, Learning: learning, Deploy: deploy, Limits: limits, Schedules: schedules, Format: format, Legacy: legacy,
 	}, nil
 }

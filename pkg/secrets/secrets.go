@@ -232,6 +232,14 @@ func WithCoreKey(f *File, a *manifest.Agent, r *Resolved) {
 	r.Missing = append(r.Missing, manifest.Core.KeyEnv)
 }
 
+// SharedValue is a value from the file's shared layer (the core's own secrets: capability headers).
+func SharedValue(f *File, name string) (string, bool) {
+	if f == nil || f.Layers.Shared == nil {
+		return "", false
+	}
+	return f.Layers.Shared.Get(name)
+}
+
 // LinkEnvFile is the sidecar's env file: only what its link needs (the agent's core key and its
 // engine API key), never the agent's other secrets.
 func LinkEnvFile(root, id string) string {

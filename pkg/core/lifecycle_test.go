@@ -90,13 +90,13 @@ func TestLifecycleByPlacement(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go link.RunRunner(ctx, link.RunnerOptions{CoreURL: base, Token: operator, Placement: "vps", Logf: t.Logf,
-		Act: func(_ context.Context, action, agent string, log func(string)) (string, error) {
-			record("vps " + action + " " + agent)
+		Act: func(_ context.Context, o link.Order, log func(string)) (link.OrderResult, error) {
+			record("vps " + o.Action + " " + o.Agent)
 			log("ran on the vps")
-			if action == "restart" {
-				return "", errors.New("docker is not running")
+			if o.Action == "restart" {
+				return link.OrderResult{}, errors.New("docker is not running")
 			}
-			return "running", nil
+			return link.OrderResult{State: "running"}, nil
 		}})
 	eventually(t, "the runner", func() bool { return c.Runners.Connected("vps") })
 	code, out = do(operator, "POST", "/api/agents/atlas/stop", map[string]any{"placement": "vps"})

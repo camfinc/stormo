@@ -58,3 +58,29 @@ func TestCoreStorageIsAnS3URI(t *testing.T) {
 		t.Errorf("a path: %v", err)
 	}
 }
+
+func TestCapabilitiesAreDeclaredWithAWorker(t *testing.T) {
+	root := t.TempDir()
+	write := func(body string) (*Instance, error) {
+		os.WriteFile(filepath.Join(root, "stormo.yaml"), []byte("name: Acme\nslug: acme\n"+body), 0o644)
+		return Load(root)
+	}
+	i, err := write("placements:\n  gpu: {kind: runner}\ncapabilities:\n  media.bake: {kind: http, url: \"https://render.example/jobs\", headers: {Authorization: \"Bearer ${RENDER_KEY}\"}, cost_usd: 0.4}\n  gpu.render: {kind: container, image: \"acme/render:1\", placement: gpu, secrets: [RENDER_KEY]}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := i.CapabilityNamed("gpu.render"); !ok || c.Concurrency != 1 || c.TimeoutMinutes != 15 || c.Placement != "gpu" {
+		t.Errorf("gpu.render: %+v", c)
+	}
+	for body, want := range map[string]string{
+		"capabilities:\n  x: {kind: http}\n":                                   "needs url",
+		"capabilities:\n  x: {kind: container, image: a, placement: remote}\n": "not local or a runner",
+		"capabilities:\n  Bad: {kind: http, url: \"https://a\"}\n":             "lowercase",
+		"capabilities:\n  x: {kind: lambda}\n":                                 "http or container",
+		"capabilities:\n  x: {kind: container, image: a, secrets: [key]}\n":    "env var NAME",
+	} {
+		if _, err := write(body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", body, err, want)
+		}
+	}
+}

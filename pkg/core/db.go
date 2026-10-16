@@ -157,6 +157,23 @@ var migrations = []string{
 		detail TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX audit_at ON audit(at);`,
+	// 8: capability jobs the core brokers for agents (input and output kept 30 days; preview scrubbed).
+	`CREATE TABLE cap_jobs (
+		id         INTEGER PRIMARY KEY,
+		capability TEXT NOT NULL,
+		agent      TEXT NOT NULL,
+		status     TEXT NOT NULL,
+		input      TEXT NOT NULL,
+		output     TEXT NOT NULL DEFAULT '',
+		error      TEXT NOT NULL DEFAULT '',
+		preview    TEXT NOT NULL DEFAULT '',
+		cost       REAL NOT NULL DEFAULT 0,
+		created    INTEGER NOT NULL,
+		started    INTEGER,
+		finished   INTEGER
+	);
+	CREATE INDEX cap_jobs_status ON cap_jobs(status, id);
+	CREATE INDEX cap_jobs_agent ON cap_jobs(agent, created);`,
 }
 
 // DB is core.db.

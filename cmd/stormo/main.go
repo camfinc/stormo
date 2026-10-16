@@ -835,6 +835,11 @@ func check(inst *instance.Instance, ids []string) ([]checked, error) {
 		if _, err := bridge.ActionsFor(a, registry); err != nil {
 			return nil, err
 		}
+		for _, cp := range a.Capabilities {
+			if _, ok := inst.CapabilityNamed(cp); !ok {
+				return nil, fmt.Errorf("agents/%s: capability %q is not declared in stormo.yaml capabilities:", id, cp)
+			}
+		}
 		r, err := build.Agent(inst, id, build.Options{Out: filepath.Join(inst.Root, ".swarm", "check", id)})
 		if err != nil {
 			return nil, err

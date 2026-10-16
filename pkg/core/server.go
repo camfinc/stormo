@@ -121,6 +121,9 @@ type CoreOptions struct {
 	DB *DB
 	// Keys map core keys to agents; nil reads the instance's secrets file.
 	Keys *AgentKeys
+	// CapabilityGrants and Container replace the broker's manifest grants and docker (tests).
+	CapabilityGrants func(agent string) []string
+	Container        func(ctx context.Context, image string, command []string, env map[string]string, input []byte) ([]byte, error)
 	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
 	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
@@ -159,8 +162,10 @@ type Core struct {
 	Learner  *Learner
 	MCP      *MCP
 	// Links are the agents' live wires (pkg/link); Runners the runners' (keyed by placement).
-	Links     *LinkHub
-	Runners   *LinkHub
+	Links   *LinkHub
+	Runners *LinkHub
+	// Broker runs capability jobs for agents.
+	Broker    *Broker
 	keys      *AgentKeys
 	inst      *instance.Instance
 	lifecycle LifecycleOps
@@ -398,7 +403,17 @@ func StartCore(o CoreOptions) (*Core, error) {
 		wroot = shared.LocalDir(inst.Root)
 	}
 	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
-	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
+	runners := NewLinkHub(db)
+	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
+		Grants: o.CapabilityGrants, Container: o.Container,
+		Secret: func(name string) (string, bool) {
+			f, err := secrets.Load(secrets.Path(inst.Root))
+			if err != nil {
+				return "", false
+			}
+			return secrets.SharedValue(f, name)
+		}})
+	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker))
 	deps := o.LearnDeps
 	if deps.NapNow == nil {
 		// A nap now: the agent's sidecar takes it over the link, else `docker compose exec` locally.
@@ -412,7 +427,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps})
-	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: NewLinkHub(db),
+	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
 		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
@@ -425,6 +440,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	go learner.Run(c.stop, time.Minute)
 	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
+	go broker.Run(c.stop)
 	c.lifecycle = o.Lifecycle
 	if c.lifecycle.Local == nil || c.lifecycle.Remote == nil {
 		def := defaultLifecycle(inst, learner.o.Deps.Restart)
@@ -455,6 +471,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 					log.Printf("core.db prune: %v", err)
 				}
 				if err := bus.Prune(RetainMessages); err != nil {
+					log.Printf("core.db prune: %v", err)
+				}
+				if err := broker.Prune(30 * 24 * time.Hour); err != nil {
 					log.Printf("core.db prune: %v", err)
 				}
 			}
@@ -581,6 +600,23 @@ func StartCore(o CoreOptions) (*Core, error) {
 		case r.Method == http.MethodPost && lifecyclePath.MatchString(path):
 			m := lifecyclePath.FindStringSubmatch(path)
 			c.handleLifecycle(w, r, who, m[1], m[2], bo.Roster)
+			return
+		case get && path == "/api/capabilities":
+			v, err := broker.View(manifest.AgentIDs(inst.Root))
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read capabilities"))
+				return
+			}
+			writeJSONBody(w, 200, v)
+			return
+		case get && path == "/api/capabilities/jobs":
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			jobs, err := broker.Jobs(limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read jobs"))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"jobs": jobs})
 			return
 		case get && path == "/api/placements":
 			writeJSONBody(w, 200, map[string]any{"placements": c.placements()})

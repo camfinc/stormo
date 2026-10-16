@@ -149,6 +149,8 @@ type Instance struct {
 	// Where the core keeps the shared space besides its workdir/ (core.storage): "" for the
 	// directory alone (a local disk, or an EFS mount), or s3://bucket/prefix mirrored to S3.
 	CoreStorage string `json:"coreStorage,omitempty"`
+	// Heavy or shared calls the core brokers for agents (stormo.yaml capabilities:).
+	Capabilities []Capability `json:"capabilities"`
 	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
 	Placements []Placement       `json:"placements"`
 	CoreURLs   map[string]string `json:"coreURLs,omitempty"`
@@ -214,8 +216,9 @@ type rawFile struct {
 			AutoRestart       bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
-	Connections []rawConnection `yaml:"connections"`
-	Placements  map[string]struct {
+	Connections  []rawConnection          `yaml:"connections"`
+	Capabilities map[string]rawCapability `yaml:"capabilities"`
+	Placements   map[string]struct {
 		Kind string `yaml:"kind"`
 	} `yaml:"placements"`
 	Deploy struct {
@@ -283,6 +286,10 @@ func Load(root string) (*Instance, error) {
 		}
 	}
 	placements, err := parsePlacements(raw.Placements)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	capabilities, err := parseCapabilities(raw.Capabilities, placements)
 	if err != nil {
 		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
 	}
@@ -374,6 +381,7 @@ func Load(root string) (*Instance, error) {
 		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
 		CoreURLs:           trimURLs(raw.Core.URLs),
 		Placements:         placements,
+		Capabilities:       capabilities,
 		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
 		Aws: AwsTarget{
 			Account:          account,
