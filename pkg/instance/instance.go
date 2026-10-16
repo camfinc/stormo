@@ -190,8 +190,8 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
-		WebUI         bool  `yaml:"web_ui"`
-		Port          int   `yaml:"port"`
+		WebUI         bool              `yaml:"web_ui"`
+		Port          int               `yaml:"port"`
 		LoopbackTrust *bool             `yaml:"loopback_trust"`
 		Listen        string            `yaml:"listen"`
 		TLS           yaml.Node         `yaml:"tls"`
