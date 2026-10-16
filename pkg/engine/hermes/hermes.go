@@ -475,7 +475,7 @@ func (h *Hermes) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("agents/%s: model.provider %q is not a connection of this instance", a.ID, a.Engine.Provider)
 	}
-	if err := ApplyOverrides(cfg, a, conn, ctx.Target, manifest.CoreAt(ctx.Instance.CorePort())); err != nil {
+	if err := ApplyOverrides(cfg, a, conn, ctx.Target, manifest.CoreFor(ctx.Instance, ctx.Target)); err != nil {
 		return nil, err
 	}
 	rendered, err := encodeYAML(cfg)

@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -136,6 +137,10 @@ type Core struct {
 	Addr    *net.TCPAddr
 	Bridges []*net.TCPAddr
 	bridge  []*http.Server
+	// Public is the listener beyond loopback (core.listen), nil without one; TLS unless core.tls is off.
+	Public       *net.TCPAddr
+	PublicTLS    bool
+	publicServer *http.Server
 	// Gateway is the default ChatGPT connection's; Gateways routes every agent to its own.
 	Gateway  *llm.Gateway
 	Gateways *llm.Gateways
@@ -162,6 +167,9 @@ func (c *Core) StopOffice() { c.once.Do(func() { close(c.stop) }) }
 // Close stops the office and the HTTP servers.
 func (c *Core) Close() error {
 	c.StopOffice()
+	if c.publicServer != nil {
+		_ = c.publicServer.Close()
+	}
 	for _, b := range c.bridge {
 		_ = b.Close()
 	}
@@ -251,6 +259,9 @@ type coreView struct {
 	Port      int          `json:"port"`
 	StartedAt string       `json:"startedAt"`
 	Instance  coreInstance `json:"instance"`
+	// Listen is the listener beyond loopback ("host:port"), TLS whether it serves TLS.
+	Listen string `json:"listen,omitempty"`
+	TLS    bool   `json:"tls,omitempty"`
 }
 
 // StartCore listens on 127.0.0.1 (and o.Bridge) and serves until Close.
@@ -440,9 +451,14 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case get && path == "/api/core":
 			// Which binary and which instance this core is, for clients deciding whether to attach.
-			// Loopback only: host paths never reach agent containers (bridge listeners serve no /api).
-			writeJSONBody(w, 200, coreView{"swarm-core", version.String(), version.API, os.Getpid(), version.Exe(), c.Addr.Port, startedAt,
-				coreInstance{inst.Root, inst.Name, inst.Org, inst.Slug}})
+			// Host paths never reach agent containers (bridge listeners serve no /api); beyond
+			// loopback it takes a read token.
+			v := coreView{Service: "swarm-core", Version: version.String(), API: version.API, PID: os.Getpid(), Exe: version.Exe(), Port: c.Addr.Port,
+				StartedAt: startedAt, Instance: coreInstance{inst.Root, inst.Name, inst.Org, inst.Slug}, TLS: c.PublicTLS}
+			if c.Public != nil {
+				v.Listen = c.Public.String()
+			}
+			writeJSONBody(w, 200, v)
 			return
 		case get && path == "/api/instance":
 			writeJSONBody(w, 200, look)
@@ -655,6 +671,20 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	go serve(c.Server, ln)
+	if inst.CoreListen != "" {
+		pl, err := publicListener(inst, c.Addr.Port)
+		if err != nil {
+			for _, l := range append(bridges, ln) {
+				l.Close()
+			}
+			c.StopOffice()
+			return nil, err
+		}
+		c.Public = pl.Addr().(*net.TCPAddr)
+		c.PublicTLS = !inst.CoreTLS.Off
+		c.publicServer = &http.Server{Handler: http.HandlerFunc(handler), ReadHeaderTimeout: 30 * time.Second}
+		go serve(c.publicServer, pl)
+	}
 	for _, bl := range bridges {
 		b := &http.Server{Handler: http.HandlerFunc(bridged), ReadHeaderTimeout: 30 * time.Second}
 		c.bridge = append(c.bridge, b)
@@ -682,4 +712,32 @@ func connectionRoute(inst *instance.Instance) func(agent string) string {
 		cache[agent], at[agent] = name, time.Now()
 		return name
 	}
+}
+
+// publicListener is core.listen on the core's port: TLS with the instance's certificate, or plain
+// when core.tls is off (instance.Load allows that on a private address only).
+func publicListener(inst *instance.Instance, port int) (net.Listener, error) {
+	addr := net.JoinHostPort(strings.Trim(inst.CoreListen, "[]"), strconv.Itoa(port))
+	if inst.CoreTLS.Off {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("core.listen %s: %w", addr, err)
+		}
+		return l, nil
+	}
+	file := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(inst.Root, p)
+	}
+	cert, err := tls.LoadX509KeyPair(file(inst.CoreTLS.Cert), file(inst.CoreTLS.Key))
+	if err != nil {
+		return nil, fmt.Errorf("core.tls: %w", err)
+	}
+	l, err := tls.Listen("tcp", addr, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		return nil, fmt.Errorf("core.listen %s: %w", addr, err)
+	}
+	return l, nil
 }

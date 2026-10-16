@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/env"
+	"github.com/camfinc/stormo/pkg/instance"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -74,7 +75,10 @@ type CoreEndpoints struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }
 // CoreAt is the core on a host port: it runs on the host (it drives the local compose projects),
 // so containers reach it at host.docker.internal. Each instance's core has its own port.
 func CoreAt(port int) CoreEndpoints {
-	u := fmt.Sprintf("http://host.docker.internal:%d", port)
+	return coreAtURL(fmt.Sprintf("http://host.docker.internal:%d", port))
+}
+
+func coreAtURL(u string) CoreEndpoints {
 	return CoreEndpoints{
 		KeyEnv:  "SWARM_CORE_KEY",
 		URL:     u,
@@ -85,6 +89,15 @@ func CoreAt(port int) CoreEndpoints {
 		// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
 		MCPURL: u + "/mcp",
 	}
+}
+
+// CoreFor is the instance's core as agents in a placement reach it: core.urls[target], else
+// core.url, else the local core on its port (docs/remote-core.md §2).
+func CoreFor(inst *instance.Instance, target Target) CoreEndpoints {
+	if u := inst.CoreURLFor(string(target)); u != "" {
+		return coreAtURL(u)
+	}
+	return CoreAt(inst.CorePort())
 }
 
 // Core is the core on the default port; its KeyEnv is the same for every instance.

@@ -139,6 +139,14 @@ type Instance struct {
 	// Requests that reach the core's loopback listener directly may read the fleet's open views
 	// without a token (stormo.yaml core.loopback_trust, default true). Everything else needs one.
 	CoreLoopbackTrust bool `json:"coreLoopbackTrust"`
+	// A second address the core listens on, beyond loopback (stormo.yaml core.listen), with TLS
+	// unless core.tls is off (only on a private address). docs/remote-core.md §3.
+	CoreListen string  `json:"coreListen,omitempty"`
+	CoreTLS    CoreTLS `json:"coreTLS"`
+	// Where agents and clients reach the core (core.url), and per placement (core.urls: local,
+	// aws, vps…), which win over it. Empty: a local core at host.docker.internal.
+	CoreURL  string            `json:"coreURL,omitempty"`
+	CoreURLs map[string]string `json:"coreURLs,omitempty"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -184,7 +192,11 @@ type rawFile struct {
 	Core struct {
 		WebUI         bool  `yaml:"web_ui"`
 		Port          int   `yaml:"port"`
-		LoopbackTrust *bool `yaml:"loopback_trust"`
+		LoopbackTrust *bool             `yaml:"loopback_trust"`
+		Listen        string            `yaml:"listen"`
+		TLS           yaml.Node         `yaml:"tls"`
+		URL           string            `yaml:"url"`
+		URLs          map[string]string `yaml:"urls"`
 		Learning      struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
@@ -261,6 +273,18 @@ func Load(root string) (*Instance, error) {
 			}
 		}
 	}
+	coreTLS, err := parseCoreTLS(&raw.Core.TLS, raw.Core.Listen)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	for k, u := range raw.Core.URLs {
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return nil, &Error{fmt.Sprintf("%s: core.urls.%s must be an http(s) URL", path, k)}
+		}
+	}
+	if u := raw.Core.URL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return nil, &Error{fmt.Sprintf("%s: core.url must be an http(s) URL", path)}
+	}
 	if raw.Core.Port != 0 && (raw.Core.Port < 1024 || raw.Core.Port > 65535) {
 		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
 	}
@@ -329,6 +353,10 @@ func Load(root string) (*Instance, error) {
 		CoreWebUI:          raw.Core.WebUI,
 		CorePortSetting:    raw.Core.Port,
 		CoreLoopbackTrust:  raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
+		CoreListen:         raw.Core.Listen,
+		CoreTLS:            coreTLS,
+		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
+		CoreURLs:           trimURLs(raw.Core.URLs),
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

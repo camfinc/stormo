@@ -40,8 +40,8 @@ type Paths struct {
 	// StoreDir is the agent's own local store (loop.LocalStoreDir).
 	StoreDir  string
 	SharedDir string
-	// CorePort is the instance's core (instance.CorePort): agents call it there.
-	CorePort int
+	// CoreURL is where the agent calls its core (manifest.CoreFor(inst, Local).URL).
+	CoreURL string
 }
 
 func ProjectName(a *manifest.Agent) string { return ProjectPrefix + a.ID }
@@ -123,8 +123,8 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		volumes = append(volumes, filepath.Join(p.SharedDir, l.Layer)+":"+l.Path)
 	}
 	environment := eng.Env(a, manifest.Local).Map()
-	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CorePort != 0 {
-		environment["SWARM_CORE_URL"] = manifest.CoreAt(p.CorePort).URL
+	if _, ok := environment["SWARM_CORE_URL"]; ok && p.CoreURL != "" {
+		environment["SWARM_CORE_URL"] = p.CoreURL
 	}
 	agent := service{
 		Image:       eng.Image(a),

@@ -195,7 +195,19 @@ func status(inst *instance.Instance, o *out.Writer) error {
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 		return err
 	}
-	o.Result(StatusResult{true, CorePort(), string(s.Login), &s}, func(w io.Writer) { printStatus(w, s) })
+	o.Result(StatusResult{true, CorePort(), string(s.Login), &s}, func(w io.Writer) {
+		printStatus(w, s)
+		if inst.CoreListen != "" {
+			if inst.CoreTLS.Off {
+				fmt.Fprintf(w, "also listening on %s:%d WITHOUT TLS (core.tls: off): only through a tunnel or VPN\n", inst.CoreListen, CorePort())
+			} else {
+				fmt.Fprintf(w, "also listening on %s:%d with TLS\n", inst.CoreListen, CorePort())
+			}
+		}
+		if u := inst.CoreURL; u != "" {
+			fmt.Fprintf(w, "agents and clients reach it at %s\n", u)
+		}
+	})
 	return nil
 }
 

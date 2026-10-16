@@ -157,7 +157,7 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if interval == 0 {
 		interval = 900
 	}
-	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CorePort: inst.CorePort()}, port, interval, image)
+	spec := Render(r.Agent, eng, Paths{Root: root, BaselineDir: r.Out, EnvFile: envFile, StoreDir: storeDir, SharedDir: sharedDir, CoreURL: manifest.CoreFor(inst, manifest.Local).URL}, port, interval, image)
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
