@@ -94,9 +94,14 @@ core:
     stagger_minutes: 2            # between agents in a scheduled cycle (default 2)
     quiet_wait_minutes: 30        # wait this long for a busy agent, then dream without a fresh nap (default 30)
     agents: [atlas]               # default: every agent
-    auto_accept: false            # accept agent-scoped memory lessons with no PII flag on their own (default false)
-    auto_accept_min_seen: 1       # …only once seen this many times (default 1)
-    auto_restart: false           # restart an idle running agent after auto-accepting, so they apply (needs auto_accept)
+    review: auto                  # after each dream: rules in code hold what needs a person, a model approves what is
+                                  # obviously safe and passes the rest to a person; it never rejects (default auto;
+                                  # manual: every decision is a person's; the old auto_accept: false means manual)
+    review_connection: chatgpt    # the connection the review asks (default: the default ChatGPT sign-in)
+    review_model: gpt-5.6-luna    # default for a ChatGPT connection: the first model its plan lists; required for an API one
+    review_prompt: review/rules.md  # your own review rules, appended to the built-in ones (a file in the instance)
+    auto_accept_min_seen: 1       # a lesson is judged only once seen this many times (default 1)
+    auto_restart: false           # restart an idle running agent after the review approved something (needs review: auto)
 
 deploy:
   aws:                            # unset fields render as <unset> and `deploy render` reports them

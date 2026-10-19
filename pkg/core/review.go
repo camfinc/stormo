@@ -15,10 +15,11 @@ import (
 	"github.com/camfinc/stormo/pkg/manifest"
 )
 
-// The review page's backend (owner token only): what the dream proposed for each agent, the
-// decisions (the same loop.Decide / loop.DecideSkill as `stormo learn`, working tree only), and a
-// local restart so accepted lessons and skills apply. Lessons are scrubbed text; skill proposals
-// are files the agent wrote. Neither reaches anyone but the owner.
+// The review page's backend (owner token only): what the dream proposed for each agent (lessons,
+// skills, runtime schedules and settings), what the review's first pass said about each and why the
+// rules held some for a person, the decisions (the same loop functions as `stormo learn`, working
+// tree only), and a local restart so what was accepted applies. Lessons are scrubbed text; skill
+// proposals are files the agent wrote. Neither reaches anyone but the owner.
 
 // ReviewLesson is one ledger entry on the review page.
 type ReviewLesson struct {
@@ -33,8 +34,37 @@ type ReviewLesson struct {
 	LastSeen  string   `json:"lastSeen"`
 	DecidedAt string   `json:"decidedAt,omitempty"`
 	Note      string   `json:"note,omitempty"`
-	// What auto_accept would take (agent-scoped memory, no PII flag).
+	// What the review's rules let its model judge (agent-scoped memory, no PII flag).
 	AutoAcceptable bool `json:"autoAcceptable"`
+	// The review's verdict on this exact text, and why the rules hold it for a person.
+	AI   *ReviewAI `json:"ai,omitempty"`
+	Held string    `json:"held,omitempty"`
+}
+
+// ReviewAI is the review's first pass on a proposal: approve, or passed to a person, and why.
+type ReviewAI struct {
+	Approve bool   `json:"approve"`
+	Reason  string `json:"reason"`
+	Model   string `json:"model"`
+	At      string `json:"at"`
+}
+
+// ReviewSchedules is the agent's runtime schedules, as agent.yaml would hold them.
+type ReviewSchedules struct {
+	Jobs []manifest.Schedule `json:"jobs"`
+	// RuntimeJobs are the ids the repo does not have (a reject drops them).
+	RuntimeJobs []string  `json:"runtimeJobs"`
+	PII         []string  `json:"pii"`
+	Nap         string    `json:"nap"`
+	AI          *ReviewAI `json:"ai,omitempty"`
+	Held        string    `json:"held,omitempty"`
+}
+
+// ReviewSetting is a setting the agent changed at runtime.
+type ReviewSetting struct {
+	loop.SettingProposal
+	AI   *ReviewAI `json:"ai,omitempty"`
+	Held string    `json:"held,omitempty"`
 }
 
 // ReviewSkill is one skill proposal.
@@ -49,6 +79,8 @@ type ReviewSkill struct {
 	Stale bool         `json:"stale"`
 	Base  string       `json:"base,omitempty"`
 	Files []ReviewFile `json:"files"`
+	AI    *ReviewAI    `json:"ai,omitempty"`
+	Held  string       `json:"held,omitempty"`
 }
 
 // ReviewFile is a file of a skill proposal, with its text when small and textual.
@@ -62,19 +94,29 @@ type ReviewFile struct {
 
 // ReviewAgent is one agent's column of the review page.
 type ReviewAgent struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Unit    string         `json:"unit"`
-	State   string         `json:"state"`
-	Busy    bool           `json:"busy"`
-	Lessons []ReviewLesson `json:"lessons"` // proposed, then accepted (which can be promoted)
-	Skills  []ReviewSkill  `json:"skills"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	Unit      string           `json:"unit"`
+	State     string           `json:"state"`
+	Busy      bool             `json:"busy"`
+	Lessons   []ReviewLesson   `json:"lessons"` // proposed, then accepted (which can be promoted)
+	Skills    []ReviewSkill    `json:"skills"`
+	Schedules *ReviewSchedules `json:"schedules"`
+	Settings  []ReviewSetting  `json:"settings"`
+	// AutoReview: the review's first pass covers this agent (agent.yaml learning.auto_review).
+	AutoReview bool `json:"autoReview"`
 	// Decisions since it last restarted through the core: restart to apply them.
 	Unapplied bool `json:"unapplied"`
 }
 
 // ReviewView is GET /api/review.
 type ReviewView struct {
+	// Review is core.learning.review (auto | manual), with the model it asks and the instance's
+	// rules file; AutoAccept is Review == "auto" (the field readers had before).
+	Review            string        `json:"review"`
+	ReviewConnection  string        `json:"reviewConnection"`
+	ReviewModel       string        `json:"reviewModel,omitempty"`
+	ReviewPrompt      string        `json:"reviewPrompt,omitempty"`
 	AutoAccept        bool          `json:"autoAccept"`
 	AutoAcceptMinSeen int           `json:"autoAcceptMinSeen"`
 	AutoRestart       bool          `json:"autoRestart"`
@@ -86,15 +128,17 @@ const maxReviewText = 64 << 10
 func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 	root := l.o.Inst.Root
 	cfg := l.o.Inst.CoreLearning
-	v := &ReviewView{AutoAccept: cfg.AutoAccept, AutoAcceptMinSeen: cfg.AutoAcceptMinSeen, AutoRestart: cfg.AutoRestart, Agents: []ReviewAgent{}}
+	v := &ReviewView{Review: cfg.Review, ReviewConnection: cfg.ReviewConnection, ReviewModel: cfg.ReviewModel, ReviewPrompt: cfg.ReviewPrompt,
+		AutoAccept: cfg.AutoAccept, AutoAcceptMinSeen: cfg.AutoAcceptMinSeen, AutoRestart: cfg.AutoRestart, Agents: []ReviewAgent{}}
 	unapplied := l.Unapplied()
 	ids := manifest.AgentIDs(root)
 	sort.Strings(ids)
 	for _, id := range ids {
-		a := ReviewAgent{ID: id, Name: id, Lessons: []ReviewLesson{}, Skills: []ReviewSkill{}, Unapplied: unapplied[id], State: "stopped"}
+		a := ReviewAgent{ID: id, Name: id, Lessons: []ReviewLesson{}, Skills: []ReviewSkill{}, Settings: []ReviewSetting{}, Unapplied: unapplied[id], State: "stopped"}
 		if m, err := manifest.Load(root, id, l.o.Inst.Names.Secret); err == nil {
-			a.Name, a.Unit = m.Name, m.Unit
+			a.Name, a.Unit, a.AutoReview = m.Name, m.Unit, m.Learning.AutoReview
 		}
+		ai, held := l.reviewNotes(id)
 		if b, ok := roster[id]; ok {
 			a.Busy = b.Busy
 			if b.Running {
@@ -120,6 +164,9 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 			if e.Note != nil {
 				r.Note = *e.Note
 			}
+			if e.Status == learning.Proposed {
+				r.AI, r.Held = ai[loop.KindLesson+"/"+e.ID], held[loop.KindLesson+"/"+e.ID]
+			}
 			a.Lessons = append(a.Lessons, r)
 		}
 		sort.SliceStable(a.Lessons, func(i, j int) bool {
@@ -134,11 +181,46 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 			return nil, err
 		}
 		for _, p := range props {
-			a.Skills = append(a.Skills, skillView(root, id, p))
+			sv := skillView(root, id, p)
+			sv.AI, sv.Held = ai[loop.KindSkill+"/"+p.Skill], held[loop.KindSkill+"/"+p.Skill]
+			a.Skills = append(a.Skills, sv)
+		}
+		if jobs, meta, err := loop.ReadSchedulesProposal(root, id); err != nil {
+			return nil, err
+		} else if meta != nil {
+			a.Schedules = &ReviewSchedules{Jobs: jobs, RuntimeJobs: meta.RuntimeJobs, PII: meta.PII, Nap: meta.Nap,
+				AI: ai[loop.KindSchedules+"/"+loop.KindSchedules], Held: held[loop.KindSchedules+"/"+loop.KindSchedules]}
+		}
+		settings, err := loop.ListSettingProposals(root, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range settings {
+			a.Settings = append(a.Settings, ReviewSetting{SettingProposal: p, AI: ai[loop.KindSetting+"/"+p.Key], Held: held[loop.KindSetting+"/"+p.Key]})
 		}
 		v.Agents = append(v.Agents, a)
 	}
 	return v, nil
+}
+
+// reviewNotes are, by kind + "/" + ref, the review's verdict on each open proposal as it reads now
+// (a verdict on older content is not shown) and why the rules hold the others for a person.
+func (l *Learner) reviewNotes(agent string) (map[string]*ReviewAI, map[string]string) {
+	ai, held := map[string]*ReviewAI{}, map[string]string{}
+	cands, hs, err := loop.ReviewCandidates(l.o.Inst, agent, l.o.Inst.CoreLearning.AutoAcceptMinSeen)
+	if err != nil {
+		return ai, held
+	}
+	for _, h := range hs {
+		held[h.Kind+"/"+h.Ref] = h.Why
+	}
+	latest := l.LatestVerdicts(agent)
+	for _, c := range cands {
+		if v, ok := latest[c.Kind+"/"+c.Ref]; ok && v.Hash == c.Hash {
+			ai[c.Kind+"/"+c.Ref] = &ReviewAI{Approve: v.Approve, Reason: v.Reason, Model: v.Model, At: v.At}
+		}
+	}
+	return ai, held
 }
 
 func readSmallText(p string) (string, int64, bool) {
@@ -189,11 +271,13 @@ func skillView(root, agent string, p loop.SkillProposal) ReviewSkill {
 
 // reviewDecision is POST /api/review's body.
 type reviewDecision struct {
-	Agent    string   `json:"agent"`
-	Lessons  []string `json:"lessons"`
-	Skill    string   `json:"skill"`
-	Decision string   `json:"decision"` // accept | reject | promote (lessons)
-	Scope    string   `json:"scope"`    // promote: unit | group
+	Agent     string   `json:"agent"`
+	Lessons   []string `json:"lessons"`
+	Skill     string   `json:"skill"`
+	Schedules bool     `json:"schedules"`
+	Settings  []string `json:"settings"`
+	Decision  string   `json:"decision"` // accept | reject | promote (lessons)
+	Scope     string   `json:"scope"`    // promote: unit | group
 }
 
 func (l *Learner) decide(d reviewDecision) error {
@@ -201,9 +285,26 @@ func (l *Learner) decide(d reviewDecision) error {
 	if !slicesContains(manifest.AgentIDs(root), d.Agent) {
 		return fmt.Errorf("unknown agent %q", d.Agent)
 	}
+	dec := map[string]string{"accept": "accepted", "reject": "rejected"}[d.Decision]
 	switch {
+	case d.Schedules || len(d.Settings) > 0:
+		if dec == "" {
+			return fmt.Errorf("schedules and settings are accepted or rejected")
+		}
+		if d.Schedules {
+			if _, err := loop.DecideSchedules(l.o.Inst, d.Agent, dec, loop.Decider{}); err != nil {
+				return err
+			}
+		}
+		for _, key := range d.Settings {
+			if _, err := loop.DecideSetting(l.o.Inst, d.Agent, key, dec, loop.Decider{}); err != nil {
+				return err
+			}
+		}
+		// A reject of schedules changes the next boot too (its runtime jobs are dropped).
+		l.markUnapplied(d.Agent)
+		return nil
 	case d.Skill != "":
-		dec := map[string]string{"accept": "accepted", "reject": "rejected"}[d.Decision]
 		if dec == "" {
 			return fmt.Errorf("a skill is accepted or rejected")
 		}
@@ -240,7 +341,7 @@ func (l *Learner) decide(d reviewDecision) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("name lessons or a skill")
+	return fmt.Errorf("name lessons, a skill, schedules or settings")
 }
 
 func slicesContains(xs []string, x string) bool {
@@ -273,14 +374,18 @@ func (c *Core) handleReview(w http.ResponseWriter, r *http.Request, roster func(
 	case http.MethodPost:
 		var d reviewDecision
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&d); err != nil {
-			writeJSONBody(w, 400, errBody("bad_request", "body is {agent, lessons | skill, decision, scope}"))
+			writeJSONBody(w, 400, errBody("bad_request", "body is {agent, lessons | skill | schedules | settings, decision, scope}"))
 			return
 		}
 		if err := c.Learner.decide(d); err != nil {
 			writeJSONBody(w, 400, errBody("refused", err.Error()))
 			return
 		}
-		c.DB.Audit(c.caller(r).Actor(), "review."+d.Decision, d.Agent, strings.Join(append(append([]string{}, d.Lessons...), d.Skill), " "))
+		target := append(append(append([]string{}, d.Lessons...), d.Settings...), d.Skill)
+		if d.Schedules {
+			target = append(target, "schedules")
+		}
+		c.DB.Audit(c.caller(r).Actor(), "review."+d.Decision, d.Agent, strings.TrimSpace(strings.Join(target, " ")))
 		writeJSONBody(w, 200, map[string]any{"ok": true})
 	default:
 		writeJSONBody(w, 405, errBody("method_not_allowed", "GET or POST"))

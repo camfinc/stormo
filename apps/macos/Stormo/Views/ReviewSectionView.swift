@@ -21,7 +21,7 @@ struct ReviewSectionView: View {
                 } else {
                     Form {
                         if view.autoAccept {
-                            Section { Text("Auto-accept is on: agent-scoped memory lessons seen \(view.autoAcceptMinSeen)+ times with no PII flag are accepted on their own.").font(.callout).foregroundStyle(.secondary) }
+                            Section { Text("Automatic review is on: after each learning cycle a model approves what is obviously safe and passes the rest to you; it never rejects. What is here waits for you. Runtime schedules and settings are reviewed with `stormo learn` or the core's review page.").font(.callout).foregroundStyle(.secondary) }
                         }
                         ForEach(agents) { AgentReview(agent: $0, showAccepted: showAll) }
                     }
@@ -125,7 +125,6 @@ private struct LessonRow: View {
                 Tag(lesson.scope)
                 if lesson.seenCount > 1 { Tag("seen \(lesson.seenCount)×") }
                 ForEach(lesson.pii, id: \.self) { Tag("PII: \($0)", tint: .red) }
-                if lesson.autoAcceptable, lesson.status == "proposed" { Tag("auto-acceptable", tint: .green) }
                 Spacer()
                 if lesson.status == "proposed" {
                     if busy { ProgressView().controlSize(.small) }

@@ -21,7 +21,7 @@ holds the one ChatGPT-subscription login and serves model calls to the other age
 |---|---|---|
 | what | deterministic Go process (`pkg/core/`) | a Hermes persona in `units/group` (`agents/core/`) |
 | does | gateway, registry, health polling, activity ingest, comms bus, workdir locks, nap/learn scheduling, rule-based compliance checks, web UI | judgement: LLM compliance review of samples, daily fleet digest, triage of findings, talks to people in Slack |
-| needs an LLM | no (it *serves* one) | yes, through the gateway locally |
+| needs an LLM | only for the review's first pass (§6), through its own gateway or an API connection | yes, through the gateway locally |
 | can change production | never | never (alerts and suggests the `swarm` command; the owner runs it) |
 
 The service is useful without the agent; the agent is just another client of the service's MCP
@@ -496,17 +496,39 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
 - *Prune*: after each agent's dream the cycle prunes its naps (`loop.Prune`, ARCHITECTURE.md): the
   naps the dream folded go except the newest 3, and so do bodies nothing refers to. The run
   records what it pruned.
-- *Auto-accept* (`core.learning.auto_accept`, off by default): after the dream, the lessons that
-  need no judgement call are accepted: agent-scoped memory (never user-profile entries) with no
-  PII flag, seen at least `auto_accept_min_seen` times (default 1). Skills and unit or group
-  promotions always wait for a person. With `auto_restart`, a running agent the cycle found idle
-  is restarted (`ops.Restart`, local only) so they apply at once; otherwise they apply on its
-  next restart.
+- *Review* (`core.learning.review`, `auto` by default; `manual` leaves every decision to a person;
+  the old `auto_accept: false` means manual): after the dream, a first pass over the agent's open
+  proposals (lessons, skills, runtime schedules and settings). Rules in code
+  (`loop.ReviewCandidates`) hold for a person, without asking any model, what a model must not
+  decide: user-profile lessons, anything PII-flagged, lessons shared beyond the agent or seen fewer
+  than `auto_accept_min_seen` times, skills holding scripts or binaries (or stale, or over 48 KB),
+  schedules with a script, a monitor, another model, an explicit delivery target or a removed repo
+  job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
+  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. It never
+  rejects: a reject purges what the agent learned, and a wrong approval is undone with `stormo learn
+  reject`. Anything but a well-formed approve is a pass to a person.
+  - Rules: the built-in prompt (`pkg/core/review_prompt.md`, embedded), then the instance's own
+    file (`core.learning.review_prompt`, appended; it cannot lift the rules in code). The proposal
+    goes in as delimited data; instructions inside it are a reason to pass it on.
+  - Model: `review_connection` (default: the default ChatGPT sign-in, called in process through the
+    gateway and counted as `core-review`) and `review_model` (default for ChatGPT: the first model
+    the plan lists; required for an API connection, which is called with the instance's shared
+    key).
+  - Verdicts are kept in `core.db` (`review_verdicts`) by agent, proposal, content hash and rules
+    hash: an unchanged proposal is not asked about again, and a rules change asks again. At most 40
+    model calls per agent per cycle; a model out of reach leaves everything for a person and says
+    so in the run.
+  - An approval is applied like a person's (`loop.Approve`, working tree only) and records who and
+    why: the ledger entry's note, or `by`/`reason` in the watermark, with the model's reason
+    scrubbed. An agent opts out with `learning.auto_review: false` in agent.yaml.
+  - With `auto_restart`, a running agent the cycle found idle is restarted (`ops.Restart`, local
+    only) so approvals apply at once; otherwise they apply on its next restart.
 - *Review page* (with `core.web_ui`; `stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
   proposed lessons (scrubbed text, kind, scope, times seen, PII flags), skill proposals with
-  their files and the current version when one exists, and the accepted lessons. Accept,
-  reject, accept everything auto-acceptable, share an accepted lesson with the unit or every
-  agent (the ledger's promotion rules apply), and restart an agent to apply what was decided.
+  their files and the current version when one exists, the schedules and settings it changed at
+  runtime, the accepted lessons, and on each open proposal what the review said or why the rules
+  hold it. Accept, reject, share an accepted lesson with the unit or every agent (the ledger's
+  promotion rules apply), and restart an agent to apply what was decided.
   The page holds no data: the owner token rides in the URL fragment (never sent to a server or
   a referrer), stays in that tab's session storage, and goes as a bearer to `/api/review`
   (`GET`, `POST {agent, lessons | skill, decision, scope}`) and

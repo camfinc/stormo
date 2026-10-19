@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/learning"
+	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
 
@@ -141,5 +142,51 @@ func TestReviewPageAndDecisions(t *testing.T) {
 	_, v = do("GET", "/api/review", owner, nil)
 	if agentOf(v, "atlas")["unapplied"] != false {
 		t.Error("restart applies the decisions")
+	}
+
+	// Runtime settings: the rules hold the sensitive one; the review's verdict shows on the other
+	// while its content is the one judged; accepting writes agent.yaml (which must stay valid).
+	manifestPath := filepath.Join(root, "agents/atlas/agent.yaml")
+	body, _ := os.ReadFile(manifestPath)
+	write(t, manifestPath, strings.Replace(string(body), "secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN]", "secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN, OPENROUTER_API_KEY]", 1))
+	write(t, filepath.Join(root, "agents/atlas/learnings/proposals/settings.json"), `[
+ {"key":"home_channel.slack","value":"C0OPS","opaque":true,"pii":[],"nap":"n2"},
+ {"key":"command_allowlist","value":"[\"git status\"]","sensitive":true,"pii":[],"nap":"n2"}]`)
+	cands, _, err := loop.ReviewCandidates(inst, "atlas", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cd := range cands {
+		if cd.Kind == loop.KindSetting {
+			c.Learner.keepVerdict("atlas", cd, Verdict{Approve: false, Reason: "an unfamiliar channel", Model: "test-model", Rules: "r"})
+		}
+	}
+	_, v = do("GET", "/api/review", owner, nil)
+	settings := agentOf(v, "atlas")["settings"].([]any)
+	if len(settings) != 2 || v["review"] != "auto" || agentOf(v, "atlas")["autoReview"] != true {
+		t.Fatalf("settings %v / review %v", settings, v["review"])
+	}
+	for _, x := range settings {
+		m := x.(map[string]any)
+		switch m["key"] {
+		case "home_channel.slack":
+			if ai, _ := m["ai"].(map[string]any); ai == nil || ai["approve"] != false || ai["reason"] != "an unfamiliar channel" {
+				t.Errorf("verdict on the home channel: %v", m)
+			}
+		case "command_allowlist":
+			if !strings.Contains(fmt.Sprint(m["held"]), "widens") || m["ai"] != nil {
+				t.Errorf("the allowlist is held by the rules: %v", m)
+			}
+		}
+	}
+	if code, out := do("POST", "/api/review", owner, map[string]any{"agent": "atlas", "settings": []string{"home_channel.slack"}, "decision": "accept"}); code != 200 {
+		t.Fatalf("accept setting %d %v", code, out)
+	}
+	if code, out := do("POST", "/api/review", owner, map[string]any{"agent": "atlas", "settings": []string{"command_allowlist"}, "decision": "promote"}); code != 400 {
+		t.Errorf("promote a setting: %d %v", code, out)
+	}
+	a, err := manifest.Load(root, "atlas", inst.Names.Secret)
+	if err != nil || a.Channels[0].HomeChannel != "C0OPS" {
+		t.Errorf("home channel in agent.yaml: %+v %v", a, err)
 	}
 }

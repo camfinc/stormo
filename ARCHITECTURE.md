@@ -305,6 +305,7 @@ and session history in `state.db`. Gaps for a fleet on ECS:
 | class | Hermes paths | goes to | restored on boot | reaches git |
 |---|---|---|---|---|
 | learning | `memories/*.md`, `skills/**`, skill telemetry, `cron/jobs.json` | `blobs/` | yes (merged) | as reviewed proposals |
+| learning | `config.yaml` (rebuilt from the repo on every boot) | `blobs/` | no | the settings the agent changed, as reviewed proposals |
 | state | `<state>/**`, `local/**`, `kanban.db`, `cron/executions.db`, voice mode | `blobs/` | yes | never |
 | raw | `state.db`, `response_store.db`, `sessions/**` | `raw/` | yes | never |
 
@@ -344,11 +345,31 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
   form; format 0, or a job agent.yaml cannot express: `learnings/proposals/cron/jobs.json`). Skill telemetry is kept in
   `learnings/skill-usage.json`.
+- Settings the agent changed in its engine config at runtime (Hermes: a `/sethome` home channel,
+  commands approved "always", MCP servers it configured) become `learnings/proposals/settings.json`.
+  Every unseen nap is read, each against the settings its instance booted with (`booted.json`),
+  because a restart rebuilds the config and only an earlier nap may hold the change. MCP `env` and
+  `headers` are never proposed; Hermes keeps credentials in `.env`, which is never napped. The raw
+  `config.yaml` blob stays in the nap store like any learning blob.
+- A proposal already decided (skills by content hash, schedules by proposal text, settings by
+  value; all in `learnings/watermark.json`) is not made again.
 - It writes the working tree only. It never commits, branches or pushes.
 
-**Review** (`stormo learn …`): accept, reject, edit (rewrite to drop PII), pin, promote; accept or
-reject skill proposals. Promotion widens a lesson from `agent` to `unit` or `group`. User-profile
-memories and anything PII-flagged can never be promoted, and a lesson must be accepted first.
+**Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),
+pin, promote; accept or reject skill, schedule and setting proposals. Accepting schedules writes
+`schedules:` in agent.yaml; rejecting them drops the jobs the agent created at runtime on its next
+boot (`baseline.json` `rejectedJobs`). Accepting a setting edits that one node in agent.yaml or the
+engine config, comments kept. Promotion widens a lesson from `agent` to `unit` or `group`.
+User-profile memories and anything PII-flagged can never be promoted, and a lesson must be
+accepted first.
+
+**Automatic review** (the core's learning cycle, `core.learning.review: auto`, the default;
+docs/core.md §6). Rules in code (`loop.ReviewCandidates`) hold for a person what must never be
+decided by a model: user-profile lessons, anything PII-flagged, skills with scripts or binaries,
+schedules that run a script, use another model or deliver to an explicit target, settings that
+widen what the agent may do, and every promotion. A model reads the rest and either approves it or
+passes it to a person; it never rejects (a reject purges, a wrong approve is undone with `learn
+reject`). The instance can append its own rules; agents can opt out (`learning.auto_review: false`).
 
 **Build** compiles accepted learnings into two tiers:
 - **hot**: the top-ranked own lessons (pinned, then most corroborated, then most recent) packed into

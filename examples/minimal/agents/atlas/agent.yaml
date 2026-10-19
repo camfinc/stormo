@@ -75,6 +75,7 @@ memory:
 learning:
   seed_fill: 0.6
   nap_interval_seconds: 900
+  auto_review: true      # the core's review may approve its proposals on its own (false: all go to a person)
 
 deploy:
   launch: fargate
