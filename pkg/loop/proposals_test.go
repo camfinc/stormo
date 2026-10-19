@@ -121,6 +121,10 @@ func TestRuntimeSettingsAndSchedules(t *testing.T) {
 	}
 	write(t, filepath.Join(home2, "memories/MEMORY.md"), "Deals close on Fridays.")
 	nap(home2, "task-b")
+	// A config.yaml napped mid-write: its settings are skipped, the dream goes on.
+	write(t, filepath.Join(home2, "config.yaml"), "platforms: {slack: [unclosed\n")
+	write(t, filepath.Join(home2, "memories/MEMORY.md"), "Deals close on Fridays.\n§\nQuotes expire in 7 days.")
+	nap(home2, "task-b")
 
 	rep, err := Dream(inst, "atlas", store)
 	if err != nil {

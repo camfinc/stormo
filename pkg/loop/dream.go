@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -190,8 +191,10 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 				return nil, err
 			}
 			if blob != nil {
+				// A plain file can be napped mid-write; one unreadable config must not stop the
+				// dream (the watermark would never pass this nap). Its settings are skipped.
 				if err := noteSettings(rs, nap, []byte(*blob), repoSet, settings); err != nil {
-					return nil, fmt.Errorf("%s: nap %s: %s: %w", agentID, nap.ID, L.Config, err)
+					log.Printf("[dream] %s: nap %s: %s unreadable, settings skipped: %v", agentID, nap.ID, L.Config, err)
 				}
 			}
 		}
