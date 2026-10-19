@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/local"
@@ -25,9 +27,11 @@ import (
 // The learning cycle (docs/core.md §6, phase 6). The core sequences the existing nap/dream loop:
 // for each agent, wait until it is quiet, nap it (the same `compose exec nap` as `stormo
 // nap-now`), dream its naps into agents/<id>/learnings (working tree only, as `stormo learn`
-// does), and count what waits for review. A cycle runs on the instance's schedule
-// (stormo.yaml core.learning.at) or on demand. The core never commits, accepts, rejects or
-// promotes anything; the digest lists counts and the `stormo learn` commands to review them.
+// does), give the review's first pass what the rules let through (core.learning.review: auto; a
+// model approves what is obviously safe and passes the rest to a person), and count what waits for
+// review. A cycle runs on the instance's schedule (stormo.yaml core.learning.at) or on demand. The
+// core never commits, rejects or promotes anything; the digest lists counts and the `stormo learn`
+// commands to review the rest.
 
 // LearnDeps are the cycle's effects; zero values take the instance's real ones.
 type LearnDeps struct {
@@ -35,8 +39,15 @@ type LearnDeps struct {
 	Dream  func(id string) (*loop.DreamReport, error)
 	// Prune drops the naps the dream has folded (loop.Prune).
 	Prune func(id string) (*loop.PruneReport, error)
-	// AutoAccept accepts the lessons that need no judgement call (loop.AutoAccept).
-	AutoAccept func(id string, minSeen int) ([]string, error)
+	// Candidates sorts an agent's open proposals by the review's rules (loop.ReviewCandidates).
+	Candidates func(id string, minSeen int) ([]loop.Candidate, []loop.Held, error)
+	// Rules is the hash of the review's rules now (Reviewer.Rules); Judge asks its model about one
+	// candidate (Reviewer.Judge); Approve applies an approval (loop.Approve).
+	Rules   func() (string, error)
+	Judge   func(id string, c loop.Candidate) (Verdict, error)
+	Approve func(id string, c loop.Candidate, who loop.Decider) error
+	// AutoReview: the agent lets the review approve on its own (agent.yaml learning.auto_review).
+	AutoReview func(id string) bool
 	// Restart recycles a local agent so accepted lessons apply (ops.Restart, local only).
 	Restart func(id string) error
 	Pending func(id string) (learnings, skills int)
@@ -55,6 +66,8 @@ type LearnerOptions struct {
 	DigestDir string
 	// Poll is how often a busy agent is looked at again (default 30 s).
 	Poll time.Duration
+	// Gateways serve the review's model calls for a ChatGPT connection.
+	Gateways *llm.Gateways
 }
 
 // AgentRun is one agent's part of a cycle. Counts only: lessons can hold client data.
@@ -69,11 +82,16 @@ type AgentRun struct {
 	Resighted        int    `json:"resighted"`
 	SkillProposals   int    `json:"skillProposals"`
 	CronProposal     bool   `json:"cronProposal"`
+	SettingProposals int    `json:"settingProposals"`
 	PendingLearnings int    `json:"pendingLearnings"`
 	PendingSkills    int    `json:"pendingSkills"`
-	// Lessons accepted automatically (core.learning.auto_accept), and whether the agent was
-	// restarted so they apply (auto_restart), or why not.
+	// The review's first pass: proposals it approved, passed to a person, and the rules held for a
+	// person without asking; why it did not run or stopped. Whether the agent was restarted so the
+	// approvals apply (auto_restart), or why not.
 	AutoAccepted int    `json:"autoAccepted"`
+	Passed       int    `json:"passed"`
+	Held         int    `json:"held"`
+	ReviewNote   string `json:"reviewNote,omitempty"`
 	Restarted    bool   `json:"restarted"`
 	RestartNote  string `json:"restartNote,omitempty"`
 	// Naps and bodies pruned after the dream, and their size.
@@ -127,8 +145,34 @@ func NewLearner(o LearnerOptions) *Learner {
 	if d.Prune == nil {
 		d.Prune = func(id string) (*loop.PruneReport, error) { return loop.Prune(inst, id, ops.LocalStore(inst.Root), 0) }
 	}
-	if d.AutoAccept == nil {
-		d.AutoAccept = func(id string, minSeen int) ([]string, error) { return loop.AutoAccept(inst.Root, id, minSeen) }
+	if d.Candidates == nil {
+		d.Candidates = func(id string, minSeen int) ([]loop.Candidate, []loop.Held, error) {
+			return loop.ReviewCandidates(inst, id, minSeen)
+		}
+	}
+	reviewer := &Reviewer{Inst: inst, Gateways: o.Gateways, Scrub: Scrubber(learning.NewScrubber(inst))}
+	if d.Rules == nil {
+		d.Rules = func() (string, error) { _, h, err := reviewer.Rules(); return h, err }
+	}
+	if d.Judge == nil {
+		d.Judge = func(id string, c loop.Candidate) (Verdict, error) {
+			a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
+			if err != nil {
+				return Verdict{}, err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+			return reviewer.Judge(ctx, a, c)
+		}
+	}
+	if d.Approve == nil {
+		d.Approve = func(id string, c loop.Candidate, who loop.Decider) error { return loop.Approve(inst, id, c, who) }
+	}
+	if d.AutoReview == nil {
+		d.AutoReview = func(id string) bool {
+			a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
+			return err == nil && a.Learning.AutoReview
+		}
 	}
 	if d.Restart == nil {
 		d.Restart = func(id string) error {
@@ -274,10 +318,12 @@ func (l *Learner) run(cycle int64, trigger string, ids []string, force bool) {
 			break
 		}
 		if _, err := l.o.DB.Exec(`INSERT INTO learn_runs(cycle, agent, started, finished, napped, nap_note, naps, new_learnings, resighted, skill_proposals,
-			cron_proposal, pending_learnings, pending_skills, error, pruned_naps, pruned_bytes, auto_accepted, restarted, restart_note)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			cron_proposal, pending_learnings, pending_skills, error, pruned_naps, pruned_bytes, auto_accepted, restarted, restart_note,
+			setting_proposals, passed, held, review_note)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			cycle, id, msOf(r.Started), msOf(r.Finished), r.Napped, r.NapNote, r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals,
-			r.CronProposal, r.PendingLearnings, r.PendingSkills, r.Error, r.PrunedNaps, r.PrunedBytes, r.AutoAccepted, r.Restarted, r.RestartNote); err != nil {
+			r.CronProposal, r.PendingLearnings, r.PendingSkills, r.Error, r.PrunedNaps, r.PrunedBytes, r.AutoAccepted, r.Restarted, r.RestartNote,
+			r.SettingProposals, r.Passed, r.Held, r.ReviewNote); err != nil {
 			log.Printf("learn: %s: %v", id, err)
 		}
 	}
@@ -332,7 +378,8 @@ func (l *Learner) runAgent(id string, force bool, quiet time.Duration) (r AgentR
 		r.Error = clip(err.Error(), 300)
 	} else if rep != nil {
 		r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals, r.CronProposal = len(rep.Naps), rep.NewLearnings, rep.Resighted, len(rep.SkillProposals), rep.CronProposal
-		l.autoAccept(id, &r)
+		r.SettingProposals = rep.SettingProposals
+		l.autoReview(id, &r)
 		if pr, err := l.o.Deps.Prune(id); err != nil {
 			log.Printf("learn: pruning %s: %v", id, err)
 		} else if pr != nil {
@@ -344,19 +391,64 @@ func (l *Learner) runAgent(id string, force bool, quiet time.Duration) (r AgentR
 	return r, true
 }
 
-// autoAccept applies core.learning.auto_accept and auto_restart to one agent's run.
-func (l *Learner) autoAccept(id string, r *AgentRun) {
+// maxJudged is how many proposals one agent's run asks the review's model about; the rest wait
+// for the next cycle (a verdict already given does not count).
+const maxJudged = 40
+
+// autoReview runs the review's first pass over one agent's open proposals (core.learning.review:
+// auto), then auto_restart. The model only approves or passes to a person; the rules in code hold
+// some proposals for a person without asking it.
+func (l *Learner) autoReview(id string, r *AgentRun) {
 	cfg := l.o.Inst.CoreLearning
-	if !cfg.AutoAccept {
+	if cfg.Review != instance.ReviewAuto {
 		return
 	}
-	ids, err := l.o.Deps.AutoAccept(id, cfg.AutoAcceptMinSeen)
+	if !l.o.Deps.AutoReview(id) {
+		r.ReviewNote = "off for this agent (learning.auto_review)"
+		return
+	}
+	cands, held, err := l.o.Deps.Candidates(id, cfg.AutoAcceptMinSeen)
 	if err != nil {
-		log.Printf("learn: auto-accept %s: %v", id, err)
+		r.ReviewNote = "rules: " + clip(err.Error(), 200)
 		return
 	}
-	r.AutoAccepted = len(ids)
-	if len(ids) == 0 {
+	r.Held = len(held)
+	rules, err := l.o.Deps.Rules()
+	if err != nil {
+		r.ReviewNote = clip(err.Error(), 200)
+		r.Passed = len(cands)
+		return
+	}
+	judged := 0
+	for i, c := range cands {
+		v, ok := l.verdict(id, c, rules)
+		if !ok {
+			if judged == maxJudged {
+				r.Passed += len(cands) - i
+				r.ReviewNote = fmt.Sprintf("%d left for the next cycle", len(cands)-i)
+				break
+			}
+			judged++
+			if v, err = l.o.Deps.Judge(id, c); err != nil {
+				// The model is out of reach: everything left waits for a person (or the next cycle).
+				r.Passed += len(cands) - i
+				r.ReviewNote = "model unavailable: " + clip(err.Error(), 200)
+				break
+			}
+			l.keepVerdict(id, c, v)
+		}
+		if !v.Approve {
+			r.Passed++
+			continue
+		}
+		if err := l.o.Deps.Approve(id, c, loop.Decider{By: "core review (" + v.Model + ")", Reason: v.Reason}); err != nil {
+			log.Printf("learn: review %s %s %s: %v", id, c.Kind, c.Ref, err)
+			r.Passed++
+			continue
+		}
+		r.AutoAccepted++
+	}
+	if r.AutoAccepted == 0 {
 		return
 	}
 	l.markUnapplied(id)
@@ -378,6 +470,56 @@ func (l *Learner) autoAccept(id string, r *AgentRun) {
 			l.markApplied(id)
 		}
 	}
+}
+
+// verdict is the review's earlier answer on this exact content under these rules.
+func (l *Learner) verdict(agent string, c loop.Candidate, rules string) (Verdict, bool) {
+	var v Verdict
+	var at int64
+	err := l.o.DB.QueryRow(`SELECT approve, reason, model, at FROM review_verdicts WHERE agent = ? AND kind = ? AND ref = ? AND hash = ? AND rules = ?`,
+		agent, c.Kind, c.Ref, c.Hash, rules).Scan(&v.Approve, &v.Reason, &v.Model, &at)
+	if err != nil {
+		return Verdict{}, false
+	}
+	v.Rules, v.At = rules, isoMs(at)
+	return v, true
+}
+
+func (l *Learner) keepVerdict(agent string, c loop.Candidate, v Verdict) {
+	if _, err := l.o.DB.Exec(`INSERT OR REPLACE INTO review_verdicts(agent, kind, ref, hash, rules, approve, reason, model, at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		agent, c.Kind, c.Ref, c.Hash, v.Rules, v.Approve, v.Reason, v.Model, l.o.Now().UnixMilli()); err != nil {
+		log.Printf("learn: keeping a verdict: %v", err)
+	}
+}
+
+// LatestVerdicts are the review's newest verdict on each of an agent's proposals (kind + "/" + ref),
+// with the content hash it was given for: the review page shows it while the proposal is unchanged.
+func (l *Learner) LatestVerdicts(agent string) map[string]struct {
+	Verdict
+	Hash string
+} {
+	out := map[string]struct {
+		Verdict
+		Hash string
+	}{}
+	rows, err := l.o.DB.Query(`SELECT kind, ref, hash, rules, approve, reason, model, at FROM review_verdicts WHERE agent = ? ORDER BY at`, agent)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, ref, hash string
+		var v Verdict
+		var at int64
+		if rows.Scan(&kind, &ref, &hash, &v.Rules, &v.Approve, &v.Reason, &v.Model, &at) == nil {
+			v.At = isoMs(at)
+			out[kind+"/"+ref] = struct {
+				Verdict
+				Hash string
+			}{v, hash}
+		}
+	}
+	return out
 }
 
 // Unapplied are the agents with lessons accepted since they last (re)started through the core.
@@ -429,9 +571,19 @@ func (l *Learner) writeDigest(c *Cycle) (string, error) {
 		}
 		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d | %s | %s | %d (%.1f MB) |\n", r.Agent, nap, r.Naps, r.NewLearnings, r.Resighted, r.SkillProposals, cron, pending,
 			r.PrunedNaps, float64(r.PrunedBytes)/(1<<20))
-		if r.AutoAccepted > 0 {
-			auto = append(auto, fmt.Sprintf("%s: %d lessons accepted automatically (%s)", r.Agent, r.AutoAccepted,
-				map[bool]string{true: "restarted, in effect now", false: r.RestartNote}[r.Restarted]))
+		if r.AutoAccepted+r.Passed+r.Held > 0 || r.ReviewNote != "" {
+			line := fmt.Sprintf("%s: %d approved", r.Agent, r.AutoAccepted)
+			if r.AutoAccepted > 0 {
+				line += " (" + map[bool]string{true: "restarted, in effect now", false: r.RestartNote}[r.Restarted] + ")"
+			}
+			line += fmt.Sprintf(", %d passed to a person, %d held by the rules", r.Passed, r.Held)
+			if r.ReviewNote != "" {
+				line += "; " + r.ReviewNote
+			}
+			auto = append(auto, line)
+		}
+		if r.SettingProposals > 0 || r.CronProposal {
+			review = append(review, "stormo learn settings "+r.Agent, "stormo learn schedules "+r.Agent)
 		}
 		if r.PendingLearnings > 0 {
 			review = append(review, "stormo learn list "+r.Agent)
@@ -441,13 +593,13 @@ func (l *Learner) writeDigest(c *Cycle) (string, error) {
 		}
 	}
 	if len(auto) > 0 {
-		fmt.Fprintf(&b, "\nAccepted automatically (agent-scoped memory, no PII flag; core.learning.auto_accept):\n\n")
+		fmt.Fprintf(&b, "\nThe review's first pass (core.learning.review: auto; it approves or passes to a person, never rejects):\n\n")
 		for _, a := range auto {
 			fmt.Fprintf(&b, "- %s\n", a)
 		}
 	}
 	if len(review) > 0 {
-		fmt.Fprintf(&b, "\nOpen the review page with `stormo core review`, or from the terminal.\nTo review (accepting, rejecting and promoting stay yours):\n\n")
+		fmt.Fprintf(&b, "\nOpen the review page with `stormo core review`, or from the terminal.\nTo review what waits for you (rejecting and promoting are always yours):\n\n")
 		for _, cmd := range review {
 			fmt.Fprintf(&b, "    %s\n", cmd)
 		}
@@ -470,7 +622,8 @@ func (l *Learner) Cycle(id int64) (*Cycle, error) {
 	}
 	c.Started, c.Finished = isoMs(started), optIso(finished)
 	rows, err := l.o.DB.Query(`SELECT agent, started, finished, napped, nap_note, naps, new_learnings, resighted, skill_proposals, cron_proposal,
-		pending_learnings, pending_skills, error, pruned_naps, pruned_bytes, auto_accepted, restarted, restart_note FROM learn_runs WHERE cycle = ? ORDER BY id`, id)
+		pending_learnings, pending_skills, error, pruned_naps, pruned_bytes, auto_accepted, restarted, restart_note,
+		setting_proposals, passed, held, review_note FROM learn_runs WHERE cycle = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +632,8 @@ func (l *Learner) Cycle(id int64) (*Cycle, error) {
 		var r AgentRun
 		var s, f int64
 		if err := rows.Scan(&r.Agent, &s, &f, &r.Napped, &r.NapNote, &r.Naps, &r.NewLearnings, &r.Resighted, &r.SkillProposals, &r.CronProposal,
-			&r.PendingLearnings, &r.PendingSkills, &r.Error, &r.PrunedNaps, &r.PrunedBytes, &r.AutoAccepted, &r.Restarted, &r.RestartNote); err != nil {
+			&r.PendingLearnings, &r.PendingSkills, &r.Error, &r.PrunedNaps, &r.PrunedBytes, &r.AutoAccepted, &r.Restarted, &r.RestartNote,
+			&r.SettingProposals, &r.Passed, &r.Held, &r.ReviewNote); err != nil {
 			return nil, err
 		}
 		r.Started, r.Finished = isoMs(s), isoMs(f)

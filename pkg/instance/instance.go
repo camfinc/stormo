@@ -86,7 +86,8 @@ type Clock struct {
 
 // CoreLearning is when the swarm core runs the learning cycle on its own (stormo.yaml
 // core.learning): each agent napped, then dreamed into its working tree, one after another. Off
-// unless At is set; accepting, rejecting and promoting stay human (`stormo learn`).
+// unless At is set. After each dream the review's first pass approves what is obviously safe;
+// rejecting and promoting stay human (`stormo learn`, the review page).
 type CoreLearning struct {
 	// Daily start time "HH:MM" in Timezone; "" never starts on its own.
 	At string `json:"at,omitempty"`
@@ -98,14 +99,30 @@ type CoreLearning struct {
 	QuietWaitMinutes int `json:"quietWaitMinutes"`
 	// The agents a scheduled cycle covers; empty is every agent.
 	Agents []string `json:"agents,omitempty"`
-	// AutoAccept: after each dream, accept the lessons that need no judgement call: agent-scoped
-	// memory (never user-profile) with no PII flag, seen at least AutoAcceptMinSeen times. Skills
-	// and unit or group promotions always wait for a person.
+	// Review is the first pass after each dream (docs/core.md §6): "auto" (the default) lets the
+	// rules in code (loop.ReviewCandidates) hold what needs a person and a model approve what is
+	// obviously safe among the rest, passing anything else to a person; it never rejects. "manual"
+	// leaves every decision to a person.
+	Review string `json:"review"`
+	// The model the review asks: a connection (default: the default ChatGPT sign-in) and a model
+	// (default for a ChatGPT connection: the first its plan lists; required for an API one).
+	ReviewConnection string `json:"reviewConnection"`
+	ReviewModel      string `json:"reviewModel,omitempty"`
+	// ReviewPrompt is a file, relative to the instance, appended to the built-in review rules.
+	ReviewPrompt string `json:"reviewPrompt,omitempty"`
+	// AutoAccept is Review == "auto" (the field API readers had before Review). AutoAcceptMinSeen:
+	// a lesson is judged only once seen this many times.
 	AutoAccept        bool `json:"autoAccept"`
 	AutoAcceptMinSeen int  `json:"autoAcceptMinSeen"`
-	// AutoRestart: restart a running, idle agent after lessons were auto-accepted, so they apply.
+	// AutoRestart: restart a running, idle agent after the review approved something, so it applies.
 	AutoRestart bool `json:"autoRestart"`
 }
+
+// Review modes (core.learning.review).
+const (
+	ReviewAuto   = "auto"
+	ReviewManual = "manual"
+)
 
 // Instance is a loaded stormo.yaml.
 type Instance struct {
@@ -211,7 +228,11 @@ type rawFile struct {
 			StaggerMinutes    *int     `yaml:"stagger_minutes"`
 			QuietWaitMinutes  *int     `yaml:"quiet_wait_minutes"`
 			Agents            []string `yaml:"agents"`
-			AutoAccept        bool     `yaml:"auto_accept"`
+			Review            string   `yaml:"review"`
+			ReviewConnection  string   `yaml:"review_connection"`
+			ReviewModel       string   `yaml:"review_model"`
+			ReviewPrompt      string   `yaml:"review_prompt"`
+			AutoAccept        *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
 			AutoAcceptMinSeen *int     `yaml:"auto_accept_min_seen"`
 			AutoRestart       bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
@@ -312,16 +333,36 @@ func Load(root string) (*Instance, error) {
 		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
 	}
 	cl := raw.Core.Learning
+	review := cl.Review
+	switch {
+	case review != "" && cl.AutoAccept != nil:
+		return nil, &Error{fmt.Sprintf("%s: core.learning: auto_accept is the old name of review; keep review", path)}
+	case review == "" && cl.AutoAccept != nil && !*cl.AutoAccept:
+		review = ReviewManual
+	case review == "":
+		review = ReviewAuto
+	case review != ReviewAuto && review != ReviewManual:
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review is auto or manual, got %q", path, review)}
+	}
 	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
-		AutoAccept: cl.AutoAccept, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
+		Review: review, ReviewConnection: or(cl.ReviewConnection, DefaultChatGPT), ReviewModel: cl.ReviewModel, ReviewPrompt: cl.ReviewPrompt,
+		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
 	if cl.AutoAcceptMinSeen != nil {
 		if *cl.AutoAcceptMinSeen < 1 || *cl.AutoAcceptMinSeen > 1000 {
 			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_seen must be 1 to 1000", path)}
 		}
 		learning.AutoAcceptMinSeen = *cl.AutoAcceptMinSeen
 	}
-	if cl.AutoRestart && !cl.AutoAccept {
-		return nil, &Error{fmt.Sprintf("%s: core.learning.auto_restart needs auto_accept", path)}
+	if cl.AutoRestart && review != ReviewAuto {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.auto_restart needs review: auto", path)}
+	}
+	if p := cl.ReviewPrompt; p != "" {
+		if filepath.IsAbs(p) || strings.HasPrefix(filepath.ToSlash(filepath.Clean(p)), "../") {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.review_prompt is a file inside the instance", path)}
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(path), p)); err != nil {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.review_prompt: %v", path, err)}
+		}
 	}
 	if cl.At != "" && !atRe.MatchString(cl.At) {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.at must be a 24-hour time like \"03:00\", got %q", path, cl.At)}
@@ -345,6 +386,11 @@ func Load(root string) (*Instance, error) {
 	connections, err := connectionsOf(raw.Connections, path)
 	if err != nil {
 		return nil, err
+	}
+	if c, ok := findConnection(connections, learning.ReviewConnection); !ok {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review_connection %q is not a connection of this instance", path, learning.ReviewConnection)}
+	} else if c.API() && learning.ReviewModel == "" && review == ReviewAuto {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review_model is required with the API connection %s", path, c.Name)}
 	}
 	rules := raw.Scrub.Rules
 	if rules == nil {

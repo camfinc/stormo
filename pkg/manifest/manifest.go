@@ -259,6 +259,9 @@ type Learning struct {
 	UserCharLimit      int     `json:"user_char_limit"`
 	SeedFill           float64 `json:"seed_fill"`
 	NapIntervalSeconds int     `json:"nap_interval_seconds"`
+	// AutoReview: the core's review may approve this agent's proposals on its own (default true;
+	// learning.auto_review: false sends all of them to a person, e.g. a client-facing agent).
+	AutoReview bool `json:"auto_review"`
 }
 
 type Deploy struct {
@@ -676,7 +679,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 		channels = append(channels, ch)
 	}
 
-	learning := Learning{MemoryCharLimit: 2200, UserCharLimit: 1375, SeedFill: 0.6, NapIntervalSeconds: 900}
+	learning := Learning{MemoryCharLimit: 2200, UserCharLimit: 1375, SeedFill: 0.6, NapIntervalSeconds: 900, AutoReview: true}
 	for _, b := range []struct {
 		now, old string
 		dst      *int
@@ -708,6 +711,13 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	}
 	if v, ok := num(m.Learning["nap_interval_seconds"]); ok {
 		learning.NapIntervalSeconds = int(v)
+	}
+	if v, ok := m.Learning["auto_review"]; ok {
+		b, isBool := v.(bool)
+		if err := req(isBool, "%s: learning.auto_review is true or false", where); err != nil {
+			return nil, err
+		}
+		learning.AutoReview = b
 	}
 	deploy := Deploy{Launch: "fargate", Registry: "ghcr", CPU: 1024, Memory: 2048, EphemeralStorageGiB: 30, SecretID: secretPrefix + "/" + id}
 	if v := str(m.Deploy["launch"]); v != "" {

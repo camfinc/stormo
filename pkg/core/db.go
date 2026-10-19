@@ -174,6 +174,24 @@ var migrations = []string{
 	);
 	CREATE INDEX cap_jobs_status ON cap_jobs(status, id);
 	CREATE INDEX cap_jobs_agent ON cap_jobs(agent, created);`,
+	// 9: the review's first pass: its verdicts (one per proposal content and rules, so an unchanged
+	// proposal is not asked about again) and what each run approved, passed on or held.
+	`CREATE TABLE review_verdicts (
+		agent   TEXT NOT NULL,
+		kind    TEXT NOT NULL,
+		ref     TEXT NOT NULL,
+		hash    TEXT NOT NULL,
+		rules   TEXT NOT NULL,
+		approve INTEGER NOT NULL,
+		reason  TEXT NOT NULL,
+		model   TEXT NOT NULL,
+		at      INTEGER NOT NULL,
+		PRIMARY KEY (agent, kind, ref, hash, rules)
+	);
+	ALTER TABLE learn_runs ADD COLUMN setting_proposals INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN passed INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN review_note TEXT NOT NULL DEFAULT '';`,
 }
 
 // DB is core.db.

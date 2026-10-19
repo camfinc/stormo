@@ -109,7 +109,7 @@ func TestPruneSparesFreshBodiesAndRepairsARacingNap(t *testing.T) {
 	}
 }
 
-func TestAutoAcceptOnlyWhatNeedsNoJudgement(t *testing.T) {
+func TestAutoAcceptableOnlyWhatNeedsNoJudgement(t *testing.T) {
 	root := t.TempDir()
 	mk := func(id string, kind learning.Kind, scope manifest.Scope, pii []string, seen int, st learning.Status) *learning.Learning {
 		return &learning.Learning{ID: id, Kind: kind, Scope: scope, Agent: "atlas", Unit: "sales", Text: id, PII: pii, Status: st, SeenCount: seen,
@@ -126,21 +126,20 @@ func TestAutoAcceptOnlyWhatNeedsNoJudgement(t *testing.T) {
 	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := AutoAccept(root, "atlas", 2)
-	if err != nil || len(ids) != 1 || ids[0] != "ok0000000001" {
-		t.Fatalf("auto-accepted %v %v", ids, err)
-	}
-	after, _ := learning.LoadLedger(root, "atlas")
-	for _, e := range after {
-		want := map[string]learning.Status{"ok0000000001": learning.Accepted, "rej000000001": learning.Rejected}[e.ID]
-		if want == "" {
-			want = learning.Proposed
+	acceptable := func(minSeen int) []string {
+		ids := []string{}
+		after, _ := learning.LoadLedger(root, "atlas")
+		for _, e := range after {
+			if AutoAcceptable(e, minSeen) {
+				ids = append(ids, e.ID)
+			}
 		}
-		if e.Status != want {
-			t.Errorf("%s: %s, want %s", e.ID, e.Status, want)
-		}
+		return ids
 	}
-	if ids, _ := AutoAccept(root, "atlas", 1); len(ids) != 1 || ids[0] != "once00000001" {
+	if ids := acceptable(2); len(ids) != 1 || ids[0] != "ok0000000001" {
+		t.Fatalf("auto-acceptable at min_seen 2: %v", ids)
+	}
+	if ids := acceptable(1); len(ids) != 2 {
 		t.Errorf("min_seen 1: %v", ids)
 	}
 }

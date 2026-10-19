@@ -80,11 +80,33 @@ func TestCoreLearning(t *testing.T) {
 	if err != nil || on.CoreLearning.At != "03:30" || on.CoreLearning.Timezone != "Europe/Lisbon" || on.CoreLearning.StaggerMinutes != 0 || strings.Join(on.CoreLearning.Agents, ",") != "atlas" {
 		t.Fatalf("%+v %v", on.CoreLearning, err)
 	}
-	auto, err := Load(mk(t, filepath.Join(tmp, "auto"), "slug: acme\ncore:\n  learning:\n    auto_accept: true\n    auto_accept_min_seen: 2\n    auto_restart: true\n"))
-	if err != nil || !auto.CoreLearning.AutoAccept || auto.CoreLearning.AutoAcceptMinSeen != 2 || !auto.CoreLearning.AutoRestart || off.CoreLearning.AutoAccept || off.CoreLearning.AutoAcceptMinSeen != 1 {
-		t.Errorf("auto accept %+v %v", auto.CoreLearning, err)
+	// The review's first pass is on by default; auto_accept is its old switch.
+	if off.CoreLearning.Review != ReviewAuto || !off.CoreLearning.AutoAccept || off.CoreLearning.ReviewConnection != DefaultChatGPT || off.CoreLearning.AutoAcceptMinSeen != 1 {
+		t.Errorf("review defaults: %+v", off.CoreLearning)
 	}
-	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_restart: true", "auto_accept_min_seen: 0"} {
+	auto, err := Load(mk(t, filepath.Join(tmp, "auto"), "slug: acme\ncore:\n  learning:\n    auto_accept_min_seen: 2\n    auto_restart: true\n"))
+	if err != nil || !auto.CoreLearning.AutoAccept || auto.CoreLearning.AutoAcceptMinSeen != 2 || !auto.CoreLearning.AutoRestart {
+		t.Errorf("auto review %+v %v", auto.CoreLearning, err)
+	}
+	for _, y := range []string{"review: manual", "auto_accept: false"} {
+		m, err := Load(mk(t, filepath.Join(tmp, "manual"+fmt.Sprint(len(y))), "slug: acme\ncore:\n  learning:\n    "+y+"\n"))
+		if err != nil || m.CoreLearning.Review != ReviewManual || m.CoreLearning.AutoAccept {
+			t.Errorf("%s: %+v %v", y, m.CoreLearning, err)
+		}
+	}
+	dir := mk(t, filepath.Join(tmp, "prompt"), "slug: acme\ncore:\n  learning:\n    review_prompt: review/rules.md\n    review_model: gpt-test\n")
+	if err := os.MkdirAll(filepath.Join(dir, "review"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "review/rules.md"), []byte("Lessons about pricing need a person.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := Load(dir); err != nil || p.CoreLearning.ReviewPrompt != "review/rules.md" || p.CoreLearning.ReviewModel != "gpt-test" {
+		t.Errorf("review prompt: %+v %v", p.CoreLearning, err)
+	}
+	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_accept_min_seen: 0",
+		"review: sometimes", "review: auto\n    auto_accept: true", "review: manual\n    auto_restart: true", "review_connection: nope",
+		"review_prompt: missing.md", "review_prompt: ../outside.md"} {
 		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", i)), "slug: acme\ncore:\n  learning:\n    "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.learning") {
 			t.Errorf("%s: %v", bad, err)
 		}

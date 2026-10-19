@@ -240,3 +240,12 @@ func editConnections(root string, edit func(list *yaml.Node) error) error {
 	}
 	return os.WriteFile(path, body, 0o644)
 }
+
+func findConnection(cs []Connection, name string) (Connection, bool) {
+	for _, c := range cs {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Connection{}, false
+}

@@ -91,3 +91,78 @@ func firstOf(a, b string) string {
 	}
 	return b
 }
+
+// Complete asks the connection's chat completions endpoint (OpenAI-compatible) for one
+// non-streaming answer to a system and a user message, and returns its text.
+func Complete(ctx context.Context, c instance.Connection, key, model, system, user string) (string, error) {
+	if !c.API() {
+		return "", fmt.Errorf("%s is a ChatGPT sign-in: the core answers for it", c.Name)
+	}
+	if key == "" {
+		return "", fmt.Errorf("%s has no value yet: set it for %s", c.Key, c.Name)
+	}
+	body, err := json.Marshal(map[string]any{"model": model, "stream": false, "messages": []map[string]string{
+		{"role": "system", "content": system}, {"role": "user", "content": user}}})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.BaseURL, "/")+"/chat/completions", strings.NewReader(string(body)))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Kind == instance.KindAnthropic {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	res, err := CompleteClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", c.Name, err)
+	}
+	defer res.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%s: chat completions answered HTTP %d", c.Name, res.StatusCode)
+	}
+	return CompletionText(out)
+}
+
+// CompleteClient is the HTTP client Complete uses (tests swap it); a review call can take a while.
+var CompleteClient = &http.Client{Timeout: 3 * time.Minute}
+
+// CompletionText is the first choice's message text of a chat completions answer.
+func CompletionText(body []byte) (string, error) {
+	var ans struct {
+		Choices []struct {
+			Message struct {
+				Content any `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &ans); err != nil {
+		return "", fmt.Errorf("not a chat completion: %w", err)
+	}
+	if len(ans.Choices) == 0 {
+		return "", fmt.Errorf("the answer has no choices")
+	}
+	switch c := ans.Choices[0].Message.Content.(type) {
+	case string:
+		return c, nil
+	case []any: // content parts
+		var b strings.Builder
+		for _, p := range c {
+			if m, ok := p.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String(), nil
+	}
+	return "", fmt.Errorf("the answer has no text")
+}

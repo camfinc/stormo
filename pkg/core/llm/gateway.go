@@ -279,6 +279,16 @@ func (g *Gateway) Handle(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// ServeAs serves one /v1/chat/completions call for a caller inside the core (the review's first
+// pass), with no key to resolve: it queues and counts like an agent named caller.
+func (g *Gateway) ServeAs(w http.ResponseWriter, r *http.Request, caller string) {
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+		writeJSON(w, 404, map[string]any{"error": map[string]any{"type": "not_found", "code": "not_found", "message": "only chat completions are served in process"}}, nil)
+		return
+	}
+	g.chat(w, r, caller)
+}
+
 // ServeHTTP is Handle with a 404 for other paths.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.Handle(w, r) {
