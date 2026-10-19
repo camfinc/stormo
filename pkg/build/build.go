@@ -41,6 +41,8 @@ type Info struct {
 	Rejected []string `json:"rejected"`
 	// Skill dir → hash of a runtime version a reviewer rejected; rehydrate never restores it.
 	RejectedSkills OrderedHashes `json:"rejectedSkills,omitempty"`
+	// Ids of jobs the agent created at runtime that a reviewer rejected; rehydrate drops them.
+	RejectedJobs []string `json:"rejectedJobs,omitempty"`
 	// Skill dirs left out because an optional secret they need is absent. Rehydrate must not bring
 	// them back from an older nap (it would read them as skills the agent wrote itself).
 	Withheld []string `json:"withheld,omitempty"`
@@ -104,22 +106,24 @@ func SkillHash(hashes map[string]string, paths []string) string {
 	return Sha256([]byte(strings.Join(lines, "\n")))
 }
 
-// rejectedSkillVersions reads the skill decisions in learnings/watermark.json (written by review).
-func rejectedSkillVersions(root, agentID string) (OrderedHashes, error) {
+// rejectedSkillVersions reads the skill decisions in learnings/watermark.json (written by review),
+// and the runtime jobs a reviewer rejected.
+func rejectedSkillVersions(root, agentID string) (OrderedHashes, []string, error) {
 	body, err := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "learnings", "watermark.json"))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	} else if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var wm struct {
 		SkillDecisions map[string]struct {
 			Hash     string `json:"hash"`
 			Decision string `json:"decision"`
 		} `json:"skillDecisions"`
+		RejectedJobs []string `json:"rejectedJobs"`
 	}
 	if err := json.Unmarshal(body, &wm); err != nil {
-		return nil, fmt.Errorf("%s watermark.json: %w", agentID, err)
+		return nil, nil, fmt.Errorf("%s watermark.json: %w", agentID, err)
 	}
 	out := OrderedHashes{}
 	dirs := make([]string, 0, len(wm.SkillDecisions))
@@ -132,7 +136,7 @@ func rejectedSkillVersions(root, agentID string) (OrderedHashes, error) {
 			out = append(out, KV{dir, d.Hash})
 		}
 	}
-	return out, nil
+	return out, wm.RejectedJobs, nil
 }
 
 func gitSha(root string) string {
@@ -246,13 +250,13 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 			rejected = append(rejected, e.ID)
 		}
 	}
-	rejectedSkills, err := rejectedSkillVersions(inst.Root, agentID)
+	rejectedSkills, rejectedJobs, err := rejectedSkillVersions(inst.Root, agentID)
 	if err != nil {
 		return nil, err
 	}
 	info := &Info{
-		RejectedSkills: rejectedSkills,
-		Agent:          eff.Agent.ID, Unit: eff.Agent.Unit, Engine: eng.Kind(), Target: o.Target,
+		RejectedSkills: rejectedSkills, RejectedJobs: rejectedJobs,
+		Agent: eff.Agent.ID, Unit: eff.Agent.Unit, Engine: eng.Kind(), Target: o.Target,
 		BuiltAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), GitSha: gitSha(inst.Root),
 		Skills: skills, Rejected: rejected, Files: fileHashes,
 	}

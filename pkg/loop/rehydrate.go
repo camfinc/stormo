@@ -234,9 +234,15 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
-	// 4. Schedules: merge baseline and runtime-created jobs.
+	// 4. Schedules: merge baseline and runtime-created jobs, less the ones a reviewer rejected.
 	if c, ok := live[L.Schedules]; ok && L.Schedules != "" {
-		merged, err := o.Engine.MergeSchedules(base[L.Schedules], c.body)
+		body := c.body
+		if d, ok := o.Engine.(engine.ScheduleDropper); ok && len(info.RejectedJobs) > 0 {
+			if body, err = d.DropSchedules(body, info.RejectedJobs); err != nil {
+				return nil, err
+			}
+		}
+		merged, err := o.Engine.MergeSchedules(base[L.Schedules], body)
 		if err != nil {
 			return nil, err
 		}
@@ -287,7 +293,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	}
 	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running
 	// instance (locally it is a bind mount), and a nap must not claim the new one.
-	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills})
+	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills, Settings: bootedSettings(o.Engine, base)})
 	if err := os.WriteFile(filepath.Join(o.Home, BootedPath), booted, 0o644); err != nil {
 		return nil, err
 	}
@@ -300,6 +306,26 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, errors.New("rehydrate produced no memory file")
 	}
 	return report, nil
+}
+
+// bootedSettings are the runtime-changeable settings in the baseline's engine config (empty, never
+// nil, when the engine has none: nil marks a nap from before they were recorded).
+func bootedSettings(eng engine.Engine, base map[string][]byte) map[string]string {
+	out := map[string]string{}
+	rs, ok := eng.(engine.RuntimeSettings)
+	L := eng.Layout()
+	if !ok || L.Config == "" || base[L.Config] == nil {
+		return out
+	}
+	list, err := rs.Settings(base[L.Config])
+	if err != nil {
+		log.Printf("[rehydrate] reading settings from %s: %v", L.Config, err)
+		return out
+	}
+	for _, s := range list {
+		out[s.Key] = s.Value
+	}
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {

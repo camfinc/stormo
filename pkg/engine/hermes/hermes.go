@@ -51,6 +51,9 @@ func New(inst *instance.Instance) *Hermes {
 			{Class: engine.Learning, Glob: "skills/.archive/**"},
 			{Class: engine.Learning, Glob: "skills/[!.]*/**"},
 			{Class: engine.Learning, Glob: "cron/jobs.json"},
+			// Rebuilt from the repo on every boot; the dream reads the settings the agent changed
+			// in it (a home channel, an approved command) and proposes them (RuntimeSettings).
+			{Class: engine.Learning, Glob: "config.yaml"},
 			// state: durable tool state, restored but never harvested into git. Tool databases under
 			// the state dir are copied with VACUUM INTO, so a nap never captures a half-written page.
 			{Class: engine.State, Glob: sd + "/**/*.{db,sqlite}", SQLite: true},
@@ -80,6 +83,7 @@ func New(inst *instance.Instance) *Hermes {
 	// example file, whose defaults (e.g. TERMINAL_TIMEOUT=60) would override config.yaml.
 	l.Placeholders = []string{".env"}
 	l.Schedules, l.ScheduleSource = "cron/jobs.json", "hermes/cron.jobs.json"
+	l.Config = "config.yaml"
 	return &Hermes{inst: inst, layout: l}
 }
 

@@ -36,6 +36,10 @@ const BootedPath = ".swarm/booted.json"
 type NapBaseline struct {
 	GitSha string              `json:"gitSha"`
 	Skills build.OrderedHashes `json:"skills"`
+	// Settings are the runtime-changeable settings the engine config booted with (key → value), so
+	// the dream tells a change the agent made from a restart's reset. Nil in naps from before it
+	// was recorded.
+	Settings map[string]string `json:"settings"`
 }
 
 // Nap is <agent>/naps/<id>.json.

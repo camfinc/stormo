@@ -71,6 +71,10 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   learn promote <agent> <id...> --scope unit|group
   learn skills <agent>                   list skill proposals
   learn skill-accept|skill-reject <agent> <skill-dir>
+  learn schedules <agent>                the schedules the agent changed at runtime, as agent.yaml would hold them
+  learn schedules-accept|schedules-reject <agent>   take them into agent.yaml, or drop its runtime jobs
+  learn settings <agent>                 settings it changed at runtime (home channel, approved commands, MCP)
+  learn setting-accept|setting-reject <agent> <key...>
 
   build and ship:
   check [agent...]                       validate manifests, compile, check action isolation
@@ -1261,7 +1265,8 @@ func secretsCmd(inst *instance.Instance, deps *ops.Deps, sub string, rest []stri
 	return errUsage
 }
 
-var reviewVerbs = []string{"list", "accept", "reject", "pin", "unpin", "edit", "promote", "skills", "skill-accept", "skill-reject"}
+var reviewVerbs = []string{"list", "accept", "reject", "pin", "unpin", "edit", "promote", "skills", "skill-accept", "skill-reject",
+	"schedules", "schedules-accept", "schedules-reject", "settings", "setting-accept", "setting-reject"}
 
 func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub string, rest []string, targets func() []string) error {
 	if !slices.Contains(reviewVerbs, sub) {
@@ -1366,6 +1371,77 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 			return err
 		}
 		fmt.Printf("%s %s\n", verb, ids[0])
+		return nil
+	case "schedules":
+		list, meta, err := loop.ReadSchedulesProposal(root, id)
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			fmt.Println("(no schedules proposal)")
+			return nil
+		}
+		for _, s := range list {
+			when := s.Every
+			if when == "" {
+				when = s.Cron
+			}
+			mark := ""
+			if slices.Contains(meta.RuntimeJobs, s.ID) {
+				mark = "  (created at runtime)"
+			}
+			fmt.Printf("%s  %s  %s  enabled=%t%s\n", s.ID, when, s.Name, s.Enabled, mark)
+		}
+		if len(meta.PII) > 0 {
+			fmt.Printf("scrubbed: %s\n", strings.Join(meta.PII, ","))
+		}
+		return nil
+	case "schedules-accept", "schedules-reject":
+		decision := map[string]string{"schedules-accept": "accepted", "schedules-reject": "rejected"}[sub]
+		meta, err := loop.DecideSchedules(inst, id, decision, loop.Decider{})
+		if err != nil {
+			return err
+		}
+		if decision == "accepted" {
+			fmt.Println("schedules written to agent.yaml; they apply when the agent restarts")
+		} else {
+			fmt.Printf("rejected; %d runtime job(s) dropped on the next start\n", len(meta.RuntimeJobs))
+		}
+		return nil
+	case "settings":
+		props, err := loop.ListSettingProposals(root, id)
+		if err != nil {
+			return err
+		}
+		if len(props) == 0 {
+			fmt.Println("(empty)")
+		}
+		for _, p := range props {
+			flags := ""
+			if p.Sensitive {
+				flags += "  sensitive"
+			}
+			if len(p.PII) > 0 {
+				flags += "  scrubbed: " + strings.Join(p.PII, ",")
+			}
+			current := p.Current
+			if current == "" {
+				current = "(unset)"
+			}
+			fmt.Printf("%s%s\n    now:      %s\n    proposed: %s\n", p.Key, flags, current, p.Value)
+		}
+		return nil
+	case "setting-accept", "setting-reject":
+		if len(ids) == 0 {
+			return errUsage
+		}
+		decision := map[string]string{"setting-accept": "accepted", "setting-reject": "rejected"}[sub]
+		for _, key := range ids {
+			if _, err := loop.DecideSetting(inst, id, key, decision, loop.Decider{}); err != nil {
+				return err
+			}
+			fmt.Printf("%s %s\n", decision, key)
+		}
 		return nil
 	}
 	return errUsage

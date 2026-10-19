@@ -442,3 +442,85 @@ func overlayDefinition(live, base json.RawMessage) (json.RawMessage, error) {
 	b.WriteByte('}')
 	return b.Bytes(), nil
 }
+
+// DropSchedules removes the jobs with the given ids from a cron/jobs.json (list or {"jobs": …}).
+func (h *Hermes) DropSchedules(body []byte, ids []string) ([]byte, error) {
+	if len(ids) == 0 || len(bytes.TrimSpace(body)) == 0 {
+		return body, nil
+	}
+	drop := map[string]bool{}
+	for _, id := range ids {
+		drop[id] = true
+	}
+	keep := func(raw json.RawMessage) ([]json.RawMessage, error) {
+		var jobs []json.RawMessage
+		if err := json.Unmarshal(raw, &jobs); err != nil {
+			return nil, err
+		}
+		out := []json.RawMessage{}
+		for _, j := range jobs {
+			var x struct {
+				ID any `json:"id"`
+			}
+			_ = json.Unmarshal(j, &x)
+			if !drop[fmt.Sprint(x.ID)] {
+				out = append(out, j)
+			}
+		}
+		return out, nil
+	}
+	var out []byte
+	if t := bytes.TrimSpace(body); t[0] == '[' {
+		jobs, err := keep(t)
+		if err != nil {
+			return nil, err
+		}
+		if out, err = marshalRaw(jobs); err != nil {
+			return nil, err
+		}
+	} else {
+		keys, obj, err := orderedObject(t)
+		if err != nil {
+			return nil, err
+		}
+		if raw, ok := obj["jobs"]; ok {
+			jobs, err := keep(raw)
+			if err != nil {
+				return nil, err
+			}
+			if obj["jobs"], err = marshalRaw(jobs); err != nil {
+				return nil, err
+			}
+		}
+		var b bytes.Buffer
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			kb, _ := json.Marshal(k)
+			b.Write(kb)
+			b.WriteByte(':')
+			b.Write(obj[k])
+		}
+		b.WriteByte('}')
+		out = b.Bytes()
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, out, "", "  "); err != nil {
+		return nil, err
+	}
+	pretty.WriteByte('\n')
+	return pretty.Bytes(), nil
+}
+
+// marshalRaw encodes without escaping "<" and "&" (prompts keep them as written).
+func marshalRaw(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSpace(b.Bytes()), nil
+}
