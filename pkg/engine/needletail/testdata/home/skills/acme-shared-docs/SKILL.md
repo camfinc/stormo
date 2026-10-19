@@ -18,6 +18,8 @@ Two directories are mounted for you and persist across restarts:
 | `/shared/sales` | sales agents only | operational documents for the sales unit |
 
 Other units' directories do not exist for you. To share with another unit, write to `group`.
+Your own working files (home, memory, skills, scripts) are in `$AGENT_HOME`: private to you, never
+visible to other agents. Put something in `/shared` only when someone else should read it.
 
 ## Conventions
 
@@ -35,6 +37,9 @@ Other units' directories do not exist for you. To share with another unit, write
 ## Hard rules
 
 - **No credentials, ever**, in any shared file.
+- **No links** (`ln -s`) in `/shared`. Copy the file instead. The core never follows a link out
+  of its directory: its tools refuse the path, and a link that points outside (the host, your
+  home, another unit) is reported to the owner as a security finding.
 - **No client personal data in `group`** (names with contact details, identity documents, card data, account numbers).
   Client documents stay in the unit directory, and only when the task needs them there.
 - Shared documents are working material, not memory: lessons belong in memory so they go through
