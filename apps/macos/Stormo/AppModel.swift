@@ -18,6 +18,8 @@ final class AppModel {
     let fleet: FleetStore
     /// The Review section's proposals (in memory only).
     let review: ReviewStore
+    /// The Files section's shared space (in memory only: names and contents can name clients).
+    let files: FilesStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -46,6 +48,7 @@ final class AppModel {
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
         review = ReviewStore(client: client, instanceRoot: nil)
+        files = FilesStore(client: client, instanceRoot: nil)
     }
 
     // MARK: Startup
@@ -63,6 +66,7 @@ final class AppModel {
         core.instanceRoot = record?.folder
         core.remoteSlug = record?.isRemote == true ? record?.slug : nil
         review.instanceRoot = record?.folder
+        files.instanceRoot = record?.url
         fleet.clear()
         retarget()
         await core.refresh()
@@ -91,6 +95,8 @@ final class AppModel {
         core.client = client
         fleet.client = client
         review.client = client
+        files.client = client
+        files.clear()
         fleet.clear()
         avatars = [:]
     }

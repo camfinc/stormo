@@ -402,7 +402,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if wroot == "" {
 		wroot = shared.LocalDir(inst.Root)
 	}
-	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
+	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster,
+		Units: func() []string { return manifest.UnitIDs(inst.Root) }})
 	runners := NewLinkHub(db)
 	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
 		Grants: o.CapabilityGrants, Container: o.Container,
@@ -670,6 +671,42 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 			v, err := workdir.Owner(limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read the workdir"))
+				return
+			}
+			writeJSONBody(w, 200, v)
+			return
+		case get && strings.HasPrefix(path, "/api/workdir/"):
+			// File names and contents can name clients: the owner only.
+			if !c.caller(r).Owner {
+				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+				return
+			}
+			p := r.URL.Query().Get("path")
+			var v any
+			var err error
+			switch path {
+			case "/api/workdir/layers":
+				v = map[string]any{"layers": workdir.Layers()}
+			case "/api/workdir/ls":
+				var es []Entry
+				if es, err = workdir.Ls(Owner, p); err == nil {
+					v = map[string]any{"path": p, "entries": es}
+				}
+			case "/api/workdir/info":
+				v, err = workdir.Info(Owner, p)
+			case "/api/workdir/file":
+				v, err = workdir.Read(Owner, p)
+			default:
+				writeJSONBody(w, 404, errBody("not_found", "no such route"))
+				return
+			}
+			var te ToolError
+			if errors.As(err, &te) {
+				writeJSONBody(w, 400, errBody("bad_request", te.Error()))
+				return
+			}
 			if err != nil {
 				writeJSONBody(w, 500, errBody("core_internal", "could not read the workdir"))
 				return

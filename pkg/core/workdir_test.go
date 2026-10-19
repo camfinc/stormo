@@ -387,3 +387,74 @@ func TestFileToolsStayInTheLayer(t *testing.T) {
 		t.Errorf("findings %v, want exactly host, unit and file", escapes)
 	}
 }
+
+// The owner's explorer: every layer of the roster, read-only, still confined to each layer.
+func TestOwnerBrowsesEveryLayer(t *testing.T) {
+	f := newWorkdir(t)
+	if got := strings.Join(f.w.Layers(), ","); got != "group,media,sales" {
+		t.Errorf("layers %s", got)
+	}
+	// A unit with no agent yet is a layer too.
+	f.w.o.Units = func() []string { return []string{"finance", "sales"} }
+	if got := strings.Join(f.w.Layers(), ","); got != "group,finance,media,sales" {
+		t.Errorf("layers with units %s", got)
+	}
+	f.w.o.Units = nil
+	f.file(t, "group/plan.md", "shared plan")
+	f.file(t, "media/brief.md", "media only")
+	f.file(t, "sales/bin.dat", "\xff\xfe\x00")
+	es, err := f.w.Ls(Owner, "/shared/media")
+	if err != nil || len(es) != 1 || es[0].Name != "brief.md" {
+		t.Fatalf("ls %+v %v", es, err)
+	}
+	c, err := f.w.Read(Owner, "/shared/media/brief.md")
+	if err != nil || c.Text != "media only" || c.Binary || c.Size != 10 {
+		t.Fatalf("read %+v %v", c, err)
+	}
+	if c, err = f.w.Read(Owner, "/shared/sales/bin.dat"); err != nil || !c.Binary || c.Text != "" {
+		t.Errorf("binary %+v %v", c, err)
+	}
+	if _, err := f.w.Info(Owner, "/shared/group/plan.md"); err != nil {
+		t.Error(err)
+	}
+	_, err = f.w.Ls(Owner, "/shared/finance")
+	wantToolErr(t, err, "not a layer")
+	_, err = f.w.Read(Owner, "/shared/group")
+	wantToolErr(t, err, "whole layer")
+	_, err = f.w.Read(Owner, "/shared/group/../media/brief.md")
+	if err != nil {
+		t.Errorf("a clean path inside media reads: %v", err)
+	}
+	// An empty agent id is not the owner.
+	_, err = f.w.Ls("", "/shared/media")
+	wantToolErr(t, err, "does not know agent")
+	_, err = f.w.Write("", "/shared/group/x.md", "x", "")
+	wantToolErr(t, err, "does not know agent")
+	// An agent still cannot read another unit; the owner cannot follow a link out of a layer.
+	_, err = f.w.Read("atlas", "/shared/media/brief.md")
+	wantToolErr(t, err, "not mounted for you")
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("host"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"host": filepath.Join(outside, "secret"), "unit": "../media/brief.md", "dir": outside} {
+		if err := os.Symlink(target, filepath.Join(f.root, "group", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"/shared/group/host", "/shared/group/unit"} {
+		_, err = f.w.Read(Owner, p)
+		wantToolErr(t, err, "link")
+	}
+	_, err = f.w.Read(Owner, "/shared/group/dir/secret")
+	wantToolErr(t, err, "leaves its layer")
+}
+
+func TestReadCapsAtMaxRead(t *testing.T) {
+	f := newWorkdir(t)
+	f.file(t, "group/big.txt", strings.Repeat("a", maxRead-1)+"é")
+	c, err := f.w.Read(Owner, "/shared/group/big.txt")
+	if err != nil || !c.Truncated || c.Binary || len(c.Text) != maxRead-1 {
+		t.Fatalf("truncated %v binary %v len %d %v", c.Truncated, c.Binary, len(c.Text), err)
+	}
+}

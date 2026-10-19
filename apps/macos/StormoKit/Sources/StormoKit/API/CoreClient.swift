@@ -87,6 +87,32 @@ public struct CoreClient: Sendable {
         _ = try await send(r)
     }
 
+    // MARK: Shared space (/shared/<layer>/…, read-only)
+
+    public func workdirLayers(owner: String) async throws -> [String] {
+        struct Body: Decodable { let layers: [String] }
+        return try JSONDecoder().decode(Body.self, from: try await send(request("api/workdir/layers", owner: owner))).layers
+    }
+
+    public func workdirList(path: String, owner: String) async throws -> [WorkdirEntry] {
+        struct Body: Decodable { let entries: [WorkdirEntry] }
+        return try JSONDecoder().decode(Body.self, from: try await send(request("api/workdir/ls", owner: owner, path: path))).entries
+    }
+
+    public func workdirInfo(path: String, owner: String) async throws -> WorkdirFileInfo {
+        try JSONDecoder().decode(WorkdirFileInfo.self, from: try await send(request("api/workdir/info", owner: owner, path: path)))
+    }
+
+    public func workdirFile(path: String, owner: String) async throws -> WorkdirFile {
+        try JSONDecoder().decode(WorkdirFile.self, from: try await send(request("api/workdir/file", owner: owner, path: path)))
+    }
+
+    private func request(_ route: String, owner: String, path: String) -> URLRequest {
+        var r = request(route, owner: owner)
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "path", value: path)])
+        return r
+    }
+
     private func request(_ path: String, owner: String) -> URLRequest {
         var r = URLRequest(url: base.appending(path: path))
         r.setValue("Bearer \(owner)", forHTTPHeaderField: "Authorization")
