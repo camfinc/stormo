@@ -67,16 +67,41 @@ office:
   clocks:                         # lobby wall of the office UI
     - { city: Lisbon, tz: Europe/Lisbon }
 
+capabilities:                     # heavy or shared calls the core runs for agents (docs/core.md): granted in agent.yaml capabilities:
+  # media.bake:
+  #   description: Render an image from a prompt; input {prompt, size}, answers {url}
+  #   kind: http                    # http: the core POSTs {job, agent, input}; or container: image + command, input on stdin
+  #   url: https://render.example/jobs
+  #   headers: {Authorization: "Bearer ${RENDER_KEY}"}   # ${NAME}: the core's secret (secrets.local.yaml shared)
+  #   concurrency: 2                # jobs at once (default 1)
+  #   timeout_minutes: 20           # default 15
+  #   cost_usd: 0.4                 # estimated cost of one job, for metering
+  # gpu.render: {kind: container, image: "acme/render:1", command: [render], secrets: [RENDER_KEY], placement: gpu}   # placement: local or a runner
+placements:                       # where agents run besides local (compose here) and remote (ECS): docs/remote-core.md §6a
+  # vps: {kind: runner}           # a host running `stormo runner vps`; its agents reach the core at core.urls.vps
 core:
+  port: 18600                     # pin the core's port (default: picked once, free of every other instance on this host, kept in .swarm/core/port)
+  # listen: 10.0.0.5              # a second address beyond loopback, same port (docs/remote-core.md); needs tls
+  # tls: {cert: certs/core.pem, key: certs/core.key}   # or `off`, allowed only on a private address (a tunnel or VPN encrypts)
+  # url: https://core.example:18600   # where agents and clients reach this core (default: a local core at host.docker.internal)
+  # urls: {remote: "https://core.internal:18600", vps: "http://10.0.0.5:18600"}   # per placement (remote = ECS; aws also accepted), wins over url
+  # storage: s3://acme-shared/workdir   # mirror the shared space to S3 too (pulled at start, pushed every 5 min); default: workdir/ alone (a disk or an EFS mount)
+  loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host)
+  web_ui: false                   # serve the office and review pages in a browser (default false: the macOS app is the face)
   learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`
     at: "03:00"                   # daily start, 24-hour time; each agent is napped, then dreamed
     timezone: Europe/Lisbon       # for `at` (default: the host's)
     stagger_minutes: 2            # between agents in a scheduled cycle (default 2)
     quiet_wait_minutes: 30        # wait this long for a busy agent, then dream without a fresh nap (default 30)
     agents: [atlas]               # default: every agent
-    auto_accept: false            # accept agent-scoped memory lessons with no PII flag on their own (default false)
-    auto_accept_min_seen: 1       # …only once seen this many times (default 1)
-    auto_restart: false           # restart an idle running agent after auto-accepting, so they apply (needs auto_accept)
+    review: auto                  # after each dream: rules in code hold what needs a person, a model approves what is
+                                  # obviously safe and passes the rest to a person; it never rejects (default auto;
+                                  # manual: every decision is a person's; the old auto_accept: false means manual)
+    review_connection: chatgpt    # the connection the review asks (default: the default ChatGPT sign-in)
+    review_model: gpt-5.6-luna    # default for a ChatGPT connection: the first model its plan lists; required for an API one
+    review_prompt: review/rules.md  # your own review rules, appended to the built-in ones (a file in the instance)
+    auto_accept_min_seen: 1       # a lesson is judged only once seen this many times (default 1)
+    auto_restart: false           # restart an idle running agent after the review approved something (needs review: auto)
 
 deploy:
   aws:                            # unset fields render as <unset> and `deploy render` reports them

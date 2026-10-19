@@ -249,8 +249,8 @@
   },
   {
    "path": "config.yaml",
-   "class": null,
-   "glob": null,
+   "class": "learning",
+   "glob": "config.yaml",
    "sqlite": false
   },
   {

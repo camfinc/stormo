@@ -326,7 +326,7 @@ final class OfficeScene: SKScene {
             let mode = OfficeLook.mode(of: a)
             for s in screens[a.id] ?? [] { s.set(mode, still: reduceMotion) }
             updateTag(a, mode: mode, now: now, force: force)
-            let r = (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0)
+            let r = a.toReview
             if let m = reviewMarkers[a.id] {
                 m.isHidden = r == 0
                 if r > 0 { setTexture(m, LabelArt.marker("\(r)", alert: false)) }

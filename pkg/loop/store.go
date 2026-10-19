@@ -48,12 +48,31 @@ type Store interface {
 // FsStore is a directory store (local runs, tests).
 type FsStore struct{ Root string }
 
+// Put writes a key atomically (a temporary file renamed into place): two writers of one key
+// (the nap loop and a `nap` run beside it) leave one whole body, never one's bytes over the
+// other's tail.
 func (s FsStore) Put(key string, body []byte) error {
 	p := filepath.Join(s.Root, key)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(p, body, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".put-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), p)
 }
 
 func (s FsStore) Get(key string) ([]byte, error) {
@@ -82,7 +101,7 @@ func (s FsStore) List(prefix string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() {
+		if !d.IsDir() && !strings.HasPrefix(d.Name(), ".put-") {
 			rel, _ := filepath.Rel(s.Root, p)
 			out = append(out, filepath.ToSlash(rel))
 		}

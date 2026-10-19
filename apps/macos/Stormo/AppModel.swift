@@ -16,6 +16,10 @@ final class AppModel {
     }
     let core: CoreSupervisor
     let fleet: FleetStore
+    /// The Review section's proposals (in memory only).
+    let review: ReviewStore
+    /// The Files section's shared space (in memory only: names and contents can name clients).
+    let files: FilesStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -27,6 +31,10 @@ final class AppModel {
     private(set) var activity: String?
     /// The last failed action, shown as an alert.
     var failure: String?
+    /// A start refused for unset secret values, shown as its own alert that leads to the fix.
+    var missingSecrets: MissingSecrets?
+    /// An agent whose editor the Agents section should open (set from elsewhere, consumed there).
+    var agentToEdit: String?
     /// Agents' portraits (/avatars/<id>.png), for name tags and the inspector.
     private(set) var avatars: [String: NSImage] = [:]
 
@@ -39,6 +47,8 @@ final class AppModel {
         let client = CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
+        review = ReviewStore(client: client, instanceRoot: nil)
+        files = FilesStore(client: client, instanceRoot: nil)
     }
 
     // MARK: Startup
@@ -47,19 +57,48 @@ final class AppModel {
     func start() async {
         let env = await ShellEnvironment.current()
         environment = env
-        let client = CoreClient(port: CoreClient.port(environment: env))
-        core.client = client
-        fleet.client = client
         await activate(instances.active)
         startPolling()
     }
 
     func activate(_ record: InstanceRecord?) async {
         if let record { instances.activate(record.root) }
-        core.instanceRoot = record?.url
+        core.instanceRoot = record?.folder
+        core.remoteSlug = record?.isRemote == true ? record?.slug : nil
+        review.instanceRoot = record?.folder
+        files.instanceRoot = record?.url
         fleet.clear()
+        retarget()
         await core.refresh()
         await resolveBinary()
+        // An instance that never ran a core has no port yet: the engine picks one free of every
+        // other instance's (`core status` resolves and keeps it).
+        if let root = record?.folder, CoreClient.pickedPort(root: root) == nil, let cli {
+            try? await cli.perform(["core", "status"])
+            retarget()
+            await core.refresh()
+        }
+    }
+
+    /// Points the clients at the active instance's core port when it changed.
+    func retarget() {
+        let client: CoreClient
+        if let active = instances.active, let remote = active.remote, let base = URL(string: remote) {
+            // A remote core: its URL, the token in the Keychain, the certificate the user trusted.
+            client = CoreClient(base: base, token: CoreTokens.get(active.id), pin: active.pin, timeout: 8)
+        } else {
+            let root = instances.active?.folder
+            let port = CoreClient.port(instanceRoot: root, environment: environment ?? ProcessInfo.processInfo.environment)
+            client = CoreClient(port: port, token: root.flatMap { ReviewStore.ownerToken(root: $0) })
+        }
+        guard client.base != core.client.base || client.token != core.client.token else { return }
+        core.client = client
+        fleet.client = client
+        review.client = client
+        files.client = client
+        files.clear()
+        fleet.clear()
+        avatars = [:]
     }
 
     // MARK: Binaries
@@ -72,7 +111,7 @@ final class AppModel {
     /// Probes the binaries and pins Auto's choice the first time an instance is seen.
     func resolveBinary() async {
         let active = instances.active
-        candidates = await resolver.candidates(instance: active?.url)
+        candidates = await resolver.candidates(instance: active?.folder)
         guard let active, active.binary == nil else { return }
         if let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) {
             instances.pin(active.root, binary: choice.resolved.path, choice: "auto")
@@ -92,8 +131,51 @@ final class AppModel {
 
     /// The CLI for the active instance through its pinned binary.
     var cli: StormoCLI? {
-        guard let active = instances.active, let pinned, let environment else { return nil }
+        guard let active = instances.active, !active.isRemote, let pinned, let environment else { return nil }
         return StormoCLI(executable: pinned.url, environment: environment, instance: active.url)
+    }
+
+    // MARK: Remote cores
+
+    /// The Connect to Remote Core sheet is open.
+    var connectingRemote = false
+
+    enum RemoteProbe: Equatable {
+        case connected
+        /// The certificate is not trusted by this Mac: its fingerprint, to trust on first use.
+        case untrusted(String)
+        case failed(String)
+    }
+
+    /// Checks a remote core with the token (`/api/core` needs read) and, when it answers, adds it
+    /// and makes it active. The token goes to the Keychain.
+    func connectRemote(url raw: String, token: String, pin: String?) async -> RemoteProbe {
+        let text = raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let base = URL(string: text), let scheme = base.scheme, ["https", "http"].contains(scheme), base.host != nil else {
+            return .failed("Enter the core's URL, like https://core.example:18600.")
+        }
+        let client = CoreClient(base: base, token: token, pin: pin, timeout: 8)
+        do {
+            let info = try await client.core()
+            let record = instances.addRemote(url: text, name: info.instance.name, slug: info.instance.slug, pin: pin)
+            CoreTokens.set(token, for: record.id)
+            await activate(record)
+            return .connected
+        } catch CoreClient.Failure.unreachable {
+            if scheme == "https", pin == nil, let fp = client.pinning.lastFingerprint { return .untrusted(fp) }
+            return .failed("Nothing answers at \(text). Check the address and that a tunnel or VPN is up if one is needed.")
+        } catch CoreClient.Failure.refused(let code, let message) {
+            return .failed(code == 401 ? "The core refused the token: \(message)" : message)
+        } catch {
+            return .failed("That is not a Stormo core, or it is too old: \(error.localizedDescription)")
+        }
+    }
+
+    /// Forgets a remote core and its token.
+    func forgetRemote(_ record: InstanceRecord) async {
+        CoreTokens.delete(record.id)
+        instances.remove(record.root)
+        await activate(instances.active)
     }
 
     // MARK: Instances
@@ -142,6 +224,10 @@ final class AppModel {
 
     func startCore() async {
         guard let cli else { return failNoBinary() }
+        if let root = instances.active?.folder, CoreClient.pickedPort(root: root) == nil {
+            try? await cli.perform(["core", "status"])
+        }
+        retarget()
         await core.start(with: cli)
         if let e = core.lastError { failure = e }
         await fleet.refresh()
@@ -166,6 +252,7 @@ final class AppModel {
 
     /// Runs a lifecycle command (start, stop, restart, nap-now) for agents through the pinned binary.
     func run(_ action: String, agents: [String]) async {
+        if instances.active?.isRemote == true { return await runRemote(action, agents: agents) }
         guard let cli else { return failNoBinary() }
         let label = agents.count == 1 ? agents[0] : "\(agents.count) agents"
         activity = "\(action.capitalized) \(label)…"
@@ -177,7 +264,49 @@ final class AppModel {
                 }
             }
         } catch {
-            failure = error.localizedDescription
+            if let m = MissingSecrets(error: error.localizedDescription) {
+                missingSecrets = m
+            } else {
+                failure = error.localizedDescription
+            }
+        }
+        await fleet.refresh()
+    }
+
+    /// A production change waiting for the person to confirm its exact plan.
+    struct PendingConfirm: Identifiable {
+        let id = UUID()
+        let action: String
+        let agent: String
+        let placement: String?
+        let plan: [String]
+    }
+
+    var pendingConfirm: PendingConfirm?
+
+    /// Start, stop or restart through the core (a remote instance has no CLI here): where the
+    /// agent's link says it runs, else the first placement available. ECS asks for confirmation.
+    func runRemote(_ action: String, agents: [String], placement: String? = nil, confirm: Bool = false) async {
+        let label = agents.count == 1 ? agents[0] : "\(agents.count) agents"
+        activity = "\(action.capitalized) \(label)…"
+        defer { activity = nil }
+        var available: [PlacementInfo] = []
+        if placement == nil { available = (try? await core.client.placements())?.filter(\.available) ?? [] }
+        for id in agents {
+            let agent = fleet.fleet?.agents.first { $0.id == id }
+            let where_ = placement ?? agent?.link?.placement ?? available.first(where: { $0.kind == "runner" })?.name ?? available.first?.name
+            do {
+                switch try await core.client.lifecycle(agent: id, action: action, placement: where_, confirm: confirm) {
+                case .done: break
+                case .needsConfirm(let plan):
+                    pendingConfirm = PendingConfirm(action: action, agent: id, placement: where_, plan: plan)
+                    return
+                }
+            } catch CoreClient.Failure.refused(_, let message) {
+                failure = "\(action.capitalized) \(id): \(message)"
+            } catch {
+                failure = "\(action.capitalized) \(id): \(error.localizedDescription)"
+            }
         }
         await fleet.refresh()
     }
@@ -194,6 +323,7 @@ final class AppModel {
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                self.retarget()
                 await self.core.refresh()
                 if self.core.state.isRunning {
                     await self.fleet.refresh()

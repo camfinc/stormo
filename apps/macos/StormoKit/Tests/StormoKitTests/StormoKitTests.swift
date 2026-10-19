@@ -442,3 +442,17 @@ final class Steps: @unchecked Sendable {
         await #expect(throws: CLIError.self) { _ = try await cli.run(["connections", "remove", "openrouter"], as: [ConnectionRow].self) }
     }
 }
+
+@Test func missingSecretsReadsBothCLIWordings() {
+    let run = MissingSecrets(error: "atlas: missing secrets OPENROUTER_API_KEY, SLACK_BOT_TOKEN in /Users/x/Library/Application Support/Stormo/Instances/acme/secrets.local.yaml (stormo secrets init / check)")
+    #expect(run == MissingSecrets(agent: "atlas", names: ["OPENROUTER_API_KEY", "SLACK_BOT_TOKEN"]))
+    let ops = MissingSecrets(error: "nova: missing secrets for a local run: APIFY_API_TOKEN (stormo secrets check nova)")
+    #expect(ops == MissingSecrets(agent: "nova", names: ["APIFY_API_TOKEN"]))
+    #expect(MissingSecrets(error: "atlas: container exited") == nil)
+}
+
+@MainActor @Test func aForgottenAgentStaysHiddenUntilTheCoreDropsIt() {
+    let store = FleetStore(client: CoreClient(base: URL(string: "http://127.0.0.1:1")!))
+    store.forget("nova")
+    #expect(store.agent("nova") == nil)
+}

@@ -62,6 +62,9 @@ type Layout struct {
 	// Empty when the engine has none.
 	Schedules      string `json:"schedules,omitempty"`
 	ScheduleSource string `json:"scheduleSource,omitempty"`
+	// Config is the engine's config file relative to home, which Compile writes from the repo and
+	// the agent can change at runtime (RuntimeSettings reads it). Empty when the engine has none.
+	Config string `json:"config,omitempty"`
 	// Root for manifest `state:` entries relative to home; each gets <StateRoot>/<name>.
 	StateRoot string `json:"stateRoot"`
 	// uid/gid the engine runs as; rehydrate (root) hands the home to it so the agent can write.
@@ -94,6 +97,8 @@ type CompileContext struct {
 	Instance *instance.Instance
 	// Where the baseline will run; local applies the manifest's engine.local model.
 	Target manifest.Target
+	// Placement names where exactly (instance placements:); "" is the target's default.
+	Placement string
 	// Hot-tier seed entries, ranked, already within budget.
 	Seed struct{ Memory, User []string }
 	// Cold-tier knowledge skill files (path relative to the skills dir → content).
@@ -164,6 +169,47 @@ type Migration struct {
 	Comments map[string]string
 	// Schedules from the engine's own schedules file; nil when it had none.
 	Schedules []manifest.Schedule
+}
+
+// Setting is one setting an agent can change at runtime, read from its engine's config file.
+type Setting struct {
+	// Key is stable across naps (e.g. home_channel.slack); Value is canonical text (JSON when
+	// structured), so two readings of the same setting compare equal.
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	// Sensitive: the setting widens what the agent may do (commands it runs unasked, tools it
+	// reaches). It is never accepted automatically.
+	Sensitive bool `json:"sensitive,omitempty"`
+	// Opaque: the value is a platform identifier (a chat id), not text; the dream does not run the
+	// PII scrubber over it (a numeric chat id reads as a phone number).
+	Opaque bool `json:"opaque,omitempty"`
+}
+
+// RuntimeSettings is an engine whose agents change settings at runtime (a home channel, an
+// approved command). Rehydrate rebuilds the config file from the repo on every boot, so the dream
+// proposes such changes for review instead (docs/core.md §6); accepting one writes it to the repo.
+type RuntimeSettings interface {
+	// Settings reads the runtime-changeable settings from the config file (Layout.Config).
+	Settings(config []byte) ([]Setting, error)
+	// RepoSettings are the same settings as the repo sets them now (agentDir is agents/<id>).
+	RepoSettings(a *manifest.Agent, agentDir string) ([]Setting, error)
+	// SettingEdit is what accepting s changes in the repo.
+	SettingEdit(a *manifest.Agent, s Setting) (*SettingEdit, error)
+}
+
+// SettingEdit sets one value in an agent's files: File is "agent.yaml" or an engine file relative
+// to the agent's directory (engine/<kind>/…); Path walks mapping keys, and "[k=v]" picks the item of
+// a sequence whose k is v (channels: [kind=slack]).
+type SettingEdit struct {
+	File  string
+	Path  []string
+	Value any
+}
+
+// ScheduleDropper is an engine that can remove jobs from its schedules file by id: rehydrate drops
+// the runtime-created jobs a reviewer rejected before merging (Info.RejectedJobs).
+type ScheduleDropper interface {
+	DropSchedules(body []byte, ids []string) ([]byte, error)
 }
 
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.

@@ -19,3 +19,5 @@ and agents take locks so they do not overwrite each other. Use the core's tools
   changing a file any other way (terminal, script), run `fs_note` (`workdir.py note <path>`), or
   the change may be recorded as `unknown`.
 - `fs_ls` / `workdir.py ls <dir>` lists a directory with last writers and locks.
+- The core's `fs_*` tools work only inside `/shared/group` and `/shared/zzunitzz`: a path through
+  a link that leaves its directory is refused, and `fs_write` never writes through a link.

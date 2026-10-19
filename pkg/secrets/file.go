@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/env"
@@ -40,6 +41,15 @@ func (n *Named) Ensure(k string) *Layer {
 	return n.m[k]
 }
 
+// Delete drops the layer for k.
+func (n *Named) Delete(k string) {
+	if n == nil {
+		return
+	}
+	delete(n.m, k)
+	n.keys = slices.DeleteFunc(n.keys, func(x string) bool { return x == k })
+}
+
 func (n *Named) Keys() []string {
 	if n == nil {
 		return nil
@@ -71,6 +81,15 @@ func AgentFile(root, id string) string {
 
 // InFolder reports whether agent id's own layers live in its folder.
 func (f *File) InFolder(id string) bool { return f.inFolder[id] }
+
+// ForgetAgent drops agent id's own layers (agents.<id>, local.agents.<id>), wherever they live.
+func (f *File) ForgetAgent(id string) {
+	f.Agents.Delete(id)
+	if f.Local != nil {
+		f.Local.Agents.Delete(id)
+	}
+	delete(f.inFolder, id)
+}
 
 // MoveToFolder makes Save write agent id's own layers to its folder instead of the shared file.
 func (f *File) MoveToFolder(id string) {

@@ -175,3 +175,66 @@ struct ImportAgentSheet: View {
         }
     }
 }
+
+/// Delete an agent: what goes and what stays, Export First… (optional), then Delete.
+struct DeleteAgentSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let agentID: String
+    let exportFirst: () -> Void
+    let deleted: () -> Void
+    @State private var withPersona = true
+    @State private var busy = false
+    @State private var failure: String?
+
+    private var name: String { model.fleet.agent(agentID)?.name ?? agentID }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Delete \(name)?", systemImage: "trash").font(.title3).fontWeight(.semibold)
+            Text("This removes \(name) from this instance: its definition, behaviour, skills and learnings, its memory and conversation history (naps) and its secret values on this Mac. A running local container is stopped first. It cannot be undone.")
+                .fixedSize(horizontal: false, vertical: true)
+            Text("To keep a copy you can import later, export it first. Optional.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Also delete its look (persona), unless another agent uses it", isOn: $withPersona)
+            Text("Refused while it runs on AWS. Its ECS service, Secrets Manager entry and the core's activity history stay.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let failure {
+                Label(failure, systemImage: "xmark.octagon.fill").foregroundStyle(.red).textSelection(.enabled)
+            }
+            HStack {
+                Button("Export First…", action: exportFirst)
+                    .disabled(busy)
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(busy)
+                Button("Delete", role: .destructive) { Task { await delete() } }
+                    .disabled(busy || model.cli == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+    }
+
+    private func delete() async {
+        guard let cli = model.cli else { return }
+        busy = true
+        defer { busy = false }
+        failure = nil
+        do {
+            let r = try await cli.run(["delete", "agent", agentID, "--yes"] + (withPersona ? ["--with-persona"] : []), as: DeleteResult.self)
+            model.fleet.forget(agentID)
+            deleted()
+            dismiss()
+            if !r.notes.isEmpty {
+                model.failure = "\(name) was deleted.\n\n" + r.notes.map { "• " + $0 }.joined(separator: "\n")
+            }
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+}

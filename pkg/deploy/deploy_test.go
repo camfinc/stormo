@@ -164,3 +164,46 @@ func TestSidecarImage(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestLinkedTaskDefGivesTheSidecarItsLinkOnly(t *testing.T) {
+	inst, a := load(t, "atlas")
+	if a.Engine.Local == nil {
+		t.Skip("atlas is not on its core in the example")
+	}
+	if DefaultTarget(inst).Core != nil {
+		t.Fatal("without core.urls the example runs on ECS without a core")
+	}
+	inst.CoreURLs = map[string]string{"remote": "https://core.internal:18600"}
+	tgt := DefaultTarget(inst)
+	if !Linked(a, tgt) {
+		t.Fatal("atlas should link on ECS")
+	}
+	c := containers(RenderTaskDef(a, hermes.New(inst), tgt))
+	nap := c["nap"]
+	envOf := func(c Container) map[string]string {
+		m := map[string]string{}
+		for _, e := range c.Environment {
+			m[e.Name] = e.Value
+		}
+		return m
+	}
+	ne := envOf(nap)
+	if ne["SWARM_CORE_URL"] != "https://core.internal:18600" || ne["SWARM_AGENT_API"] != "http://localhost:8642" || ne["SWARM_PLACEMENT"] != "remote" {
+		t.Errorf("nap env %v", ne)
+	}
+	if nap.Secrets == nil || len(*nap.Secrets) != 2 || (*nap.Secrets)[0].Name != "SWARM_CORE_KEY" || (*nap.Secrets)[1].Name != "SWARM_AGENT_API_KEY" ||
+		!strings.HasSuffix((*nap.Secrets)[1].ValueFrom, ":API_SERVER_KEY::") {
+		t.Errorf("nap secrets %+v", nap.Secrets)
+	}
+	agent := c["agent"]
+	if envOf(agent)["SWARM_CORE_URL"] != "http://localhost:18690" {
+		t.Errorf("agent SWARM_CORE_URL %q", envOf(agent)["SWARM_CORE_URL"])
+	}
+	found := false
+	for _, s := range *agent.Secrets {
+		found = found || s.Name == "SWARM_CORE_KEY"
+	}
+	if !found {
+		t.Error("the agent has no core key on ECS")
+	}
+}

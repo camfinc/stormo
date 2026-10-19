@@ -357,6 +357,7 @@ func TestNewestAvatarByNumber(t *testing.T) {
 
 func TestOfficeRoutes(t *testing.T) {
 	dir, inst := fixture(t)
+	inst.CoreWebUI = true
 	f := NewFleet(FleetOptions{Inst: inst, ReposDir: dir, Ps: ps})
 	f.Refresh()
 	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, Fleet: f})
@@ -397,8 +398,9 @@ func TestOfficeRoutes(t *testing.T) {
 				t.Errorf("%s: %d", asset, r.StatusCode)
 			}
 		}
+		// Not served: without a token, not even whether it exists (401).
 		for _, p := range []string{"/ui/../server.go", "/ui/fleet.go"} {
-			if r, _ := get(p); r.StatusCode != 404 {
+			if r, _ := get(p); r.StatusCode != 401 {
 				t.Errorf("%s: %d", p, r.StatusCode)
 			}
 		}
@@ -481,10 +483,11 @@ func TestOfficeRoutes(t *testing.T) {
 		if r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/png" || body != "v2-newest" {
 			t.Errorf("%d %s %q", r.StatusCode, r.Header.Get("Content-Type"), body)
 		}
-		for _, p := range []string{"/avatars/nova.png", "/avatars/..%2F..%2Fsecrets.png"} {
-			if r, _ := get(p); r.StatusCode != 404 {
-				t.Errorf("%s: %d", p, r.StatusCode)
-			}
+		if r, _ := get("/avatars/nova.png"); r.StatusCode != 404 {
+			t.Errorf("nova: %d", r.StatusCode)
+		}
+		if r, _ := get("/avatars/..%2F..%2Fsecrets.png"); r.StatusCode != 401 {
+			t.Errorf("traversal: %d", r.StatusCode)
 		}
 	})
 
@@ -497,8 +500,74 @@ func TestOfficeRoutes(t *testing.T) {
 		if strings.Contains(body, inst.Root) || strings.Contains(body, `"pid"`) {
 			t.Errorf("/health reaches agent containers; no host paths in it: %s", body)
 		}
-		if r, body := get("/nope"); r.StatusCode != 404 || body != `{"error":{"code":"not_found","message":"GET /nope"}}` {
-			t.Errorf("%d %s", r.StatusCode, body)
+		if r, _ := get("/nope"); r.StatusCode != 401 {
+			t.Errorf("unknown route without a token: %d", r.StatusCode)
+		}
+		req, _ := http.NewRequest("GET", base+"/nope", nil)
+		req.Header.Set("Authorization", "Bearer "+ReadOwnerToken(inst.Root))
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 404 || string(b) != `{"error":{"code":"not_found","message":"GET /nope"}}` {
+			t.Errorf("%d %s", r.StatusCode, b)
 		}
 	})
+}
+
+func TestFleetUsage(t *testing.T) {
+	out := "6a8d6e11b580\t0.76%\t254.8MiB / 15.66GiB\n" +
+		"d0606dcbe36b\t1.50%\t636KiB / 15.66GiB\n" +
+		"ffffffffffff\t9.00%\t1GiB / 15.66GiB\n" +
+		"bad line\n"
+	u := ParseDockerStats(out, map[string]string{"6a8d6e11b580": "atlas", "d0606dcbe36b": "atlas"})
+	a, ok := u["atlas"]
+	if len(u) != 1 || !ok || a.CPUPercent < 2.25 || a.CPUPercent > 2.27 ||
+		a.MemBytes != parseBytes("254.8MiB")+636<<10 || a.MemBytes < 267e6 || a.MemLimitBytes != parseBytes("15.66GiB") {
+		t.Errorf("usage = %+v", u)
+	}
+	if parseBytes("12MB") != 12e6 || parseBytes("0B") != 0 || parseBytes("MiB") != -1 || parseBytes("3XB") != -1 {
+		t.Error("parseBytes")
+	}
+
+	// Only a running agent carries usage.
+	dir, inst := fixture(t)
+	stats := func() (map[string]ContainerUsage, error) {
+		return map[string]ContainerUsage{"atlas": {CPUPercent: 5, MemBytes: 1 << 20}, "nova": {CPUPercent: 1}}, nil
+	}
+	f := NewFleet(FleetOptions{Inst: inst, ReposDir: dir, Ps: ps, Stats: stats})
+	f.Refresh()
+	s := f.Snapshot()
+	if u := find(s, "atlas").Usage; u == nil || u.CPUPercent != 5 || u.MemBytes != 1<<20 {
+		t.Errorf("atlas usage = %+v", u)
+	}
+	if u := find(s, "nova").Usage; u != nil {
+		t.Errorf("stopped nova has usage %+v", u)
+	}
+}
+
+func TestWebUIOffByDefault(t *testing.T) {
+	_, inst := fixture(t)
+	if inst.CoreWebUI {
+		t.Fatal("core.web_ui defaults to true, want false")
+	}
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	base := fmt.Sprintf("http://127.0.0.1:%d", c.Addr.Port)
+	for p, want := range map[string]int{"/": 404, "/review": 404, "/ui/app.js": 404, "/ui/style.css": 404, "/ui/review.js": 404,
+		"/health": 200, "/api/core": 200, "/api/instance": 200, "/api/fleet": 200} {
+		r, err := http.Get(base + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != want {
+			t.Errorf("%s: %d, want %d", p, r.StatusCode, want)
+		}
+	}
 }

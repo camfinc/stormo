@@ -21,7 +21,7 @@ holds the one ChatGPT-subscription login and serves model calls to the other age
 |---|---|---|
 | what | deterministic Go process (`pkg/core/`) | a Hermes persona in `units/group` (`agents/core/`) |
 | does | gateway, registry, health polling, activity ingest, comms bus, workdir locks, nap/learn scheduling, rule-based compliance checks, web UI | judgement: LLM compliance review of samples, daily fleet digest, triage of findings, talks to people in Slack |
-| needs an LLM | no (it *serves* one) | yes, through the gateway locally |
+| needs an LLM | only for the review's first pass (§6), through its own gateway or an API connection | yes, through the gateway locally |
 | can change production | never | never (alerts and suggests the `swarm` command; the owner runs it) |
 
 The service is useful without the agent; the agent is just another client of the service's MCP
@@ -73,6 +73,65 @@ sidecar and start nothing, so they are outside the rule.
 
 On AWS (later) the same code runs as an ECS service; only the lifecycle backend changes to the
 `remote` branch of `pkg/ops`, and the gateway is switched off (see Phase 1, scope).
+
+**Several instances, several cores.** Each instance's core has its own port: `SWARM_CORE_PORT`,
+else `core.port` in stormo.yaml, else the one it picked before (`.swarm/core/port`), else the first
+port from 18600 that no other instance on the host claims, that no other instance's core answers
+on and that is free. Claims live in `~/.stormo/instances/<id>.json` (`STORMO_HOME` moves it); one
+whose instance is gone is dropped. Agents are built against their instance's port, and new agent
+ports skip every other instance's `.swarm/ports.json`. Compose projects stay `swarm-<agent id>`:
+a command on an agent whose containers another instance created is refused, so two instances on
+one host need different agent ids.
+
+**The agent link (built, docs/remote-core.md §1a, §4).** Each agent's `nap` sidecar dials its core
+at `/link` (a WebSocket, the agent's core key) and keeps it up: status every 10 s from the agent's
+own engine API (so the core sees agents it cannot reach, wherever they run), wake runs and naps
+down. The sidecar also runs a relay on `:18690` that the engine's hooks, MCP calls and the workdir
+helper use instead of the core: it forwards them, holds hook deliveries and `msg_send` calls in a
+bounded spool of its own (`SWARM_LINK_DIR`, never under the home) while the core is away and
+delivers them in order when it is back, and fails other MCP calls fast. The model gateway is
+called directly; Hermes falls back on its own. The sidecar gets only its core key and the agent's
+engine API key (`agents/<id>/data/link.env`), never the agent's other secrets. The core prefers
+the link for status, wakes and naps, and falls back to compose and the local API port without
+one; a link gone for 10 minutes is a `link_lost` finding. `/api/fleet` shows each agent's `link`.
+
+**Lifecycle and runners (built, docs/remote-core.md §6a).** The core starts, stops and restarts
+agents for any client (`POST /api/agents/<id>/start|stop|restart`, operate scope, audited) in a
+placement: `local` (compose on the core's host), `remote` (ECS through the AWS CLI with the core's
+credentials; the exact plan comes back as 428 until the caller confirms it), or a `runner`
+placement declared in stormo.yaml (`placements: {vps: {kind: runner}}`), served by `stormo runner
+vps` on that host with `SWARM_CORE_URL` and an operate token (`STORMO_RUNNER_TOKEN`). The runner
+dials the core (`/runner`) and carries out orders with its own checkout, as `stormo start` would
+there; agents it starts are built for the placement (its `core.urls.<name>`, no ChatGPT gateway).
+On ECS, an agent on its core links when the instance names a core for it (`core.urls.remote`):
+the task definition gives the nap sidecar its core URL and, from Secrets Manager, only its core key
+and engine API key, and `secrets push` then sends the agent's `SWARM_CORE_KEY`.
+
+**Shared space across machines (built, docs/remote-core.md §5).** The core's workdir is the source
+of truth. A runner keeps its host's `workdir/` in step with it (`/api/sync/<layer>`, its operate
+token, every 15 s): only group and the units of the agents its placement runs. Per file, the side
+that changed since they last agreed wins; when both changed, the core's version stays and the
+host's comes back as `<name>.conflict-<placement>-<time><ext>` on both. A write lands only if the
+file is still what the runner last saw, and never under a hard or temp lock of an agent outside
+the placement. Synced changes are attributed by the core's scan, with the agents' `fs_note`
+claims, like terminal writes. `core.storage: s3://bucket/prefix` mirrors the workdir to S3: pulled
+when the core starts, pushed every 5 minutes and when it stops, with deletions only after a
+successful pull. On ECS the agents keep sharing EFS directly.
+
+**Capabilities (built, docs/remote-core.md §6).** Heavy or shared calls an instance declares
+(`capabilities:` in stormo.yaml) and grants per agent (`capabilities: [media.bake]` in agent.yaml;
+`stormo check` refuses an undeclared one). Agents use MCP tools: `cap_list` (their grants),
+`cap_start {capability, input}` (a job number) and `cap_status {job}` (queued, running, done with
+its output, failed with why). The core queues jobs in core.db, keeps each capability to its
+`concurrency`, and runs them through a worker that is never the core itself: `http` POSTs
+`{job, agent, input}` with headers whose `${NAME}` come from the core's secrets; `container` runs
+`docker run --rm -i` (no capabilities, no new privileges) with the input on stdin and the secrets
+it names in its environment, here or on a runner placement, which fills them from its own secrets
+file. The worker's credential stays with the core or the runner; agents hold only their grant.
+Jobs that were running when the core stopped fail; jobs are kept 30 days. The owner sees the
+registry, grants, queue, this month's spend per agent (`cost_usd` per job that did not fail) and the
+latest jobs with scrubbed previews (`GET /api/capabilities`, `/api/capabilities/jobs`, the app's
+Capabilities page); every start is audited.
 
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.
@@ -194,6 +253,10 @@ Retention: activity previews can hold client data, so they live only in `.swarm/
 are pruned after 7 days, and never reach git, S3 or Slack.
 
 ## 3. Web UI
+
+**Off by default.** The macOS app (docs/macos-app.md) is the face; the browser pages (`/`, `/review`,
+`/ui/*`) are served only with `core.web_ui: true` in stormo.yaml, and otherwise answer 404 with that
+hint. The JSON API, the gateway, ingest, MCP and avatars are served either way.
 
 Served by core at `http://127.0.0.1:18600/`, plain HTML + one JS module, no build step, live
 updates over SSE (`/api/events`).
@@ -433,17 +496,39 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
 - *Prune*: after each agent's dream the cycle prunes its naps (`loop.Prune`, ARCHITECTURE.md): the
   naps the dream folded go except the newest 3, and so do bodies nothing refers to. The run
   records what it pruned.
-- *Auto-accept* (`core.learning.auto_accept`, off by default): after the dream, the lessons that
-  need no judgement call are accepted: agent-scoped memory (never user-profile entries) with no
-  PII flag, seen at least `auto_accept_min_seen` times (default 1). Skills and unit or group
-  promotions always wait for a person. With `auto_restart`, a running agent the cycle found idle
-  is restarted (`ops.Restart`, local only) so they apply at once; otherwise they apply on its
-  next restart.
-- *Review page* (`stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
+- *Review* (`core.learning.review`, `auto` by default; `manual` leaves every decision to a person;
+  the old `auto_accept: false` means manual): after the dream, a first pass over the agent's open
+  proposals (lessons, skills, runtime schedules and settings). Rules in code
+  (`loop.ReviewCandidates`) hold for a person, without asking any model, what a model must not
+  decide: user-profile lessons, anything PII-flagged, lessons shared beyond the agent or seen fewer
+  than `auto_accept_min_seen` times, skills holding scripts or binaries (or stale, or over 48 KB),
+  schedules with a script, a monitor, another model, an explicit delivery target or a removed repo
+  job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
+  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. It never
+  rejects: a reject purges what the agent learned, and a wrong approval is undone with `stormo learn
+  reject`. Anything but a well-formed approve is a pass to a person.
+  - Rules: the built-in prompt (`pkg/core/review_prompt.md`, embedded), then the instance's own
+    file (`core.learning.review_prompt`, appended; it cannot lift the rules in code). The proposal
+    goes in as delimited data; instructions inside it are a reason to pass it on.
+  - Model: `review_connection` (default: the default ChatGPT sign-in, called in process through the
+    gateway and counted as `core-review`) and `review_model` (default for ChatGPT: the first model
+    the plan lists; required for an API connection, which is called with the instance's shared
+    key).
+  - Verdicts are kept in `core.db` (`review_verdicts`) by agent, proposal, content hash and rules
+    hash: an unchanged proposal is not asked about again, and a rules change asks again. At most 40
+    model calls per agent per cycle; a model out of reach leaves everything for a person and says
+    so in the run.
+  - An approval is applied like a person's (`loop.Approve`, working tree only) and records who and
+    why: the ledger entry's note, or `by`/`reason` in the watermark, with the model's reason
+    scrubbed. An agent opts out with `learning.auto_review: false` in agent.yaml.
+  - With `auto_restart`, a running agent the cycle found idle is restarted (`ops.Restart`, local
+    only) so approvals apply at once; otherwise they apply on its next restart.
+- *Review page* (with `core.web_ui`; `stormo core review` opens `http://127.0.0.1:18600/review`): per agent, the
   proposed lessons (scrubbed text, kind, scope, times seen, PII flags), skill proposals with
-  their files and the current version when one exists, and the accepted lessons. Accept,
-  reject, accept everything auto-acceptable, share an accepted lesson with the unit or every
-  agent (the ledger's promotion rules apply), and restart an agent to apply what was decided.
+  their files and the current version when one exists, the schedules and settings it changed at
+  runtime, the accepted lessons, and on each open proposal what the review said or why the rules
+  hold it. Accept, reject, share an accepted lesson with the unit or every agent (the ledger's
+  promotion rules apply), and restart an agent to apply what was decided.
   The page holds no data: the owner token rides in the URL fragment (never sent to a server or
   a referrer), stays in that tab's session storage, and goes as a bearer to `/api/review`
   (`GET`, `POST {agent, lessons | skill, decision, scope}`) and

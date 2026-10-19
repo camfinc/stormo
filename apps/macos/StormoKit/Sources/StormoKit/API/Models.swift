@@ -157,11 +157,49 @@ public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
     public var napIntervalSeconds: Int?
     public var pendingLearnings: Int?
     public var pendingSkills: Int?
+    /// Runtime schedules and settings proposals.
+    public var pendingChanges: Int?
     public var office: OfficeState?
+    /// The agent's containers together (agent + nap), while running locally.
+    public var usage: ContainerUsage?
+    /// Its live wire to the core (pkg/link); nil when it never linked.
+    public var link: AgentLink?
 
     public init(id: String, name: String, unit: String, state: String, office: OfficeState? = nil) {
         self.id = id; self.name = name; self.unit = unit; self.state = state; self.office = office
     }
+}
+
+/// An agent's link to the core: `connected`, or `lost` since a time; where it runs; what it holds.
+public struct AgentLink: Codable, Sendable, Equatable {
+    public var state: String
+    public var placement: String?
+    /// Epoch milliseconds: connected or lost since.
+    public var since: Int64
+    public var lastSeen: Int64
+    /// Hook deliveries and queued messages waiting in the agent's spool.
+    public var buffered: Int
+
+    public var isConnected: Bool { state == "connected" }
+
+    /// "connected · vps", "lost · local"
+    public var summary: String { [state, placement].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
+}
+
+public struct ContainerUsage: Codable, Sendable, Equatable {
+    /// Percent of one CPU (200 = two CPUs busy).
+    public var cpuPercent: Double
+    public var memBytes: Int64
+    public var memLimitBytes: Int64
+
+    public init(cpuPercent: Double, memBytes: Int64, memLimitBytes: Int64) {
+        self.cpuPercent = cpuPercent; self.memBytes = memBytes; self.memLimitBytes = memLimitBytes
+    }
+
+    /// "2.4%"
+    public var cpuText: String { cpuPercent.formatted(.number.precision(.fractionLength(1))) + "%" }
+    /// "312 MB"
+    public var memText: String { memBytes.formatted(.byteCount(style: .memory)) }
 }
 
 public struct RobotNote: Codable, Sendable, Equatable {

@@ -21,6 +21,9 @@ struct AgentsView: View {
     @State private var inspecting = true
     @State private var path: [AgentRoute] = []
     @State private var exporting: ExportTarget?
+    @State private var deleting: ExportTarget?
+    /// Export First… from the delete sheet: back to it once the export sheet closes.
+    @State private var deleteAfterExport: String?
     @State private var choosingImport = false
     @State private var importing: ImportTarget?
     @State private var creating = false
@@ -31,6 +34,11 @@ struct AgentsView: View {
         NavigationStack(path: $path) {
             list
                 .navigationDestination(for: AgentRoute.self) { AgentEditor(agentID: $0.id) }
+        }
+        .task(id: model.agentToEdit) {
+            guard let id = model.agentToEdit else { return }
+            model.agentToEdit = nil
+            edit(id)
         }
     }
 
@@ -78,20 +86,38 @@ struct AgentsView: View {
                     }
                     .width(min: 80, ideal: 110)
                     TableColumn("To review") { a in
-                        let n = (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0)
+                        let n = a.toReview
                         Text(n > 0 ? "\(n)" : "—").foregroundStyle(n > 0 ? .primary : .tertiary)
+                    }
+                    .width(min: 60, ideal: 80)
+                    TableColumn("CPU") { a in
+                        Text(a.usage?.cpuText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
+                    }
+                    .width(min: 50, ideal: 60)
+                    TableColumn("Memory") { a in
+                        Text(a.usage?.memText ?? "—").monospacedDigit().foregroundStyle(a.usage == nil ? .tertiary : .primary)
+                    }
+                    .width(min: 60, ideal: 80)
+                    TableColumn("Link") { a in
+                        if let l = a.link {
+                            Label(l.placement ?? l.state, systemImage: l.isConnected ? "link" : "link.badge.plus")
+                                .foregroundStyle(l.isConnected ? Color.secondary : Color.orange)
+                                .help(l.isConnected ? "Linked to the core" : "Link lost")
+                        } else {
+                            Text("—").foregroundStyle(.tertiary)
+                        }
                     }
                     .width(min: 60, ideal: 80)
                     TableColumn("Model") { a in Text(a.localModel ?? a.model ?? "—").foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: FleetAgent.ID.self) { ids in
-                    AgentActions(ids: Array(ids), edit: edit, export: { exporting = ExportTarget(id: $0) })
+                    AgentActions(ids: Array(ids), edit: edit, export: { exporting = ExportTarget(id: $0) }, delete: { deleting = ExportTarget(id: $0) })
                 } primaryAction: { ids in
                     if ids.count == 1, let id = ids.first { edit(id) }
                 }
                 .inspector(isPresented: $inspecting) {
                     if selection.count == 1, let id = selection.first, let agent = model.fleet.agent(id) {
-                        AgentInspector(agent: agent, edit: edit)
+                        AgentInspector(agent: agent, edit: edit, delete: { deleting = ExportTarget(id: $0) })
                     } else {
                         ContentUnavailableView("Select an agent", systemImage: "person.crop.circle")
                     }
@@ -99,7 +125,19 @@ struct AgentsView: View {
             }
         }
         .navigationTitle("Agents")
-        .sheet(item: $exporting) { ExportAgentSheet(agentID: $0.id) }
+        .sheet(item: $exporting, onDismiss: {
+            if let id = deleteAfterExport {
+                deleteAfterExport = nil
+                deleting = ExportTarget(id: id)
+            }
+        }) { ExportAgentSheet(agentID: $0.id) }
+        .sheet(item: $deleting) { t in
+            DeleteAgentSheet(agentID: t.id, exportFirst: {
+                deleteAfterExport = t.id
+                deleting = nil
+                exporting = ExportTarget(id: t.id)
+            }, deleted: { selection.remove(t.id); path.removeAll() })
+        }
         .sheet(isPresented: $creating) { NewAgentWizard(open: edit) }
         .fileImporter(isPresented: $choosingImport, allowedContentTypes: [.zip]) { result in
             if case .success(let url) = result { importing = ImportTarget(url: url) }
@@ -145,17 +183,21 @@ struct AgentActions: View {
     let ids: [String]
     let edit: (String) -> Void
     let export: (String) -> Void
+    let delete: (String) -> Void
 
     var body: some View {
         if !ids.isEmpty {
             Button("Start") { Task { await model.run("start", agents: ids) } }
             Button("Stop") { Task { await model.run("stop", agents: ids) } }
             Button("Restart") { Task { await model.run("restart", agents: ids) } }
-            if ids.count == 1 {
+            // A remote instance's files and commands live where its core runs.
+            if ids.count == 1, model.instances.active?.isRemote != true {
                 Button("Nap Now") { Task { await model.run("nap-now", agents: ids) } }
                 Divider()
                 Button("Edit…") { edit(ids[0]) }
                 Button("Export…") { export(ids[0]) }
+                Divider()
+                Button("Delete…", role: .destructive) { delete(ids[0]) }
             }
             Divider()
             Button("Copy Command") {
@@ -170,6 +212,8 @@ struct AgentInspector: View {
     let agent: FleetAgent
     /// Opens the agent's editor; no button without it.
     var edit: ((String) -> Void)?
+    /// Asks to delete the agent; no button without it.
+    var delete: ((String) -> Void)?
 
     var body: some View {
         Form {
@@ -191,6 +235,20 @@ struct AgentInspector: View {
                 }
                 LabeledContent("Container", value: agent.state)
                 if let h = agent.health { LabeledContent("Health", value: h) }
+                if let u = agent.usage {
+                    LabeledContent("CPU", value: u.cpuText)
+                    LabeledContent("Memory", value: "\(u.memText) of \(u.memLimitBytes.formatted(.byteCount(style: .memory)))")
+                }
+                if let l = agent.link {
+                    LabeledContent("Link") {
+                        HStack(spacing: 4) {
+                            Text(l.summary).foregroundStyle(l.isConnected ? Color.primary : Color.orange)
+                            Text("since").foregroundStyle(.secondary)
+                            Text(Date(timeIntervalSince1970: Double(l.since) / 1000), format: .relative(presentation: .named))
+                        }
+                    }
+                    if l.buffered > 0 { LabeledContent("Held for the core", value: "\(l.buffered)") }
+                }
                 if let d = agent.detail, !d.isEmpty { LabeledContent("Detail", value: d) }
                 if let jobs = agent.activity?.runningJobs, !jobs.isEmpty {
                     LabeledContent("Jobs", value: jobs.joined(separator: ", "))
@@ -207,11 +265,14 @@ struct AgentInspector: View {
                 if let m = agent.localModel { LabeledContent("Local model", value: m) }
                 if let e = agent.endpoint { LabeledContent("API", value: e) }
                 if let n = agent.napIntervalSeconds { LabeledContent("Nap every", value: Duration.seconds(n).formatted(.units(allowed: [.hours, .minutes]))) }
-                LabeledContent("To review", value: "\((agent.pendingLearnings ?? 0)) learnings, \((agent.pendingSkills ?? 0)) skills")
+                LabeledContent("To review", value: "\((agent.pendingLearnings ?? 0)) learnings, \((agent.pendingSkills ?? 0)) skills\((agent.pendingChanges ?? 0) > 0 ? ", \(agent.pendingChanges ?? 0) runtime changes" : "")")
             }
             Section {
                 HStack {
                     AgentActionsBar(id: agent.id, running: agent.state == "running")
+                }
+                if let delete {
+                    Button("Delete Agent…", systemImage: "trash", role: .destructive) { delete(agent.id) }
                 }
             }
         }
@@ -228,7 +289,9 @@ struct AgentActionsBar: View {
     var body: some View {
         if running {
             Button("Restart") { Task { await model.run("restart", agents: [id]) } }
-            Button("Nap Now") { Task { await model.run("nap-now", agents: [id]) } }
+            if model.instances.active?.isRemote != true {
+                Button("Nap Now") { Task { await model.run("nap-now", agents: [id]) } }
+            }
             Button("Stop", role: .destructive) { Task { await model.run("stop", agents: [id]) } }
         } else {
             Button("Start") { Task { await model.run("start", agents: [id]) } }
@@ -298,7 +361,7 @@ struct CoreNotRunningView: View {
             }
         } description: {
             switch model.core.state {
-            case .otherInstance(let c): Text("The core on this Mac belongs to \(c.instance.name). One core runs at a time.")
+            case .otherInstance(let c): Text("\(c.instance.name)'s core answers on this instance's port (\(model.core.client.port)). Give one of them its own `core.port` in stormo.yaml, or delete `.swarm/core/port` here so the next start picks a free one.")
             case .incompatible: Text("The running core is older than this app. Restarting it with the pinned stormo takes a few seconds; agents keep running.")
             default: Text("Start the core to see the fleet.")
             }

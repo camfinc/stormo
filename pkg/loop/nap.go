@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,10 +29,17 @@ type NapFile struct {
 	Size   int              `json:"size"`
 }
 
+// BootedPath is where rehydrate records, in the engine home, the baseline the instance booted from.
+const BootedPath = ".swarm/booted.json"
+
 // NapBaseline records which baseline the nap's instance booted from.
 type NapBaseline struct {
 	GitSha string              `json:"gitSha"`
 	Skills build.OrderedHashes `json:"skills"`
+	// Settings are the runtime-changeable settings the engine config booted with (key → value), so
+	// the dream tells a change the agent made from a restart's reset. Nil in naps from before it
+	// was recorded.
+	Settings map[string]string `json:"settings"`
 }
 
 // Nap is <agent>/naps/<id>.json.
@@ -94,6 +102,9 @@ func fingerprint(files []NapFile) string {
 func IsoMillis(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 // NapOptions describe one agent instance to snapshot.
+// napMu keeps one nap at a time in a process (the interval loop and one the core asked for).
+var napMu sync.Mutex
+
 type NapOptions struct {
 	Agent, Unit string
 	Engine      engine.Engine
@@ -108,6 +119,8 @@ type NapOptions struct {
 
 // NapOnce snapshots the home; returns nil when nothing changed since the latest nap.
 func NapOnce(o NapOptions) (*Nap, error) {
+	napMu.Lock()
+	defer napMu.Unlock()
 	files, err := TakeSnapshot(o.Home, o.Engine.Layout().Rules)
 	if err != nil {
 		return nil, err
@@ -136,7 +149,14 @@ func NapOnce(o NapOptions) (*Nap, error) {
 		}
 	}
 	var baseline *NapBaseline
-	if o.BaselineDir != "" {
+	if body, err := os.ReadFile(filepath.Join(o.Home, BootedPath)); err == nil {
+		var b NapBaseline
+		if err := json.Unmarshal(body, &b); err != nil {
+			return nil, err
+		}
+		baseline = &b
+	} else if o.BaselineDir != "" {
+		// A home rehydrated before booted.json existed: the baseline dir is the best guess.
 		if body, err := os.ReadFile(filepath.Join(o.BaselineDir, build.InfoPath)); err == nil {
 			var info build.Info
 			if err := json.Unmarshal(body, &info); err != nil {

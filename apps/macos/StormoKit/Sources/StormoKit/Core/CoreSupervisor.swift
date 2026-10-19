@@ -17,7 +17,7 @@ public enum CoreState: Sendable, Equatable {
     case incompatible(version: String?, api: Int?)
 
     /// Classifies what the port answered. `core` is nil when /api/core does not exist.
-    public static func classify(health: Health?, core: CoreInfo?, instanceRoot: URL?) -> CoreState {
+    public static func classify(health: Health?, core: CoreInfo?, instanceRoot: URL?, remoteSlug: String? = nil) -> CoreState {
         guard let health else { return .down }
         guard let api = health.api, StormoAPI.supported.contains(api) else {
             return .incompatible(version: health.version, api: health.api)
@@ -26,6 +26,10 @@ public enum CoreState: Sendable, Equatable {
         // core, not an old one.
         guard let core else { return .unknown }
         if let instanceRoot, samePath(core.instance.root, instanceRoot.path) {
+            return .running(core)
+        }
+        // A remote core has no folder here: the instance's slug identifies it.
+        if instanceRoot == nil, let remoteSlug, core.instance.slug == remoteSlug {
             return .running(core)
         }
         return .otherInstance(core)
@@ -56,6 +60,8 @@ public final class CoreSupervisor {
     public private(set) var lastError: String?
     public var client: CoreClient
     public var instanceRoot: URL?
+    /// Set for a remote core: the slug its /api/core must report.
+    public var remoteSlug: String?
 
     public init(client: CoreClient, instanceRoot: URL?) {
         self.client = client
@@ -72,7 +78,7 @@ public final class CoreSupervisor {
         let health = try? await client.health()
         var core: CoreInfo?
         if health != nil { core = try? await client.core() }
-        return CoreState.classify(health: health, core: core, instanceRoot: instanceRoot)
+        return CoreState.classify(health: health, core: core, instanceRoot: instanceRoot, remoteSlug: remoteSlug)
     }
 
     /// `core up`; the state follows what then answers.

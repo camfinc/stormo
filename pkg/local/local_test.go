@@ -13,6 +13,9 @@ import (
 )
 
 func TestPortsAreStable(t *testing.T) {
+	t.Setenv("STORMO_HOME", t.TempDir())
+	defer func(f func(int) bool) { portFree = f }(portFree)
+	portFree = func(int) bool { return true }
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, ".swarm"), 0o755)
 	os.WriteFile(filepath.Join(root, ".swarm", "ports.json"), []byte(`{"atlas": 18642, "scout": 18643, "nova": 18646}`), 0o644)
@@ -91,5 +94,55 @@ func TestPortConcurrentAllocationsAreDistinct(t *testing.T) {
 		if again, _ := Port(root, ids[i]); again != p {
 			t.Errorf("%s: %d then %d (an entry was lost)", ids[i], p, again)
 		}
+	}
+}
+
+func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
+	t.Setenv("STORMO_HOME", t.TempDir())
+	defer func(f func(int) bool) { portFree = f }(portFree)
+	portFree = func(p int) bool { return p != PortBase+1 }
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "stormo.yaml"), []byte("name: Other\n"), 0o644)
+	os.MkdirAll(filepath.Join(other, ".swarm"), 0o755)
+	os.WriteFile(filepath.Join(other, ".swarm", "ports.json"), []byte(`{"x": 18642}`), 0o644)
+	os.MkdirAll(filepath.Join(os.Getenv("STORMO_HOME"), "instances"), 0o700)
+	os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"),
+		[]byte(`{"root": "`+other+`", "name": "Other", "corePort": 18600}`), 0o600)
+	if got, err := Port(t.TempDir(), "atlas"); err != nil || got != PortBase+2 {
+		t.Errorf("got %d %v, want %d (18642 is the other instance's, 18643 is busy)", got, err, PortBase+2)
+	}
+}
+
+func TestComposeGivesTheSidecarItsLink(t *testing.T) {
+	inst, err := instance.Load("../../examples/minimal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := manifest.Load(inst.Root, "atlas", inst.Names.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Paths{Root: inst.Root, BaselineDir: "/b", EnvFile: "/x/agent.env", StoreDir: "/s", SharedDir: "/w",
+		CoreURL: "http://host.docker.internal:18600", LinkEnvFile: "/x/link.env"}
+	spec := Render(a, hermes.New(inst), p, 18642, 120, "stormo-sidecar:test")
+	nap := spec.Services["nap"]
+	if !slices.Equal(nap.EnvFile, []string{"/x/link.env"}) || nap.Environment["SWARM_CORE_URL"] != p.CoreURL ||
+		nap.Environment["SWARM_AGENT_API"] != "http://agent:8642" || nap.Environment["SWARM_LINK_DIR"] != "/link" || !slices.Contains(nap.Volumes, "link:/link") {
+		t.Errorf("nap: %+v", nap)
+	}
+	if spec.Volumes["link"] == nil {
+		t.Error("no link volume")
+	}
+	// The agent's own env file is never the sidecar's, and its core calls go to the relay.
+	if slices.Contains(nap.EnvFile, p.EnvFile) {
+		t.Error("the sidecar got the agent's secrets")
+	}
+	if got := spec.Services["agent"].Environment["SWARM_CORE_URL"]; got != "http://nap:18690" {
+		t.Errorf("agent SWARM_CORE_URL %q", got)
+	}
+	// Without link secrets the sidecar is as before.
+	p.LinkEnvFile = ""
+	if nap := Render(a, hermes.New(inst), p, 18642, 120, "x").Services["nap"]; len(nap.EnvFile) != 0 || nap.Environment["SWARM_CORE_URL"] != "" {
+		t.Errorf("link off: %+v", nap)
 	}
 }

@@ -5,6 +5,8 @@ package build
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +39,10 @@ type Info struct {
 	Skills OrderedHashes `json:"skills"`
 	// Ledger ids a reviewer rejected; rehydrate purges matching entries from live memory.
 	Rejected []string `json:"rejected"`
+	// Skill dir → hash of a runtime version a reviewer rejected; rehydrate never restores it.
+	RejectedSkills OrderedHashes `json:"rejectedSkills,omitempty"`
+	// Ids of jobs the agent created at runtime that a reviewer rejected; rehydrate drops them.
+	RejectedJobs []string `json:"rejectedJobs,omitempty"`
 	// Skill dirs left out because an optional secret they need is absent. Rehydrate must not bring
 	// them back from an older nap (it would read them as skills the agent wrote itself).
 	Withheld []string `json:"withheld,omitempty"`
@@ -100,6 +106,39 @@ func SkillHash(hashes map[string]string, paths []string) string {
 	return Sha256([]byte(strings.Join(lines, "\n")))
 }
 
+// rejectedSkillVersions reads the skill decisions in learnings/watermark.json (written by review),
+// and the runtime jobs a reviewer rejected.
+func rejectedSkillVersions(root, agentID string) (OrderedHashes, []string, error) {
+	body, err := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "learnings", "watermark.json"))
+	if os.IsNotExist(err) {
+		return nil, nil, nil
+	} else if err != nil {
+		return nil, nil, err
+	}
+	var wm struct {
+		SkillDecisions map[string]struct {
+			Hash     string `json:"hash"`
+			Decision string `json:"decision"`
+		} `json:"skillDecisions"`
+		RejectedJobs []string `json:"rejectedJobs"`
+	}
+	if err := json.Unmarshal(body, &wm); err != nil {
+		return nil, nil, fmt.Errorf("%s watermark.json: %w", agentID, err)
+	}
+	out := OrderedHashes{}
+	dirs := make([]string, 0, len(wm.SkillDecisions))
+	for dir := range wm.SkillDecisions {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		if d := wm.SkillDecisions[dir]; d.Decision == "rejected" && d.Hash != "" {
+			out = append(out, KV{dir, d.Hash})
+		}
+	}
+	return out, wm.RejectedJobs, nil
+}
+
 func gitSha(root string) string {
 	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
 	cmd.Dir = root
@@ -123,6 +162,8 @@ func Out(root, agentID string, target manifest.Target) string {
 type Options struct {
 	Out    string
 	Target manifest.Target
+	// Placement names where it runs (instance placements:); "" is the target's default.
+	Placement string
 	// Present names the secrets with values (deciding optional secrets); nil reads them from
 	// secrets.local.yaml for the target.
 	Present []string
@@ -169,6 +210,7 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 		return nil, err
 	}
 	ctx.Target = o.Target
+	ctx.Placement = o.Placement
 	ctx.SkipSkills = eff.SkipSkills
 	if o.Target == manifest.Local && eff.Agent.Engine.Local != nil {
 		// On the swarm core the shared space is coordinated by it: locks, attribution, workdir.py.
@@ -211,7 +253,12 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 			rejected = append(rejected, e.ID)
 		}
 	}
+	rejectedSkills, rejectedJobs, err := rejectedSkillVersions(inst.Root, agentID)
+	if err != nil {
+		return nil, err
+	}
 	info := &Info{
+		RejectedSkills: rejectedSkills, RejectedJobs: rejectedJobs,
 		Agent: eff.Agent.ID, Unit: eff.Agent.Unit, Engine: eng.Kind(), Target: o.Target,
 		BuiltAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), GitSha: gitSha(inst.Root),
 		Skills: skills, Rejected: rejected, Files: fileHashes,

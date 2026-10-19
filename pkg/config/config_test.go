@@ -172,7 +172,7 @@ func TestApplyKeepsTheFileAsWritten(t *testing.T) {
 		{"an integer stays an integer", `{"memory":{"agent":3000}}`,
 			[]string{"-  agent: 2200", "+  agent: 3000"}},
 		{"null deletes", `{"learning":{"seed_fill":null}}`, []string{"-  seed_fill: 0.6"}},
-		{"a list loses one item", `{"secrets":["OPENROUTER_API_KEY","SLACK_BOT_TOKEN","SLACK_APP_TOKEN","ELEVENLABS_API_KEY","API_SERVER_KEY"]}`,
+		{"a list loses one item", `{"secrets":["ELEVENLABS_API_KEY","API_SERVER_KEY"]}`,
 			[]string{"-  - APIFY_API_TOKEN"}},
 		{"a flow list stays flow", `{"channels":[{"kind":"slack","allow_bots":"mentions","slash_commands":true,"allowed_users":["U0000000001","U0000000002"],"home_channel":"C0000000001"},{"kind":"telegram"}]}`,
 			[]string{"-    allowed_users: [U0000000001]", "+    allowed_users: [U0000000001, U0000000002]"}},

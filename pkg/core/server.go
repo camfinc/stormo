@@ -2,10 +2,15 @@ package core
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/aws"
+	"github.com/camfinc/stormo/pkg/link"
+	"github.com/camfinc/stormo/pkg/local"
 	"io"
 	"log"
 	"net"
@@ -35,8 +40,14 @@ import (
 // Port is the core's default port.
 const Port = 18600
 
-// CorePort is SWARM_CORE_PORT, else Port.
+// activePort is the port of the instance the CLI works on (set by Command and serve).
+var activePort int
+
+// CorePort is the current instance's core port (instance.CorePort), else SWARM_CORE_PORT, else Port.
 func CorePort() int {
+	if activePort > 0 {
+		return activePort
+	}
 	if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_PORT")); err == nil && n > 0 {
 		return n
 	}
@@ -110,6 +121,11 @@ type CoreOptions struct {
 	DB *DB
 	// Keys map core keys to agents; nil reads the instance's secrets file.
 	Keys *AgentKeys
+	// CapabilityGrants and Container replace the broker's manifest grants and docker (tests).
+	CapabilityGrants func(agent string) []string
+	Container        func(ctx context.Context, image string, command []string, env map[string]string, input []byte) ([]byte, error)
+	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
+	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
 	OwnerToken string
 	// The bus's view of the fleet, wake runs and Slack mirror; nil takes the fleet's, a run through
@@ -130,6 +146,10 @@ type Core struct {
 	Addr    *net.TCPAddr
 	Bridges []*net.TCPAddr
 	bridge  []*http.Server
+	// Public is the listener beyond loopback (core.listen), nil without one; TLS unless core.tls is off.
+	Public       *net.TCPAddr
+	PublicTLS    bool
+	publicServer *http.Server
 	// Gateway is the default ChatGPT connection's; Gateways routes every agent to its own.
 	Gateway  *llm.Gateway
 	Gateways *llm.Gateways
@@ -141,11 +161,20 @@ type Core struct {
 	Workdir  *Workdir
 	Learner  *Learner
 	MCP      *MCP
-	keys     *AgentKeys
-	owner    string
-	ownDB    bool
-	stop     chan struct{}
-	once     sync.Once
+	// Links are the agents' live wires (pkg/link); Runners the runners' (keyed by placement).
+	Links   *LinkHub
+	Runners *LinkHub
+	// Broker runs capability jobs for agents.
+	Broker    *Broker
+	keys      *AgentKeys
+	inst      *instance.Instance
+	lifecycle LifecycleOps
+	owner     string
+	// loopbackTrust: direct loopback requests may read the open views without a token.
+	loopbackTrust bool
+	ownDB         bool
+	stop          chan struct{}
+	once          sync.Once
 }
 
 // StopOffice stops the office timer (and the fleet's timers if the core started them).
@@ -154,6 +183,15 @@ func (c *Core) StopOffice() { c.once.Do(func() { close(c.stop) }) }
 // Close stops the office and the HTTP servers.
 func (c *Core) Close() error {
 	c.StopOffice()
+	if c.publicServer != nil {
+		_ = c.publicServer.Close()
+	}
+	if c.Links != nil {
+		c.Links.Close()
+	}
+	if c.Runners != nil {
+		c.Runners.Close()
+	}
 	for _, b := range c.bridge {
 		_ = b.Close()
 	}
@@ -165,7 +203,7 @@ func (c *Core) Close() error {
 }
 
 // caller is who a request comes from: the owner (owner token) or an agent (its core key).
-func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys) }
+func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys, c.DB) }
 
 func marshalCompact(v any) []byte {
 	var b bytes.Buffer
@@ -243,6 +281,9 @@ type coreView struct {
 	Port      int          `json:"port"`
 	StartedAt string       `json:"startedAt"`
 	Instance  coreInstance `json:"instance"`
+	// Listen is the listener beyond loopback ("host:port"), TLS whether it serves TLS.
+	Listen string `json:"listen,omitempty"`
+	TLS    bool   `json:"tls,omitempty"`
 }
 
 // StartCore listens on 127.0.0.1 (and o.Bridge) and serves until Close.
@@ -326,6 +367,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 			a.Activity != nil && (a.Activity.ActiveAgents > 0 || a.Activity.GatewayBusy || len(a.Activity.RunningJobs) > 0) ||
 			gateway.Status().Active[a.ID] > 0
 	}
+	links := NewLinkHub(db)
+	if fleet != nil {
+		fleet.SetLinks(links)
+	}
 	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror}
 	if bo.Roster == nil {
 		bo.Roster = func() []BusAgent {
@@ -340,7 +385,14 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	if bo.Wake == nil && fleet != nil {
-		bo.Wake = EngineWake(inst, fleet.APIKey, nil)
+		// Over the agent's link when it has one (wherever it runs), else its local API port.
+		direct := EngineWake(inst, fleet.APIKey, nil)
+		bo.Wake = func(ctx context.Context, a BusAgent, input, session, idempotency string) error {
+			if links.Connected(a.ID) {
+				return links.Command(ctx, a.ID, link.TypeWake, link.Wake{Input: input, Session: session, Idempotency: idempotency})
+			}
+			return direct(ctx, a, input, session, idempotency)
+		}
 	}
 	if bo.Mirror == nil && !o.NoMirror {
 		bo.Mirror = SlackMirror(inst, nil)
@@ -350,14 +402,56 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if wroot == "" {
 		wroot = shared.LocalDir(inst.Root)
 	}
-	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster})
-	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir))
-	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: o.LearnDeps})
-	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp,
-		keys: keys, owner: owner, ownDB: ownDB, stop: make(chan struct{})}
+	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster,
+		Units: func() []string { return manifest.UnitIDs(inst.Root) }})
+	runners := NewLinkHub(db)
+	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
+		Grants: o.CapabilityGrants, Container: o.Container,
+		Secret: func(name string) (string, bool) {
+			f, err := secrets.Load(secrets.Path(inst.Root))
+			if err != nil {
+				return "", false
+			}
+			return secrets.SharedValue(f, name)
+		}})
+	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker))
+	deps := o.LearnDeps
+	if deps.NapNow == nil {
+		// A nap now: the agent's sidecar takes it over the link, else `docker compose exec` locally.
+		deps.NapNow = func(id string) error {
+			if links.Connected(id) {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer cancel()
+				return links.Command(ctx, id, link.TypeNap, link.Nap{Reason: "learn"})
+			}
+			return local.NapNow(inst, id)
+		}
+	}
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps, Gateways: gateway})
+	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
+		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
+	if inst.CoreStorage != "" && o.WorkdirRoot == "" {
+		m := &Mirror{Dir: wroot, URI: inst.CoreStorage, Region: inst.Aws.Region, CLI: aws.Exec}
+		if m.Region == instance.Unset {
+			m.Region = ""
+		}
+		go m.Run(c.stop, 5*time.Minute)
+	}
 	go learner.Run(c.stop, time.Minute)
+	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
+	go broker.Run(c.stop)
+	c.lifecycle = o.Lifecycle
+	if c.lifecycle.Local == nil || c.lifecycle.Remote == nil {
+		def := defaultLifecycle(inst, learner.o.Deps.Restart)
+		if c.lifecycle.Local == nil {
+			c.lifecycle.Local = def.Local
+		}
+		if c.lifecycle.Remote == nil {
+			c.lifecycle.Remote = def.Remote
+		}
+	}
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
@@ -378,6 +472,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 					log.Printf("core.db prune: %v", err)
 				}
 				if err := bus.Prune(RetainMessages); err != nil {
+					log.Printf("core.db prune: %v", err)
+				}
+				if err := broker.Prune(30 * 24 * time.Hour); err != nil {
 					log.Printf("core.db prune: %v", err)
 				}
 			}
@@ -408,6 +505,22 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}()
 		path := r.URL.Path
 		get := r.Method == http.MethodGet
+		who := c.caller(r)
+		if need, ok := c.needs(r, who); !ok {
+			if who.Owner {
+				writeJSONBody(w, 403, errBody("forbidden", "this needs the "+need.String()+" scope"))
+			} else {
+				writeJSONBody(w, 401, errBody("unauthorized", "a token is required (Authorization: Bearer …)"))
+			}
+			return
+		}
+		if c.handleAdmin(w, r, who) {
+			return
+		}
+		if !inst.CoreWebUI && (path == "/" || path == "/review" || uiFiles[path].body != nil) {
+			writeJSONBody(w, 404, errBody("not_found", "the browser view is off: use the Stormo app, or set core.web_ui: true in stormo.yaml"))
+			return
+		}
 		switch {
 		case get && path == "/health":
 			s := gateway.Status()
@@ -416,9 +529,14 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return
 		case get && path == "/api/core":
 			// Which binary and which instance this core is, for clients deciding whether to attach.
-			// Loopback only: host paths never reach agent containers (bridge listeners serve no /api).
-			writeJSONBody(w, 200, coreView{"swarm-core", version.String(), version.API, os.Getpid(), version.Exe(), c.Addr.Port, startedAt,
-				coreInstance{inst.Root, inst.Name, inst.Org, inst.Slug}})
+			// Host paths never reach agent containers (bridge listeners serve no /api); beyond
+			// loopback it takes a read token.
+			v := coreView{Service: "swarm-core", Version: version.String(), API: version.API, PID: os.Getpid(), Exe: version.Exe(), Port: c.Addr.Port,
+				StartedAt: startedAt, Instance: coreInstance{inst.Root, inst.Name, inst.Org, inst.Slug}, TLS: c.PublicTLS}
+			if c.Public != nil {
+				v.Listen = c.Public.String()
+			}
+			writeJSONBody(w, 200, v)
 			return
 		case get && path == "/api/instance":
 			writeJSONBody(w, 200, look)
@@ -463,6 +581,13 @@ func StartCore(o CoreOptions) (*Core, error) {
 		case path == "/mcp":
 			mcp.Handle(w, r)
 			return
+		case path == link.Path:
+			if who.Agent == "" {
+				writeJSONBody(w, 401, errBody("unauthorized", "the link takes an agent's core key"))
+				return
+			}
+			links.Handle(w, r, who.Agent)
+			return
 		case get && path == "/review":
 			// The page holds no data: it reads the owner token from its URL fragment and asks /api/review.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -470,8 +595,38 @@ func StartCore(o CoreOptions) (*Core, error) {
 			w.Header().Set("Referrer-Policy", "no-referrer")
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
 			return
-		case path == "/api/review" || (r.Method == http.MethodPost && strings.HasPrefix(path, "/api/agents/") && strings.HasSuffix(path, "/restart")):
+		case path == "/api/review":
 			c.handleReview(w, r, bo.Roster)
+			return
+		case r.Method == http.MethodPost && lifecyclePath.MatchString(path):
+			m := lifecyclePath.FindStringSubmatch(path)
+			c.handleLifecycle(w, r, who, m[1], m[2], bo.Roster)
+			return
+		case get && path == "/api/capabilities":
+			v, err := broker.View(manifest.AgentIDs(inst.Root))
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read capabilities"))
+				return
+			}
+			writeJSONBody(w, 200, v)
+			return
+		case get && path == "/api/capabilities/jobs":
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			jobs, err := broker.Jobs(limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read jobs"))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"jobs": jobs})
+			return
+		case get && path == "/api/placements":
+			writeJSONBody(w, 200, map[string]any{"placements": c.placements()})
+			return
+		case path == link.RunnerPath:
+			c.handleRunner(w, r, who)
+			return
+		case strings.HasPrefix(path, "/api/sync/"):
+			c.handleSync(w, r, who, bo.Roster)
 			return
 		case get && path == "/api/learning":
 			// Schedule and counts per agent: no lesson text, so no key.
@@ -505,6 +660,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 				writeJSONBody(w, 400, errBody("bad_request", err.Error()))
 				return
 			}
+			c.DB.Audit(who.Actor(), "learn.start", strings.Join(req.Agents, " "), fmt.Sprintf("cycle=%d force=%v", id, req.Force))
 			writeJSONBody(w, 202, map[string]any{"cycle": id})
 			return
 		case get && path == "/api/workdir":
@@ -515,6 +671,42 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 			v, err := workdir.Owner(limit)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read the workdir"))
+				return
+			}
+			writeJSONBody(w, 200, v)
+			return
+		case get && strings.HasPrefix(path, "/api/workdir/"):
+			// File names and contents can name clients: the owner only.
+			if !c.caller(r).Owner {
+				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+				return
+			}
+			p := r.URL.Query().Get("path")
+			var v any
+			var err error
+			switch path {
+			case "/api/workdir/layers":
+				v = map[string]any{"layers": workdir.Layers()}
+			case "/api/workdir/ls":
+				var es []Entry
+				if es, err = workdir.Ls(Owner, p); err == nil {
+					v = map[string]any{"path": p, "entries": es}
+				}
+			case "/api/workdir/info":
+				v, err = workdir.Info(Owner, p)
+			case "/api/workdir/file":
+				v, err = workdir.Read(Owner, p)
+			default:
+				writeJSONBody(w, 404, errBody("not_found", "no such route"))
+				return
+			}
+			var te ToolError
+			if errors.As(err, &te) {
+				writeJSONBody(w, 400, errBody("bad_request", te.Error()))
+				return
+			}
 			if err != nil {
 				writeJSONBody(w, 500, errBody("core_internal", "could not read the workdir"))
 				return
@@ -630,6 +822,20 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	go serve(c.Server, ln)
+	if inst.CoreListen != "" {
+		pl, err := publicListener(inst, c.Addr.Port)
+		if err != nil {
+			for _, l := range append(bridges, ln) {
+				l.Close()
+			}
+			c.StopOffice()
+			return nil, err
+		}
+		c.Public = pl.Addr().(*net.TCPAddr)
+		c.PublicTLS = !inst.CoreTLS.Off
+		c.publicServer = &http.Server{Handler: http.HandlerFunc(handler), ReadHeaderTimeout: 30 * time.Second}
+		go serve(c.publicServer, pl)
+	}
 	for _, bl := range bridges {
 		b := &http.Server{Handler: http.HandlerFunc(bridged), ReadHeaderTimeout: 30 * time.Second}
 		c.bridge = append(c.bridge, b)
@@ -657,4 +863,32 @@ func connectionRoute(inst *instance.Instance) func(agent string) string {
 		cache[agent], at[agent] = name, time.Now()
 		return name
 	}
+}
+
+// publicListener is core.listen on the core's port: TLS with the instance's certificate, or plain
+// when core.tls is off (instance.Load allows that on a private address only).
+func publicListener(inst *instance.Instance, port int) (net.Listener, error) {
+	addr := net.JoinHostPort(strings.Trim(inst.CoreListen, "[]"), strconv.Itoa(port))
+	if inst.CoreTLS.Off {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("core.listen %s: %w", addr, err)
+		}
+		return l, nil
+	}
+	file := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(inst.Root, p)
+	}
+	cert, err := tls.LoadX509KeyPair(file(inst.CoreTLS.Cert), file(inst.CoreTLS.Key))
+	if err != nil {
+		return nil, fmt.Errorf("core.tls: %w", err)
+	}
+	l, err := tls.Listen("tcp", addr, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		return nil, fmt.Errorf("core.listen %s: %w", addr, err)
+	}
+	return l, nil
 }

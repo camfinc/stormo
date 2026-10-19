@@ -41,6 +41,9 @@ struct StormoCommands: Commands {
     @FocusedValue(\.newInstance) private var newInstance
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About Stormo") { AboutPanel.show(model: model) }
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Instance…") { newInstance?() }
                 .keyboardShortcut("n")

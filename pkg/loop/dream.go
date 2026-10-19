@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,7 +17,6 @@ import (
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
-	"go.yaml.in/yaml/v3"
 )
 
 // The dream folds naps back into git as *proposals*. It runs off-task (a laptop or a scheduled job
@@ -37,18 +37,30 @@ type DreamReport struct {
 	Resighted      int                   `json:"resighted"`
 	SkillProposals []SkillProposalReport `json:"skillProposals"`
 	CronProposal   bool                  `json:"cronProposal"`
+	// Runtime settings changes proposed (learnings/proposals/settings.json).
+	SettingProposals int `json:"settingProposals"`
 }
 
 type SkillDecision struct {
 	Hash     string `json:"hash"`
 	Decision string `json:"decision"` // rejected | accepted
 	At       string `json:"at"`
+	// By is who decided when it was not a person at the terminal or review page (the core's
+	// review, with its model), and Reason what it said.
+	By     string `json:"by,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Watermark is learnings/watermark.json.
 type Watermark struct {
 	LastNap        *string                  `json:"lastNap"`
 	SkillDecisions map[string]SkillDecision `json:"skillDecisions"`
+	// The last decision on the schedules proposal (Hash: its text), and the jobs the agent created
+	// at runtime that a reviewer rejected: rehydrate drops them (build.Info.RejectedJobs).
+	ScheduleDecision *SkillDecision `json:"scheduleDecision,omitempty"`
+	RejectedJobs     []string       `json:"rejectedJobs,omitempty"`
+	// Decisions on runtime settings by key (Hash: the value), so a decided value is not proposed again.
+	SettingDecisions map[string]SkillDecision `json:"settingDecisions,omitempty"`
 }
 
 func learningsDir(root, agent string) string {
@@ -56,7 +68,7 @@ func learningsDir(root, agent string) string {
 }
 
 func LoadWatermark(root, agent string) (*Watermark, error) {
-	w := &Watermark{SkillDecisions: map[string]SkillDecision{}}
+	w := &Watermark{SkillDecisions: map[string]SkillDecision{}, SettingDecisions: map[string]SkillDecision{}}
 	body, err := os.ReadFile(filepath.Join(learningsDir(root, agent), "watermark.json"))
 	if os.IsNotExist(err) {
 		return w, nil
@@ -68,6 +80,9 @@ func LoadWatermark(root, agent string) (*Watermark, error) {
 	}
 	if w.SkillDecisions == nil {
 		w.SkillDecisions = map[string]SkillDecision{}
+	}
+	if w.SettingDecisions == nil {
+		w.SettingDecisions = map[string]SkillDecision{}
 	}
 	return w, nil
 }
@@ -147,6 +162,19 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		return report, nil
 	}
 
+	// Settings the agent changed at runtime: every unseen nap, since a restart resets the config
+	// and only an earlier nap may hold the change.
+	rs, hasSettings := eng.(engine.RuntimeSettings)
+	hasSettings = hasSettings && L.Config != ""
+	agentDir := manifest.AgentDir(root, agentID)
+	var repoSet map[string]string
+	if hasSettings {
+		if repoSet, err = repoSettings(rs, agent, agentDir); err != nil {
+			return nil, err
+		}
+	}
+	settings := map[string]settingSighting{}
+
 	// 1. Memories from every unseen nap, so provenance counts every instance that held a lesson.
 	var last *Nap
 	for _, id := range napIDs {
@@ -157,6 +185,19 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			continue
 		}
 		last = nap
+		if hasSettings {
+			blob, err := learningBlob(s, agentID, nap, L.Config)
+			if err != nil {
+				return nil, err
+			}
+			if blob != nil {
+				// A plain file can be napped mid-write; one unreadable config must not stop the
+				// dream (the watermark would never pass this nap). Its settings are skipped.
+				if err := noteSettings(rs, nap, []byte(*blob), repoSet, settings); err != nil {
+					log.Printf("[dream] %s: nap %s: %s unreadable, settings skipped: %v", agentID, nap.ID, L.Config, err)
+				}
+			}
+		}
 		for _, m := range []struct {
 			kind learning.Kind
 			path string
@@ -204,6 +245,14 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			}
 		}
 		repoSkills := filepath.Join(manifest.AgentDir(root, agentID), "skills")
+		// What the nap's instance booted with: a skill still at that hash is not the agent's change,
+		// however far the repo has moved since (an edit not yet deployed would read as a revert).
+		booted := map[string]string{}
+		baseSha := ""
+		if last.Baseline != nil {
+			booted = last.Baseline.Skills.Map()
+			baseSha = last.Baseline.GitSha
+		}
 		dirs := build.SkillDirs(learningPaths, L.SkillsDir)
 		for _, dir := range sortedKeys(dirs) {
 			paths := dirs[dir]
@@ -223,6 +272,13 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			if d, ok := wm.SkillDecisions[dir]; ok && d.Hash == napHash {
 				continue // already decided
 			}
+			bootHash, wasBooted := booted[dir]
+			if wasBooted && bootHash == napHash {
+				continue // unchanged since boot
+			}
+			// The agent changed a version the repo has since moved past: accepting it would undo
+			// the repo's change, so the proposal says so and accept refuses it.
+			stale := inRepo && wasBooted && repoSkillHash(filepath.Join(repoSkills, dir), L.SkillsDir+"/"+dir) != bootHash
 			bodies := map[string]string{}
 			for _, p := range paths {
 				b, err := learningBlob(s, agentID, last, p)
@@ -249,12 +305,14 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 				}
 			}
 			piiList := sortedKeys(pii)
-			meta, _ := learning.MarshalIndent(SkillProposal{Skill: dir, NapHash: napHash, Nap: last.ID, PII: piiList})
+			meta, _ := learning.MarshalIndent(SkillProposal{Skill: dir, NapHash: napHash, Nap: last.ID, PII: piiList, Stale: stale, Base: baseSha})
 			if err := os.WriteFile(filepath.Join(proposals, "skills", dir, ".proposal.json"), meta, 0o644); err != nil {
 				return nil, err
 			}
 			status := "new"
-			if inRepo {
+			if stale {
+				status = "changed (on an older version; merge by hand)"
+			} else if inRepo {
 				status = "changed"
 			}
 			report.SkillProposals = append(report.SkillProposals, SkillProposalReport{dir, status, piiList})
@@ -272,19 +330,8 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		// proposed in that form. A job agent.yaml cannot express falls back to the engine's file.
 		if cron != nil && agent.Schedules != nil {
 			if live, err := eng.ReadSchedules([]byte(*cron)); err == nil {
-				if !sameSchedules(live, agent.Schedules) {
-					body, err := yaml.Marshal(map[string]any{"schedules": live})
-					if err != nil {
-						return nil, err
-					}
-					text, _ := scrubber.Scrub(string(body))
-					if err := os.MkdirAll(proposals, 0o755); err != nil {
-						return nil, err
-					}
-					if err := os.WriteFile(filepath.Join(proposals, "schedules.yaml"), []byte(text), 0o644); err != nil {
-						return nil, err
-					}
-					report.CronProposal = true
+				if report.CronProposal, err = writeSchedules(proposals, live, agent.Schedules, last.ID, wm, scrubber); err != nil {
+					return nil, err
 				}
 				cron = nil
 			}
@@ -310,6 +357,12 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		}
 	}
 
+	if hasSettings {
+		if report.SettingProposals, err = writeSettings(rs, agent, proposals, settings, repoSet, wm, scrubber); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := learning.SaveLedger(root, agentID, ledger); err != nil {
 		return nil, err
 	}
@@ -322,6 +375,27 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 }
 
 // repoSame: the nap's copy of a skill has exactly the repo's files with the same contents.
+// repoSkillHash hashes a skill dir in the repo as the build does (its files are copied verbatim).
+func repoSkillHash(repoDir, prefix string) string {
+	hashes := map[string]string{}
+	paths := []string{}
+	_ = filepath.WalkDir(repoDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(repoDir, p)
+		key := prefix + "/" + filepath.ToSlash(rel)
+		paths = append(paths, key)
+		hashes[key] = build.Sha256(b)
+		return nil
+	})
+	return build.SkillHash(hashes, paths)
+}
+
 func repoSame(repoDir, prefix string, bodies map[string]string) bool {
 	n := 0
 	same := true
@@ -362,8 +436,9 @@ func renderReport(r *DreamReport) string {
 	if r.CronProposal {
 		cron = "yes (learnings/proposals/schedules.yaml, or cron/jobs.json for an engine-only job)"
 	}
-	lines = append(lines, "- cron proposal: "+cron, "",
-		"Review with `stormo learn list "+r.Agent+"` and `stormo learn skills "+r.Agent+"`.", "")
+	lines = append(lines, "- cron proposal: "+cron, fmt.Sprintf("- settings changed at runtime: %d", r.SettingProposals), "",
+		"Review with `stormo learn list "+r.Agent+"`, `stormo learn skills "+r.Agent+"`, `stormo learn schedules "+r.Agent+
+			"` and `stormo learn settings "+r.Agent+"`.", "")
 	return strings.Join(lines, "\n")
 }
 

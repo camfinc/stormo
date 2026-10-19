@@ -78,6 +78,10 @@ type SkillProposal struct {
 	NapHash string   `json:"napHash"`
 	Nap     string   `json:"nap"`
 	PII     []string `json:"pii"`
+	// Stale: the agent changed the version it booted with (commit Base), and the repo's copy has
+	// changed since. Accepting would overwrite that change, so it is refused; merge by hand.
+	Stale bool   `json:"stale,omitempty"`
+	Base  string `json:"base,omitempty"`
 }
 
 func ProposalsDir(root, agent string) string {
@@ -111,6 +115,11 @@ func ListSkillProposals(root, agent string) ([]SkillProposal, error) {
 
 // DecideSkill accepts (copies into skills/) or rejects a skill proposal and records the decision.
 func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
+	return DecideSkillBy(root, agent, skill, decision, Decider{})
+}
+
+// DecideSkillBy is DecideSkill recording who decided (the core's review) and why.
+func DecideSkillBy(root, agent, skill, decision string, who Decider) (*SkillProposal, error) {
 	props, err := ListSkillProposals(root, agent)
 	if err != nil {
 		return nil, err
@@ -125,6 +134,9 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 		return nil, fmt.Errorf("%s: no skill proposal %s", agent, skill)
 	}
 	src := filepath.Join(ProposalsDir(root, agent), skill)
+	if decision == "accepted" && prop.Stale {
+		return nil, fmt.Errorf("%s: %s was changed by the agent from an older version (%s); the repo's copy has changed since, so accepting would undo that. Merge it by hand from %s, then reject the proposal", agent, skill, or(prop.Base, "an earlier build"), src)
+	}
 	if decision == "accepted" {
 		dest := filepath.Join(manifest.AgentDir(root, agent), "skills", skill)
 		if err := os.RemoveAll(dest); err != nil {
@@ -142,7 +154,7 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	wm.SkillDecisions[skill] = SkillDecision{Hash: prop.NapHash, Decision: decision, At: IsoMillis(time.Now())}
+	wm.SkillDecisions[skill] = SkillDecision{Hash: prop.NapHash, Decision: decision, At: IsoMillis(time.Now()), By: who.By, Reason: who.Reason}
 	return prop, SaveWatermark(root, agent, wm)
 }
 
@@ -179,30 +191,17 @@ func pruneEmpty(dir string) {
 	}
 }
 
-// AutoAcceptable: a proposed lesson that needs no judgement call. Agent-scoped memory only (a
-// user-profile entry is about a person), with no PII flag, seen at least minSeen times.
+// AutoAcceptable: a proposed lesson the review's rules let its model judge. Agent-scoped memory
+// only (a user-profile entry is about a person), with no PII flag, seen at least minSeen times
+// (ReviewCandidates applies the same rules).
 func AutoAcceptable(e *learning.Learning, minSeen int) bool {
 	return e.Status == learning.Proposed && e.Scope == manifest.ScopeAgent && e.Kind == learning.KindMemory &&
 		len(e.PII) == 0 && e.SeenCount >= minSeen
 }
 
-// AutoAccept accepts agent's auto-acceptable lessons and returns their ids. It writes the ledger
-// in the working tree only, like every review decision.
-func AutoAccept(root, agent string, minSeen int) ([]string, error) {
-	ledger, err := learning.LoadLedger(root, agent)
-	if err != nil {
-		return nil, err
+func or(a, b string) string {
+	if a != "" {
+		return a
 	}
-	ids := []string{}
-	for _, e := range ledger {
-		if AutoAcceptable(e, minSeen) {
-			ids = append(ids, e.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return ids, nil
-	}
-	accepted := learning.Accepted
-	_, err = Decide(root, agent, ids, Change{Status: &accepted, Note: "accepted automatically (core.learning.auto_accept)"})
-	return ids, err
+	return b
 }

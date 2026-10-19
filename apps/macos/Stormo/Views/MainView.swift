@@ -2,15 +2,18 @@ import StormoKit
 import SwiftUI
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case office, agents, chat, providers, core
+    case office, agents, files, review, chat, providers, capabilities, core
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .office: "Office"
         case .agents: "Agents"
+        case .files: "Files"
+        case .review: "Review"
         case .chat: "Chat"
         case .providers: "Providers"
+        case .capabilities: "Capabilities"
         case .core: "Core"
         }
     }
@@ -19,8 +22,11 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .office: "building.2"
         case .agents: "person.3"
+        case .files: "folder"
+        case .review: "checklist"
         case .chat: "bubble.left.and.text.bubble.right"
         case .providers: "cpu"
+        case .capabilities: "shippingbox"
         case .core: "server.rack"
         }
     }
@@ -40,15 +46,20 @@ struct MainView: View {
             } else {
                 NavigationSplitView {
                     List(SidebarItem.allCases, selection: $section) { s in
-                        Label(s.title, systemImage: s.symbol).tag(s)
+                        Label(s.title, systemImage: s.symbol)
+                            .badge(s == .review ? model.fleet.summary.toReview : 0)
+                            .tag(s)
                     }
                     .navigationSplitViewColumnWidth(min: 160, ideal: 190)
                 } detail: {
                     switch section ?? .agents {
                     case .office: OfficeView()
                     case .agents: AgentsView()
+                    case .files: FilesView()
+                    case .review: ReviewSectionView()
                     case .chat: ChatView()
                     case .providers: ProvidersView()
+                    case .capabilities: CapabilitiesSection()
                     case .core: CoreView()
                     }
                 }
@@ -59,6 +70,16 @@ struct MainView: View {
         .focusedSceneValue(\.openInstance, { importing = true })
         .focusedSceneValue(\.newInstance, { creating = true })
         .sheet(isPresented: $creating) { NewInstanceSheet().environment(model) }
+        .sheet(isPresented: $model.connectingRemote) { RemoteCoreSheet().environment(model) }
+        .alert("Change production?", isPresented: Binding(get: { model.pendingConfirm != nil }, set: { if !$0 { model.pendingConfirm = nil } }),
+               presenting: model.pendingConfirm) { p in
+            Button("\(p.action.capitalized) \(p.agent)", role: .destructive) {
+                Task { await model.runRemote(p.action, agents: [p.agent], placement: p.placement, confirm: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { p in
+            Text("The core will run, on \(p.placement ?? "its placement"):\n\n" + p.plan.joined(separator: "\n"))
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.open(folder: url) } }
         }
@@ -67,10 +88,34 @@ struct MainView: View {
         } message: {
             Text(model.failure ?? "")
         }
+        .alert(missingTitle, isPresented: Binding(get: { model.missingSecrets != nil }, set: { if !$0 { model.missingSecrets = nil } }), presenting: model.missingSecrets) { m in
+            Button("Open Agent Settings") {
+                model.agentToEdit = m.agent
+                section = .agents
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}
+        } message: { m in
+            Text(missingMessage(m))
+        }
     }
 }
 
 extension MainView {
+    private func agentName(_ id: String) -> String { model.fleet.agent(id)?.name ?? id }
+
+    private var missingTitle: String {
+        guard let m = model.missingSecrets else { return "" }
+        return "\(agentName(m.agent)) can't start yet"
+    }
+
+    private func missingMessage(_ m: MissingSecrets) -> String {
+        let count = m.names.count == 1 ? "a secret value that isn't" : "\(m.names.count) secret values that aren't"
+        return "\(agentName(m.agent)) needs \(count) set on this Mac:\n\n"
+            + m.names.joined(separator: "\n")
+            + "\n\nAdd them under Secret values in the agent's settings, then start it again."
+    }
+
     static var initialSection: SidebarItem {
         #if DEBUG
         if let s = ProcessInfo.processInfo.environment["STORMO_SECTION"].flatMap(SidebarItem.init(rawValue:)) { return s }
@@ -93,6 +138,7 @@ struct MainToolbar: ToolbarContent {
                 Divider()
                 Button("New Instance…", action: newInstance)
                 Button("Open Instance…", action: openInstance)
+                Button("Connect to Remote Core…") { model.connectingRemote = true }
             } label: {
                 Label(model.instances.active?.name ?? "Instance", systemImage: "square.stack.3d.up")
                     .labelStyle(.titleAndIcon)
@@ -110,7 +156,8 @@ struct MainToolbar: ToolbarContent {
             }
         }
         ToolbarItem(placement: .primaryAction) {
-            CoreToggleButton()
+            // A remote core is started and stopped where it runs.
+            if model.instances.active?.isRemote != true { CoreToggleButton() }
         }
     }
 }

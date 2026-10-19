@@ -7,32 +7,58 @@ and refuse what you do not understand.
 
 ## The core's HTTP API
 
-`stormo core` listens on `127.0.0.1:$SWARM_CORE_PORT` (18600). Reads of the fleet and the office
-need no key. The bind is not a full boundary: on OrbStack and Docker Desktop agent containers reach
-loopback ports through `host.docker.internal`. So reads that return message bodies, activity
-previews or file history need `Authorization: Bearer <owner token>` (the value in
-`.swarm/core/owner.token`, 0600, minted when the core starts; containers never mount `.swarm/core`)
-or the agent's own `SWARM_CORE_KEY`, which sees only its own part. On Linux, agent containers reach
-the core through bridge listeners that serve only `/health`, `/v1/*`, `/mcp` and `/ingest/*`.
+`stormo core` listens on the instance's core port (`127.0.0.1`, 18600 for the first instance on a
+host; docs/core.md). **Every route except `/health` needs a credential** (docs/remote-core.md §3):
+
+- a person: `Authorization: Bearer <token>`, either the owner token (`.swarm/core/owner.token`,
+  0600, minted when the core starts, scope admin; containers never mount `.swarm/core`) or a
+  personal token from `stormo core token add` (`stc_…`, scope `read`, `operate` or `admin`,
+  optionally expiring, revocable). GET needs `read`, anything that changes state `operate`,
+  `/api/tokens` and `/api/audit` `admin`. A token without the scope gets 403, no token 401.
+- an agent: its own `SWARM_CORE_KEY` on `/v1/*`, `/ingest/*`, `/mcp` and its own
+  `/api/agents/<id>/activity`, nothing else.
+
+While `core.loopback_trust` is on (the default), a request that reaches the loopback listener
+directly (no `X-Forwarded-For`/`Forwarded`) still reads the views that were always open locally
+without a token: `/`, `/review`, `/ui/*`, `/api/core`, `/api/instance`, `/api/fleet`,
+`/api/gateway[/models]`, `/api/learning`, timelines and avatars. On OrbStack and Docker Desktop agent
+containers reach loopback ports through `host.docker.internal`, so nothing that holds client data is
+among them. On Linux, agent containers reach the core through bridge listeners that serve only
+`/health`, `/v1/*`, `/mcp` and `/ingest/*`.
 
 | route | body |
 |---|---|
 | `GET /health` | `status`, `service` (`swarm-core`), `login` (`ok` \| `missing` \| `relogin_required`), `planLimitedUntil`, `version`, `api`. Also on bridge listeners: no host paths |
 | `GET /api/core` | the running core: `service`, `version`, `api`, `pid`, `exe` (symlinks resolved), `port`, `startedAt` (RFC 3339), `instance` {`root`, `name`, `org`, `slug`}. Tells a client which binary and which instance it would attach to |
 | `GET /api/instance` | the instance's look: `name`, `org`, `slug`, `clocks` [{`city`, `tz`}], `units` {unit: {`hue`, `wall`, `floor`, `desk`}} (the web office's `window.STORMO`) |
-| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with its `office` timeline, `live`: the tool it runs now, from its hooks, or null, `messages`: `unread`, `received`, `sent` today, and `locks`: shared-space locks it holds), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
+| `GET /api/fleet` | `polledAt`, `units`, `agents` (each with `pendingLearnings`, `pendingSkills`, `pendingChanges` (runtime schedules and settings proposals), its `office` timeline, `live`: the tool it runs now, from its hooks, or null, `messages`: `unread`, `received`, `sent` today, `locks`: shared-space locks it holds, and `usage`: `cpuPercent`, `memBytes`, `memLimitBytes` of its local containers together from `docker stats`, absent when not running), `now` (server ms), `robot`, `gateway`. See docs/core.md §3 for the office fields |
 | `GET /api/agents/<id>/timeline` | `agent`, `live`, `entries` [{`at`, `event`, `tool`}], newest first; `?limit=` (≤ 500, default 100) |
 | `GET /api/agents/<id>/activity` | the same with each entry's `session` and `preview`. Owner token or that agent's key |
 | `POST /ingest/<engine>` | an engine's hook deliveries (Hermes: `/ingest/hermes`, its outbound hooks), signed with the agent's core key and read by that engine's runtime (`engine.Runtime`; docs/core.md §2) |
 | `GET /api/messages` | `threads` [{`thread`, `subject`, `updated`, `messages` [{`id`, `thread`, `from`, `to`, `subject`, `body`, `priority`, `attach`, `hop`, `sent`, `recipients` [{`agent`, `read`, `acked`, `woken`}]}]}], newest thread first; `?agent=`, `?limit=` (default 30). Owner token |
 | `GET /api/findings` | `findings` [{`id`, `agent`, `rule`, `severity`, `evidence`, `firstSeen`, `lastSeen`, `count`, `status`}]; `?all=1` adds resolved ones. Owner token |
 | `GET /api/workdir` | `locks` [{`owner`, `path`, `kind`, `reason`, `created`, `expires`}], `changes` [{`path`, `at`, `kind`, `agent`, `how`, `violation`}] newest first (`?limit=`, default 50), `layers` {layer: files}. Owner token |
-| `GET /api/learning` | `at`, `timezone`, `next` (the schedule, empty when off), `running` (cycle id or null), `cycles` [{`id`, `trigger`, `started`, `finished`, `status`, `digest`, `runs` [{`agent`, `started`, `finished`, `napped`, `napNote`, `naps`, `newLearnings`, `resighted`, `skillProposals`, `cronProposal`, `pendingLearnings`, `pendingSkills`, `error`}]}], newest first. Counts only |
+| `GET /api/workdir/layers` | `layers`: `group` first, then each unit an agent of the roster belongs to. Owner token |
+| `GET /api/workdir/ls?path=/shared/<layer>/…` | `path`, `entries` [{`name`, `dir`, `size`, `modified`, `lastWriter`, `locked`}]; links are skipped. Owner token |
+| `GET /api/workdir/info?path=` | `path`, `exists`, `dir`, `size`, `modified`, `creator`, `lastWriter`, `how`, `locks`, `history` (fs_info's answer). Owner token |
+| `GET /api/workdir/file?path=` | `path`, `size`, `modified`, `truncated` (past 1 MiB), `binary`, `text` (absent when binary). Read-only, never follows a link out of its layer; a bad path is a 400. Owner token |
+| `GET /api/learning` | `at`, `timezone`, `next` (the schedule, empty when off), `running` (cycle id or null), `cycles` [{`id`, `trigger`, `started`, `finished`, `status`, `digest`, `runs` [{`agent`, `started`, `finished`, `napped`, `napNote`, `naps`, `newLearnings`, `resighted`, `skillProposals`, `cronProposal`, `pendingLearnings`, `pendingSkills`, `error`, `settingProposals`, `autoAccepted` (approved by the review), `passed` (passed to a person), `held` (held by the rules), `reviewNote`, `restarted`, `restartNote`}]}], newest first. Counts only |
 | `POST /api/learn` | body `{agents, force}`; 202 `{cycle}`, 409 while a cycle runs. Owner token |
-| `GET /api/review` | `autoAccept`, `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`}], `skills` [{`skill`, `pii`, `nap`, `new`, `files` [{`path`, `size`, `text`, `current`}]}]}]. Owner token |
-| `POST /api/review` | `{agent, lessons: [id…] \| skill, decision: accept \| reject \| promote, scope: unit \| group}`; 400 with the reason when refused. Owner token |
+| `GET /api/review` | `review` (`auto` \| `manual`), `reviewConnection`, `reviewModel`, `reviewPrompt`, `autoAccept` (review is auto), `autoAcceptMinSeen`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `autoReview`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`, `ai`, `held`}], `skills` [{`skill`, `pii`, `nap`, `new`, `stale`, `base`, `files` [{`path`, `size`, `text`, `current`}], `ai`, `held`}], `schedules` (null, or {`jobs` (agent.yaml schedules), `runtimeJobs`, `pii`, `nap`, `ai`, `held`}), `settings` [{`key`, `value`, `current`, `sensitive`, `opaque`, `pii`, `nap`, `ai`, `held`}]}]. On an open proposal `ai` is the review's verdict on its current content ({`approve`, `reason`, `model`, `at`}) and `held` why the rules keep it for a person. Owner token |
+| `POST /api/review` | `{agent, lessons: [id…] \| skill \| schedules: true \| settings: [key…], decision: accept \| reject \| promote (lessons), scope: unit \| group}`; 400 with the reason when refused. Owner token |
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
-| `GET /review` | the review page (no data; reads the owner token from `#t=`) |
+| `POST /api/agents/<id>/start\|stop\|restart` | `{placement, confirm}` (placement: as asked, else where its link runs, else local). local runs compose here; remote (ECS) answers 428 `{plan}` until `confirm: true`; a runner placement goes to its runner (503 when none serves it). → `{action, agent, placement, log, state}`. Operate; audited |
+| `GET /api/placements` | `placements` [{`name`, `kind`: local \| ecs \| runner, `available`}]. Read |
+| `GET /link` (WebSocket) | an agent's live wire (pkg/link): hello, status, wake/nap commands. The agent's core key |
+| `GET /runner` (WebSocket) | a runner's link: lifecycle orders for its placement. An operate token |
+| `GET /api/capabilities` | `capabilities` [{`name`, `description`, `kind`, `placement`, `concurrency`, `costUSD`, `queued`, `running`, `agents` (granted)}], `spend` [{`agent`, `capability`, `jobs`, `failed`, `usd`}] this month, `since`. Read |
+| `GET /api/capabilities/jobs[?limit=n]` | `jobs` [{`job`, `capability`, `agent`, `status`, `error`, `preview` (scrubbed), `costUSD`, `created`, `started`, `finished`}], never inputs or outputs. Read |
+| `/api/sync/<layer>[/<path>]` | a runner's sync (operate token, `X-Stormo-Placement`): GET lists `files` [{`path`, `sha256`, `size`}] or reads one; PUT/DELETE with `X-Base-SHA256` (409 stale, 423 locked). Only group and its agents' units |
+| `GET /api/tokens[?all=1]` | `tokens` [{`id`, `name`, `scope`, `created`, `expires`, `lastUsed`, `revoked`}], never values. Admin |
+| `POST /api/tokens` | `{name, scope: read \| operate \| admin, days}` (0 days never expires) → 201 `{token, info}`; the value is shown this once. Admin |
+| `DELETE /api/tokens/<name or id>` | revokes at once. Admin |
+| `GET /api/audit[?limit=n]` | `entries` [{`at`, `actor` (owner, a token's name, `agent:<id>`), `action`, `target`, `detail`}], newest first. Admin |
+| `GET /review` | the review page (no data; reads the owner token from `#t=`). Only with `core.web_ui: true`, like `/` and `/ui/*`; otherwise 404 |
 | `POST /mcp` | the agents' MCP server (docs/core.md §4, §5), each agent with its own core key |
 | `GET /api/gateway/models?connection=<name>` | `connection`, `models` [{`id`, `display_name`, `context_length`}]: that ChatGPT sign-in's plan catalog, fetched when the cached one is older than 10 min (the configured defaults before sign-in) |
 | `GET /api/gateway` | the model gateway: login, `account`, plan limit, `manageUsageUrl`, in flight, queued, concurrency, `models` (all of the default ChatGPT connection), per-agent `usage` and `active` (across connections), and `connections` [{`name`, `login`, `account`, `planLimitedUntil`, `inflight`, `queued`, `concurrency`}], one per ChatGPT connection |
@@ -72,7 +98,7 @@ into an `error` event.
 | `new agent` (spec on stdin) | `id`, `name`, `unit`, `files` (written), `secrets` (declared names), `missing` (declared names with no local value). The agent's generated keys (engine API key, local-only core key) are minted into its `data/secrets.yaml`; `secrets.local.yaml` is not rewritten. The spec is JSON: `name` (required), `id` (default: slugged name), `role`, `unit` or `newUnit` {`id`,`name`,`description`}, `persona` (an existing `personas/<slug>`) or `look` (a new one, written to `personas/<id>`; shape as `look show`'s `look`; refused when that folder exists), `engine` {`kind`,`version`,`imageTag`}, `model` {`name`,`provider`,`localName`,`localConnection`}, `channels` [{`kind`,`allowedUsers`,`homeChannel`,`allowBots`}], `secrets` (extra names), `soul` (SOUL.md; default a starter). Empty fields borrow the instance's most common engine and model. Channel, connection and engine keys are declared automatically; secret values never go in the spec (`secrets set`). Refused (`invalid`, nothing left behind) when the id is taken or the agent would not load |
 | `new agent --options` | `options` (as `config show`'s, instance-wide), `defaults` {`unit`,`engine`,`model`} a new agent starts from, `takenIds` |
 | `instance` | `root`, `name`, `org`, `slug` of the instance this invocation found (`--instance`, `STORMO_INSTANCE`, the working directory, the binary's directory, in that order) |
-| `status` (`ps`) | one row per agent: `agent`, `unit`, `where`, `state` (running \| stopped \| starting \| missing \| unknown), `health`, `endpoint`, `lastNap`, `pendingLearnings`, `pendingSkills`, `detail` |
+| `status` (`ps`) | one row per agent: `agent`, `unit`, `where`, `state` (running \| stopped \| starting \| missing \| unknown), `health`, `endpoint`, `lastNap`, `pendingLearnings`, `pendingSkills`, `pendingChanges` (runtime schedules and settings proposals), `detail` |
 | `start`, `stop`, `restart`, `nap-now` | `action`, `where`, `agents` (in the order handled); progress as `step` events |
 | `chat <agent> <msg>\|- [--session s]` | `agent`, `session` (where the conversation is now: an engine compaction can move it), `reply`. `-` reads the message from stdin (use it: a message could be `--json`). The session (default `swarm-local`) is created when missing. A turn can take minutes; cancel by ending the process |
 | `conversations <agent>` | `agent`, `conversations` [{`id`, `title`, `source` (`api_server`, `slack`, `cron`, …), `preview`, `startedAt`, `lastActive`, `messages`, `ended`, `compacted`}], most recently active first. `id` stays the conversation's first session across automatic compactions; counts and times are the live part's. Titles, previews and messages are client data: shown to the owner, never sent to the core |
@@ -104,6 +130,7 @@ into an `error` event.
 | `config write <file> --if-hash <h>` | as `show`, for what was written. The new content comes on stdin |
 | `migrate agent [agent…]` | one row per agent: `agent`, `from`, `to` (agent.yaml formats), `changes` (lines), `data` (`moved`, `in-place`, or `running`: its data stays until it is stopped). Runs `check` after |
 | `export <agent> [--data] [-o file]` | `path`, `agent`, `mode` (`config` \| `data`), `files`, `naps`, `containsSecrets`. A data export carries every secret value the agent resolves in plain text: the zip is written 0600, holds `DATA-EXPORT-CONTAINS-SECRETS.txt`, and a `step` warns. Codes: `legacy` (format 0: migrate first), `tracked` (its data folder is in git) |
+| `delete agent <agent> [--with-persona] --yes` | `agent`, `removed` (what went), `notes` (what stays: a persona another agent uses, a stopped ECS service, an emptied unit). A `step` per item. Stops a local container first; refused (`refused`) while the agent runs on ECS. Without `--yes` it asks on a terminal |
 | `import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]` | `agent`, `from` (the source instance's slug), `mode`, `changes`. Every member is checked against the zip's manifest; the result must pass `check`, else nothing is kept. Codes: `invalid`, `exists` (pass `--replace` or `--as`), `unknown_unit`, `missing_actions` (pass `--with-actions`), `tracked` |
 | `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -95,7 +96,26 @@ type FleetAgent struct {
 	NapIntervalSeconds int    `json:"napIntervalSeconds"`
 	PendingLearnings   int    `json:"pendingLearnings"`
 	PendingSkills      int    `json:"pendingSkills"`
+	// Runtime schedules and settings proposals waiting for review.
+	PendingChanges int `json:"pendingChanges"`
+	// The agent's containers together (agent + nap sidecar), from `docker stats`; nil when not
+	// running locally or docker did not answer.
+	Usage *ContainerUsage `json:"usage,omitempty"`
+	// Link is the agent's live wire to the core (pkg/link), nil when it never linked.
+	Link *LinkInfo `json:"link,omitempty"`
 }
+
+// ContainerUsage is what an agent's local containers use right now.
+type ContainerUsage struct {
+	// Percent of one CPU (200 = two CPUs busy), as docker reports it.
+	CPUPercent float64 `json:"cpuPercent"`
+	MemBytes   int64   `json:"memBytes"`
+	// The memory limit docker reports (the VM's memory when the container has none).
+	MemLimitBytes int64 `json:"memLimitBytes"`
+}
+
+// StatsFn reports resource usage per agent id.
+type StatsFn func() (map[string]ContainerUsage, error)
 
 // NapChanges is what a nap changed, as counts per file class only: paths can carry session or user ids.
 type NapChanges struct {
@@ -154,9 +174,11 @@ type FleetOptions struct {
 	Inst *instance.Instance
 	// Where sibling repos named by `persona.repo` live (avatars). Default: SWARM_REPOS_DIR, else the
 	// instance's parent.
-	ReposDir         string
-	Interval         time.Duration
-	Ps               PsFn
+	ReposDir string
+	Interval time.Duration
+	Ps       PsFn
+	// Default DockerStats, unless Ps is given (a fake container state has no real containers).
+	Stats            StatsFn
 	ActivityInterval time.Duration
 	ActivityFetch    ActivityFetch
 	// API keys per agent (default: the secret its engine's runtime names, from secrets.local.yaml,
@@ -177,6 +199,87 @@ func ComposePs(id string) (place.LocalState, error) {
 		return place.LocalState{State: "unknown", Detail: "docker compose not found"}, nil
 	}
 	return place.LocalStateOf(id, func() ([]string, error) { return composeCmd, nil }), nil
+}
+
+// DockerStats is the default StatsFn: one `docker stats --no-stream` over the running containers of
+// the swarm-<id> compose projects, summed per agent.
+func DockerStats() (map[string]ContainerUsage, error) {
+	ps, err := exec.Command("docker", "ps", "--filter", "label=com.docker.compose.project",
+		"--format", `{{.ID}}\t{{.Label "com.docker.compose.project"}}`).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	agentOf := map[string]string{}
+	ids := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(ps)), "\n") {
+		cid, project, ok := strings.Cut(line, "\t")
+		if id, swarm := strings.CutPrefix(project, local.ProjectPrefix); ok && swarm && id != "" {
+			agentOf[cid] = id
+			ids = append(ids, cid)
+		}
+	}
+	if len(ids) == 0 {
+		return map[string]ContainerUsage{}, nil
+	}
+	argv := append([]string{"stats", "--no-stream", "--format", `{{.ID}}\t{{.CPUPerc}}\t{{.MemUsage}}`}, ids...)
+	out, err := exec.Command("docker", argv...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker stats: %w", err)
+	}
+	return ParseDockerStats(string(out), agentOf), nil
+}
+
+// ParseDockerStats sums `docker stats` lines (id, CPU %, "used / limit") per agent; agentOf maps a
+// container id (docker may print it shorter or longer than ps did) to its agent.
+func ParseDockerStats(out string, agentOf map[string]string) map[string]ContainerUsage {
+	res := map[string]ContainerUsage{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(strings.TrimSpace(line), "\t")
+		if len(f) != 3 {
+			continue
+		}
+		id := ""
+		for cid, a := range agentOf {
+			if strings.HasPrefix(cid, f[0]) || strings.HasPrefix(f[0], cid) {
+				id = a
+				break
+			}
+		}
+		if id == "" {
+			continue
+		}
+		cpu, err := strconv.ParseFloat(strings.TrimSuffix(f[1], "%"), 64)
+		used, limit, ok := strings.Cut(f[2], "/")
+		mem, limitBytes := parseBytes(used), parseBytes(limit)
+		if err != nil || !ok || mem < 0 || limitBytes < 0 {
+			continue
+		}
+		u := res[id]
+		u.CPUPercent += cpu
+		u.MemBytes += mem
+		u.MemLimitBytes = max(u.MemLimitBytes, limitBytes)
+		res[id] = u
+	}
+	return res
+}
+
+// parseBytes reads docker's sizes ("254.8MiB", "636KiB", "1.2GB"); -1 when it cannot.
+func parseBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	i := strings.IndexFunc(s, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
+	if i <= 0 {
+		return -1
+	}
+	n, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return -1
+	}
+	mult := map[string]float64{"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12,
+		"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}[s[i:]]
+	if mult == 0 {
+		return -1
+	}
+	return int64(n * mult)
 }
 
 var (
@@ -314,7 +417,9 @@ type Fleet struct {
 	naps    map[string]*loop.Nap
 	events  []NapEvent
 	avatars map[string]string
-	keys    apiKeys
+	// links: agents' live wires; their status wins over compose and local polling.
+	links *LinkHub
+	keys  apiKeys
 
 	pollMu   sync.Mutex
 	running  chan struct{}
@@ -338,6 +443,9 @@ func NewFleet(o FleetOptions) *Fleet {
 	}
 	if f.o.Ps == nil {
 		f.o.Ps = ComposePs
+		if f.o.Stats == nil {
+			f.o.Stats = DockerStats
+		}
 	}
 	if f.o.Interval == 0 {
 		f.o.Interval = 10 * time.Second
@@ -458,6 +566,19 @@ func (f *Fleet) fetchJSON(ctx context.Context, url, key string) (any, error) {
 	return v, nil
 }
 
+// SetLinks gives the fleet the agents' links.
+func (f *Fleet) SetLinks(h *LinkHub) {
+	f.mu.Lock()
+	f.links = h
+	f.mu.Unlock()
+}
+
+func (f *Fleet) linkHub() *LinkHub {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.links
+}
+
 // PollActivity is one activity round over the agents the last compose poll saw running.
 func (f *Fleet) PollActivity() {
 	f.actMu.Lock()
@@ -483,6 +604,11 @@ func (f *Fleet) PollActivity() {
 				} else {
 					f.activity[a.ID] = act
 				}
+			}
+			// A linked agent reports its own activity; no need to reach its API from here.
+			if st := f.linkHub().Status(a.ID); st != nil {
+				set(sanitize(st.Activity))
+				return
 			}
 			if a.State != "running" && a.State != "starting" {
 				set(nil)
@@ -616,6 +742,17 @@ func (f *Fleet) poll() error {
 	agentIDs := manifest.AgentIDs(root)
 	results := make([]*FleetAgent, len(agentIDs))
 	var wg sync.WaitGroup
+	var usage map[string]ContainerUsage
+	if f.o.Stats != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			if usage, err = f.o.Stats(); err != nil {
+				log.Printf("fleet: stats: %s", strings.SplitN(err.Error(), "\n", 2)[0])
+			}
+		}()
+	}
 	for i, id := range agentIDs {
 		wg.Add(1)
 		go func(i int, id string) {
@@ -627,6 +764,9 @@ func (f *Fleet) poll() error {
 	agents := []FleetAgent{}
 	for _, a := range results {
 		if a != nil {
+			if u, ok := usage[a.ID]; ok && a.State == "running" {
+				a.Usage = &u
+			}
 			agents = append(agents, *a)
 		}
 	}
@@ -710,10 +850,18 @@ func (f *Fleet) pollAgent(id string, store loop.Store) *FleetAgent {
 		ID: id, Name: m.Name, Unit: m.Unit, Engine: m.Engine.Kind, Role: m.Role, Model: m.Engine.Model,
 		Channels: channels, OptionalChannels: optional, Avatar: avatar != "", Desk: desk, Sprite: sprite,
 		State: s.State, Health: s.Health, Detail: s.Detail, Endpoint: endpoint,
-		NapIntervalSeconds: m.Learning.NapIntervalSeconds, PendingSkills: len(skills),
+		NapIntervalSeconds: m.Learning.NapIntervalSeconds, PendingSkills: len(skills), PendingChanges: loop.PendingChanges(root, id),
 	}
 	if m.Engine.Local != nil {
 		a.LocalModel = m.Engine.Local.Model
+	}
+	if h := f.linkHub(); h != nil {
+		a.Link = h.Info(id)
+		// Running elsewhere (or not seen by local compose): its link says how it is.
+		if st := h.Status(id); st != nil && a.State != "running" {
+			a.State, a.Health = st.State, ""
+			a.Detail = "linked from " + or(a.Link.Placement, "elsewhere")
+		}
 	}
 	if nap != nil {
 		a.LastNap = nap.TakenAt

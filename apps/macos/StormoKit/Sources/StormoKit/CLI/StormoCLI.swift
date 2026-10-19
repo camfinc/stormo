@@ -121,11 +121,11 @@ public struct StormoCLI: Sendable {
                     }
                 }
                 let errReader = Task {
-                    for try await chunk in err.fileHandleForReading.bytes.lines { await stderrTail.append(chunk) }
+                    for try await chunk in err.fileHandleForReading.liveLines() { await stderrTail.append(chunk) }
                 }
                 var failure: CLIEvent?
                 do {
-                    for try await line in out.fileHandleForReading.bytes.lines {
+                    for try await line in out.fileHandleForReading.liveLines() {
                         guard let event = CLIEvent(line: line) else { continue }
                         if case .error = event { failure = event }
                         continuation.yield(event)
@@ -186,4 +186,45 @@ private actor StderrTail {
         if lines.count > 200 { lines.removeFirst(lines.count - 200) }
     }
     var text: String { lines.joined(separator: "\n") }
+}
+
+extension FileHandle {
+    /// The handle's lines as they are written. `bytes.lines` on a pipe can hold output back until a
+    /// large chunk or EOF, which stalls a long-running command's events (the sign-in page URL).
+    func liveLines() -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let pending = LineBuffer()
+            readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    for line in pending.finish() { continuation.yield(line) }
+                    continuation.finish()
+                } else {
+                    for line in pending.append(data) { continuation.yield(line) }
+                }
+            }
+            continuation.onTermination = { [weak self] _ in self?.readabilityHandler = nil }
+        }
+    }
+}
+
+/// Splits incoming bytes into complete lines; only the readability handler's queue uses it.
+private final class LineBuffer: @unchecked Sendable {
+    private var buffer = Data()
+
+    func append(_ data: Data) -> [String] {
+        buffer.append(data)
+        var lines: [String] = []
+        while let nl = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+            lines.append(String(decoding: buffer[buffer.startIndex..<nl], as: UTF8.self))
+            buffer.removeSubrange(buffer.startIndex...nl)
+        }
+        return lines
+    }
+
+    func finish() -> [String] {
+        defer { buffer.removeAll() }
+        return buffer.isEmpty ? [] : [String(decoding: buffer, as: UTF8.self)]
+    }
 }

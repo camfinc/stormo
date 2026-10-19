@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/env"
+	"github.com/camfinc/stormo/pkg/instance"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -67,19 +68,87 @@ var ChannelSecrets = map[string][]string{
 	"telegram": {"TELEGRAM_BOT_TOKEN"},
 }
 
-// Core is the swarm core's model gateway as local agent containers see it. Each agent
+// CoreEndpoints are the swarm core's addresses as local agent containers see it. Each agent
 // authenticates with its own key, a local-only secret (never pushed to AWS).
-var Core = struct{ KeyEnv, URL, BaseURL, IngestURL, MCPURL string }{
-	KeyEnv: "SWARM_CORE_KEY",
-	// The core runs on the host (it drives the local compose projects), so containers reach it here.
-	URL:     "http://host.docker.internal:18600",
-	BaseURL: "http://host.docker.internal:18600/v1",
-	// An engine's hooks post to IngestURL/<engine kind>, signed with the agent's core key
-	// (docs/core.md §2).
-	IngestURL: "http://host.docker.internal:18600/ingest",
-	// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
-	MCPURL: "http://host.docker.internal:18600/mcp",
+type CoreEndpoints struct {
+	KeyEnv, URL, BaseURL, IngestURL, MCPURL string
+	// NoGateway: the ChatGPT subscription is not for this placement (it stays on local cores).
+	NoGateway bool
+	// Remote: an AWS agent linked to a core (the instance names one for the remote placement).
+	Remote bool
 }
+
+// CoreAt is the core on a host port: it runs on the host (it drives the local compose projects),
+// so containers reach it at host.docker.internal. Each instance's core has its own port.
+func CoreAt(port int) CoreEndpoints {
+	return coreAtURL(fmt.Sprintf("http://host.docker.internal:%d", port))
+}
+
+func coreAtURL(u string) CoreEndpoints {
+	return CoreEndpoints{
+		KeyEnv:  "SWARM_CORE_KEY",
+		URL:     u,
+		BaseURL: u + "/v1",
+		// An engine's hooks post to IngestURL/<engine kind>, signed with the agent's core key
+		// (docs/core.md §2).
+		IngestURL: u + "/ingest",
+		// The core's MCP server: the agent message bus and shared-space coordination (docs/core.md §4, §5).
+		MCPURL: u + "/mcp",
+	}
+}
+
+// CoreFor is the instance's core as agents in a placement reach it: core.urls[target], else
+// core.url, else the local core on its port (docs/remote-core.md §2).
+//
+// The model gateway (BaseURL) is called directly; hooks and MCP go to the agent's sidecar relay
+// (RelayURL), which forwards them to URL and holds them while the core is away (pkg/link).
+func CoreFor(inst *instance.Instance, target Target) CoreEndpoints {
+	return CoreForPlacement(inst, target, "")
+}
+
+// CoreForPlacement is CoreFor for a named placement (instance placements:): its own core.urls
+// entry, no ChatGPT gateway outside local, and ECS linked only when the instance names a core
+// for it (core.urls.remote, or aws).
+func CoreForPlacement(inst *instance.Instance, target Target, placement string) CoreEndpoints {
+	if placement == "" {
+		placement = "local"
+		if target == AWS {
+			placement = "remote"
+		}
+	}
+	// The local port only when no URL names the core: a runner host never claims one.
+	u := inst.CoreURLFor(placement)
+	if u == "" && placement == "remote" {
+		u = inst.CoreURLFor("aws")
+	}
+	var e CoreEndpoints
+	if u != "" {
+		e = coreAtURL(u)
+	} else {
+		e = CoreAt(inst.CorePort())
+	}
+	relay := RelayURL(target)
+	e.IngestURL, e.MCPURL = relay+"/ingest", relay+"/mcp"
+	if p, ok := inst.PlacementNamed(placement); ok && p.Kind != instance.PlacementLocal {
+		e.NoGateway = true
+	}
+	if target == AWS {
+		e.Remote = inst.CoreURLs["remote"] != "" || inst.CoreURLs["aws"] != "" || inst.CoreURL != ""
+	}
+	return e
+}
+
+// RelayURL is the agent's sidecar relay as its engine reaches it: the nap service by name in a
+// local compose project, localhost in an ECS task (one network namespace).
+func RelayURL(target Target) string {
+	if target == Local {
+		return "http://nap:18690"
+	}
+	return "http://localhost:18690"
+}
+
+// Core is the core on the default port; its KeyEnv is the same for every instance.
+var Core = CoreAt(18600)
 
 // OptionalSecret is a secret the agent can run without; when absent, what it gates is left out.
 type OptionalSecret struct {
@@ -190,6 +259,9 @@ type Learning struct {
 	UserCharLimit      int     `json:"user_char_limit"`
 	SeedFill           float64 `json:"seed_fill"`
 	NapIntervalSeconds int     `json:"nap_interval_seconds"`
+	// AutoReview: the core's review may approve this agent's proposals on its own (default true;
+	// learning.auto_review: false sends all of them to a person, e.g. a client-facing agent).
+	AutoReview bool `json:"auto_review"`
 }
 
 type Deploy struct {
@@ -213,6 +285,8 @@ type Agent struct {
 	Secrets         []string         `json:"secrets"`
 	OptionalSecrets []OptionalSecret `json:"optional_secrets"`
 	Actions         []string         `json:"actions"`
+	// Capabilities the core may run for this agent (instance capabilities:).
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Non-secret settings exported to the agent's container as-is; never a credential.
 	Env      *env.Env `json:"env"`
 	State    []State  `json:"state"`
@@ -362,6 +436,7 @@ type raw struct {
 	Secrets         []any            `yaml:"secrets"`
 	OptionalSecrets []map[string]any `yaml:"optional_secrets"`
 	Actions         []any            `yaml:"actions"`
+	Capabilities    []any            `yaml:"capabilities"`
 	Env             yaml.Node        `yaml:"env"`
 	State           []State          `yaml:"state"`
 	Learning        map[string]any   `yaml:"learning"`
@@ -473,6 +548,12 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	for _, a := range actions {
 		au := strings.SplitN(a, ".", 2)[0]
 		if err := req(au == unit || au == "group", `%s: action "%s" belongs to unit "%s", not "%s"`, where, a, au, unit); err != nil {
+			return nil, err
+		}
+	}
+	capabilities := strs(m.Capabilities)
+	for _, c := range capabilities {
+		if err := req(instance.CapabilityName.MatchString(c), `%s: capability "%s" is lowercase words joined by dots`, where, c); err != nil {
 			return nil, err
 		}
 	}
@@ -598,7 +679,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 		channels = append(channels, ch)
 	}
 
-	learning := Learning{MemoryCharLimit: 2200, UserCharLimit: 1375, SeedFill: 0.6, NapIntervalSeconds: 900}
+	learning := Learning{MemoryCharLimit: 2200, UserCharLimit: 1375, SeedFill: 0.6, NapIntervalSeconds: 900, AutoReview: true}
 	for _, b := range []struct {
 		now, old string
 		dst      *int
@@ -631,6 +712,13 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	if v, ok := num(m.Learning["nap_interval_seconds"]); ok {
 		learning.NapIntervalSeconds = int(v)
 	}
+	if v, ok := m.Learning["auto_review"]; ok {
+		b, isBool := v.(bool)
+		if err := req(isBool, "%s: learning.auto_review is true or false", where); err != nil {
+			return nil, err
+		}
+		learning.AutoReview = b
+	}
 	deploy := Deploy{Launch: "fargate", Registry: "ghcr", CPU: 1024, Memory: 2048, EphemeralStorageGiB: 30, SecretID: secretPrefix + "/" + id}
 	if v := str(m.Deploy["launch"]); v != "" {
 		deploy.Launch = v
@@ -660,7 +748,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	}
 	return &Agent{
 		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Engine: engine,
-		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Env: envs,
+		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Capabilities: capabilities, Env: envs,
 		State: state, Learning: learning, Deploy: deploy, Limits: limits, Schedules: schedules, Format: format, Legacy: legacy,
 	}, nil
 }

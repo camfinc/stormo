@@ -181,7 +181,7 @@ struct OfficeHUD: View {
             Meter(label: "On shift", value: "\(s.onShift)/\(s.total)", color: s.onShift > 0 ? OfficePalette.ok : OfficePalette.off)
             Meter(label: "Working", value: "\(s.working)", color: s.working > 0 ? OfficePalette.busy : nil)
             Meter(label: "Idle", value: "\(idle)", color: idle > 0 ? OfficePalette.ok : nil)
-            Meter(label: "To review", value: "\(fleet.agents.reduce(0) { $0 + ($1.pendingLearnings ?? 0) + ($1.pendingSkills ?? 0) })",
+            Meter(label: "To review", value: "\(fleet.agents.reduce(0) { $0 + $1.toReview })",
                   color: s.toReview > 0 ? OfficePalette.gold : nil)
             if s.attention > 0 { Meter(label: "Attention", value: "\(s.attention)", color: OfficePalette.bad) }
             if g.planLimitedUntil != nil {

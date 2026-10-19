@@ -21,12 +21,15 @@ public struct FleetSummary: Sendable, Equatable {
             if a.state == "running" { onShift += 1 }
             if a.office?.working == true { working += 1 }
             if a.needsAttention { attention += 1 }
-            if (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0) > 0 { toReview += 1 }
+            if a.toReview > 0 { toReview += 1 }
         }
     }
 }
 
 extension FleetAgent {
+    /// Everything of its waiting for review: lessons, skills, runtime schedules and settings.
+    public var toReview: Int { (pendingLearnings ?? 0) + (pendingSkills ?? 0) + (pendingChanges ?? 0) }
+
     /// Unhealthy, or a platform (Slack…) reporting it needs attention: the office's red `!`.
     public var needsAttention: Bool {
         if health == "unhealthy" { return true }
@@ -57,6 +60,8 @@ public final class FleetStore {
     /// The instance's look (/api/instance); nil on a core without it.
     public private(set) var look: InstanceLook?
     public var client: CoreClient
+    /// Deleted agents, hidden until the core's registry (rescanned on a timer) drops them too.
+    private var deleted: Set<String> = []
 
     public init(client: CoreClient) {
         self.client = client
@@ -64,7 +69,9 @@ public final class FleetStore {
 
     public func refresh() async {
         do {
-            let f = try await client.fleet()
+            var f = try await client.fleet()
+            deleted.formIntersection(f.agents.map(\.id))
+            f.agents.removeAll { deleted.contains($0.id) }
             fleet = f
             summary = FleetSummary(f)
             clockOffset = f.now - Int64(Date().timeIntervalSince1970 * 1000)
@@ -73,6 +80,13 @@ public final class FleetStore {
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    /// Drops a deleted agent at once instead of at the core's next rescan.
+    public func forget(_ id: String) {
+        deleted.insert(id)
+        fleet?.agents.removeAll { $0.id == id }
+        if let fleet { summary = FleetSummary(fleet) }
     }
 
     public func clear() {

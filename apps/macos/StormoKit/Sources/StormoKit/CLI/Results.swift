@@ -36,6 +36,7 @@ public struct AgentStatus: Codable, Sendable, Equatable, Identifiable {
     public var lastNap: String?
     public var pendingLearnings: Int
     public var pendingSkills: Int
+    public var pendingChanges: Int?
     public var detail: String?
     public var id: String { agent }
 }
@@ -201,6 +202,14 @@ public struct ExportResult: Codable, Sendable, Equatable {
     public var files: Int
     public var naps: Int
     public var containsSecrets: Bool
+}
+
+/// `delete agent <agent>`.
+public struct DeleteResult: Codable, Sendable, Equatable {
+    public var agent: String
+    public var removed: [String]
+    /// What stays and may need a person (a shared persona, a stopped ECS service, an empty unit).
+    public var notes: [String]
 }
 
 /// `import <file.zip>`.

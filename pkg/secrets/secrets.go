@@ -221,6 +221,54 @@ func WriteLocalEnv(root string, a *manifest.Agent) (string, Resolved, error) {
 	return p, r, nil
 }
 
+// WithCoreKey adds the agent's core key (minted under local.agents.<id>, local-only until now)
+// to what an AWS push sends: for an agent on ECS that links to a core (deploy.Linked), whose
+// sidecar and engine read it from Secrets Manager (docs/remote-core.md decision 3).
+func WithCoreKey(f *File, a *manifest.Agent, r *Resolved) {
+	if v, ok := f.Local.lookup(a, manifest.Core.KeyEnv); ok && v != "" {
+		r.Values.Set(manifest.Core.KeyEnv, v)
+		return
+	}
+	r.Missing = append(r.Missing, manifest.Core.KeyEnv)
+}
+
+// SharedValue is a value from the file's shared layer (the core's own secrets: capability headers).
+func SharedValue(f *File, name string) (string, bool) {
+	if f == nil || f.Layers.Shared == nil {
+		return "", false
+	}
+	return f.Layers.Shared.Get(name)
+}
+
+// LinkEnvFile is the sidecar's env file: only what its link needs (the agent's core key and its
+// engine API key), never the agent's other secrets.
+func LinkEnvFile(root, id string) string {
+	return filepath.Join(manifest.AgentDir(root, id), "data", "link.env")
+}
+
+// WriteLinkEnv writes the link's env file from resolved values; apiKeyName is the engine's API key
+// name (engine.Runtime.APIKeyName). Missing values are left out (the link then stays off).
+func WriteLinkEnv(root string, a *manifest.Agent, r Resolved, apiKeyName string) (string, error) {
+	vals := env.New()
+	if r.Values != nil {
+		if v, ok := r.Values.Get(manifest.Core.KeyEnv); ok && v != "" {
+			vals.Set(manifest.Core.KeyEnv, v)
+		}
+		if v, ok := r.Values.Get(apiKeyName); ok && v != "" {
+			vals.Set("SWARM_AGENT_API_KEY", v)
+		}
+	}
+	body, err := RenderEnvFile(vals)
+	if err != nil {
+		return "", err
+	}
+	p := LinkEnvFile(root, a.ID)
+	if err := WritePrivate(p, []byte(body)); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
 // PerAgent names belong to one agent by design (its engine API key, its own bot/app tokens).
 func PerAgent(name string) bool {
 	if slices.Contains(engines.APIKeyNames(), name) {

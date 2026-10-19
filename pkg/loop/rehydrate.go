@@ -157,6 +157,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		withheld[w] = true
 	}
 	baseSkills := info.Skills.Map()
+	rejectedSkills := info.RejectedSkills.Map()
 	var napSkills map[string]string
 	if nap != nil && nap.Baseline != nil {
 		napSkills = nap.Baseline.Skills.Map()
@@ -168,6 +169,16 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			continue // left out of this build: an optional secret it needs is absent
 		}
 		baseHash, inBaseline := baseSkills[dir]
+		liveHashes := map[string]string{}
+		for _, p := range paths {
+			liveHashes[p] = live[p].meta.Sha256
+		}
+		if h, ok := rejectedSkills[dir]; ok && h == build.SkillHash(liveHashes, paths) {
+			if inBaseline {
+				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
+			}
+			continue // a reviewer rejected this runtime version
+		}
 		leaf := dir[strings.LastIndex(dir, "/")+1:]
 		if !inBaseline && engineOwned[leaf] {
 			continue // the image ships its own copy
@@ -177,11 +188,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 				report.KeptRepoSkills = append(report.KeptRepoSkills, dir)
 				continue
 			}
-			hashes := map[string]string{}
-			for _, p := range paths {
-				hashes[p] = live[p].meta.Sha256
-			}
-			if build.SkillHash(hashes, paths) == baseHash {
+			if build.SkillHash(liveHashes, paths) == baseHash {
 				continue // unchanged at runtime
 			}
 			for p := range out {
@@ -227,9 +234,15 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
-	// 4. Schedules: merge baseline and runtime-created jobs.
+	// 4. Schedules: merge baseline and runtime-created jobs, less the ones a reviewer rejected.
 	if c, ok := live[L.Schedules]; ok && L.Schedules != "" {
-		merged, err := o.Engine.MergeSchedules(base[L.Schedules], c.body)
+		body := c.body
+		if d, ok := o.Engine.(engine.ScheduleDropper); ok && len(info.RejectedJobs) > 0 {
+			if body, err = d.DropSchedules(body, info.RejectedJobs); err != nil {
+				return nil, err
+			}
+		}
+		merged, err := o.Engine.MergeSchedules(base[L.Schedules], body)
 		if err != nil {
 			return nil, err
 		}
@@ -278,6 +291,12 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	if err := os.WriteFile(filepath.Join(o.Home, ".swarm", "rehydrate.json"), rep, 0o644); err != nil {
 		return nil, err
 	}
+	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running
+	// instance (locally it is a bind mount), and a nap must not claim the new one.
+	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills, Settings: bootedSettings(o.Engine, base)})
+	if err := os.WriteFile(filepath.Join(o.Home, BootedPath), booted, 0o644); err != nil {
+		return nil, err
+	}
 	if L.RuntimeUID != 0 && os.Geteuid() == 0 {
 		if _, err := ChownTree(o.Home, L.RuntimeUID, L.RuntimeGID, nil); err != nil {
 			return nil, err
@@ -287,6 +306,26 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, errors.New("rehydrate produced no memory file")
 	}
 	return report, nil
+}
+
+// bootedSettings are the runtime-changeable settings in the baseline's engine config (empty, never
+// nil, when the engine has none: nil marks a nap from before they were recorded).
+func bootedSettings(eng engine.Engine, base map[string][]byte) map[string]string {
+	out := map[string]string{}
+	rs, ok := eng.(engine.RuntimeSettings)
+	L := eng.Layout()
+	if !ok || L.Config == "" || base[L.Config] == nil {
+		return out
+	}
+	list, err := rs.Settings(base[L.Config])
+	if err != nil {
+		log.Printf("[rehydrate] reading settings from %s: %v", L.Config, err)
+		return out
+	}
+	for _, s := range list {
+		out[s.Key] = s.Value
+	}
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {

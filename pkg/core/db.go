@@ -137,6 +137,61 @@ var migrations = []string{
 	`ALTER TABLE learn_runs ADD COLUMN auto_accepted INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN restarted INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN restart_note TEXT NOT NULL DEFAULT '';`,
+	// 7: personal access tokens (only a hash is kept) and the audit log of what principals did.
+	`CREATE TABLE tokens (
+		id        TEXT PRIMARY KEY,
+		name      TEXT NOT NULL UNIQUE,
+		scope     TEXT NOT NULL,
+		hash      TEXT NOT NULL,
+		created   INTEGER NOT NULL,
+		expires   INTEGER,
+		last_used INTEGER,
+		revoked   INTEGER
+	);
+	CREATE TABLE audit (
+		id     INTEGER PRIMARY KEY,
+		at     INTEGER NOT NULL,
+		actor  TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX audit_at ON audit(at);`,
+	// 8: capability jobs the core brokers for agents (input and output kept 30 days; preview scrubbed).
+	`CREATE TABLE cap_jobs (
+		id         INTEGER PRIMARY KEY,
+		capability TEXT NOT NULL,
+		agent      TEXT NOT NULL,
+		status     TEXT NOT NULL,
+		input      TEXT NOT NULL,
+		output     TEXT NOT NULL DEFAULT '',
+		error      TEXT NOT NULL DEFAULT '',
+		preview    TEXT NOT NULL DEFAULT '',
+		cost       REAL NOT NULL DEFAULT 0,
+		created    INTEGER NOT NULL,
+		started    INTEGER,
+		finished   INTEGER
+	);
+	CREATE INDEX cap_jobs_status ON cap_jobs(status, id);
+	CREATE INDEX cap_jobs_agent ON cap_jobs(agent, created);`,
+	// 9: the review's first pass: its verdicts (one per proposal content and rules, so an unchanged
+	// proposal is not asked about again) and what each run approved, passed on or held.
+	`CREATE TABLE review_verdicts (
+		agent   TEXT NOT NULL,
+		kind    TEXT NOT NULL,
+		ref     TEXT NOT NULL,
+		hash    TEXT NOT NULL,
+		rules   TEXT NOT NULL,
+		approve INTEGER NOT NULL,
+		reason  TEXT NOT NULL,
+		model   TEXT NOT NULL,
+		at      INTEGER NOT NULL,
+		PRIMARY KEY (agent, kind, ref, hash, rules)
+	);
+	ALTER TABLE learn_runs ADD COLUMN setting_proposals INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN passed INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE learn_runs ADD COLUMN review_note TEXT NOT NULL DEFAULT '';`,
 }
 
 // DB is core.db.

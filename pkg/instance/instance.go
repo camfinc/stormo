@@ -86,7 +86,8 @@ type Clock struct {
 
 // CoreLearning is when the swarm core runs the learning cycle on its own (stormo.yaml
 // core.learning): each agent napped, then dreamed into its working tree, one after another. Off
-// unless At is set; accepting, rejecting and promoting stay human (`stormo learn`).
+// unless At is set. After each dream the review's first pass approves what is obviously safe;
+// rejecting and promoting stay human (`stormo learn`, the review page).
 type CoreLearning struct {
 	// Daily start time "HH:MM" in Timezone; "" never starts on its own.
 	At string `json:"at,omitempty"`
@@ -98,14 +99,30 @@ type CoreLearning struct {
 	QuietWaitMinutes int `json:"quietWaitMinutes"`
 	// The agents a scheduled cycle covers; empty is every agent.
 	Agents []string `json:"agents,omitempty"`
-	// AutoAccept: after each dream, accept the lessons that need no judgement call: agent-scoped
-	// memory (never user-profile) with no PII flag, seen at least AutoAcceptMinSeen times. Skills
-	// and unit or group promotions always wait for a person.
+	// Review is the first pass after each dream (docs/core.md §6): "auto" (the default) lets the
+	// rules in code (loop.ReviewCandidates) hold what needs a person and a model approve what is
+	// obviously safe among the rest, passing anything else to a person; it never rejects. "manual"
+	// leaves every decision to a person.
+	Review string `json:"review"`
+	// The model the review asks: a connection (default: the default ChatGPT sign-in) and a model
+	// (default for a ChatGPT connection: the first its plan lists; required for an API one).
+	ReviewConnection string `json:"reviewConnection"`
+	ReviewModel      string `json:"reviewModel,omitempty"`
+	// ReviewPrompt is a file, relative to the instance, appended to the built-in review rules.
+	ReviewPrompt string `json:"reviewPrompt,omitempty"`
+	// AutoAccept is Review == "auto" (the field API readers had before Review). AutoAcceptMinSeen:
+	// a lesson is judged only once seen this many times.
 	AutoAccept        bool `json:"autoAccept"`
 	AutoAcceptMinSeen int  `json:"autoAcceptMinSeen"`
-	// AutoRestart: restart a running, idle agent after lessons were auto-accepted, so they apply.
+	// AutoRestart: restart a running, idle agent after the review approved something, so it applies.
 	AutoRestart bool `json:"autoRestart"`
 }
+
+// Review modes (core.learning.review).
+const (
+	ReviewAuto   = "auto"
+	ReviewManual = "manual"
+)
 
 // Instance is a loaded stormo.yaml.
 type Instance struct {
@@ -131,6 +148,29 @@ type Instance struct {
 	OfficeUnits map[string]OfficeUnit `json:"officeUnits"`
 	// The core's own learning schedule (stormo.yaml core.learning).
 	CoreLearning CoreLearning `json:"coreLearning"`
+	// The core serves its browser pages (office, review) only when true (stormo.yaml core.web_ui);
+	// the macOS app is the default face and uses the core's API either way.
+	CoreWebUI bool `json:"coreWebUI"`
+	// The core's port as stormo.yaml pins it (core.port); 0 lets CorePort pick and keep one.
+	CorePortSetting int `json:"corePortSetting,omitempty"`
+	// Requests that reach the core's loopback listener directly may read the fleet's open views
+	// without a token (stormo.yaml core.loopback_trust, default true). Everything else needs one.
+	CoreLoopbackTrust bool `json:"coreLoopbackTrust"`
+	// A second address the core listens on, beyond loopback (stormo.yaml core.listen), with TLS
+	// unless core.tls is off (only on a private address). docs/remote-core.md §3.
+	CoreListen string  `json:"coreListen,omitempty"`
+	CoreTLS    CoreTLS `json:"coreTLS"`
+	// Where agents and clients reach the core (core.url), and per placement (core.urls: local,
+	// aws, vps…), which win over it. Empty: a local core at host.docker.internal.
+	CoreURL string `json:"coreURL,omitempty"`
+	// Where the core keeps the shared space besides its workdir/ (core.storage): "" for the
+	// directory alone (a local disk, or an EFS mount), or s3://bucket/prefix mirrored to S3.
+	CoreStorage string `json:"coreStorage,omitempty"`
+	// Heavy or shared calls the core brokers for agents (stormo.yaml capabilities:).
+	Capabilities []Capability `json:"capabilities"`
+	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
+	Placements []Placement       `json:"placements"`
+	CoreURLs   map[string]string `json:"coreURLs,omitempty"`
 	// Ways to reach models (stormo.yaml connections:, plus the implicit openrouter and chatgpt).
 	Connections []Connection `json:"connections"`
 	Aws         AwsTarget    `json:"aws"`
@@ -174,19 +214,35 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
-		Learning struct {
+		WebUI         bool              `yaml:"web_ui"`
+		Port          int               `yaml:"port"`
+		LoopbackTrust *bool             `yaml:"loopback_trust"`
+		Listen        string            `yaml:"listen"`
+		TLS           yaml.Node         `yaml:"tls"`
+		URL           string            `yaml:"url"`
+		URLs          map[string]string `yaml:"urls"`
+		Storage       string            `yaml:"storage"`
+		Learning      struct {
 			At                string   `yaml:"at"`
 			Timezone          string   `yaml:"timezone"`
 			StaggerMinutes    *int     `yaml:"stagger_minutes"`
 			QuietWaitMinutes  *int     `yaml:"quiet_wait_minutes"`
 			Agents            []string `yaml:"agents"`
-			AutoAccept        bool     `yaml:"auto_accept"`
+			Review            string   `yaml:"review"`
+			ReviewConnection  string   `yaml:"review_connection"`
+			ReviewModel       string   `yaml:"review_model"`
+			ReviewPrompt      string   `yaml:"review_prompt"`
+			AutoAccept        *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
 			AutoAcceptMinSeen *int     `yaml:"auto_accept_min_seen"`
 			AutoRestart       bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
-	Connections []rawConnection `yaml:"connections"`
-	Deploy      struct {
+	Connections  []rawConnection          `yaml:"connections"`
+	Capabilities map[string]rawCapability `yaml:"capabilities"`
+	Placements   map[string]struct {
+		Kind string `yaml:"kind"`
+	} `yaml:"placements"`
+	Deploy struct {
 		Aws struct {
 			Account          any    `yaml:"account"`
 			Region           string `yaml:"region"`
@@ -250,17 +306,62 @@ func Load(root string) (*Instance, error) {
 			}
 		}
 	}
+	placements, err := parsePlacements(raw.Placements)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	capabilities, err := parseCapabilities(raw.Capabilities, placements)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	coreTLS, err := parseCoreTLS(&raw.Core.TLS, raw.Core.Listen)
+	if err != nil {
+		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	for k, u := range raw.Core.URLs {
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return nil, &Error{fmt.Sprintf("%s: core.urls.%s must be an http(s) URL", path, k)}
+		}
+	}
+	if st := raw.Core.Storage; st != "" && (!strings.HasPrefix(st, "s3://") || len(st) <= len("s3://")) {
+		return nil, &Error{fmt.Sprintf("%s: core.storage is s3://bucket/prefix (leave it out for the workdir directory alone)", path)}
+	}
+	if u := raw.Core.URL; u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return nil, &Error{fmt.Sprintf("%s: core.url must be an http(s) URL", path)}
+	}
+	if raw.Core.Port != 0 && (raw.Core.Port < 1024 || raw.Core.Port > 65535) {
+		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
+	}
 	cl := raw.Core.Learning
+	review := cl.Review
+	switch {
+	case review != "" && cl.AutoAccept != nil:
+		return nil, &Error{fmt.Sprintf("%s: core.learning: auto_accept is the old name of review; keep review", path)}
+	case review == "" && cl.AutoAccept != nil && !*cl.AutoAccept:
+		review = ReviewManual
+	case review == "":
+		review = ReviewAuto
+	case review != ReviewAuto && review != ReviewManual:
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review is auto or manual, got %q", path, review)}
+	}
 	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
-		AutoAccept: cl.AutoAccept, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
+		Review: review, ReviewConnection: or(cl.ReviewConnection, DefaultChatGPT), ReviewModel: cl.ReviewModel, ReviewPrompt: cl.ReviewPrompt,
+		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
 	if cl.AutoAcceptMinSeen != nil {
 		if *cl.AutoAcceptMinSeen < 1 || *cl.AutoAcceptMinSeen > 1000 {
 			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_seen must be 1 to 1000", path)}
 		}
 		learning.AutoAcceptMinSeen = *cl.AutoAcceptMinSeen
 	}
-	if cl.AutoRestart && !cl.AutoAccept {
-		return nil, &Error{fmt.Sprintf("%s: core.learning.auto_restart needs auto_accept", path)}
+	if cl.AutoRestart && review != ReviewAuto {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.auto_restart needs review: auto", path)}
+	}
+	if p := cl.ReviewPrompt; p != "" {
+		if filepath.IsAbs(p) || strings.HasPrefix(filepath.ToSlash(filepath.Clean(p)), "../") {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.review_prompt is a file inside the instance", path)}
+		}
+		// Not opened here: sidecars load stormo.yaml with only some of the instance's files. The core
+		// reads it for each review, and a missing file stops the review with that reason.
 	}
 	if cl.At != "" && !atRe.MatchString(cl.At) {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.at must be a 24-hour time like \"03:00\", got %q", path, cl.At)}
@@ -284,6 +385,11 @@ func Load(root string) (*Instance, error) {
 	connections, err := connectionsOf(raw.Connections, path)
 	if err != nil {
 		return nil, err
+	}
+	if c, ok := findConnection(connections, learning.ReviewConnection); !ok {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review_connection %q is not a connection of this instance", path, learning.ReviewConnection)}
+	} else if c.API() && learning.ReviewModel == "" && review == ReviewAuto {
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review_model is required with the API connection %s", path, c.Name)}
 	}
 	rules := raw.Scrub.Rules
 	if rules == nil {
@@ -312,6 +418,16 @@ func Load(root string) (*Instance, error) {
 		Clocks:             raw.Office.Clocks,
 		OfficeUnits:        orUnits(raw.Office.Units),
 		CoreLearning:       learning,
+		CoreWebUI:          raw.Core.WebUI,
+		CorePortSetting:    raw.Core.Port,
+		CoreLoopbackTrust:  raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
+		CoreListen:         raw.Core.Listen,
+		CoreTLS:            coreTLS,
+		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
+		CoreURLs:           trimURLs(raw.Core.URLs),
+		Placements:         placements,
+		Capabilities:       capabilities,
+		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),
