@@ -106,7 +106,7 @@ func TestCoreLearning(t *testing.T) {
 	}
 	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_accept_min_seen: 0",
 		"review: sometimes", "review: auto\n    auto_accept: true", "review: manual\n    auto_restart: true", "review_connection: nope",
-		"review_prompt: missing.md", "review_prompt: ../outside.md"} {
+		"review_prompt: ../outside.md", "review_prompt: /etc/rules.md"} {
 		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", i)), "slug: acme\ncore:\n  learning:\n    "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.learning") {
 			t.Errorf("%s: %v", bad, err)
 		}

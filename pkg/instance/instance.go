@@ -360,9 +360,8 @@ func Load(root string) (*Instance, error) {
 		if filepath.IsAbs(p) || strings.HasPrefix(filepath.ToSlash(filepath.Clean(p)), "../") {
 			return nil, &Error{fmt.Sprintf("%s: core.learning.review_prompt is a file inside the instance", path)}
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(path), p)); err != nil {
-			return nil, &Error{fmt.Sprintf("%s: core.learning.review_prompt: %v", path, err)}
-		}
+		// Not opened here: sidecars load stormo.yaml with only some of the instance's files. The core
+		// reads it for each review, and a missing file stops the review with that reason.
 	}
 	if cl.At != "" && !atRe.MatchString(cl.At) {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.at must be a 24-hour time like \"03:00\", got %q", path, cl.At)}
