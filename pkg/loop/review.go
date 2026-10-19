@@ -115,6 +115,11 @@ func ListSkillProposals(root, agent string) ([]SkillProposal, error) {
 
 // DecideSkill accepts (copies into skills/) or rejects a skill proposal and records the decision.
 func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
+	return DecideSkillBy(root, agent, skill, decision, Decider{})
+}
+
+// DecideSkillBy is DecideSkill recording who decided (the core's review) and why.
+func DecideSkillBy(root, agent, skill, decision string, who Decider) (*SkillProposal, error) {
 	props, err := ListSkillProposals(root, agent)
 	if err != nil {
 		return nil, err
@@ -149,7 +154,7 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 	if err != nil {
 		return nil, err
 	}
-	wm.SkillDecisions[skill] = SkillDecision{Hash: prop.NapHash, Decision: decision, At: IsoMillis(time.Now())}
+	wm.SkillDecisions[skill] = SkillDecision{Hash: prop.NapHash, Decision: decision, At: IsoMillis(time.Now()), By: who.By, Reason: who.Reason}
 	return prop, SaveWatermark(root, agent, wm)
 }
 
