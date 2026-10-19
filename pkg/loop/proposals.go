@@ -328,3 +328,16 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 	pruneEmpty(dir)
 	return meta, nil
 }
+
+// PendingChanges counts an agent's open runtime proposals: its schedules (one proposal) and each
+// setting.
+func PendingChanges(root, agent string) int {
+	n := 0
+	if fileExists(filepath.Join(proposalsRoot(root, agent), "schedules.yaml")) {
+		n++
+	}
+	if props, err := ListSettingProposals(root, agent); err == nil {
+		n += len(props)
+	}
+	return n
+}

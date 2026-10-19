@@ -86,7 +86,7 @@ struct AgentsView: View {
                     }
                     .width(min: 80, ideal: 110)
                     TableColumn("To review") { a in
-                        let n = (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0)
+                        let n = a.toReview
                         Text(n > 0 ? "\(n)" : "—").foregroundStyle(n > 0 ? .primary : .tertiary)
                     }
                     .width(min: 60, ideal: 80)
@@ -265,7 +265,7 @@ struct AgentInspector: View {
                 if let m = agent.localModel { LabeledContent("Local model", value: m) }
                 if let e = agent.endpoint { LabeledContent("API", value: e) }
                 if let n = agent.napIntervalSeconds { LabeledContent("Nap every", value: Duration.seconds(n).formatted(.units(allowed: [.hours, .minutes]))) }
-                LabeledContent("To review", value: "\((agent.pendingLearnings ?? 0)) learnings, \((agent.pendingSkills ?? 0)) skills")
+                LabeledContent("To review", value: "\((agent.pendingLearnings ?? 0)) learnings, \((agent.pendingSkills ?? 0)) skills\((agent.pendingChanges ?? 0) > 0 ? ", \(agent.pendingChanges ?? 0) runtime changes" : "")")
             }
             Section {
                 HStack {

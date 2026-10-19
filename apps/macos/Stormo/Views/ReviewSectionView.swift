@@ -1,9 +1,10 @@
 import StormoKit
 import SwiftUI
 
-/// What the dream proposed for each agent: lessons and skills to accept or reject, accepted lessons
-/// to promote, and a restart so decisions apply. The same decisions as `stormo learn`, through the
-/// core's review API with the owner token (the browser review page's replacement).
+/// What the dream proposed for each agent: lessons, skills, and the schedules and settings it changed
+/// at runtime, to accept or reject; accepted lessons to promote; what the automatic review said; and
+/// a restart so decisions apply. The same decisions as `stormo learn`, through the core's review API
+/// with the owner token (the browser review page's replacement).
 struct ReviewSectionView: View {
     @Environment(AppModel.self) private var model
     @State private var showAll = false
@@ -20,9 +21,7 @@ struct ReviewSectionView: View {
                     ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle", description: Text("Proposals appear here after an agent's dream."))
                 } else {
                     Form {
-                        if view.autoAccept {
-                            Section { Text("Automatic review is on: after each learning cycle a model approves what is obviously safe and passes the rest to you; it never rejects. What is here waits for you. Runtime schedules and settings are reviewed with `stormo learn` or the core's review page.").font(.callout).foregroundStyle(.secondary) }
-                        }
+                        Section { ReviewModeNote(view: view) }
                         ForEach(agents) { AgentReview(agent: $0, showAccepted: showAll) }
                     }
                     .formStyle(.grouped)
@@ -73,6 +72,8 @@ private struct AgentReview: View {
             if agent.unapplied { restartRow }
             ForEach(agent.proposedLessons) { LessonRow(agent: agent.id, lesson: $0) }
             ForEach(agent.skills) { SkillRow(agent: agent.id, skill: $0) }
+            if let schedules = agent.schedules { SchedulesRow(agent: agent.id, schedules: schedules) }
+            ForEach(agent.runtimeSettings) { SettingRow(agent: agent.id, setting: $0) }
             if agent.proposedLessons.count > 1 {
                 HStack {
                     Spacer()
@@ -87,7 +88,8 @@ private struct AgentReview: View {
                 }
             }
         } header: {
-            SectionTitle(agent.name, note: [agent.unit, agent.state == "running" ? (agent.busy ? "working" : "on shift") : "off shift"].filter { !$0.isEmpty }.joined(separator: " · "))
+            SectionTitle(agent.name, note: [agent.unit, agent.state == "running" ? (agent.busy ? "working" : "on shift") : "off shift",
+                                            agent.autoReview == false ? "no automatic review" : ""].filter { !$0.isEmpty }.joined(separator: " · "))
         }
     }
 
@@ -142,6 +144,7 @@ private struct LessonRow: View {
                 }
             }
             .controlSize(.small)
+            if lesson.status == "proposed" { ReviewNote(ai: lesson.ai, held: lesson.held) }
         }
         .padding(.vertical, 2)
     }
@@ -177,6 +180,7 @@ private struct SkillRow: View {
                     .disabled(!skill.pii.isEmpty || stale || busy)
             }
             .controlSize(.small)
+            ReviewNote(ai: skill.ai, held: skill.held)
             if stale {
                 Label("The agent changed a version of this skill from before the repo's latest edit\(skill.base.map { " (it booted from \($0))" } ?? ""). Red lines below include the repo's newer edits, not only the agent's. Accepting would undo them, so merge what you want by hand, then reject this.", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
@@ -224,6 +228,145 @@ private struct SkillRow: View {
 
     private func decide(_ verdict: ReviewDecision.Verdict) {
         Task { await model.review.decide(.skill(skill.skill, of: agent, verdict)) }
+    }
+}
+
+/// Whether the automatic review is on, and what it asks.
+private struct ReviewModeNote: View {
+    let view: ReviewView
+
+    var body: some View {
+        if view.review == "manual" || (view.review == nil && !view.autoAccept) {
+            Label("Automatic review is off (core.learning.review: manual): every proposal waits for you.", systemImage: "person")
+                .font(.callout).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Automatic review is on: after each learning cycle a model approves what is obviously safe and passes the rest to you. It never rejects. What is here waits for you.", systemImage: "checkmark.shield")
+                    .font(.callout)
+                Text(details).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var details: String {
+        var parts = ["Rules in code always keep client data, people's profiles, scripts and permission changes for you"]
+        if let c = view.reviewConnection { parts.append("model: \(view.reviewModel ?? "the first \(c) lists")") }
+        if let p = view.reviewPrompt { parts.append("your rules: \(p)") }
+        if view.autoRestart { parts.append("idle agents restart to apply") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Why a proposal is here: the rules held it for a person, or the review's model passed it on.
+private struct ReviewNote: View {
+    let ai: ReviewAI?
+    let held: String?
+
+    var body: some View {
+        if let held {
+            Label("Held for you by the rules: \(held)", systemImage: "hand.raised")
+                .font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let ai, !ai.approve {
+            Label("The review passed it to you: \(ai.reason)", systemImage: "questionmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+                .help("\(ai.model), \(ai.at)")
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// The schedules the agent changed at runtime, as one proposal.
+private struct SchedulesRow: View {
+    @Environment(AppModel.self) private var model
+    let agent: String
+    let schedules: ReviewSchedules
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.clock").foregroundStyle(.secondary)
+                Text("Scheduled jobs").fontWeight(.medium)
+                Tag("\(schedules.runtimeJobs.count) created at runtime")
+                ForEach(schedules.pii, id: \.self) { Tag("redacted \($0)", tint: .red) }
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                Button("Reject") { decide(.reject) }
+                    .disabled(busy)
+                    .help("Drops the jobs it created at runtime when it next starts.")
+                Button("Accept") { decide(.accept) }
+                    .disabled(!schedules.pii.isEmpty || busy)
+                    .help(schedules.pii.isEmpty ? "Writes these jobs to agent.yaml's schedules." : "Redacted: copy what you want into agent.yaml by hand, then reject.")
+            }
+            .controlSize(.small)
+            ReviewNote(ai: schedules.ai, held: schedules.held)
+            ForEach(schedules.jobs) { job in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(job.name ?? job.id).font(.callout)
+                        Text(job.when).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        if !job.enabled { Tag("paused") }
+                        if schedules.runtimeJobs.contains(job.id) { Tag("new", tint: .blue) }
+                        if let d = job.deliver, !d.isEmpty { Tag("→ \(d)") }
+                        if job.script != nil { Tag("runs a script", tint: .orange) }
+                    }
+                    if let p = job.prompt { Text(p).font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled) }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var busy: Bool { model.review.deciding.contains(ReviewDecision.schedules(of: agent, .accept).key) }
+
+    private func decide(_ verdict: ReviewDecision.Verdict) {
+        Task { await model.review.decide(.schedules(of: agent, verdict)) }
+    }
+}
+
+/// A setting the agent changed at runtime (a home channel, approved commands, an MCP server).
+private struct SettingRow: View {
+    @Environment(AppModel.self) private var model
+    let agent: String
+    let setting: ReviewSetting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                Text(setting.key).font(.callout.monospaced())
+                if setting.sensitive == true { Tag("widens what it may do", tint: .orange) }
+                ForEach(setting.pii, id: \.self) { Tag("redacted \($0)", tint: .red) }
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                Button("Reject") { decide(.reject) }
+                    .disabled(busy)
+                Button("Accept") { decide(.accept) }
+                    .disabled(!setting.pii.isEmpty || busy)
+                    .help("Writes it to the agent's files in the repo; it applies when the agent restarts.")
+            }
+            .controlSize(.small)
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
+                GridRow {
+                    Text("now").foregroundStyle(.secondary)
+                    Text(setting.current ?? "not set in the repo").foregroundStyle(setting.current == nil ? .tertiary : .primary)
+                }
+                GridRow {
+                    Text("proposed").foregroundStyle(.secondary)
+                    Text(setting.value)
+                }
+            }
+            .font(.caption.monospaced())
+            .textSelection(.enabled)
+            ReviewNote(ai: setting.ai, held: setting.held)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var busy: Bool { model.review.deciding.contains(ReviewDecision.settings([setting.key], of: agent, .accept).key) }
+
+    private func decide(_ verdict: ReviewDecision.Verdict) {
+        Task { await model.review.decide(.settings([setting.key], of: agent, verdict)) }
     }
 }
 

@@ -21,12 +21,15 @@ public struct FleetSummary: Sendable, Equatable {
             if a.state == "running" { onShift += 1 }
             if a.office?.working == true { working += 1 }
             if a.needsAttention { attention += 1 }
-            if (a.pendingLearnings ?? 0) + (a.pendingSkills ?? 0) > 0 { toReview += 1 }
+            if a.toReview > 0 { toReview += 1 }
         }
     }
 }
 
 extension FleetAgent {
+    /// Everything of its waiting for review: lessons, skills, runtime schedules and settings.
+    public var toReview: Int { (pendingLearnings ?? 0) + (pendingSkills ?? 0) + (pendingChanges ?? 0) }
+
     /// Unhealthy, or a platform (Slack…) reporting it needs attention: the office's red `!`.
     public var needsAttention: Bool {
         if health == "unhealthy" { return true }

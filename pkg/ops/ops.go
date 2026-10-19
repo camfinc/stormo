@@ -106,6 +106,7 @@ type Status struct {
 	LastNap          string `json:"lastNap,omitempty"`
 	PendingLearnings int    `json:"pendingLearnings"`
 	PendingSkills    int    `json:"pendingSkills"`
+	PendingChanges   int    `json:"pendingChanges"`
 	Detail           string `json:"detail,omitempty"`
 }
 
@@ -177,6 +178,7 @@ func AgentStatus(where place.Where, d *Deps, ids []string) ([]Status, error) {
 			return nil, err
 		}
 		row.PendingSkills = len(props)
+		row.PendingChanges = loop.PendingChanges(d.Inst.Root, id)
 		out = append(out, row)
 	}
 	return out, nil
@@ -216,8 +218,11 @@ func RenderStatus(rows []Status, now time.Time) string {
 			state += " (" + r.Health + ")"
 		}
 		review := "-"
-		if r.PendingLearnings > 0 || r.PendingSkills > 0 {
+		if r.PendingLearnings > 0 || r.PendingSkills > 0 || r.PendingChanges > 0 {
 			review = fmt.Sprintf("%d lessons, %d skills", r.PendingLearnings, r.PendingSkills)
+			if r.PendingChanges > 0 {
+				review += fmt.Sprintf(", %d changes", r.PendingChanges)
+			}
 		}
 		end := r.Endpoint
 		if r.Detail != "" {

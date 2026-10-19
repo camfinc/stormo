@@ -96,6 +96,8 @@ type FleetAgent struct {
 	NapIntervalSeconds int    `json:"napIntervalSeconds"`
 	PendingLearnings   int    `json:"pendingLearnings"`
 	PendingSkills      int    `json:"pendingSkills"`
+	// Runtime schedules and settings proposals waiting for review.
+	PendingChanges int `json:"pendingChanges"`
 	// The agent's containers together (agent + nap sidecar), from `docker stats`; nil when not
 	// running locally or docker did not answer.
 	Usage *ContainerUsage `json:"usage,omitempty"`
@@ -848,7 +850,7 @@ func (f *Fleet) pollAgent(id string, store loop.Store) *FleetAgent {
 		ID: id, Name: m.Name, Unit: m.Unit, Engine: m.Engine.Kind, Role: m.Role, Model: m.Engine.Model,
 		Channels: channels, OptionalChannels: optional, Avatar: avatar != "", Desk: desk, Sprite: sprite,
 		State: s.State, Health: s.Health, Detail: s.Detail, Endpoint: endpoint,
-		NapIntervalSeconds: m.Learning.NapIntervalSeconds, PendingSkills: len(skills),
+		NapIntervalSeconds: m.Learning.NapIntervalSeconds, PendingSkills: len(skills), PendingChanges: loop.PendingChanges(root, id),
 	}
 	if m.Engine.Local != nil {
 		a.LocalModel = m.Engine.Local.Model

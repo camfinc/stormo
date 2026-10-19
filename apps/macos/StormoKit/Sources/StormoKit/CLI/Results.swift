@@ -36,6 +36,7 @@ public struct AgentStatus: Codable, Sendable, Equatable, Identifiable {
     public var lastNap: String?
     public var pendingLearnings: Int
     public var pendingSkills: Int
+    public var pendingChanges: Int?
     public var detail: String?
     public var id: String { agent }
 }

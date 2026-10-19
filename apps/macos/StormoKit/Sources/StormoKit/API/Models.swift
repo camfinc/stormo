@@ -157,6 +157,8 @@ public struct FleetAgent: Codable, Sendable, Equatable, Identifiable {
     public var napIntervalSeconds: Int?
     public var pendingLearnings: Int?
     public var pendingSkills: Int?
+    /// Runtime schedules and settings proposals.
+    public var pendingChanges: Int?
     public var office: OfficeState?
     /// The agent's containers together (agent + nap), while running locally.
     public var usage: ContainerUsage?

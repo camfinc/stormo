@@ -11,6 +11,35 @@ import Testing
         #expect(o["skill"] == nil)
     }
 
+    @Test func runtimeDecisionsEncodeAsTheCoreReadsThem() throws {
+        let sch = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(ReviewDecision.schedules(of: "atlas", .reject))) as? [String: Any])
+        #expect(sch["schedules"] as? Bool == true && sch["decision"] as? String == "reject" && sch["lessons"] == nil && sch["skill"] == nil)
+        let set = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(ReviewDecision.settings(["home_channel.slack"], of: "atlas", .accept))) as? [String: Any])
+        #expect(set["settings"] as? [String] == ["home_channel.slack"] && set["schedules"] == nil)
+        #expect(ReviewDecision.schedules(of: "atlas", .accept).key != ReviewDecision.settings(["x"], of: "atlas", .accept).key)
+    }
+
+    @Test func decodesVerdictsHeldReasonsAndRuntimeProposals() throws {
+        let body = #"""
+        {"review":"auto","reviewConnection":"chatgpt","autoAccept":true,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[
+         {"id":"atlas","name":"Atlas","unit":"sales","state":"running","busy":false,"unapplied":false,"autoReview":true,
+          "lessons":[{"id":"l1","kind":"memory","scope":"agent","text":"t","pii":[],"status":"proposed","seenCount":1,"firstSeen":"a","lastSeen":"b","autoAcceptable":true,
+                      "ai":{"approve":false,"reason":"names a client","model":"m","at":"z"}}],
+          "skills":[],
+          "schedules":{"jobs":[{"id":"rt1","name":"Digest","cron":"0 8 * * *","prompt":"p","agent":true,"enabled":true,"deliver":"slack"}],"runtimeJobs":["rt1"],"pii":[],"nap":"n","held":"job rt1 runs a script"},
+          "settings":[{"key":"home_channel.slack","value":"C1","opaque":true,"pii":[],"nap":"n"}]}]}
+        """#
+        let v = try JSONDecoder().decode(ReviewView.self, from: Data(body.utf8))
+        let a = try #require(v.agents.first)
+        #expect(v.review == "auto" && a.pending == 3 && a.lessons[0].ai?.reason == "names a client")
+        #expect(a.schedules?.held == "job rt1 runs a script" && a.schedules?.jobs.first?.when == "0 8 * * *")
+        #expect(a.runtimeSettings.first?.key == "home_channel.slack" && a.runtimeSettings.first?.current == nil)
+        // A core from before the automatic review still decodes.
+        let old = #"{"autoAccept":false,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[{"id":"a","name":"A","unit":"u","state":"stopped","busy":false,"unapplied":false,"lessons":[],"skills":[]}]}"#
+        let o = try JSONDecoder().decode(ReviewView.self, from: Data(old.utf8))
+        #expect(o.review == nil && o.agents[0].pending == 0)
+    }
+
     @Test func ownerTokenIsTrimmedAndOptional() throws {
         let s = try Scratch()
         #expect(ReviewStore.ownerToken(root: s.url) == nil)
