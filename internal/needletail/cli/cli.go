@@ -122,8 +122,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Memory:         mem,
 		Redact:         red.Redact,
 		LongestSecret:  red.Longest,
-		// The core's fs_note for direct /shared writes arrives with the core client (M2).
-		SharedWrite: func(context.Context, string) { logf("shared write by a file tool (fs_note pending core client)") },
+		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, logger: logger}, nil
@@ -145,6 +144,8 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	if len(key) < api.MinKey {
 		rt.logger.Printf("%s is missing or shorter than %d characters: the API answers only /health", secrets.APIKey, api.MinKey)
 	}
+	link := connectCore(rt)
+	defer link.close(3 * time.Second)
 	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact})
 	if err != nil {

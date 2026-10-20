@@ -16,10 +16,11 @@ type Background struct {
 	// MaxAge is how long a call is retried (default 10 min); Wait the first retry's delay.
 	MaxAge, Wait, MaxWait time.Duration
 
-	mu     sync.Mutex
-	queue  []bgCall
-	signal chan struct{}
-	done   chan struct{}
+	mu      sync.Mutex
+	queue   []bgCall
+	sending bool
+	signal  chan struct{}
+	done    chan struct{}
 }
 
 type bgCall struct {
@@ -58,14 +59,37 @@ func (b *Background) Go(name string, args any) {
 // Done is closed once the worker stopped.
 func (b *Background) Done() <-chan struct{} { return b.done }
 
+// Flush waits until every queued call was made or dropped, or ctx ends.
+func (b *Background) Flush(ctx context.Context) {
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	for {
+		b.mu.Lock()
+		idle := len(b.queue) == 0 && !b.sending
+		b.mu.Unlock()
+		if idle {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.done:
+			return
+		case <-t.C:
+		}
+	}
+}
+
 func (b *Background) next() (bgCall, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.queue) == 0 {
+		b.sending = false
 		return bgCall{}, false
 	}
 	c := b.queue[0]
 	b.queue = b.queue[1:]
+	b.sending = true
 	return c, true
 }
 
