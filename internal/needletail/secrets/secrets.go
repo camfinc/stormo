@@ -97,6 +97,21 @@ func (s *Secrets) Scrub() {
 	}
 }
 
+// Clean is environ without the owned secrets Scrub unsets (the passthrough allowlist and the
+// http_secrets envs stay): the terminal's env, given explicitly, so nothing that put a secret back
+// into this process' env after boot reaches it.
+func (s *Secrets) Clean(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(s.owned, k) && !slices.Contains(Passthrough, k) && !slices.Contains(s.shared, k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // Redactor masks known secret values. It is safe for concurrent use.
 type Redactor struct {
 	mu     sync.RWMutex

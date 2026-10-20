@@ -24,7 +24,8 @@ func terminalTool() Tool {
 		Name: "terminal",
 		Description: "Run a shell command with bash in the agent's home (the working directory). " +
 			"Use it for scripts, git, curl, python3 and anything the file tools do not cover. " +
-			"Output (stdout and stderr together) is capped; long-running commands are killed at the timeout.",
+			"Output (stdout and stderr together) is capped; long-running commands are killed at the timeout. " +
+			"A process left running in the background (cmd &) keeps running after the command returns; its later output is not captured.",
 		Schema: schema(`{"type":"object","properties":{
 "command":{"type":"string","description":"The bash command to run."},
 "timeout":{"type":"integer","description":"Seconds before the command is killed (default: the agent's command timeout)."},
@@ -44,7 +45,12 @@ type terminalResult struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exit_code"`
 	Error    string `json:"error,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
+
+// noteBackground: the command exited but a process it left in the background still held the
+// output open. That process is not killed (an agent may start a server on purpose).
+const noteBackground = "background processes are still running; output they write from now on is not captured"
 
 func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error) {
 	var a terminalArgs
@@ -91,6 +97,9 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 		res.ExitCode, res.Error = -1, fmt.Sprintf("timed out after %s and was killed", timeout)
 	case ctx.Err() != nil:
 		res.ExitCode, res.Error = -1, "cancelled"
+	case errors.Is(err, exec.ErrWaitDelay):
+		// Go reports this only for a command that otherwise exited 0
+		res.ExitCode, res.Note = cmd.ProcessState.ExitCode(), noteBackground
 	case err != nil:
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

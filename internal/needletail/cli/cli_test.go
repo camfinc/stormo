@@ -280,3 +280,19 @@ func TestUsage(t *testing.T) {
 		t.Error("bad format accepted")
 	}
 }
+
+// The terminal gets an explicit env without the runtime's own secrets, even if one came back into
+// this process' env after boot scrubbed it.
+func TestTerminalEnvClean(t *testing.T) {
+	h := home(t, "http://127.0.0.1:1/v1", "http://127.0.0.1:1/v1")
+	setenv(t, h)
+	rt, err := boot("", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENROUTER_API_KEY", cloudKey)
+	env := strings.Join(rt.agent.Env.Environ(), "\n")
+	if strings.Contains(env, cloudKey) || strings.Contains(env, apiKey) || !strings.Contains(env, "CRM_API_TOKEN="+crmToken) || !strings.Contains(env, "SWARM_CORE_KEY=") {
+		t.Errorf("terminal env:\n%s", env)
+	}
+}

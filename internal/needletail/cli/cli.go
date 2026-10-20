@@ -98,6 +98,11 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	_ = os.Setenv("HOME", cfg.Home)
 	logger := log.New(red.Writer(stderr), "", log.LstdFlags|log.LUTC)
 	logf := func(s string) { logger.Println(s) }
+	// Scrub changes only this process' own copy of the env: the kernel still shows the env it
+	// started with in /proc/<pid>/environ, which a terminal command (same uid) could read.
+	if err := undumpable(); err != nil {
+		logf(fmt.Sprintf("could not hide the process from same-user readers (prctl): %v", err))
+	}
 
 	eps := []llm.Endpoint{}
 	for _, e := range cfg.Endpoints() {
@@ -113,7 +118,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Home:           cfg.Home,
 		Sandbox:        sandbox.Sandbox{Home: cfg.Home, Shared: cfg.SharedRoots()},
 		CommandTimeout: cfg.CommandTimeout(),
-		Environ:        os.Environ,
+		Environ:        func() []string { return sec.Clean(os.Environ()) },
 		Memory:         mem,
 		Redact:         red.Redact,
 		LongestSecret:  red.Longest,

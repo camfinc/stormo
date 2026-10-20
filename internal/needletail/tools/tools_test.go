@@ -274,3 +274,26 @@ func TestSearchRuntimeDirs(t *testing.T) {
 		t.Errorf("home search = %v", m)
 	}
 }
+
+// A command that leaves a background process running (a server it starts on purpose) returns its
+// output and exit code, with a note; the process is not killed.
+func TestTerminalBackgroundChild(t *testing.T) {
+	r, env := setup(t)
+	marker := filepath.Join(env.Home, "bg-done")
+	start := time.Now()
+	m, failed := call(t, r, env, "terminal", map[string]any{"command": "(sleep 3; touch " + marker + ") & echo started"})
+	if failed || m["exit_code"] != float64(0) || !strings.Contains(m["output"].(string), "started") || !strings.Contains(fmt.Sprint(m["note"]), "background") {
+		t.Errorf("terminal = %v", m)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("took %s", took)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Error("the background process was killed")
+}

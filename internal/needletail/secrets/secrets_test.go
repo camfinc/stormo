@@ -87,3 +87,13 @@ func TestRedactJSONForms(t *testing.T) {
 		t.Errorf("longest = %d", r.Longest())
 	}
 }
+
+// Clean is environ without the runtime's own secrets (passthrough and http_secrets envs stay):
+// the terminal's env, whatever this process' env holds by then.
+func TestClean(t *testing.T) {
+	environ := []string{"API_SERVER_KEY=a", "SWARM_CORE_KEY=b", "OPENROUTER_API_KEY=c", "SLACK_APP_TOKEN=d", "LUAU_ONLY_TOKEN=e", "CRM_API_TOKEN=f", "PATH=/bin", "NOEQUALS"}
+	got := strings.Join(Load(cfg(), environ).Clean(environ), " ")
+	if got != "SWARM_CORE_KEY=b LUAU_ONLY_TOKEN=e CRM_API_TOKEN=f PATH=/bin NOEQUALS" {
+		t.Errorf("clean = %s", got)
+	}
+}
