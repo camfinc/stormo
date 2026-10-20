@@ -57,6 +57,11 @@ func TestOpenNoFollow(t *testing.T) {
 	if _, _, err := openRead(filepath.Join(real, "swapped.md"), "swapped.md"); err == nil {
 		t.Error("read through a symlink")
 	}
+	// the flags themselves: the link is not followed even without the Lstat check before
+	if f, err := os.OpenFile(link, os.O_WRONLY|oNoFollow|oNonblock, 0); err == nil {
+		_ = f.Close()
+		t.Error("O_NOFOLLOW open followed the link")
+	}
 	if b, _ := os.ReadFile(target); string(b) != "keep" {
 		t.Errorf("target = %q", b)
 	}

@@ -281,14 +281,14 @@ func TestTerminalBackgroundChild(t *testing.T) {
 	r, env := setup(t)
 	marker := filepath.Join(env.Home, "bg-done")
 	start := time.Now()
-	m, failed := call(t, r, env, "terminal", map[string]any{"command": "(sleep 3; touch " + marker + ") & echo started"})
+	m, failed := call(t, r, env, "terminal", map[string]any{"command": "(sleep 6; touch " + marker + ") & echo started"})
 	if failed || m["exit_code"] != float64(0) || !strings.Contains(m["output"].(string), "started") || !strings.Contains(fmt.Sprint(m["note"]), "background") {
 		t.Errorf("terminal = %v", m)
 	}
-	if took := time.Since(start); took > 3*time.Second {
+	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("took %s", took)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker); err == nil {
 			return
