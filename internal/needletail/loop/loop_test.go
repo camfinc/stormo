@@ -29,6 +29,8 @@ type stub struct {
 	mu       sync.Mutex
 	requests []map[string]any
 	pick     func(req map[string]any) string
+	// refuse, when set, answers a request with an HTTP error instead (status 0: no error).
+	refuse func(req map[string]any) (int, string)
 }
 
 func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +44,14 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, req)
 	s.mu.Unlock()
+	if s.refuse != nil {
+		if code, body := s.refuse(req); code != 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			fmt.Fprint(w, body)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	fmt.Fprintf(w, "data: %s\n\n", s.pick(req))
 	fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n")
@@ -267,6 +277,18 @@ func TestCompaction(t *testing.T) {
 	if questions != 8 || tr.SessionID != tip {
 		t.Errorf("transcript: %d questions, tip %s", questions, tr.SessionID)
 	}
+	// after a restart the carried rows are recognised as copies: nothing is served twice
+	again, err := sessions.Open(filepath.Join(a.Cfg.Home, "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr2, _ := again.Transcript("conv", 0, false)
+	if len(tr2.Data) != len(tr.Data) {
+		t.Errorf("transcript after reopen: %d rows, before %d", len(tr2.Data), len(tr.Data))
+	}
+	if l := again.List(0); len(l) != 1 || l[0].MessageCount != len(tr.Data) {
+		t.Errorf("list after reopen = %+v (want %d messages)", l, len(tr.Data))
+	}
 }
 
 func TestCutPoint(t *testing.T) {
@@ -288,5 +310,91 @@ func TestCutPoint(t *testing.T) {
 	}
 	if c := cutPoint([]wire.Message{{Role: "system"}, {Role: "user"}}, 0); c != 0 {
 		t.Errorf("nothing to summarise = %d", c)
+	}
+	// a call left unanswered by a crash does not block every later cut
+	orphan := []wire.Message{
+		{Role: "user", Content: "a"},
+		{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "9"}}},
+		{Role: "user", Content: "b"},
+		{Role: "assistant", Content: "c"},
+		{Role: "user", Content: "d"},
+	}
+	if c := cutPoint(orphan, 0); c != 4 {
+		t.Errorf("orphan tight cut = %d", c)
+	}
+}
+
+// malformed is why the provider would refuse req's messages with a 400: every assistant row with
+// tool calls must be followed by one tool row per call, and a tool row must answer such a call.
+func malformed(req map[string]any) string {
+	msgs := req["messages"].([]any)
+	for i := 0; i < len(msgs); i++ {
+		row := msgs[i].(map[string]any)
+		if row["role"] == "tool" {
+			return fmt.Sprintf("message %d: tool row %v without its call", i, row["tool_call_id"])
+		}
+		calls, _ := row["tool_calls"].([]any)
+		want := map[string]bool{}
+		for _, c := range calls {
+			want[c.(map[string]any)["id"].(string)] = true
+		}
+		for len(want) > 0 {
+			i++
+			if i >= len(msgs) || msgs[i].(map[string]any)["role"] != "tool" {
+				return fmt.Sprintf("message %d: tool calls %v unanswered", i, want)
+			}
+			delete(want, msgs[i].(map[string]any)["tool_call_id"].(string))
+		}
+	}
+	return ""
+}
+
+func refuseMalformed(req map[string]any) (int, string) {
+	if why := malformed(req); why != "" {
+		return 400, fmt.Sprintf(`{"error":{"message":%q,"type":"invalid_request_error"}}`, why)
+	}
+	return 0, ""
+}
+
+// A turn that died between the model's tool calls and their results leaves calls without answers;
+// the next turn answers them as interrupted instead of failing on every request from then on.
+func TestDanglingToolCalls(t *testing.T) {
+	st := &stub{refuse: refuseMalformed, pick: func(req map[string]any) string { return say("ok") }}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	a := newAgent(t, srv)
+	dead := wire.Message{Role: "assistant", ToolCalls: []wire.ToolCall{
+		{ID: "call_a", Name: "terminal", Arguments: `{"command":"true"}`},
+		{ID: "call_b", Name: "terminal", Arguments: `{"command":"true"}`},
+	}}
+	// crashed after the first of two results
+	_, _ = a.Store.Create(wire.Session{ID: "s1"})
+	if _, err := a.Store.Append("s1", wire.Message{Role: "user", Content: "do it"}, dead, wire.Message{Role: "tool", ToolCallID: "call_a", Content: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Run(context.Background(), "s1", "and now?", Options{})
+	if err != nil || res.Text != "ok" {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+	rows, _ := a.Store.Messages("s1")
+	roles := []string{}
+	for _, r := range rows {
+		roles = append(roles, r.Role+":"+r.ToolCallID)
+	}
+	if strings.Join(roles, ",") != "user:,assistant:,tool:call_a,tool:call_b,user:,assistant:" || !strings.Contains(rows[3].Content, "interrupted") {
+		t.Errorf("rows = %v", roles)
+	}
+	// a session already written past such a call (before this fix) is sent well formed too
+	_, _ = a.Store.Create(wire.Session{ID: "s2"})
+	if _, err := a.Store.Append("s2", wire.Message{Role: "user", Content: "do it"}, dead, wire.Message{Role: "user", Content: "hello?"}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := a.Run(context.Background(), "s2", "anyone?", Options{}); err != nil || res.Text != "ok" {
+		t.Fatalf("legacy run = %+v, %v", res, err)
+	}
+	// and compaction can cut it
+	rows, _ = a.Store.Messages("s2")
+	if c := cutPoint(rows, 0); c <= 0 {
+		t.Errorf("no cut in %d rows", len(rows))
 	}
 }

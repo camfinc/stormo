@@ -52,10 +52,10 @@ func TestLineage(t *testing.T) {
 		{Role: "assistant", Content: "answer one"},
 	}
 	turn2 := []wire.Message{{Role: "user", Content: "second"}, {Role: "assistant", Content: "answer two"}}
-	if err := s.Append("c1", turn1...); err != nil {
+	if _, err := s.Append("c1", turn1...); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append("c1", turn2...); err != nil {
+	if _, err := s.Append("c1", turn2...); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Sync("c1"); err != nil {
@@ -72,10 +72,10 @@ func TestLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(tip, wire.Message{Role: "user", Content: "third"}, wire.Message{Role: "assistant", Content: "answer three"}); err != nil {
+	if _, err := s.Append(tip, wire.Message{Role: "user", Content: "third"}, wire.Message{Role: "assistant", Content: "answer three"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append("c1", wire.Message{Role: "user", Content: "late"}); !errors.Is(err, ErrEnded) {
+	if _, err := s.Append("c1", wire.Message{Role: "user", Content: "late"}); !errors.Is(err, ErrEnded) {
 		t.Errorf("append to ended: %v", err)
 	}
 	if _, err := s.Compact("c1", "again", nil); !errors.Is(err, ErrEnded) {
@@ -179,7 +179,7 @@ func TestTornLineAndJunk(t *testing.T) {
 		t.Errorf("list = %+v", l)
 	}
 	// the torn line was dropped, so the next row is whole
-	if err := s.Append("ok", wire.Message{Role: "assistant", Content: "hello"}); err != nil {
+	if _, err := s.Append("ok", wire.Message{Role: "assistant", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if tr, _ := open(t, dir).Transcript("ok", 0, false); len(tr.Data) != 2 || tr.Data[1].Content != "hello" {

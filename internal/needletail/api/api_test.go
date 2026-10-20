@@ -58,7 +58,7 @@ func (f *fakeAgent) Run(ctx context.Context, session, input string, _ loop.Optio
 			return nil, err
 		}
 	}
-	_ = f.store.Append(tip, wire.Message{Role: "user", Content: input},
+	_, _ = f.store.Append(tip, wire.Message{Role: "user", Content: input},
 		wire.Message{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "call_1", Name: "terminal", Arguments: "{}"}}},
 		wire.Message{Role: "tool", ToolCallID: "call_1", Content: "ok"},
 		wire.Message{Role: "assistant", Content: "echo " + input})

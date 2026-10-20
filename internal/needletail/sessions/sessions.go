@@ -315,25 +315,29 @@ func (s *Store) Messages(id string) ([]wire.Message, error) {
 	return rows, err
 }
 
-// Append adds rows to a live session, redacted and stamped. Durable at the next Sync.
-func (s *Store) Append(id string, rows ...wire.Message) error {
+// Append adds rows to a live session, redacted and stamped, and returns them as stored: a caller
+// that keeps the conversation in memory keeps these, so rows it later carries into a compaction
+// match the file row for row (see carried). Durable at the next Sync.
+func (s *Store) Append(id string, rows ...wire.Message) ([]wire.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.metas[id]
 	if !ok {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	if m.EndReason != "" {
-		return ErrEnded
+		return nil, ErrEnded
 	}
 	return s.append(m, rows, false)
 }
 
-func (s *Store) append(m *meta, rows []wire.Message, keepStamp bool) error {
+// append writes rows (the caller's slice is left alone) and returns them as written.
+func (s *Store) append(m *meta, in []wire.Message, keepStamp bool) ([]wire.Message, error) {
 	var buf bytes.Buffer
 	now := Stamp(s.now())
-	for i := range rows {
-		r := rows[i]
+	rows := make([]wire.Message, len(in))
+	for i := range in {
+		r := in[i]
 		r.Content = s.redact(r.Content)
 		r.ToolName = "" // files pair tool rows by id
 		if len(r.ToolCalls) > 0 {
@@ -349,7 +353,7 @@ func (s *Store) append(m *meta, rows []wire.Message, keepStamp bool) error {
 		}
 		line, err := json.Marshal(r)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		buf.Write(line)
 		buf.WriteByte('\n')
@@ -357,19 +361,19 @@ func (s *Store) append(m *meta, rows []wire.Message, keepStamp bool) error {
 	}
 	f, err := os.OpenFile(s.path(m.ID), os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_, err = f.Write(buf.Bytes())
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, r := range rows {
 		m.observe(r)
 	}
-	return nil
+	return rows, nil
 }
 
 // Sync makes a session's rows durable and refreshes sessions/index.json (a turn boundary).
@@ -443,7 +447,7 @@ func (s *Store) Compact(id, summary string, carry []wire.Message) (string, error
 	c := s.metas[child.ID]
 	now := Stamp(s.now())
 	rows := append([]wire.Message{{Role: "system", Content: summary, At: now}}, carry...)
-	if err := s.append(c, rows, true); err != nil {
+	if _, err := s.append(c, rows, true); err != nil {
 		return "", err
 	}
 	c.carried = len(carry)

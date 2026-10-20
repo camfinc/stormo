@@ -98,11 +98,25 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 	if err != nil {
 		return nil, err
 	}
-	user := wire.Message{Role: "user", Content: input}
-	if err := a.Store.Append(tip, user); err != nil {
+	// A turn that stopped (a crash, a restart) between the model's tool calls and their results
+	// left calls without answers: answer them as interrupted, or every request would be refused.
+	if calls := unanswered(history); len(calls) > 0 {
+		rows := make([]wire.Message, len(calls))
+		for i, c := range calls {
+			rows[i] = wire.Message{Role: "tool", ToolCallID: c.ID, Content: interruptedResult}
+		}
+		stored, err := a.Store.Append(tip, rows...)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, stored...)
+		a.logf("session=%s: %d tool calls of an interrupted turn answered as interrupted", tip, len(calls))
+	}
+	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input})
+	if err != nil {
 		return nil, err
 	}
-	history = append(history, user)
+	history = append(history, stored...)
 	res := &Result{Session: tip}
 	defer func() {
 		if err := a.Store.Sync(res.Session); err != nil {
@@ -162,10 +176,11 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		if msg.Content == "" && len(calls) == 0 {
 			msg.Content = "(no answer)"
 		}
-		if err := a.Store.Append(res.Session, msg); err != nil {
+		stored, err := a.Store.Append(res.Session, msg)
+		if err != nil {
 			return res, err
 		}
-		history = append(history, msg)
+		history = append(history, stored...)
 		if resp.Content != "" && obs != nil {
 			obs.Text(res.Session, resp.Content)
 		}
@@ -189,11 +204,11 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 			if obs != nil {
 				obs.ToolDone(res.Session, c, out, failed, time.Since(started))
 			}
-			row := wire.Message{Role: "tool", ToolCallID: c.ID, Content: out}
-			if err := a.Store.Append(res.Session, row); err != nil {
+			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out})
+			if err != nil {
 				return res, err
 			}
-			history = append(history, row)
+			history = append(history, stored...)
 			sinceTotal += len(out)
 		}
 	}
@@ -206,11 +221,62 @@ func (a *Agent) window(ctx context.Context, turn *llm.Turn) int {
 	return a.LLM.ContextLength(ctx, turn.Endpoint())
 }
 
+// interruptedResult answers a tool call whose turn stopped before its result was stored.
+const interruptedResult = `{"error":"interrupted"}`
+
+// unanswered is the tool calls of history's last assistant row that have no result after it, when
+// only tool rows follow that row: what a turn that stopped mid-tools leaves.
+func unanswered(history []wire.Message) []wire.ToolCall {
+	var open []wire.ToolCall
+	for _, m := range history {
+		switch {
+		case m.Role == "tool":
+			for i, c := range open {
+				if c.ID == m.ToolCallID {
+					open = append(open[:i:i], open[i+1:]...)
+					break
+				}
+			}
+		case len(m.ToolCalls) > 0:
+			open = append([]wire.ToolCall(nil), m.ToolCalls...)
+		default:
+			open = nil
+		}
+	}
+	return open
+}
+
+// toLLM is the request's messages: the system prompt, then history made well formed. Every tool
+// call is followed by its result (a call a stopped turn left unanswered, in a session written
+// before Run answered them, gets the interrupted result), and a tool row that answers no call
+// right before it is left out: providers refuse either.
 func toLLM(system string, history []wire.Message) []llm.Message {
 	out := []llm.Message{{Role: "system", Content: system}}
-	for _, m := range history {
-		out = append(out, llm.Message{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})
+	var open []string
+	flush := func() {
+		for _, id := range open {
+			out = append(out, llm.Message{Role: "tool", ToolCallID: id, Content: interruptedResult})
+		}
+		open = nil
 	}
+	for _, m := range history {
+		if m.Role == "tool" {
+			for i, id := range open {
+				if id == m.ToolCallID {
+					open = append(open[:i:i], open[i+1:]...)
+					out = append(out, llm.Message{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID})
+					break
+				}
+			}
+			continue
+		}
+		flush()
+		out = append(out, llm.Message{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})
+		for _, c := range m.ToolCalls {
+			open = append(open, c.ID)
+		}
+	}
+	flush()
 	return out
 }
 
@@ -279,8 +345,9 @@ func (a *Agent) SystemPrompt() string {
 }
 
 // compact summarises the older part of history into a new session (sessions.Store.Compact) and
-// returns the new tip with its rows. The cut is at a row where every earlier tool call has its
-// result, so the model never sees a call without its answer or an answer without its call.
+// returns the new tip with its rows. The cut is at a user or assistant row, never inside a block
+// of tool results, so the model never sees a call without its answer or an answer without its
+// call.
 func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history []wire.Message, window int) (string, []wire.Message, error) {
 	cut := cutPoint(history, int(keepRecent*float64(window)))
 	if cut <= 0 {
@@ -300,21 +367,16 @@ func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history
 }
 
 // cutPoint is the earliest valid cut whose kept tail fits keep tokens, else the latest valid cut
-// (0 when there is none). A valid cut starts at a user or assistant row with no tool call of the
-// rows before it left unanswered, and leaves something to summarise.
+// (0 when there is none). A valid cut starts at a user or assistant row and leaves something to
+// summarise. Tool results directly follow their calls, so every call before such a row has its
+// result before it too, or never will (a stopped turn's: toLLM answers it as interrupted); a call
+// left open that way must not block every later cut.
 func cutPoint(history []wire.Message, keep int) int {
 	valid := []int{}
-	open := map[string]bool{}
 	summarisable := false
 	for i, m := range history {
-		if i > 0 && summarisable && len(open) == 0 && (m.Role == "user" || m.Role == "assistant") {
+		if i > 0 && summarisable && (m.Role == "user" || m.Role == "assistant") {
 			valid = append(valid, i)
-		}
-		for _, c := range m.ToolCalls {
-			open[c.ID] = true
-		}
-		if m.Role == "tool" {
-			delete(open, m.ToolCallID)
 		}
 		if m.Role != "system" {
 			summarisable = true
