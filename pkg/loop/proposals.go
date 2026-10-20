@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/camfinc/stormo/pkg/build"
@@ -51,9 +52,12 @@ type SchedulesProposal struct {
 
 // ScriptChange is a script in a schedules proposal.
 type ScriptChange struct {
-	Name   string `json:"name"`   // file name in agents/<id>/scripts/
+	Name   string `json:"name"`   // path in agents/<id>/scripts/
 	Status string `json:"status"` // new, or changed (the repo has another version)
 	Sha256 string `json:"sha256"` // the agent's version, as napped
+	// Stale: the repo changed this script after the agent's instance booted, so accepting would
+	// undo the repo's edit; accept is refused (merge by hand, then reject).
+	Stale bool `json:"stale,omitempty"`
 }
 
 func proposalsRoot(root, agent string) string {
@@ -345,6 +349,11 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 		if len(meta.PII) > 0 {
 			return nil, fmt.Errorf("%s: the schedules proposal was redacted (%v); copy what you want into agent.yaml by hand, then reject it", agentID, meta.PII)
 		}
+		for _, c := range meta.Scripts {
+			if c.Stale {
+				return nil, fmt.Errorf("%s: the repo changed scripts/%s after the agent edited it; merge what you want by hand, then reject the proposal", agentID, c.Name)
+			}
+		}
 		undo, err := acceptScripts(root, agentID, meta.Scripts)
 		if err != nil {
 			return nil, err
@@ -389,6 +398,19 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 	return meta, nil
 }
 
+// scriptPath: a relative, clean path with no hidden or parent segments.
+func scriptPath(name string) bool {
+	if name == "" || filepath.IsAbs(name) || filepath.ToSlash(filepath.Clean(name)) != name {
+		return false
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "" || seg[0] == '.' {
+			return false
+		}
+	}
+	return true
+}
+
 // acceptScripts copies a schedules proposal's scripts into agents/<id>/scripts/; undo puts back what
 // was there, for when agent.yaml then refuses the schedules.
 func acceptScripts(root, agentID string, scripts []ScriptChange) (undo func(), err error) {
@@ -407,9 +429,9 @@ func acceptScripts(root, agentID string, scripts []ScriptChange) (undo func(), e
 		}
 	}
 	for _, c := range scripts {
-		if c.Name == "" || c.Name != filepath.Base(c.Name) || c.Name[0] == '.' {
+		if !scriptPath(c.Name) {
 			undo()
-			return nil, fmt.Errorf("%s: proposed script %q is not a file name", agentID, c.Name)
+			return nil, fmt.Errorf("%s: proposed script %q is not a path inside scripts/", agentID, c.Name)
 		}
 		body, err := os.ReadFile(filepath.Join(SchedulesScriptsDir(root, agentID), c.Name))
 		if err != nil {

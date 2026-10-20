@@ -51,9 +51,9 @@ func New(inst *instance.Instance) *Hermes {
 			{Class: engine.Learning, Glob: "skills/.archive/**"},
 			{Class: engine.Learning, Glob: "skills/[!.]*/**"},
 			{Class: engine.Learning, Glob: "cron/jobs.json"},
-			// Cron scripts (Hermes runs them only from scripts/ itself, never a subdir): the repo's
-			// and any the agent wrote for its own jobs (Layout.ScriptsDir).
-			{Class: engine.Learning, Glob: "scripts/[!._]*"},
+			// Cron scripts and the modules they import: the repo's and any the agent wrote or edited
+			// for its own jobs (Layout.ScriptsDir). Caches are left out, as the build leaves them out.
+			{Class: engine.Learning, Glob: "scripts/**", Except: []string{"**/__pycache__/**", "**/node_modules/**", "**/.*", "**/.*/**", "**/*.pyc"}},
 			// Rebuilt from the repo on every boot; the dream reads the settings the agent changed
 			// in it (a home channel, an approved command) and proposes them (RuntimeSettings).
 			{Class: engine.Learning, Glob: "config.yaml"},

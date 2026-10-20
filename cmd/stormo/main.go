@@ -1393,7 +1393,11 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 			fmt.Printf("%s  %s  %s  enabled=%t%s\n", s.ID, when, s.Name, s.Enabled, mark)
 		}
 		for _, c := range meta.Scripts {
-			fmt.Printf("script %s  (%s; %s)\n", c.Name, c.Status, filepath.Join(loop.SchedulesScriptsDir(root, id), c.Name))
+			stale := ""
+			if c.Stale {
+				stale = "; the repo changed it since, merge by hand"
+			}
+			fmt.Printf("script %s  (%s%s; %s)\n", c.Name, c.Status, stale, filepath.Join(loop.SchedulesScriptsDir(root, id), c.Name))
 		}
 		if len(meta.PII) > 0 {
 			fmt.Printf("scrubbed: %s\n", strings.Join(meta.PII, ","))

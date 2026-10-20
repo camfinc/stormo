@@ -83,6 +83,8 @@ public struct ReviewScript: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     /// "new", or "changed" (the repo has another version, in `current`).
     public var status: String
+    /// The repo changed it after the agent did: accept is refused (nil from an older core).
+    public var stale: Bool?
     public var size: Int64
     public var text: String?
     public var current: String?

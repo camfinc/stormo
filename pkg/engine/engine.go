@@ -4,6 +4,7 @@ package engine
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ type SnapshotRule struct {
 	Glob string `json:"glob"`
 	// SQLite database: snapshot with VACUUM INTO (consistent under WAL), skip -wal/-shm siblings.
 	SQLite bool `json:"sqlite,omitempty"`
+	// Except are globs this rule does not claim (caches inside a tree it does); such a path falls
+	// through to the next rule.
+	Except []string `json:"except,omitempty"`
 }
 
 // Layout is where things live inside the engine home.
@@ -78,7 +82,7 @@ type Layout struct {
 // Classify returns the first rule matching path (relative to the home), or nil.
 func Classify(path string, rules []SnapshotRule) *SnapshotRule {
 	for i := range rules {
-		if Match(rules[i].Glob, path) {
+		if Match(rules[i].Glob, path) && !slices.ContainsFunc(rules[i].Except, func(g string) bool { return Match(g, path) }) {
 			return &rules[i]
 		}
 	}

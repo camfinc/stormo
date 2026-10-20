@@ -298,8 +298,10 @@ private struct SchedulesRow: View {
                     .disabled(busy)
                     .help("Drops the jobs it created at runtime when it next starts.")
                 Button("Accept") { decide(.accept) }
-                    .disabled(!schedules.pii.isEmpty || busy)
-                    .help(schedules.pii.isEmpty ? "Writes these jobs to agent.yaml's schedules, and their scripts to the agent's scripts folder." : "Redacted: copy what you want into agent.yaml by hand, then reject.")
+                    .disabled(!schedules.pii.isEmpty || stale || busy)
+                    .help(!schedules.pii.isEmpty ? "Redacted: copy what you want into agent.yaml by hand, then reject."
+                        : stale ? "The repo changed a script after the agent edited it: merge what you want by hand, then reject."
+                        : "Writes these jobs to agent.yaml's schedules, and their scripts to the agent's scripts folder.")
             }
             .controlSize(.small)
             ReviewNote(ai: schedules.ai, held: schedules.held)
@@ -328,6 +330,7 @@ private struct SchedulesRow: View {
                             .foregroundStyle(.secondary)
                         Text("scripts/\(script.name)").font(.callout.monospaced())
                         Tag(script.status == "changed" ? "change" : "new script", tint: script.status == "changed" ? .orange : .blue)
+                        if script.stale ?? false { Tag("older version", tint: .orange) }
                         if let diff {
                             if diff.added > 0 { Text("+\(diff.added)").foregroundStyle(.green) }
                             if diff.removed > 0 { Text("−\(diff.removed)").foregroundStyle(.red) }
@@ -350,6 +353,7 @@ private struct SchedulesRow: View {
     }
 
     private var scripts: [ReviewScript] { schedules.scripts ?? [] }
+    private var stale: Bool { scripts.contains { $0.stale ?? false } }
 
     private var busy: Bool { model.review.deciding.contains(ReviewDecision.schedules(of: agent, .accept).key) }
 

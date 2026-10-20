@@ -66,8 +66,10 @@ type ReviewSchedules struct {
 type ReviewScript struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // new | changed
-	Size   int64  `json:"size"`
-	Text   string `json:"text,omitempty"`
+	// Stale: the repo changed it after the agent did; accept is refused.
+	Stale bool   `json:"stale,omitempty"`
+	Size  int64  `json:"size"`
+	Text  string `json:"text,omitempty"`
 	// The repo's version, when the script is changed.
 	Current *string `json:"current,omitempty"`
 }
@@ -254,7 +256,7 @@ func scriptsView(root, agent string, scripts []loop.ScriptChange) []ReviewScript
 	out := []ReviewScript{}
 	for _, c := range scripts {
 		text, size, _ := readSmallText(filepath.Join(loop.SchedulesScriptsDir(root, agent), c.Name))
-		r := ReviewScript{Name: c.Name, Status: c.Status, Size: size, Text: text}
+		r := ReviewScript{Name: c.Name, Status: c.Status, Stale: c.Stale, Size: size, Text: text}
 		if c.Status == "changed" {
 			if cur, _, ok := readSmallText(filepath.Join(manifest.AgentDir(root, agent), "scripts", c.Name)); ok {
 				r.Current = &cur

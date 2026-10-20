@@ -112,13 +112,13 @@
   {
    "path": "scripts/collect.py",
    "class": "learning",
-   "glob": "scripts/[!._]*",
+   "glob": "scripts/**",
    "sqlite": false
   },
   {
    "path": "scripts/accounts.json",
    "class": "learning",
-   "glob": "scripts/[!._]*",
+   "glob": "scripts/**",
    "sqlite": false
   },
   {
@@ -135,6 +135,24 @@
   },
   {
    "path": "scripts/lib/helper.py",
+   "class": "learning",
+   "glob": "scripts/**",
+   "sqlite": false
+  },
+  {
+   "path": "scripts/lib/__pycache__/helper.cpython-312.pyc",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "scripts/node_modules/x/index.js",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "scripts/.venv/bin/python",
    "class": null,
    "glob": null,
    "sqlite": false

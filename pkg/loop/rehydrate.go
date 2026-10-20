@@ -29,8 +29,10 @@ type RehydrateReport struct {
 	PurgedMemories int      `json:"purgedMemories"`
 	DeferredSeed   int      `json:"deferredSeed"`
 	RestoredFiles  int      `json:"restoredFiles"`
-	// Scripts the agent wrote for its own jobs, restored from the nap.
+	// Scripts the agent wrote or edited, restored from the nap; KeptRepoScripts are edits dropped
+	// because the repo changed that script since the nap's instance booted.
 	RestoredScripts []string `json:"restoredScripts"`
+	KeptRepoScripts []string `json:"keptRepoScripts"`
 }
 
 type liveFile struct {
@@ -136,7 +138,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		}
 	}
 	out := map[string][]byte{}
-	report := &RehydrateReport{Baseline: info.GitSha, RestoredSkills: []string{}, KeptRepoSkills: []string{}, RestoredScripts: []string{}}
+	report := &RehydrateReport{Baseline: info.GitSha, RestoredSkills: []string{}, KeptRepoSkills: []string{}, RestoredScripts: []string{}, KeptRepoScripts: []string{}}
 	if nap != nil {
 		report.Nap = &nap.ID
 	}
@@ -211,18 +213,21 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		}
 	}
 
-	// 2b. Scripts the agent wrote (any its instance did not boot with) come back, so a job it made
-	// never outlives the script it runs. A repo file wins over a runtime edit (the dream proposes the
-	// edit), and a version a reviewer rejected stays out.
+	// 2b. Scripts the agent wrote or edited (any version its instance did not boot with) come back
+	// until a reviewer decides, as skills do, so a job it made never outlives the script it runs. A
+	// version a reviewer rejected stays out, and so does an edit to a script the repo has changed
+	// since that instance booted (the repo's newer version wins; the dream marks the edit stale).
 	if L.ScriptsDir != "" && nap != nil && nap.Baseline != nil && nap.Baseline.Scripts != nil {
 		rejectedScripts := info.RejectedScripts.Map()
 		for _, p := range sortedKeys(live) {
 			v := live[p]
 			name, ok := strings.CutPrefix(p, L.ScriptsDir+"/")
-			if !ok || v.meta.Class != engine.Learning || nap.Baseline.Scripts[name] == v.meta.Sha256 {
+			booted := nap.Baseline.Scripts[name]
+			if !ok || v.meta.Class != engine.Learning || booted == v.meta.Sha256 || rejectedScripts[name] == v.meta.Sha256 {
 				continue
 			}
-			if _, inRepo := base[p]; inRepo || rejectedScripts[name] == v.meta.Sha256 {
+			if body, inRepo := base[p]; inRepo && build.Sha256(body) != booted {
+				report.KeptRepoScripts = append(report.KeptRepoScripts, name)
 				continue
 			}
 			out[p] = v.body

@@ -129,14 +129,15 @@ func runtimeScripts(s Store, root, agentID string, L *engine.Layout, nap *Nap, w
 		if body == nil {
 			continue
 		}
-		status := "new"
-		if repo, err := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "scripts", name)); err == nil {
+		c := ScriptChange{Name: name, Status: "new", Sha256: f.Sha256}
+		if repo, err := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "scripts", filepath.FromSlash(name))); err == nil {
 			if string(repo) == *body {
 				continue // already in the repo
 			}
-			status = "changed"
+			c.Status = "changed"
+			c.Stale = build.Sha256(repo) != nap.Baseline.Scripts[name]
 		}
-		out = append(out, runtimeScript{ScriptChange{Name: name, Status: status, Sha256: f.Sha256}, *body})
+		out = append(out, runtimeScript{c, *body})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

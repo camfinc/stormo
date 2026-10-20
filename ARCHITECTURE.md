@@ -345,14 +345,15 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
   form; format 0, or a job agent.yaml cannot express: `learnings/proposals/cron/jobs.json`). Skill telemetry is kept in
   `learnings/skill-usage.json`.
-- Scripts the agent wrote or edited in its scripts dir (`Layout.ScriptsDir`; any its instance did not
-  boot with, by `booted.json` `scripts`) go with the schedules proposal, scrubbed, under
-  `learnings/proposals/scripts/`: a job it made usually runs a script it made, and a schedule may
-  name only a script in `agents/<id>/scripts/`. Until decided they survive restarts: naps keep them
-  (learning class) and rehydrate restores them, except over a repo file (an edit to the repo's
-  script is proposed, never restored) and except a version a reviewer rejected. So a runtime job
-  never outlives its script. A script the repo deleted while the instance ran was booted, so it is
-  neither proposed nor restored.
+- Scripts the agent wrote or edited in its scripts dir (`Layout.ScriptsDir`, subdirectories included,
+  caches not; any version its instance did not boot with, by `booted.json` `scripts`) go with the
+  schedules proposal, scrubbed, under `learnings/proposals/scripts/`: a job it made usually runs a
+  script it made, and a schedule may name only a script in `agents/<id>/scripts/`. Until decided
+  they survive restarts as skills do: naps keep them (learning class) and rehydrate restores them,
+  except a version a reviewer rejected and except an edit to a script the repo changed since that
+  instance booted (the repo's version wins; the proposal is `stale` and accept refuses it). So a
+  runtime job never outlives its script. A script the repo deleted while the instance ran was
+  booted, so it is neither proposed nor restored.
 - Settings the agent changed in its engine config at runtime (Hermes: a `/sethome` home channel,
   commands approved "always", MCP servers it configured) become `learnings/proposals/settings.json`.
   Every unseen nap is read, each against the settings its instance booted with (`booted.json`),

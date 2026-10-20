@@ -213,9 +213,10 @@ func TestRuntimeSettingsAndSchedules(t *testing.T) {
 	})
 }
 
-// Scripts the agent writes for its own jobs: napped, restored across restarts (a repo file always
-// wins), proposed with the schedules, accepted into agents/<id>/scripts/ or rejected and dropped.
-// A script the repo deletes while the agent runs is neither proposed nor restored.
+// Scripts the agent writes or edits for its own jobs (subdirectories included, caches not): napped,
+// restored across restarts until reviewed, proposed with the schedules, accepted into
+// agents/<id>/scripts/ or rejected and dropped. A script the repo deletes while the agent runs is
+// neither proposed nor restored; an edit to one the repo changed since is stale.
 func TestRuntimeScripts(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "instance")
@@ -305,15 +306,17 @@ func TestRuntimeScripts(t *testing.T) {
 		t.Fatalf("booted scripts = %v, %v", booted.Scripts, err)
 	}
 
-	// At runtime the agent splits its job: a monitor, a helper it imports, an edit to the repo's
-	// script, and a job that runs the monitor.
+	// At runtime the agent splits its job: a monitor, helpers it imports (one in a package), an edit
+	// to the repo's script, and a job that runs the monitor. Python leaves its cache behind.
 	write(t, filepath.Join(home1, "scripts/watch.py"), "import helper\nhelper.run()\n")
 	write(t, filepath.Join(home1, "scripts/helper.py"), "def run():\n    print('ok')\n")
+	write(t, filepath.Join(home1, "scripts/lib/util.py"), "X = 1\n")
+	write(t, filepath.Join(home1, "scripts/__pycache__/helper.cpython-312.pyc"), "cache")
 	write(t, filepath.Join(home1, "scripts/report.py"), "print('report v2')\n")
 	addJob(home1, "rt0001", "watch.py")
 	nap(home1)
 	meta := proposal()
-	if got := names(meta); !slices.Equal(got, []string{"helper.py:new", "report.py:changed", "watch.py:new"}) {
+	if got := names(meta); !slices.Equal(got, []string{"helper.py:new", "lib/util.py:new", "report.py:changed", "watch.py:new"}) {
 		t.Fatalf("proposed scripts = %v", got)
 	}
 	if text := read(t, filepath.Join(SchedulesScriptsDir(root, "atlas"), "watch.py")); text != "import helper\nhelper.run()\n" {
@@ -325,19 +328,23 @@ func TestRuntimeScripts(t *testing.T) {
 		t.Error("a proposal carrying scripts must wait for a person")
 	}
 
-	// A restart: the agent's own scripts come back, the repo's script keeps the repo's version.
+	// A restart before anyone reviewed: everything the agent wrote or edited comes back, the cache
+	// does not.
 	home2, rep := boot("home2")
-	if !slices.Equal(rep.RestoredScripts, []string{"helper.py", "watch.py"}) {
+	if !slices.Equal(rep.RestoredScripts, []string{"helper.py", "lib/util.py", "report.py", "watch.py"}) {
 		t.Errorf("restored scripts = %v", rep.RestoredScripts)
 	}
-	if got := read(t, filepath.Join(home2, "scripts/report.py")); got != "print('report')\n" {
-		t.Errorf("report.py = %q; the repo's version wins", got)
+	if got := read(t, filepath.Join(home2, "scripts/report.py")); got != "print('report v2')\n" {
+		t.Errorf("report.py = %q; the agent's edit stays until reviewed", got)
+	}
+	if exists(filepath.Join(home2, "scripts/__pycache__")) {
+		t.Error("python cache restored")
 	}
 	if !strings.Contains(read(t, filepath.Join(home2, "cron/jobs.json")), `"watch.py"`) {
 		t.Error("the runtime job lost its monitor")
 	}
 	nap(home2)
-	if got := names(proposal()); !slices.Equal(got, []string{"helper.py:new", "watch.py:new"}) {
+	if got := names(proposal()); !slices.Equal(got, []string{"helper.py:new", "lib/util.py:new", "report.py:changed", "watch.py:new"}) {
 		t.Fatalf("proposed scripts after the restart = %v", got)
 	}
 
@@ -348,10 +355,13 @@ func TestRuntimeScripts(t *testing.T) {
 		if _, err := DecideSchedules(inst, "atlas", "accepted", Decider{}); err == nil || !strings.Contains(err.Error(), "missing.py") {
 			t.Fatalf("accept = %v; want refused for missing.py", err)
 		}
-		for _, f := range []string{"watch.py", "helper.py"} {
+		for _, f := range []string{"watch.py", "helper.py", "lib/util.py"} {
 			if exists(filepath.Join(repoScripts, f)) {
 				t.Errorf("%s left in the repo after a refused accept", f)
 			}
+		}
+		if got := read(t, filepath.Join(repoScripts, "report.py")); got != "print('report')\n" {
+			t.Errorf("repo report.py = %q; a refused accept must put it back", got)
 		}
 		write(t, filepath.Join(dir, "schedules.yaml"), saved)
 	})
@@ -360,8 +370,10 @@ func TestRuntimeScripts(t *testing.T) {
 		if _, err := DecideSchedules(inst, "atlas", "accepted", Decider{}); err != nil {
 			t.Fatal(err)
 		}
-		if got := read(t, filepath.Join(repoScripts, "watch.py")); got != "import helper\nhelper.run()\n" {
-			t.Errorf("repo watch.py = %q", got)
+		for f, want := range map[string]string{"watch.py": "import helper\nhelper.run()\n", "lib/util.py": "X = 1\n", "report.py": "print('report v2')\n"} {
+			if got := read(t, filepath.Join(repoScripts, f)); got != want {
+				t.Errorf("repo %s = %q", f, got)
+			}
 		}
 		a, err := manifest.Load(root, "atlas", inst.Names.Secret)
 		if err != nil {
@@ -416,6 +428,26 @@ func TestRuntimeScripts(t *testing.T) {
 			if exists(filepath.Join(home5, "scripts/scrape.py")) || strings.Contains(read(t, filepath.Join(home5, "cron/jobs.json")), "rt0002") {
 				t.Error("rejected script or job restored")
 			}
+
+			t.Run("an edit to a script the repo changed since is stale: refused, and the repo wins", func(t *testing.T) {
+				write(t, filepath.Join(home5, "scripts/watch.py"), "print('agent edit')\n")
+				nap(home5)
+				write(t, filepath.Join(repoScripts, "watch.py"), "print('repo edit')\n")
+				meta := proposal()
+				if meta == nil || len(meta.Scripts) != 1 || !meta.Scripts[0].Stale {
+					t.Fatalf("proposal = %+v; want watch.py stale", meta)
+				}
+				if _, err := DecideSchedules(inst, "atlas", "accepted", Decider{}); err == nil || !strings.Contains(err.Error(), "watch.py") {
+					t.Fatalf("accept = %v; want refused", err)
+				}
+				if got := read(t, filepath.Join(repoScripts, "watch.py")); got != "print('repo edit')\n" {
+					t.Errorf("repo watch.py = %q; a refused accept changed it", got)
+				}
+				home6, rep := boot("home6")
+				if !slices.Equal(rep.KeptRepoScripts, []string{"watch.py"}) || read(t, filepath.Join(home6, "scripts/watch.py")) != "print('repo edit')\n" {
+					t.Errorf("kept %v, watch.py = %q; want the repo's newer version", rep.KeptRepoScripts, read(t, filepath.Join(home6, "scripts/watch.py")))
+				}
+			})
 		})
 	})
 }
