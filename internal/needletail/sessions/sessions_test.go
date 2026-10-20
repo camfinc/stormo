@@ -3,6 +3,7 @@ package sessions
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,5 +185,55 @@ func TestTornLineAndJunk(t *testing.T) {
 	}
 	if tr, _ := open(t, dir).Transcript("ok", 0, false); len(tr.Data) != 2 || tr.Data[1].Content != "hello" {
 		t.Errorf("after repair = %+v", tr.Data)
+	}
+}
+
+// A compaction makes the new session durable before it ends the old one: a crash in between leaves
+// the old session live, never an ended one whose continuation was lost.
+func TestCompactDurableOrder(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir)
+	for _, id := range []string{"p1", "p2"} {
+		_, _ = s.Create(wire.Session{ID: id})
+		if _, err := s.Append(id, wire.Message{Role: "user", Content: "q"}, wire.Message{Role: "assistant", Content: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ended := func(id string) bool {
+		raw, _ := os.ReadFile(filepath.Join(dir, id+".jsonl"))
+		var h wire.Session
+		first, _, _ := strings.Cut(string(raw), "\n")
+		_ = json.Unmarshal([]byte(first), &h)
+		return h.EndReason != ""
+	}
+	var synced []string
+	s.fsync = func(f *os.File) error {
+		synced = append(synced, filepath.Base(f.Name())+fmt.Sprintf(" parent-ended=%v", ended("p1")))
+		return f.Sync()
+	}
+	tip, err := s.Compact("p1", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) == 0 || synced[0] != tip+".jsonl parent-ended=false" {
+		t.Errorf("syncs = %v", synced)
+	}
+	// the new session cannot be made durable: the compaction fails and the old session carries on
+	s.fsync = func(f *os.File) error { return errors.New("disk gone") }
+	if _, err := s.Compact("p2", "summary", nil); err == nil {
+		t.Fatal("compaction with a failed sync succeeded")
+	}
+	s.fsync = func(f *os.File) error { return f.Sync() }
+	if h, _ := s.Get("p2"); h.EndReason != "" || ended("p2") {
+		t.Errorf("p2 ended: %+v", h)
+	}
+	if x, _ := s.Tip("p2"); x != "p2" {
+		t.Errorf("tip(p2) = %s", x)
+	}
+	if _, err := s.Append("p2", wire.Message{Role: "user", Content: "still here"}); err != nil {
+		t.Error(err)
+	}
+	if x, _ := open(t, dir).Tip("p2"); x != "p2" {
+		t.Errorf("after restart tip(p2) = %s", x)
 	}
 }

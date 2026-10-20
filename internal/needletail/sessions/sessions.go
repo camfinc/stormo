@@ -70,6 +70,7 @@ type Store struct {
 	dir    string
 	redact func(string) string
 	now    func() time.Time
+	fsync  func(*os.File) error // (*os.File).Sync; tests watch or fail it
 
 	mu    sync.Mutex
 	metas map[string]*meta
@@ -84,7 +85,7 @@ func Open(dir string, redact func(string) string) (*Store, error) {
 	if redact == nil {
 		redact = func(s string) string { return s }
 	}
-	s := &Store{dir: dir, redact: redact, now: time.Now, metas: map[string]*meta{}}
+	s := &Store{dir: dir, redact: redact, now: time.Now, fsync: (*os.File).Sync, metas: map[string]*meta{}}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -381,15 +382,7 @@ func (s *Store) Sync(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.metas[id]; ok {
-		f, err := os.OpenFile(s.path(id), os.O_WRONLY, 0)
-		if err != nil {
-			return err
-		}
-		err = f.Sync()
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
+		if err := s.syncFile(id); err != nil {
 			return err
 		}
 	}
@@ -447,20 +440,36 @@ func (s *Store) Compact(id, summary string, carry []wire.Message) (string, error
 	c := s.metas[child.ID]
 	now := Stamp(s.now())
 	rows := append([]wire.Message{{Role: "system", Content: summary, At: now}}, carry...)
-	if _, err := s.append(c, rows, true); err != nil {
+	_, err = s.append(c, rows, true)
+	if err == nil {
+		// the new session is durable before the old one ends: a crash in between leaves the old
+		// one live (and the new one dropped below), never an ended session without its sequel
+		err = s.syncFile(child.ID)
+	}
+	if err == nil {
+		err = s.end(id, wire.EndCompression)
+	}
+	if err != nil {
+		// a child on disk with a live parent would become the conversation's tip at the next boot
+		_ = os.Remove(s.path(child.ID))
+		delete(s.metas, child.ID)
 		return "", err
 	}
 	c.carried = len(carry)
-	if err := s.end(id, wire.EndCompression); err != nil {
-		return "", err
-	}
 	m.child = child.ID
-	f, err := os.OpenFile(s.path(child.ID), os.O_WRONLY, 0)
-	if err == nil {
-		_ = f.Sync()
-		_ = f.Close()
-	}
 	return child.ID, s.writeIndex()
+}
+
+func (s *Store) syncFile(id string) error {
+	f, err := os.OpenFile(s.path(id), os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	err = s.fsync(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // carried is how many rows at the start of child (after its summary rows) copy parent's last ones.
