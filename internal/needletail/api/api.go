@@ -39,6 +39,7 @@ const MinKey = 16
 
 const (
 	defaultMaxTurns = 2
+	defaultGrace    = 3 * time.Second
 	maxBody         = 4 << 20
 	defaultList     = 50
 	maxList         = 200
@@ -50,6 +51,7 @@ const (
 var (
 	ErrSessionBusy = errors.New("this conversation is already running a turn")
 	ErrBusy        = errors.New("the agent is running as many turns as it can")
+	ErrClosing     = errors.New("the agent is shutting down")
 )
 
 // Server is the API and the turn scheduler behind it.
@@ -65,9 +67,11 @@ type Server struct {
 
 	base   context.Context
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	wg     sync.WaitGroup // running turns; Add only under mu, with closing checked
+	grace  time.Duration  // how long Shutdown waits for cancelled turns to stop
 
 	mu         sync.Mutex
+	closing    bool            // Shutdown has begun: no turn starts
 	busy       map[string]bool // conversation roots with a running turn
 	active     int
 	lastActive time.Time
@@ -84,9 +88,11 @@ type Options struct {
 	StateDir string
 	// MaxTurns is the global cap (default 2).
 	MaxTurns int
-	Log      func(string)
-	Redact   func(string) string
-	Now      func() time.Time
+	// StopGrace is how long Shutdown waits for turns it cancelled to stop (default 3 s).
+	StopGrace time.Duration
+	Log       func(string)
+	Redact    func(string) string
+	Now       func() time.Time
 }
 
 // New builds the server.
@@ -96,9 +102,12 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
+	}
+	if s.grace <= 0 {
+		s.grace = defaultGrace
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -180,10 +189,15 @@ func intParam(r *http.Request, name string, def, max int) int {
 
 // ---- turns -----------------------------------------------------------------------------------
 
-// Acquire reserves a turn on root's conversation; release must follow.
+// Acquire reserves a turn on root's conversation; release must follow. It counts the turn in wg
+// under mu, after checking closing, so no turn starts once Shutdown has begun and no wg.Add
+// races Shutdown's wg.Wait.
 func (s *Server) acquire(root, source string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		return ErrClosing
+	}
 	if s.busy[root] {
 		return ErrSessionBusy
 	}
@@ -193,6 +207,7 @@ func (s *Server) acquire(root, source string) error {
 	s.busy[root] = true
 	s.active++
 	s.lastActive, s.lastSource = s.now(), source
+	s.wg.Add(1)
 	return nil
 }
 
@@ -202,6 +217,7 @@ func (s *Server) release(root string) {
 	delete(s.busy, root)
 	s.active--
 	s.lastActive = s.now()
+	s.wg.Done()
 }
 
 // Turn runs one turn on session, creating it (with create's title and source) when it does not
@@ -215,8 +231,6 @@ func (s *Server) Turn(ctx context.Context, session, input string, create wire.Se
 	if err := s.acquire(root, h.Source); err != nil {
 		return nil, err
 	}
-	s.wg.Add(1)
-	defer s.wg.Done()
 	defer s.release(root)
 	return s.run(ctx, session, input, opts)
 }
@@ -252,21 +266,38 @@ func (s *Server) ensure(session string, create wire.Session) (string, error) {
 }
 
 func busyStatus(err error) int {
-	if errors.Is(err, ErrSessionBusy) {
+	switch {
+	case errors.Is(err, ErrSessionBusy):
 		return http.StatusConflict
+	case errors.Is(err, ErrClosing):
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusTooManyRequests
 }
 
-// Shutdown waits for running turns until ctx ends, then cancels them and waits for them to stop.
+// Shutdown stops new turns, waits for running ones until ctx ends, then cancels them and waits
+// for them to stop, at most the grace period (a turn stuck in something that ignores its
+// cancellation must not keep the process from exiting).
 func (s *Server) Shutdown(ctx context.Context) {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-ctx.Done():
 		s.cancel()
-		<-done
+		t := time.NewTimer(s.grace)
+		defer t.Stop()
+		select {
+		case <-done:
+		case <-t.C:
+			s.mu.Lock()
+			n := s.active
+			s.mu.Unlock()
+			s.logf("shutdown: %d turns still running %s after cancellation; not waiting for them", n, s.grace)
+		}
 	}
 	s.cancel()
 }
@@ -333,9 +364,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			s.logf("idempotency store: %v", err)
 		}
 	}
-	s.wg.Add(1)
 	go func() {
-		defer s.wg.Done()
 		defer s.release(root)
 		_, _ = s.run(s.base, session, req.Input, loop.Options{})
 	}()
@@ -411,8 +440,6 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := func() (*loop.Result, error) {
-		s.wg.Add(1)
-		defer s.wg.Done()
 		defer s.release(root)
 		return s.run(s.base, id, req.Message, loop.Options{})
 	}()

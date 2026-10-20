@@ -29,6 +29,7 @@ const key = "test-key-0123456789abcdef"
 type fakeAgent struct {
 	store   *sessions.Store
 	release chan struct{}
+	stuck   chan struct{} // "stuck" waits for it and ignores cancellation
 	mu      sync.Mutex
 	runs    []string
 }
@@ -47,6 +48,9 @@ func (f *fakeAgent) Run(ctx context.Context, session, input string, _ loop.Optio
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if input == "stuck" {
+		<-f.stuck
 	}
 	if input == "fail" {
 		return nil, errors.New("model endpoint 0: HTTP 502")
@@ -77,7 +81,7 @@ func newServer(t *testing.T, state string) (*Server, *fakeAgent, *httptest.Serve
 	if err != nil {
 		t.Fatal(err)
 	}
-	fa := &fakeAgent{store: store, release: make(chan struct{})}
+	fa := &fakeAgent{store: store, release: make(chan struct{}), stuck: make(chan struct{})}
 	s, err := New(Options{Key: key, Store: store, Agent: fa, StateDir: filepath.Join(state, "state")})
 	if err != nil {
 		t.Fatal(err)
@@ -333,4 +337,41 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting")
+}
+
+// Shutdown: no turn starts once it has begun, and a turn that ignores its cancellation does not
+// hold the process past the grace period.
+func TestShutdownBounded(t *testing.T) {
+	s, fa, srv := newServer(t, t.TempDir())
+	s.grace = 100 * time.Millisecond
+	defer close(fa.stuck)
+	go func() { _, _ = s.Turn(context.Background(), "a", "stuck", wire.Session{}, loop.Options{}) }()
+	waitFor(t, func() bool { return fa.count() == 1 })
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() { s.Shutdown(expired); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Shutdown waits for a stuck turn forever")
+	}
+	if _, err := s.Turn(context.Background(), "b", "x", wire.Session{}, loop.Options{}); !errors.Is(err, ErrClosing) {
+		t.Errorf("turn after shutdown: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := s.store.Create(wire.Session{ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ := call(srv, key)(ctx, http.MethodPost, "/v1/sessions/c/chat", wire.ChatRequest{Message: "x"})
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("chat after shutdown = %d", status)
+	}
+	status, _, _ = call(srv, key)(ctx, http.MethodPost, "/v1/runs", wire.RunRequest{Input: "x"})
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("run after shutdown = %d", status)
+	}
+	if fa.count() != 1 {
+		t.Errorf("runs = %v", fa.runs)
+	}
 }

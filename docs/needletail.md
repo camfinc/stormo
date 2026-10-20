@@ -256,6 +256,8 @@ All routes except `/health` need `Authorization: Bearer API_SERVER_KEY`.
 | `POST /v1/sessions/{id}/chat {message}` | Synchronous; returns `{session_id: tip, message:{content}}`. |
 | `DELETE /v1/sessions/{id}` | Deletes the whole lineage on the server. |
 
+Once shutdown has begun (SIGTERM) no turn starts: `/chat` and `/v1/runs` answer 503. Running turns get the drain budget, then are cancelled and waited for at most a few seconds more, so a turn stuck in something that ignores cancellation cannot keep the process from exiting.
+
 Status mapping on the client side: 404 → `ErrNotFound`; 409, 429 and 503 → `ErrBusy`.
 
 ### 4.9 Channels (`slack`)
