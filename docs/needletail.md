@@ -116,6 +116,10 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 1. `pkg/engines/engines.go`: two registry lines.
 2. **Per-engine version validation.** `engine.version` and `image_tag` are validated today with Hermes-shaped rules. Move the check behind an optional `engine.VersionValidator` interface (`ValidVersion(string) error`). Hermes keeps its current rule; needletail accepts semver or a pinned tag. This lands before any manifest uses needletail.
 
+**Made in M2, engine-neutral, Hermes unchanged.**
+- The sidecar relay (`pkg/link`) forwarded only Hermes' hook headers, so another engine's signed hook reached the core unsigned (401). It now forwards any `X-<Engine>-Signature[-…]`, `-Event` or `-Delivery` header (bounded), besides its fixed set.
+- The workdir's terminal inference (`shellAt`) read only Hermes' event names (`pre_tool_call`, `post_tool_call`). It also reads Stormo's kind names (`tool_start`, `tool_done`, `engine.HookKind`), which needletail's hooks carry; what the core stores is unchanged. The office timeline labels the kind names too.
+
 **Deliberately not changed in the MVP.**
 - `ShellTools` (`core/workdir.go:46`): needletail names its shell tool `terminal`.
 - The `SLACK_HOME_CHANNEL` lookup in `wake.go:74`: needletail sets the same env var.
@@ -201,7 +205,7 @@ Names stay Hermes-compatible, so bench files, `schedules.tools`, `ShellTools` an
 | Tool | Behaviour |
 |---|---|
 | `terminal` | `bash -lc` with cwd `$AGENT_HOME`, `command_timeout`, capped output, and an explicit environment: the process env without the runtime's own secrets, plus the passthrough allowlist. At the timeout (or when the turn is cancelled) the command's whole process group is killed. A process the command leaves running in the background after a normal exit (`cmd &`, say a server the agent starts on purpose) is **not** killed: once the command has exited, the tool waits 2 s for the output to close, then returns the output so far and the exit code with a note that background processes are still running; what they write later is not captured. When it runs from a skill it exports `SKILL_DIR`. |
-| `read_file`, `write_file`, `patch`, `search_files` | Paths are confined by `sandbox.Resolve` to `$AGENT_HOME` or `/shared/{group,<unit>}`, with symlinks evaluated and re-checked; a path must resolve inside the same root it names, so a symlink from one root into another (say `/shared/group/x` → the home's `skills/`) is refused. Only regular files are opened (a FIFO would block the turn), without following a symlink in the final component, and a write truncates only after checking that the path still resolves to the file it opened. `read_file` holds at most one capped line in memory; `patch` refuses files over 8 MiB. Direct writes to `/shared` are allowed for parity and followed by an automatic `fs_note` (decided, §11; the note is sent from M2); prompts prefer `fs_write`. The runtime's own files (`sessions/**`, `state/needletail/**`, `needletail.yaml`) are never written by these tools, and `search_files` skips them (`logs/**` too) and refuses to start in one. |
+| `read_file`, `write_file`, `patch`, `search_files` | Paths are confined by `sandbox.Resolve` to `$AGENT_HOME` or `/shared/{group,<unit>}`, with symlinks evaluated and re-checked; a path must resolve inside the same root it names, so a symlink from one root into another (say `/shared/group/x` → the home's `skills/`) is refused. Only regular files are opened (a FIFO would block the turn), without following a symlink in the final component, and a write truncates only after checking that the path still resolves to the file it opened. `read_file` holds at most one capped line in memory; `patch` refuses files over 8 MiB. Direct writes to `/shared` are allowed for parity and followed by an automatic `fs_note` (decided, §11; §4.11); prompts prefer `fs_write`. The runtime's own files (`sessions/**`, `state/needletail/**`, `needletail.yaml`) are never written by these tools, and `search_files` skips them (`logs/**` too) and refuses to start in one. |
 | `memory` | Actions add, replace and remove on the `memory` or `user` target. The budget is counted in UTF-16 units; when over, it returns an error showing the current usage. |
 | `skills_list`, `skill_view`, `skill_manage` | `skill_view` loads skills progressively and resolves `${SKILL_DIR}`. `skill_manage` creates, edits, patches and deletes under `skills/`. For `.luau` files it validates the header and compiles before saving. |
 | `luau_test` | Dry-runs a Luau tool with writes and http disabled, so the agent can iterate. |
@@ -273,9 +277,12 @@ The websocket client is `github.com/gorilla/websocket` v1.5.3 (decided, §11), a
 
 ### 4.10 Core MCP (`mcp`)
 
-- Stateless JSON-RPC over POST with a bearer token.
-- `initialize` with protocol `2025-06-18`. `tools/list` is cached per boot; `tools/call` runs a tool.
-- A result with `isError` is returned to the model as a tool error.
+- Stateless JSON-RPC over POST to `core.mcp_url` (the sidecar relay's `/mcp`) with `Authorization: Bearer SWARM_CORE_KEY`.
+- `initialize` with protocol `2025-06-18`, then `notifications/initialized`. `tools/list` is cached per boot once it succeeds; `tools/call` runs a tool.
+- The core's tools join the registry as `mcp_core_<name>` as soon as the core lists them. The core (or the relay) may be away at boot: `serve` keeps asking with backoff (2 s doubling to 1 min), and turns before that run without them.
+- A result with `isError`, the relay's "core unreachable" answer (JSON-RPC `-32000`) and a transport error all reach the model as a tool error; none fails the turn. A `msg_send` the relay queues while the core is away answers as a normal result ("Queued: …").
+- An object result reaches the model as that JSON; any other text as `{"result": text}`.
+- `serve` only: `oneshot` (the bench) never talks to the core.
 
 ### 4.11 Hooks to the core (`hooks`)
 
@@ -288,9 +295,13 @@ Each event is a `POST {ingest_url}/needletail` with header `X-Needletail-Signatu
  "call_id":"<real tool call id>","approval_id":"","platform":"","status":"","duration_ms":0}
 ```
 
-- Sent through a bounded queue, fire-and-forget, with a 5 s timeout, and only when on core.
-- No events are sent for LLM calls.
-- `input` is redacted before sending.
+- Sent through a bounded queue (256 events, the oldest dropped when full) by one worker, in order, with a 5 s timeout per attempt, and only when on core (`serve`). Emitting never blocks a turn.
+- A transport error or a 5xx is retried with backoff (1 s doubling to 30 s) with the same body and delivery id (a UUIDv7), so the core drops a repeat; a 4xx is dropped (the core refuses those for good); an event older than 9 min is dropped (the core refuses anything more than 10 min off). The relay answers 202 when it holds a delivery for a core that is away: that counts as delivered, and the relay sends it on later with its original `at`.
+- Events: `session_start` when a turn begins and `session_end` when it ends (`status` ok, error or cancelled), `tool_start` and `tool_done` around each tool call (`call_id` the model's own id, `status` ok or error, `duration_ms`). `session` is the conversation's root, so a compaction mid-turn does not split start from end; `platform` is the session's source (`api_server`, `slack`, `cron`, …). Approval events wait for M8.
+- No events are sent for LLM calls, and none for the assistant's text (client data).
+- `input` is the call's arguments, redacted, each string cut to 512 bytes, objects to 32 keys (the path and command keys first), arrays to 16 items, 4 levels deep; an input still over 32 KiB keeps only its path and command keys. The relay accepts at most 1 MiB.
+- After a file tool writes under `/shared`, an `fs_note` for its `/shared/<layer>/…` path is sent in the background (64 queued, retried while the core is away for up to 10 min). The `tool_done` hook names the path too, so the core's workdir attributes the write either way; a terminal write is attributed by the core's terminal inference.
+- On SIGTERM the hooks and notes outlive the drain of running turns, and get up to 3 s more to go.
 
 ## 5. Luau
 
@@ -530,7 +541,7 @@ A `pkg/engines` test checks that `needletail` resolves for both `Get` and `Runti
 3. **Luau wasm toolchain.** Exceptions and longjmp under WASI. Spike before M6.
 4. **Parity of loop quality.** Compaction and context management regress as worse answers, not errors. Mitigation: bench plus a soak against Hermes.
 5. **Contracts freeze at the first nap.** Review M0 and M1 before any real agent naps.
-6. **Hermes vocabulary is entrenched**: `terminal`, `mcp_core_*`, `API_SERVER_KEY`. This is accepted for parity, and the neutral follow-ups loosen it later.
+6. **Hermes vocabulary is entrenched**: `terminal`, `mcp_core_*`, `API_SERVER_KEY`. This is accepted for parity, and the neutral follow-ups loosen it later. Note (M2): the Hermes image `v2026.9.24` registers the core's tools as `mcp__core__<name>`, not `mcp_core_<name>`, and in the example instance offers them to no `api_server` turn. Needletail keeps `mcp_core_<name>` as designed; the wake text names the tools without a prefix, so it reads the same. Prompts or skills that spell out a prefixed name need checking before a cutover.
 7. **No approvals in the MVP.** Agents that depend on them stay on Hermes.
 8. **Skill scripts depend on Hermes helpers** and `HERMES_*` env. Audit them before each cutover.
 9. **The runtime uid stays tied to `shared.PosixUID`** until the mounts plan's step 3.
