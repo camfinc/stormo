@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,13 +115,27 @@ func (a *Agent) Relay() http.Handler {
 	})
 }
 
-var keptHeaders = []string{"Content-Type", "Authorization", "Accept", "X-Hermes-Signature-256", "X-Hermes-Event", "X-Hermes-Delivery", "Mcp-Protocol-Version"}
+var keptHeaders = []string{"Content-Type", "Authorization", "Accept", "Mcp-Protocol-Version"}
+
+// hookHeader is an engine's own hook header, whatever the engine is called:
+// X-<Engine>-Signature[-…], X-<Engine>-Event or X-<Engine>-Delivery. The core verifies a hook with
+// the signature header its engine's runtime names (engine.Runtime.HookSignature), so the relay
+// passes every engine's on, not only one engine's.
+var hookHeader = regexp.MustCompile(`^X-[A-Za-z0-9]+-(Signature(-[A-Za-z0-9]+)*|Event|Delivery)$`)
+
+// maxHookHeader bounds one hook header's value (a signature is under a hundred bytes).
+const maxHookHeader = 512
 
 func headersOf(r *http.Request) map[string]string {
 	h := map[string]string{}
 	for _, k := range keptHeaders {
 		if v := r.Header.Get(k); v != "" {
 			h[k] = v
+		}
+	}
+	for k, vs := range r.Header {
+		if len(vs) > 0 && vs[0] != "" && len(vs[0]) <= maxHookHeader && hookHeader.MatchString(k) {
+			h[k] = vs[0]
 		}
 	}
 	return h
