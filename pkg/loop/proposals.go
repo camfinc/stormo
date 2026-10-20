@@ -20,7 +20,8 @@ import (
 )
 
 // Proposals beside lessons and skills: the schedules the agent changed at runtime
-// (learnings/proposals/schedules.yaml, with schedules.meta.json) and the settings it changed in its
+// (learnings/proposals/schedules.yaml, with schedules.meta.json, and scripts/ for the scripts it
+// wrote or edited for them) and the settings it changed in its
 // engine config (learnings/proposals/settings.json). The dream rewrites them; decisions live in the
 // watermark, so a decided proposal is not made again.
 
@@ -43,10 +44,25 @@ type SchedulesProposal struct {
 	Hash        string   `json:"hash"`
 	PII         []string `json:"pii"`
 	RuntimeJobs []string `json:"runtimeJobs"`
+	// Scripts the agent wrote or edited in its scripts dir, in scripts/ beside schedules.yaml: an
+	// accept puts them in agents/<id>/scripts/ with the schedules, a reject keeps them out.
+	Scripts []ScriptChange `json:"scripts,omitempty"`
+}
+
+// ScriptChange is a script in a schedules proposal.
+type ScriptChange struct {
+	Name   string `json:"name"`   // file name in agents/<id>/scripts/
+	Status string `json:"status"` // new, or changed (the repo has another version)
+	Sha256 string `json:"sha256"` // the agent's version, as napped
 }
 
 func proposalsRoot(root, agent string) string {
 	return filepath.Join(learningsDir(root, agent), "proposals")
+}
+
+// SchedulesScriptsDir holds the schedules proposal's scripts.
+func SchedulesScriptsDir(root, agent string) string {
+	return filepath.Join(proposalsRoot(root, agent), "scripts")
 }
 
 func settingsPath(root, agent string) string {
@@ -215,9 +231,10 @@ func DecideSetting(inst *instance.Instance, agentID, key, decision string, who D
 	return &prop, SaveWatermark(root, agentID, wm)
 }
 
-// writeSchedules writes schedules.yaml and its meta for the agent's runtime schedules, unless they
-// match the repo or this exact proposal was decided before. Jobs a reviewer rejected are left out.
-func writeSchedules(dir string, live, repo []manifest.Schedule, nap string, wm *Watermark, scrubber *learning.Scrubber) (bool, error) {
+// writeSchedules writes schedules.yaml and its meta for the agent's runtime schedules and the scripts
+// it wrote for them, unless both match the repo or this exact proposal was decided before. Jobs a
+// reviewer rejected are left out.
+func writeSchedules(dir string, live, repo []manifest.Schedule, scripts []runtimeScript, nap string, wm *Watermark, scrubber *learning.Scrubber) (bool, error) {
 	repoIDs := map[string]bool{}
 	for _, s := range repo {
 		repoIDs[s.ID] = true
@@ -232,7 +249,7 @@ func writeSchedules(dir string, live, repo []manifest.Schedule, nap string, wm *
 		}
 		kept = append(kept, s)
 	}
-	if sameSchedules(kept, repo) {
+	if sameSchedules(kept, repo) && len(scripts) == 0 {
 		return false, nil
 	}
 	body, err := yaml.Marshal(map[string]any{"schedules": kept})
@@ -240,20 +257,47 @@ func writeSchedules(dir string, live, repo []manifest.Schedule, nap string, wm *
 		return false, err
 	}
 	text, pii := scrubber.Scrub(string(body))
-	hash := build.Sha256([]byte(text))
+	// The hash covers the scripts too, so a decision is on exactly what was reviewed.
+	hashed := text
+	changes, texts := []ScriptChange{}, map[string]string{}
+	for _, sc := range scripts {
+		t, found := scrubber.Scrub(sc.Body)
+		for _, f := range found {
+			if !slices.Contains(pii, f) {
+				pii = append(pii, f)
+			}
+		}
+		changes = append(changes, sc.ScriptChange)
+		texts[sc.Name] = t
+		hashed += "\n" + sc.Name + " " + build.Sha256([]byte(t))
+	}
+	hash := build.Sha256([]byte(hashed))
 	if wm.ScheduleDecision != nil && wm.ScheduleDecision.Hash == hash {
 		return false, nil
 	}
 	if pii == nil {
 		pii = []string{}
 	}
+	sort.Strings(pii)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "schedules.yaml"), []byte(text), 0o644); err != nil {
 		return false, err
 	}
-	meta, _ := learning.MarshalIndent(SchedulesProposal{Nap: nap, Hash: hash, PII: pii, RuntimeJobs: runtime})
+	for _, c := range changes {
+		dst := filepath.Join(dir, "scripts", c.Name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return false, err
+		}
+		if err := os.WriteFile(dst, []byte(texts[c.Name]), 0o644); err != nil {
+			return false, err
+		}
+	}
+	if len(changes) == 0 {
+		changes = nil
+	}
+	meta, _ := learning.MarshalIndent(SchedulesProposal{Nap: nap, Hash: hash, PII: pii, RuntimeJobs: runtime, Scripts: changes})
 	return true, os.WriteFile(filepath.Join(dir, "schedules.meta.json"), append(meta, '\n'), 0o644)
 }
 
@@ -284,8 +328,10 @@ func ReadSchedulesProposal(root, agent string) ([]manifest.Schedule, *SchedulesP
 	return doc.Schedules, meta, nil
 }
 
-// DecideSchedules accepts the schedules proposal (agent.yaml's schedules: becomes it) or rejects
-// it (the runtime jobs in it are dropped on the agent's next start), and records the decision.
+// DecideSchedules accepts the schedules proposal (agent.yaml's schedules: becomes it, and its scripts
+// go to agents/<id>/scripts/ first, since a schedule may name only a script the repo has) or rejects
+// it (the runtime jobs and scripts in it are dropped on the agent's next start), and records the
+// decision.
 func DecideSchedules(inst *instance.Instance, agentID, decision string, who Decider) (*SchedulesProposal, error) {
 	root := inst.Root
 	list, meta, err := ReadSchedulesProposal(root, agentID)
@@ -299,7 +345,12 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 		if len(meta.PII) > 0 {
 			return nil, fmt.Errorf("%s: the schedules proposal was redacted (%v); copy what you want into agent.yaml by hand, then reject it", agentID, meta.PII)
 		}
+		undo, err := acceptScripts(root, agentID, meta.Scripts)
+		if err != nil {
+			return nil, err
+		}
 		if err := config.SetPath(inst, agentID, "agent.yaml", []string{"schedules"}, list); err != nil {
+			undo()
 			return nil, err
 		}
 	}
@@ -314,6 +365,12 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 			}
 		}
 		sort.Strings(wm.RejectedJobs)
+		for _, c := range meta.Scripts {
+			if wm.RejectedScripts == nil {
+				wm.RejectedScripts = map[string]string{}
+			}
+			wm.RejectedScripts[c.Name] = c.Sha256
+		}
 	}
 	wm.ScheduleDecision = &SkillDecision{Hash: meta.Hash, Decision: decision, At: IsoMillis(time.Now()), By: who.By, Reason: who.Reason}
 	if err := SaveWatermark(root, agentID, wm); err != nil {
@@ -325,8 +382,57 @@ func DecideSchedules(inst *instance.Instance, agentID, decision string, who Deci
 			return nil, err
 		}
 	}
+	if err := os.RemoveAll(SchedulesScriptsDir(root, agentID)); err != nil {
+		return nil, err
+	}
 	pruneEmpty(dir)
 	return meta, nil
+}
+
+// acceptScripts copies a schedules proposal's scripts into agents/<id>/scripts/; undo puts back what
+// was there, for when agent.yaml then refuses the schedules.
+func acceptScripts(root, agentID string, scripts []ScriptChange) (undo func(), err error) {
+	type prev struct {
+		path string
+		body []byte // nil: the file did not exist
+	}
+	done := []prev{}
+	undo = func() {
+		for _, p := range slices.Backward(done) {
+			if p.body == nil {
+				_ = os.Remove(p.path)
+			} else {
+				_ = os.WriteFile(p.path, p.body, 0o644)
+			}
+		}
+	}
+	for _, c := range scripts {
+		if c.Name == "" || c.Name != filepath.Base(c.Name) || c.Name[0] == '.' {
+			undo()
+			return nil, fmt.Errorf("%s: proposed script %q is not a file name", agentID, c.Name)
+		}
+		body, err := os.ReadFile(filepath.Join(SchedulesScriptsDir(root, agentID), c.Name))
+		if err != nil {
+			undo()
+			return nil, fmt.Errorf("%s: proposed script %s: %w", agentID, c.Name, err)
+		}
+		dst := filepath.Join(manifest.AgentDir(root, agentID), "scripts", c.Name)
+		old, err := os.ReadFile(dst)
+		if err != nil && !os.IsNotExist(err) {
+			undo()
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			undo()
+			return nil, err
+		}
+		if err := os.WriteFile(dst, body, 0o644); err != nil {
+			undo()
+			return nil, err
+		}
+		done = append(done, prev{dst, old})
+	}
+	return undo, nil
 }
 
 // PendingChanges counts an agent's open runtime proposals: its schedules (one proposal) and each

@@ -110,6 +110,36 @@
    "sqlite": false
   },
   {
+   "path": "scripts/collect.py",
+   "class": "learning",
+   "glob": "scripts/[!._]*",
+   "sqlite": false
+  },
+  {
+   "path": "scripts/accounts.json",
+   "class": "learning",
+   "glob": "scripts/[!._]*",
+   "sqlite": false
+  },
+  {
+   "path": "scripts/__pycache__/collect.cpython-312.pyc",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "scripts/.cache",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": "scripts/lib/helper.py",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
    "path": "cron/executions.db",
    "class": "state",
    "glob": "cron/executions.db",

@@ -1392,6 +1392,9 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 			}
 			fmt.Printf("%s  %s  %s  enabled=%t%s\n", s.ID, when, s.Name, s.Enabled, mark)
 		}
+		for _, c := range meta.Scripts {
+			fmt.Printf("script %s  (%s; %s)\n", c.Name, c.Status, filepath.Join(loop.SchedulesScriptsDir(root, id), c.Name))
+		}
 		if len(meta.PII) > 0 {
 			fmt.Printf("scrubbed: %s\n", strings.Join(meta.PII, ","))
 		}
@@ -1403,9 +1406,9 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 			return err
 		}
 		if decision == "accepted" {
-			fmt.Println("schedules written to agent.yaml; they apply when the agent restarts")
+			fmt.Printf("schedules written to agent.yaml (%d script(s) to agents/%s/scripts/); they apply when the agent restarts\n", len(meta.Scripts), id)
 		} else {
-			fmt.Printf("rejected; %d runtime job(s) dropped on the next start\n", len(meta.RuntimeJobs))
+			fmt.Printf("rejected; %d runtime job(s) and %d script(s) dropped on the next start\n", len(meta.RuntimeJobs), len(meta.Scripts))
 		}
 		return nil
 	case "settings":

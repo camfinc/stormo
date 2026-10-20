@@ -45,6 +45,11 @@ type Layout struct {
 	Memory struct{ Memory, User string } `json:"memory"`
 	// Skills root relative to home.
 	SkillsDir string `json:"skillsDir"`
+	// ScriptsDir is where Compile ships agents/<id>/scripts/ (the files schedules run), relative to
+	// home; empty when the engine has none. A file the agent adds there at runtime is its own: a
+	// learning rule must snapshot it, rehydrate restores it (never over a repo file) and the dream
+	// proposes it with the schedules, so a job never outlives the script it runs.
+	ScriptsDir string `json:"scriptsDir,omitempty"`
 	// SkillUsage is the engine's skill usage file relative to home, if it keeps one (the dream
 	// copies it next to the learnings).
 	SkillUsage string `json:"skillUsage,omitempty"`

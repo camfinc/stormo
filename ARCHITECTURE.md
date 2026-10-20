@@ -345,6 +345,14 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
   form; format 0, or a job agent.yaml cannot express: `learnings/proposals/cron/jobs.json`). Skill telemetry is kept in
   `learnings/skill-usage.json`.
+- Scripts the agent wrote or edited in its scripts dir (`Layout.ScriptsDir`; any its instance did not
+  boot with, by `booted.json` `scripts`) go with the schedules proposal, scrubbed, under
+  `learnings/proposals/scripts/`: a job it made usually runs a script it made, and a schedule may
+  name only a script in `agents/<id>/scripts/`. Until decided they survive restarts: naps keep them
+  (learning class) and rehydrate restores them, except over a repo file (an edit to the repo's
+  script is proposed, never restored) and except a version a reviewer rejected. So a runtime job
+  never outlives its script. A script the repo deleted while the instance ran was booted, so it is
+  neither proposed nor restored.
 - Settings the agent changed in its engine config at runtime (Hermes: a `/sethome` home channel,
   commands approved "always", MCP servers it configured) become `learnings/proposals/settings.json`.
   Every unseen nap is read, each against the settings its instance booted with (`booted.json`),
@@ -357,8 +365,9 @@ asked for anything else, and raw history sits under a prefix the dream role can 
 
 **Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),
 pin, promote; accept or reject skill, schedule and setting proposals. Accepting schedules writes
-`schedules:` in agent.yaml; rejecting them drops the jobs the agent created at runtime on its next
-boot (`baseline.json` `rejectedJobs`). Accepting a setting edits that one node in agent.yaml or the
+their scripts to `agents/<id>/scripts/`, then `schedules:` in agent.yaml (put back if agent.yaml
+refuses them); rejecting them drops the jobs the agent created at runtime and the scripts in the
+proposal on its next boot (`baseline.json` `rejectedJobs`, `rejectedScripts`). Accepting a setting edits that one node in agent.yaml or the
 engine config, comments kept. Promotion widens a lesson from `agent` to `unit` or `group`.
 User-profile memories and anything PII-flagged can never be promoted, and a lesson must be
 accepted first.

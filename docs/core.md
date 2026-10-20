@@ -502,8 +502,8 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   (`loop.ReviewCandidates`) hold for a person, without asking any model, what a model must not
   decide: user-profile lessons, anything PII-flagged, lessons shared beyond the agent or seen fewer
   than `auto_accept_min_seen` times, skills holding scripts or binaries (or stale, or over 48 KB),
-  schedules with a script, a monitor, another model, an explicit delivery target or a removed repo
-  job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
+  schedules with a script (proposed with them or named), a monitor, another model, an explicit
+  delivery target or a removed repo job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
   of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. It never
   rejects: a reject purges what the agent learned, and a wrong approval is undone with `stormo learn
   reject`. Anything but a well-formed approve is a pass to a person.

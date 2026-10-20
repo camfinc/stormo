@@ -60,7 +60,7 @@ func TestReviewRules(t *testing.T) {
 	live := append([]manifest.Schedule{}, agent.Schedules...)
 	live = append(live, manifest.Schedule{ID: "rt1", Name: "Digest", Cron: "0 8 * * *", Prompt: "Summarise yesterday's deals.", Agent: true, Enabled: true, Deliver: "slack"})
 	wm, _ := LoadWatermark(root, "atlas")
-	if ok, err := writeSchedules(proposalsRoot(root, "atlas"), live, agent.Schedules, "n", wm, scrubber); err != nil || !ok {
+	if ok, err := writeSchedules(proposalsRoot(root, "atlas"), live, agent.Schedules, nil, "n", wm, scrubber); err != nil || !ok {
 		t.Fatalf("schedules proposal: %v %v", ok, err)
 	}
 	write(t, settingsPath(root, "atlas"), `[{"key":"home_channel.slack","value":"C0000000099","current":"C0000000001","opaque":true,"pii":[],"nap":"n"},

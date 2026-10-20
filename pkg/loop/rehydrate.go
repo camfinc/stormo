@@ -29,6 +29,8 @@ type RehydrateReport struct {
 	PurgedMemories int      `json:"purgedMemories"`
 	DeferredSeed   int      `json:"deferredSeed"`
 	RestoredFiles  int      `json:"restoredFiles"`
+	// Scripts the agent wrote for its own jobs, restored from the nap.
+	RestoredScripts []string `json:"restoredScripts"`
 }
 
 type liveFile struct {
@@ -134,7 +136,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		}
 	}
 	out := map[string][]byte{}
-	report := &RehydrateReport{Baseline: info.GitSha, RestoredSkills: []string{}, KeptRepoSkills: []string{}}
+	report := &RehydrateReport{Baseline: info.GitSha, RestoredSkills: []string{}, KeptRepoSkills: []string{}, RestoredScripts: []string{}}
 	if nap != nil {
 		report.Nap = &nap.ID
 	}
@@ -206,6 +208,25 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	for p, v := range live {
 		if strings.HasPrefix(p, L.SkillsDir+"/.") && !slices.Contains(L.NotRestored, p) && v.meta.Class == engine.Learning {
 			out[p] = v.body
+		}
+	}
+
+	// 2b. Scripts the agent wrote (any its instance did not boot with) come back, so a job it made
+	// never outlives the script it runs. A repo file wins over a runtime edit (the dream proposes the
+	// edit), and a version a reviewer rejected stays out.
+	if L.ScriptsDir != "" && nap != nil && nap.Baseline != nil && nap.Baseline.Scripts != nil {
+		rejectedScripts := info.RejectedScripts.Map()
+		for _, p := range sortedKeys(live) {
+			v := live[p]
+			name, ok := strings.CutPrefix(p, L.ScriptsDir+"/")
+			if !ok || v.meta.Class != engine.Learning || nap.Baseline.Scripts[name] == v.meta.Sha256 {
+				continue
+			}
+			if _, inRepo := base[p]; inRepo || rejectedScripts[name] == v.meta.Sha256 {
+				continue
+			}
+			out[p] = v.body
+			report.RestoredScripts = append(report.RestoredScripts, name)
 		}
 	}
 
@@ -293,7 +314,8 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	}
 	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running
 	// instance (locally it is a bind mount), and a nap must not claim the new one.
-	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills, Settings: bootedSettings(o.Engine, base)})
+	booted, _ := learning.MarshalIndent(NapBaseline{GitSha: info.GitSha, Skills: info.Skills, Settings: bootedSettings(o.Engine, base),
+		Scripts: bootedScripts(L, base)})
 	if err := os.WriteFile(filepath.Join(o.Home, BootedPath), booted, 0o644); err != nil {
 		return nil, err
 	}
@@ -306,6 +328,21 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, errors.New("rehydrate produced no memory file")
 	}
 	return report, nil
+}
+
+// bootedScripts are the repo's scripts in the baseline, by file name (empty, never nil, when it has
+// none: nil marks a nap from before they were recorded).
+func bootedScripts(L *engine.Layout, base map[string][]byte) map[string]string {
+	out := map[string]string{}
+	if L.ScriptsDir == "" {
+		return out
+	}
+	for p, body := range base {
+		if name, ok := strings.CutPrefix(p, L.ScriptsDir+"/"); ok {
+			out[name] = build.Sha256(body)
+		}
+	}
+	return out
 }
 
 // bootedSettings are the runtime-changeable settings in the baseline's engine config (empty, never

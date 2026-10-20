@@ -53,11 +53,23 @@ type ReviewAI struct {
 type ReviewSchedules struct {
 	Jobs []manifest.Schedule `json:"jobs"`
 	// RuntimeJobs are the ids the repo does not have (a reject drops them).
-	RuntimeJobs []string  `json:"runtimeJobs"`
-	PII         []string  `json:"pii"`
-	Nap         string    `json:"nap"`
-	AI          *ReviewAI `json:"ai,omitempty"`
-	Held        string    `json:"held,omitempty"`
+	RuntimeJobs []string `json:"runtimeJobs"`
+	// Scripts the agent wrote or edited for them; an accept puts them in agents/<id>/scripts/.
+	Scripts []ReviewScript `json:"scripts"`
+	PII     []string       `json:"pii"`
+	Nap     string         `json:"nap"`
+	AI      *ReviewAI      `json:"ai,omitempty"`
+	Held    string         `json:"held,omitempty"`
+}
+
+// ReviewScript is a script in a schedules proposal, with its text when small and textual.
+type ReviewScript struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // new | changed
+	Size   int64  `json:"size"`
+	Text   string `json:"text,omitempty"`
+	// The repo's version, when the script is changed.
+	Current *string `json:"current,omitempty"`
 }
 
 // ReviewSetting is a setting the agent changed at runtime.
@@ -188,8 +200,8 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 		if jobs, meta, err := loop.ReadSchedulesProposal(root, id); err != nil {
 			return nil, err
 		} else if meta != nil {
-			a.Schedules = &ReviewSchedules{Jobs: jobs, RuntimeJobs: meta.RuntimeJobs, PII: meta.PII, Nap: meta.Nap,
-				AI: ai[loop.KindSchedules+"/"+loop.KindSchedules], Held: held[loop.KindSchedules+"/"+loop.KindSchedules]}
+			a.Schedules = &ReviewSchedules{Jobs: jobs, RuntimeJobs: meta.RuntimeJobs, Scripts: scriptsView(root, id, meta.Scripts), PII: meta.PII,
+				Nap: meta.Nap, AI: ai[loop.KindSchedules+"/"+loop.KindSchedules], Held: held[loop.KindSchedules+"/"+loop.KindSchedules]}
 		}
 		settings, err := loop.ListSettingProposals(root, id)
 		if err != nil {
@@ -236,6 +248,21 @@ func readSmallText(p string) (string, int64, bool) {
 		return "", st.Size(), true
 	}
 	return string(b), st.Size(), true
+}
+
+func scriptsView(root, agent string, scripts []loop.ScriptChange) []ReviewScript {
+	out := []ReviewScript{}
+	for _, c := range scripts {
+		text, size, _ := readSmallText(filepath.Join(loop.SchedulesScriptsDir(root, agent), c.Name))
+		r := ReviewScript{Name: c.Name, Status: c.Status, Size: size, Text: text}
+		if c.Status == "changed" {
+			if cur, _, ok := readSmallText(filepath.Join(manifest.AgentDir(root, agent), "scripts", c.Name)); ok {
+				r.Current = &cur
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 func skillView(root, agent string, p loop.SkillProposal) ReviewSkill {
