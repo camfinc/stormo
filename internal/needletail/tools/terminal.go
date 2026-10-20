@@ -77,11 +77,15 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	cmd.Env = terminalEnv(env)
 	cmd.Stdin = nil
 	out := &capped{}
+	if env.LongestSecret != nil {
+		// twice the longest: a mask can be longer than what it replaces
+		out.overlap = 2 * env.LongestSecret()
+	}
 	cmd.Stdout, cmd.Stderr = out, out
 	killGroup(cmd)
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
-	res := terminalResult{Output: out.String()}
+	res := terminalResult{Output: out.String(env.Redact)}
 	switch {
 	case cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
 		res.ExitCode, res.Error = -1, fmt.Sprintf("timed out after %s and was killed", timeout)
@@ -115,8 +119,11 @@ func terminalEnv(env *Env) []string {
 	return append(out, "HOME="+env.Home)
 }
 
-// capped keeps the first outputHead and the last outputTail bytes written.
+// capped keeps the first outputHead and the last outputTail bytes written, each with overlap
+// bytes more, so that a secret straddling a cut can be masked whole (see String).
 type capped struct {
+	overlap int
+
 	mu      sync.Mutex
 	head    []byte
 	tail    []byte
@@ -127,14 +134,14 @@ func (c *capped) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := len(p)
-	if room := outputHead - len(c.head); room > 0 {
+	if room := outputHead + c.overlap - len(c.head); room > 0 {
 		k := min(room, len(p))
 		c.head = append(c.head, p[:k]...)
 		p = p[k:]
 	}
 	if len(p) > 0 {
 		c.tail = append(c.tail, p...)
-		if over := len(c.tail) - outputTail; over > 0 {
+		if over := len(c.tail) - outputTail - c.overlap; over > 0 {
 			c.dropped += over
 			c.tail = append(c.tail[:0], c.tail[over:]...)
 		}
@@ -142,12 +149,25 @@ func (c *capped) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (c *capped) String() string {
+// String is the output kept. When the middle was elided, the head and the tail are masked with
+// redact first and only then cut by overlap bytes: a secret that starts in the kept head ends
+// within its overlap, so it is masked whole, and only the overlap can hold part of one (one the
+// buffer cut), which the cut drops. The same holds at the tail's start.
+func (c *capped) String(redact func(string) string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	s := string(c.head)
-	if c.dropped > 0 {
-		s += fmt.Sprintf("\n… [%d bytes of output elided] …\n", c.dropped)
+	if c.dropped == 0 {
+		return strings.ToValidUTF8(string(c.head)+string(c.tail), "�")
 	}
-	return strings.ToValidUTF8(s+string(c.tail), "�")
+	if redact == nil {
+		redact = func(s string) string { return s }
+	}
+	head, tail := string(c.head), string(c.tail)
+	if c.overlap > 0 {
+		head, tail = redact(head), redact(tail)
+		head = head[:max(0, len(head)-c.overlap)]
+		tail = tail[min(len(tail), c.overlap):]
+	}
+	s := head + fmt.Sprintf("\n… [%d bytes of output elided] …\n", c.dropped+2*c.overlap) + tail
+	return strings.ToValidUTF8(s, "�")
 }

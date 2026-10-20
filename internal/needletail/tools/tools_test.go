@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,8 +31,9 @@ func setup(t *testing.T) (*Registry, *Env) {
 		Environ: func() []string {
 			return []string{"PATH=" + os.Getenv("PATH"), "HOME=/root", "CRM_API_TOKEN=acme_abcdefgh123"}
 		},
-		Memory: &memory.Store{Home: home, Limits: map[string]int{"memory": 100, "user": 100}},
-		Redact: func(s string) string { return strings.ReplaceAll(s, "acme_abcdefgh123", "[REDACTED]") },
+		Memory:        &memory.Store{Home: home, Limits: map[string]int{"memory": 100, "user": 100}},
+		Redact:        func(s string) string { return strings.ReplaceAll(s, "acme_abcdefgh123", "[REDACTED]") },
+		LongestSecret: func() int { return len("acme_abcdefgh123") },
 	}
 	return NewRegistry(Builtins()...), env
 }
@@ -160,5 +162,50 @@ func TestMemoryAndErrors(t *testing.T) {
 	}
 	if f := r.Filter([]string{"terminal", "ghost"}); len(f) != 1 || f[0].Name != "terminal" {
 		t.Errorf("filter = %v", f)
+	}
+}
+
+// A secret whose value JSON escapes (quotes, &, <, >, backslash, control characters) is masked
+// before the result is encoded, so no escaped form of it reaches the model or a session file.
+func TestRedactBeforeEncoding(t *testing.T) {
+	r, env := setup(t)
+	weird := `pa"ss<w>&ord\x` + "\t9"
+	env.Environ = func() []string { return []string{"PATH=" + os.Getenv("PATH"), "WEIRD_TOKEN=" + weird} }
+	env.Redact = func(s string) string { return strings.ReplaceAll(s, weird, "[REDACTED]") }
+	out, _ := r.Call(context.Background(), env, "terminal", `{"command":"printf '%s' \"$WEIRD_TOKEN\""}`)
+	raw, _ := json.Marshal(weird)
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(weird)
+	for _, form := range []string{weird, strings.Trim(string(raw), `"`), strings.Trim(strings.TrimSpace(b.String()), `"`), `pa\"ss`} {
+		if strings.Contains(out, form) {
+			t.Errorf("result carries %q: %s", form, out)
+		}
+	}
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Errorf("not masked: %s", out)
+	}
+	// an error message too
+	_ = os.WriteFile(filepath.Join(env.Home, weird[:2]+".txt"), nil, 0o644)
+	out, _ = r.Call(context.Background(), env, "read_file", `{"path":`+string(raw)+`}`)
+	if strings.Contains(out, `pa\"ss`) || !strings.Contains(out, "[REDACTED]") {
+		t.Errorf("error = %s", out)
+	}
+}
+
+// Capping long output never leaves part of a secret at the cut: a secret straddling the end of
+// the kept head or the start of the kept tail is masked whole or dropped whole.
+func TestTerminalCapKeepsSecretsWhole(t *testing.T) {
+	r, env := setup(t)
+	for _, c := range []struct{ cmd, part string }{
+		{fmt.Sprintf(`head -c %d /dev/zero | tr '\0' a; printf %%s "$CRM_API_TOKEN"; head -c 40000 /dev/zero | tr '\0' b`, outputHead-6), "acme_a"},
+		{fmt.Sprintf(`head -c 50000 /dev/zero | tr '\0' a; printf %%s "$CRM_API_TOKEN"; head -c %d /dev/zero | tr '\0' b`, outputTail-8), "gh123"},
+	} {
+		m, _ := call(t, r, env, "terminal", map[string]any{"command": c.cmd})
+		out := m["output"].(string)
+		if strings.Contains(out, c.part) || !strings.Contains(out, "elided") {
+			t.Errorf("%s: output keeps %q (%d bytes)", c.cmd, c.part, len(out))
+		}
 	}
 }

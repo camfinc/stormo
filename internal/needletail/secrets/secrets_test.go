@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -63,5 +64,26 @@ func TestLoadScrubRedact(t *testing.T) {
 	var nilR *Redactor
 	if nilR.Redact("x") != "x" {
 		t.Error("nil redactor")
+	}
+}
+
+// Text that is already JSON (a tool call's arguments, an encoded result) carries a secret in its
+// escaped form; that form is masked too, with and without HTML escaping.
+func TestRedactJSONForms(t *testing.T) {
+	weird := `pa"ss<w>&ord\x` + "\t9"
+	r := NewRedactor(nil, []string{"WEIRD_TOKEN=" + weird, "PLAIN_TOKEN=plain-secret-value"})
+	html, _ := json.Marshal(map[string]string{"command": "echo " + weird + " plain-secret-value"})
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(map[string]string{"command": "echo " + weird})
+	for _, in := range []string{string(html), b.String()} {
+		out := r.Redact(in)
+		if strings.Contains(out, "pa") || strings.Contains(out, "plain-secret") || !strings.Contains(out, Mask) || !json.Valid([]byte(out)) {
+			t.Errorf("%s -> %s", in, out)
+		}
+	}
+	if r.Longest() < len(weird) {
+		t.Errorf("longest = %d", r.Longest())
 	}
 }

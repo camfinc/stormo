@@ -116,6 +116,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Environ:        os.Environ,
 		Memory:         mem,
 		Redact:         red.Redact,
+		LongestSecret:  red.Longest,
 		// The core's fs_note for direct /shared writes arrives with the core client (M2).
 		SharedWrite: func(context.Context, string) { logf("shared write by a file tool (fs_note pending core client)") },
 	}

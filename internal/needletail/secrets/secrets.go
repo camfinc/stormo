@@ -4,6 +4,7 @@
 package secrets
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"regexp"
@@ -99,7 +100,8 @@ func (s *Secrets) Scrub() {
 // Redactor masks known secret values. It is safe for concurrent use.
 type Redactor struct {
 	mu     sync.RWMutex
-	values []string // longest first, so a value containing another is masked whole
+	values []string // as added
+	forms  []string // each value and its JSON-escaped forms, longest first, so a value containing another is masked whole
 	r      *strings.Replacer
 }
 
@@ -139,13 +141,49 @@ func (r *Redactor) add(v string) {
 	}
 }
 
+// build masks each value as it is and as JSON writes it inside a string (with and without HTML
+// escaping), so text that is already JSON (a tool call's arguments, an encoded result) is masked
+// too: a value with a quote, a backslash, &, <, > or a control character differs once escaped.
 func (r *Redactor) build() {
-	sort.Slice(r.values, func(i, j int) bool { return len(r.values[i]) > len(r.values[j]) })
-	pairs := make([]string, 0, 2*len(r.values))
+	r.forms = r.forms[:0]
 	for _, v := range r.values {
-		pairs = append(pairs, v, Mask)
+		for _, f := range []string{v, jsonForm(v, true), jsonForm(v, false)} {
+			if f != "" && !slices.Contains(r.forms, f) {
+				r.forms = append(r.forms, f)
+			}
+		}
+	}
+	sort.SliceStable(r.forms, func(i, j int) bool { return len(r.forms[i]) > len(r.forms[j]) })
+	pairs := make([]string, 0, 2*len(r.forms))
+	for _, f := range r.forms {
+		pairs = append(pairs, f, Mask)
 	}
 	r.r = strings.NewReplacer(pairs...)
+}
+
+// jsonForm is v as it appears inside a JSON string.
+func jsonForm(v string, escapeHTML bool) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(escapeHTML)
+	if enc.Encode(v) != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(b.String(), `"`), "\n"), `"`)
+}
+
+// Longest is the length of the longest text Redact masks (0: none): a writer that cuts text must
+// keep that much around a cut to see a value whole.
+func (r *Redactor) Longest() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.forms) == 0 {
+		return 0
+	}
+	return len(r.forms[0])
 }
 
 // Redact is s with every known secret value masked.

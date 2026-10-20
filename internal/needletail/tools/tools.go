@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -29,6 +30,9 @@ type Env struct {
 	Memory  *memory.Store
 	// Redact masks secret values in results.
 	Redact func(string) string
+	// LongestSecret is the length of the longest text Redact masks: the terminal keeps that much
+	// overlap where it cuts output, so a cut never leaves part of a secret (nil: 0).
+	LongestSecret func() int
 	// SharedWrite is told about each file tool write under /shared (the core's fs_note, M2).
 	SharedWrite func(ctx context.Context, path string)
 	// Session is the calling session's id.
@@ -109,15 +113,79 @@ func (r *Registry) Call(ctx context.Context, env *Env, name, args string) (strin
 	if failed {
 		out = map[string]string{"error": err.Error()}
 	}
+	redact := func(s string) string { return s }
+	if env != nil && env.Redact != nil {
+		redact = env.Redact
+	}
+	// Masked before encoding (a value JSON escapes differs once encoded) and after (for what the
+	// walk cannot reach, such as raw JSON).
+	if out != nil {
+		out = redactValue(reflect.ValueOf(out), redact).Interface()
+	}
 	b, merr := json.Marshal(out)
 	if merr != nil {
 		b, failed = []byte(`{"error":"result could not be encoded"}`), true
 	}
-	s := string(b)
-	if env != nil && env.Redact != nil {
-		s = env.Redact(s)
+	return redact(string(b)), failed
+}
+
+// redactValue is a copy of v with redact applied to every string in it: struct fields, map
+// values, slice and array elements, through pointers and interfaces. Byte slices are left alone.
+func redactValue(v reflect.Value, redact func(string) string) reflect.Value {
+	switch v.Kind() {
+	case reflect.String:
+		out := reflect.New(v.Type()).Elem()
+		out.SetString(redact(v.String()))
+		return out
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(redactValue(v.Elem(), redact))
+		return out
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(redactValue(v.Elem(), redact))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		for i := 0; i < out.NumField(); i++ {
+			if f := out.Field(i); f.CanSet() {
+				f.Set(redactValue(v.Field(i), redact))
+			}
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() || v.Type().Elem().Kind() == reflect.Uint8 {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(redactValue(v.Index(i), redact))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(redactValue(v.Index(i), redact))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		for it := v.MapRange(); it.Next(); {
+			out.SetMapIndex(it.Key(), redactValue(it.Value(), redact))
+		}
+		return out
 	}
-	return s, failed
+	return v
 }
 
 // safeRun turns a tool's panic into an error: one bad call must not take the runtime down.
