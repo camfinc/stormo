@@ -147,7 +147,7 @@ The runtime is the process `needletail serve`, running as uid 10000 with `HOME=$
 ### 4.2 Secrets
 
 - At boot the binary reads the values it needs (`SWARM_CORE_KEY`, `API_SERVER_KEY`, `SLACK_*`, the provider key) into a secrets struct.
-- It then unsets every secret from its own environment except the terminal passthrough allowlist (`SWARM_CORE_URL`, `SWARM_CORE_KEY`, which helper scripts use to call the core as the agent).
+- It then unsets those secrets from its own environment except the terminal passthrough allowlist (`SWARM_CORE_URL`, `SWARM_CORE_KEY`, which helper scripts use to call the core as the agent) and the `http_secrets` envs, which are usually a skill's own token that its scripts read from the env. Skill secrets the runtime does not read stay in the env as with Hermes; every env value whose name looks like a credential (`*TOKEN*`, `*SECRET*`, `*_KEY`, …) is redacted.
 - Tool results, logs and hook inputs go through a redactor that masks the known secret values.
 
 ### 4.3 LLM (`llm`)

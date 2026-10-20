@@ -32,21 +32,21 @@ func TestLoadScrubRedact(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	s.Scrub()
-	for _, gone := range []string{"API_SERVER_KEY", "OPENROUTER_API_KEY", "SLACK_BOT_TOKEN", "LUAU_ONLY_TOKEN"} {
+	for _, gone := range []string{"API_SERVER_KEY", "OPENROUTER_API_KEY", "SLACK_BOT_TOKEN"} {
 		if _, ok := os.LookupEnv(gone); ok {
 			t.Errorf("%s still in env", gone)
 		}
 	}
-	for _, kept := range []string{"SWARM_CORE_KEY", "CRM_API_TOKEN", "SWARM_AGENT"} {
+	for _, kept := range []string{"SWARM_CORE_KEY", "CRM_API_TOKEN", "SWARM_AGENT", "LUAU_ONLY_TOKEN"} {
 		if _, ok := os.LookupEnv(kept); !ok {
 			t.Errorf("%s scrubbed", kept)
 		}
 	}
 
 	r := NewRedactor(s, environ)
-	in := "key api-key-0123456789abcdef crm acme_abcdefgh123 core core-key-0123456789 agent atlas short abc"
+	in := "key api-key-0123456789abcdef crm acme_abcdefgh123 core core-key-0123456789 luau luau-secret-value agent atlas short abc"
 	out := r.Redact(in)
-	for _, leaked := range []string{"api-key-0123456789abcdef", "acme_abcdefgh123", "core-key-0123456789"} {
+	for _, leaked := range []string{"api-key-0123456789abcdef", "acme_abcdefgh123", "core-key-0123456789", "luau-secret-value"} {
 		if strings.Contains(out, leaked) {
 			t.Errorf("leaked %s: %s", leaked, out)
 		}

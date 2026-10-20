@@ -86,8 +86,18 @@ type Client struct {
 	DefaultContext int
 
 	mu      sync.Mutex
-	context map[string]int
+	context map[string]contextEntry
 }
+
+// contextEntry is a cached context length; a failed lookup (a core not signed in yet) is retried
+// after contextRetry instead of keeping the default for the process' life.
+type contextEntry struct {
+	n  int
+	ok bool
+	at time.Time
+}
+
+const contextRetry = 5 * time.Minute
 
 // Defaults for a zero Client.
 const (
@@ -559,22 +569,23 @@ func (c *Client) ContextLength(ctx context.Context, idx int) int {
 	ep := c.Endpoints[idx]
 	key := ep.BaseURL + "\x00" + ep.Model
 	c.mu.Lock()
-	if n, ok := c.context[key]; ok {
+	if e, ok := c.context[key]; ok && (e.ok || time.Since(e.at) < contextRetry) {
 		c.mu.Unlock()
-		return n
+		return e.n
 	}
 	c.mu.Unlock()
 	n := c.fetchContext(ctx, ep)
-	if n <= 0 {
-		n = def
+	e := contextEntry{n: n, ok: n > 0, at: time.Now()}
+	if !e.ok {
+		e.n = def
 	}
 	c.mu.Lock()
 	if c.context == nil {
-		c.context = map[string]int{}
+		c.context = map[string]contextEntry{}
 	}
-	c.context[key] = n
+	c.context[key] = e
 	c.mu.Unlock()
-	return n
+	return e.n
 }
 
 func (c *Client) fetchContext(parent context.Context, ep Endpoint) int {

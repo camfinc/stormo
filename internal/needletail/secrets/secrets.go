@@ -36,6 +36,7 @@ var secretName = regexp.MustCompile(`(?i)(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|_
 type Secrets struct {
 	values map[string]string
 	owned  []string
+	shared []string // owned, but skills read them too: never scrubbed
 }
 
 // Owned are the env names the runtime reads for cfg: its API key, the core key, the Slack tokens,
@@ -69,6 +70,11 @@ func Load(cfg *wire.Config, environ []string) *Secrets {
 		}
 	}
 	s := &Secrets{values: map[string]string{}, owned: Owned(cfg)}
+	// An http_secrets env is usually a skill's own token (a CRM key its bash scripts read from
+	// the env): Go injects it into Luau's requests, and the terminal keeps it. It is redacted.
+	for _, h := range cfg.Luau.HTTPSecrets {
+		s.shared = append(s.shared, h.Env)
+	}
 	for _, n := range s.owned {
 		if v := env[n]; v != "" {
 			s.values[n] = v
@@ -80,11 +86,11 @@ func Load(cfg *wire.Config, environ []string) *Secrets {
 // Get is an owned secret's value ("" when unset).
 func (s *Secrets) Get(name string) string { return s.values[name] }
 
-// Scrub unsets the owned secrets from this process' env, except the passthrough allowlist, so
-// nothing the runtime starts (the terminal) inherits them.
+// Scrub unsets the owned secrets from this process' env, except the passthrough allowlist and the
+// http_secrets envs, so nothing the runtime starts (the terminal) inherits them.
 func (s *Secrets) Scrub() {
 	for _, n := range s.owned {
-		if !slices.Contains(Passthrough, n) {
+		if !slices.Contains(Passthrough, n) && !slices.Contains(s.shared, n) {
 			_ = os.Unsetenv(n)
 		}
 	}
