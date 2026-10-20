@@ -22,13 +22,57 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
-// Observer hears a turn's steps (the bench's stream-json, later the core's hooks).
+// Observer hears a turn's steps (the bench's stream-json, the core's hooks).
 type Observer interface {
 	// ToolStart is before a tool runs; ToolDone after, with its (redacted) result.
 	ToolStart(session string, call wire.ToolCall)
 	ToolDone(session string, call wire.ToolCall, result string, failed bool, took time.Duration)
 	// Text is an assistant message's text, once the model has finished it.
 	Text(session, text string)
+}
+
+// TurnObserver is an Observer that also hears a turn begin (on the session it runs on) and end
+// (session is then the tip the turn ended on; err how it failed, nil when it answered).
+type TurnObserver interface {
+	TurnStart(session string)
+	TurnEnd(session string, err error)
+}
+
+// observers is every observer of one turn, called in order.
+type observers []Observer
+
+func (o observers) ToolStart(session string, call wire.ToolCall) {
+	for _, x := range o {
+		x.ToolStart(session, call)
+	}
+}
+
+func (o observers) ToolDone(session string, call wire.ToolCall, result string, failed bool, took time.Duration) {
+	for _, x := range o {
+		x.ToolDone(session, call, result, failed, took)
+	}
+}
+
+func (o observers) Text(session, text string) {
+	for _, x := range o {
+		x.Text(session, text)
+	}
+}
+
+func (o observers) TurnStart(session string) {
+	for _, x := range o {
+		if t, ok := x.(TurnObserver); ok {
+			t.TurnStart(session)
+		}
+	}
+}
+
+func (o observers) TurnEnd(session string, err error) {
+	for _, x := range o {
+		if t, ok := x.(TurnObserver); ok {
+			t.TurnEnd(session, err)
+		}
+	}
 }
 
 // Agent runs turns for one agent home.
@@ -43,6 +87,8 @@ type Agent struct {
 	Now func() time.Time
 	// ContextLength overrides the endpoint's context window (0: ask the endpoint).
 	ContextLength int
+	// Observer hears every turn (the core's hooks), besides a turn's own Options.Observer.
+	Observer Observer
 }
 
 // Options shape one turn.
@@ -89,11 +135,25 @@ func (a *Agent) logf(format string, args ...any) {
 
 // Run is one turn of session (any session of its lineage: the turn goes to the tip). The caller
 // makes sure one turn at a time runs per conversation.
-func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*Result, error) {
+func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (res *Result, err error) {
 	tip, ok := a.Store.Tip(session)
 	if !ok {
 		return nil, ErrNoSession
 	}
+	var obs observers
+	for _, o := range []Observer{a.Observer, opts.Observer} {
+		if o != nil {
+			obs = append(obs, o)
+		}
+	}
+	obs.TurnStart(tip)
+	defer func() {
+		end := tip
+		if res != nil {
+			end = res.Session
+		}
+		obs.TurnEnd(end, err)
+	}()
 	history, err := a.Store.Messages(tip)
 	if err != nil {
 		return nil, err
@@ -117,7 +177,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		return nil, err
 	}
 	history = append(history, stored...)
-	res := &Result{Session: tip}
+	res = &Result{Session: tip}
 	defer func() {
 		if err := a.Store.Sync(res.Session); err != nil {
 			a.logf("session sync: %v", err)
@@ -136,7 +196,6 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		allowed[t.Name] = true
 	}
 	env := a.Env
-	obs := opts.Observer
 	lastTotal, sinceTotal := 0, 0
 	shrunk := false // a context-length refusal was answered with a compaction
 
@@ -196,7 +255,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 			return res, err
 		}
 		history = append(history, stored...)
-		if resp.Content != "" && obs != nil {
+		if resp.Content != "" {
 			obs.Text(res.Session, resp.Content)
 		}
 		if len(calls) == 0 {
@@ -205,9 +264,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		}
 		env.Session = res.Session
 		for _, c := range calls {
-			if obs != nil {
-				obs.ToolStart(res.Session, c)
-			}
+			obs.ToolStart(res.Session, c)
 			started := time.Now()
 			var out string
 			var failed bool
@@ -216,9 +273,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 			} else {
 				out, failed = fmt.Sprintf(`{"error":"tool %q is not available in this turn"}`, c.Name), true
 			}
-			if obs != nil {
-				obs.ToolDone(res.Session, c, out, failed, time.Since(started))
-			}
+			obs.ToolDone(res.Session, c, out, failed, time.Since(started))
 			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out})
 			if err != nil {
 				return res, err

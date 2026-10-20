@@ -86,6 +86,14 @@ func (e *events) ToolDone(s string, c wire.ToolCall, out string, failed bool, _ 
 }
 func (e *events) Text(s, text string) { e.log = append(e.log, "text:"+text) }
 
+// turnEvents also hears turns begin and end (as the core's hooks do).
+type turnEvents struct{ events }
+
+func (e *turnEvents) TurnStart(s string) { e.log = append(e.log, "turn:"+s) }
+func (e *turnEvents) TurnEnd(s string, err error) {
+	e.log = append(e.log, fmt.Sprintf("end:%s:%v", s, err))
+}
+
 func newAgent(t *testing.T, srv *httptest.Server) *Agent {
 	t.Helper()
 	home := t.TempDir()
@@ -130,9 +138,15 @@ func TestTurnWithTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := &events{}
+	standing := &turnEvents{}
+	a.Observer = standing
 	res, err := a.Run(context.Background(), "s1", "say hello", Options{Observer: ev})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The agent's own observer hears every turn, start to end, besides the turn's.
+	if got := strings.Join(standing.log, ","); got != "turn:s1,start:terminal:call_x1,done:terminal:false,start:memory:call_x2,done:memory:false,text:Done: hello from bash.,end:s1:<nil>" {
+		t.Errorf("standing events = %s", got)
 	}
 	if res.Text != "Done: hello from bash." || res.Session != "s1" || res.Steps != 3 || res.Tokens != 45 {
 		t.Errorf("result = %+v", res)
@@ -170,6 +184,16 @@ func TestTurnWithTools(t *testing.T) {
 	}
 	if _, err := a.Run(context.Background(), "ghost", "x", Options{}); err != ErrNoSession {
 		t.Errorf("ghost: %v", err)
+	}
+	// A cancelled turn still ends.
+	standing.log = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := a.Run(ctx, "s1", "again", Options{}); err == nil {
+		t.Error("cancelled turn ran")
+	}
+	if got := strings.Join(standing.log, ","); got != "turn:s1,end:s1:context canceled" {
+		t.Errorf("cancelled turn events = %s", got)
 	}
 }
 
