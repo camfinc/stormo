@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,5 +234,20 @@ func TestFatalAndExhausted(t *testing.T) {
 	cl = &Client{Endpoints: []Endpoint{{BaseURL: stall.URL}}, IdleTimeout: 100 * time.Millisecond}
 	if _, err := cl.NewTurn().Complete(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("stall: %v", err)
+	}
+}
+
+func TestContextExceeded(t *testing.T) {
+	for err, want := range map[error]bool{
+		&Failure{Status: 400, Code: "context_length_exceeded"}:                                        true,
+		&Failure{Status: 400, Code: "invalid_request_error", Message: "Maximum context length is 8k"}: true,
+		&Failure{Status: 413, Message: "prompt exceeds the context window"}:                           true,
+		&Failure{Status: 400, Code: "invalid_request_error", Message: "bad tool schema"}:              false,
+		&Failure{Status: 500, Code: "context_length_exceeded"}:                                        false,
+		errors.New("context length"):                                                                  false,
+	} {
+		if got := ContextExceeded(err); got != want {
+			t.Errorf("%v: %v", err, got)
+		}
 	}
 }

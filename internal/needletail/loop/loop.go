@@ -138,6 +138,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 	env := a.Env
 	obs := opts.Observer
 	lastTotal, sinceTotal := 0, 0
+	shrunk := false // a context-length refusal was answered with a compaction
 
 	for step := 0; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -147,7 +148,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		window := a.window(ctx, turn)
 		estimate := max(estimateTokens(system, history, specs), lastTotal+sinceTotal/charsPerTok)
 		if float64(estimate) > compactAt*float64(window) {
-			newTip, newHistory, err := a.compact(ctx, turn, res.Session, history, window)
+			newTip, newHistory, err := a.compact(ctx, turn, res.Session, history, window, int(keepRecent*float64(window)))
 			if err != nil {
 				a.logf("compaction skipped: %v", err)
 			} else {
@@ -163,6 +164,20 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (*
 		}
 		resp, err := turn.Complete(ctx, req)
 		if err != nil {
+			// The estimate was low and the model refused the request as too long: compact as
+			// much as can be (the request's own size is the window it did not fit) and retry
+			// the step, once per turn.
+			if !shrunk && llm.ContextExceeded(err) {
+				shrunk = true
+				newTip, newHistory, cerr := a.compact(ctx, turn, res.Session, history, min(window, estimate), 0)
+				if cerr == nil {
+					res.Session, history = newTip, newHistory
+					lastTotal, sinceTotal = 0, 0
+					step--
+					continue
+				}
+				a.logf("compaction after a context-length refusal skipped: %v", cerr)
+			}
 			return res, err
 		}
 		res.Steps++
@@ -348,8 +363,8 @@ func (a *Agent) SystemPrompt() string {
 // returns the new tip with its rows. The cut is at a user or assistant row, never inside a block
 // of tool results, so the model never sees a call without its answer or an answer without its
 // call.
-func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history []wire.Message, window int) (string, []wire.Message, error) {
-	cut := cutPoint(history, int(keepRecent*float64(window)))
+func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history []wire.Message, window, keep int) (string, []wire.Message, error) {
+	cut := cutPoint(history, keep)
 	if cut <= 0 {
 		return "", nil, errors.New("no point to cut the conversation at")
 	}

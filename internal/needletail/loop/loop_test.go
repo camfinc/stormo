@@ -398,3 +398,66 @@ func TestDanglingToolCalls(t *testing.T) {
 		t.Errorf("no cut in %d rows", len(rows))
 	}
 }
+
+// A provider that refuses a request as too long (the estimate was low) gets one compacted retry.
+func TestContextLengthExceeded(t *testing.T) {
+	tooLong := `{"error":{"message":"This model's maximum context length is 1000 tokens.","type":"invalid_request_error","code":"context_length_exceeded"}}`
+	refuseOld := true
+	st := &stub{
+		refuse: func(req map[string]any) (int, string) {
+			msgs := req["messages"].([]any)
+			if strings.HasPrefix(msgs[0].(map[string]any)["content"].(string), "You compact") {
+				return 0, ""
+			}
+			for _, m := range msgs {
+				if c, _ := m.(map[string]any)["content"].(string); refuseOld && strings.Contains(c, "OLD-") {
+					return 400, tooLong
+				}
+			}
+			return 0, ""
+		},
+		pick: func(req map[string]any) string {
+			if strings.HasPrefix(req["messages"].([]any)[0].(map[string]any)["content"].(string), "You compact") {
+				return say("Earlier: old questions.")
+			}
+			return say("fresh answer")
+		},
+	}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	a := newAgent(t, srv)
+	a.ContextLength = 1_000_000 // the estimate never asks for a compaction
+	_, _ = a.Store.Create(wire.Session{ID: "conv"})
+	for i := 0; i < 6; i++ {
+		if _, err := a.Store.Append("conv", wire.Message{Role: "user", Content: fmt.Sprintf("OLD-%d question", i)}, wire.Message{Role: "assistant", Content: "old answer"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := a.Run(context.Background(), "conv", "new question", Options{})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Text != "fresh answer" || res.Session == "conv" {
+		t.Errorf("result = %+v", res)
+	}
+	if h, _ := a.Store.Get("conv"); h.EndReason != wire.EndCompression {
+		t.Errorf("not compacted: %+v", h)
+	}
+	// still too long after the compaction: the error comes back, after one retry only
+	refuseOld = false
+	_, _ = a.Store.Create(wire.Session{ID: "big"})
+	st.refuse = func(req map[string]any) (int, string) {
+		if strings.HasPrefix(req["messages"].([]any)[0].(map[string]any)["content"].(string), "You compact") {
+			return 0, ""
+		}
+		return 400, tooLong
+	}
+	_, _ = a.Store.Append("big", wire.Message{Role: "user", Content: "a"}, wire.Message{Role: "assistant", Content: "b"})
+	before := len(st.requests)
+	if _, err := a.Run(context.Background(), "big", "c", Options{}); err == nil || !strings.Contains(err.Error(), "context_length_exceeded") {
+		t.Errorf("err = %v", err)
+	}
+	if n := len(st.requests) - before; n != 3 { // the turn, the summary, the retry
+		t.Errorf("%d requests", n)
+	}
+}

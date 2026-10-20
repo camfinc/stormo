@@ -176,6 +176,20 @@ func classify(f *Failure) action {
 	return fatal
 }
 
+// ContextExceeded: err is a refusal of a request too long for the model's context window
+// (OpenAI's code context_length_exceeded, or a provider's message saying as much).
+func ContextExceeded(err error) bool {
+	var f *Failure
+	if !errors.As(err, &f) || (f.Status != 400 && f.Status != 413) {
+		return false
+	}
+	if f.Code == "context_length_exceeded" {
+		return true
+	}
+	m := strings.ToLower(f.Message)
+	return strings.Contains(m, "context length") || strings.Contains(m, "context window") || strings.Contains(m, "maximum context")
+}
+
 // Complete runs one completion along the chain.
 func (t *Turn) Complete(ctx context.Context, req Request) (*Response, error) {
 	c := t.c
