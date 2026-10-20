@@ -121,7 +121,8 @@ func TestGrantsRender(t *testing.T) {
 	}
 	inst, a := atlas(t)
 	conn, _ := inst.Connection(a.Engine.Provider)
-	raw, err := yaml.Marshal(renderConfig(a, conn, manifest.Local, ac))
+	core := manifest.CoreFor(inst, manifest.Local)
+	raw, err := yaml.Marshal(renderConfig(a, conn, manifest.Local, core, ac))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +136,23 @@ func TestGrantsRender(t *testing.T) {
 	if len(c.Luau.HTTPSecrets) != 1 || c.Luau.HTTPSecrets[0].Env != "CRM_API_TOKEN" {
 		t.Errorf("http_secrets = %+v", c.Luau.HTTPSecrets)
 	}
-	// On the core: its gateway first, the agent's connection as the fallback.
-	if c.Model.Primary.BaseURL != manifest.Core.BaseURL || len(c.Model.Fallbacks) != 1 || c.Model.Fallbacks[0].KeyEnv != conn.Key || c.Core == nil {
+	// On the core: its gateway first (the instance's own core), the agent's connection as the
+	// fallback; hooks and MCP through the sidecar's relay.
+	if c.Model.Primary.BaseURL != core.BaseURL || len(c.Model.Fallbacks) != 1 || c.Model.Fallbacks[0].KeyEnv != conn.Key || c.Core == nil ||
+		c.Core.MCPURL != manifest.RelayURL(manifest.Local)+"/mcp" || c.Core.IngestURL != manifest.RelayURL(manifest.Local)+"/ingest" {
 		t.Errorf("model = %+v core = %+v", c.Model, c.Core)
+	}
+	// Another instance's core port is the one rendered.
+	inst.CorePortSetting = 28600
+	other := renderConfig(a, conn, manifest.Local, manifest.CoreFor(inst, manifest.Local), ac)
+	if !strings.Contains(other.Model.Primary.BaseURL, ":28600/") {
+		t.Errorf("core port: %s", other.Model.Primary.BaseURL)
+	}
+	// A placement without the ChatGPT gateway keeps the connection as its model, core tools still on.
+	noGW := core
+	noGW.NoGateway = true
+	if c := renderConfig(a, conn, manifest.Local, noGW, ac); c.Model.Primary != (wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}) || c.Core == nil {
+		t.Errorf("no gateway: %+v", c)
 	}
 	// A bad grant is refused.
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  grants: [exec:bash]\n"), 0o644); err != nil {

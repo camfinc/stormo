@@ -66,17 +66,21 @@ func onCore(a *manifest.Agent, target manifest.Target) bool {
 
 // renderConfig is needletail.yaml. The model connection resolves as Hermes' does: on the core, the
 // core's gateway first and the agent's connection as the fallback; elsewhere the connection alone.
-func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.Target, ac *agentConfig) wire.Config {
+// core is the instance's core as this placement reaches it (manifest.CoreForPlacement): its own
+// port or URL, with hooks and MCP through the sidecar's relay.
+func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.Target, core manifest.CoreEndpoints, ac *agentConfig) wire.Config {
 	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
 	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
 		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout},
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit}}
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}
-	if onCore(a, target) {
-		c.Model.Primary = wire.Endpoint{BaseURL: manifest.Core.BaseURL, KeyEnv: manifest.Core.KeyEnv, Model: a.Engine.Local.Model}
+	if onCore(a, target) && !core.NoGateway {
+		c.Model.Primary = wire.Endpoint{BaseURL: core.BaseURL, KeyEnv: core.KeyEnv, Model: a.Engine.Local.Model}
 		c.Model.Fallbacks = []wire.Endpoint{cloud}
-		c.Core = &wire.CoreConfig{MCPURL: manifest.Core.MCPURL, IngestURL: manifest.Core.IngestURL, KeyEnv: manifest.Core.KeyEnv}
+	}
+	if onCore(a, target) || core.Remote && a.Engine.Local != nil {
+		c.Core = &wire.CoreConfig{MCPURL: core.MCPURL, IngestURL: core.IngestURL, KeyEnv: core.KeyEnv}
 		grants = append(grants, "core:msg_*")
 	}
 	for _, g := range ac.Luau.Grants {
@@ -152,7 +156,7 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	if err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
-	cfg, err := yaml.Marshal(renderConfig(a, conn, ctx.Target, ac))
+	cfg, err := yaml.Marshal(renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac))
 	if err != nil {
 		return nil, err
 	}
