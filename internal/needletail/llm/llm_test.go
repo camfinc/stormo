@@ -251,3 +251,27 @@ func TestContextExceeded(t *testing.T) {
 		}
 	}
 }
+
+// Providers that leave out the index: a new id starts a new call, and a name repeated across
+// chunks is not doubled.
+func TestToolCallsWithoutIndex(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\"command\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"terminal","arguments":"\"ls\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_3","function":{"name":"memory","arguments":"{}"}},{"id":"call_4","function":{"name":"terminal","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`, ``,
+	}, "\n\n")
+	resp, f := readStream(strings.NewReader(body), func() {})
+	if f != nil {
+		t.Fatal(f)
+	}
+	got := []string{}
+	for _, c := range resp.ToolCalls {
+		got = append(got, c.ID+" "+c.Name+" "+c.Arguments)
+	}
+	want := []string{`call_1 terminal {"command":"ls"}`, `call_2 read_file {"path":"a"}`, `call_3 memory {}`, `call_4 terminal {}`}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("calls =\n%s", strings.Join(got, "\n"))
+	}
+}

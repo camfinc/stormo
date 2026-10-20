@@ -155,7 +155,7 @@ The runtime is the process `needletail serve`, running as uid 10000 with `HOME=$
 An OpenAI chat-completions client with streaming SSE.
 
 **Stream handling**
-- Parses `content`, `reasoning_content`, `tool_calls` deltas keyed by `index`, the finish chunk, the usage chunk and `[DONE]`.
+- Parses `content`, `reasoning_content`, `tool_calls` deltas keyed by `index` (a provider that sends none: a fragment with a new id starts a new call), the finish chunk, the usage chunk and `[DONE]`.
 - An in-band `data: {"error":…}` frame, or a stream that ends without `[DONE]`, counts as a failed attempt.
 
 **Retries and fallback**

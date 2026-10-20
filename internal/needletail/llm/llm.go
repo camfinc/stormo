@@ -472,6 +472,7 @@ func readStream(body io.Reader, alive func()) (*Response, *Failure) {
 	var content, reasoning strings.Builder
 	calls := map[int]*wire.ToolCall{}
 	order := []int{}
+	last, synth := 0, 0 // the call the latest fragment went to; keys for calls without an index (negative)
 	var data []string
 	done := false
 	flush := func() *Failure {
@@ -504,9 +505,18 @@ func readStream(body io.Reader, alive func()) (*Response, *Failure) {
 			reasoning.WriteString(d.ReasoningContent)
 			reasoning.WriteString(d.Reasoning)
 			for j, tc := range d.ToolCalls {
-				i := j
-				if tc.Index != nil {
+				// Without an index, a fragment continues the call being streamed unless it
+				// brings another id, or is not the delta's first (a delta never carries two
+				// fragments of one call).
+				var i int
+				switch prev := calls[last]; {
+				case tc.Index != nil:
 					i = *tc.Index
+				case j == 0 && prev != nil && (tc.ID == "" || prev.ID == "" || tc.ID == prev.ID):
+					i = last
+				default:
+					synth--
+					i = synth
 				}
 				c, ok := calls[i]
 				if !ok {
@@ -514,11 +524,12 @@ func readStream(body io.Reader, alive func()) (*Response, *Failure) {
 					calls[i] = c
 					order = append(order, i)
 				}
+				last = i
 				if tc.ID != "" {
 					c.ID = tc.ID
 				}
 				if tc.Function.Name != "" {
-					c.Name += tc.Function.Name
+					c.Name = tc.Function.Name
 				}
 				c.Arguments += tc.Function.Arguments
 			}
