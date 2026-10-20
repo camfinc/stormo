@@ -69,10 +69,11 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 | `luau check <file>` | Validates the header and compiles only. |
 
 **Image** (`deploy/needletail/Dockerfile`)
-- Multi-stage. The builder is `golang:1.26` pinned by digest and runs `CGO_ENABLED=0 go build ./cmd/needletail`, for amd64 and arm64.
-- The final stage is `alpine:3.x` pinned by digest, with `bash`, `python3`, `git` and `ca-certificates`. Existing skill scripts are bash and python, so the `terminal` tool needs them.
-- `USER 10000:10000` (`shared.PosixUID`).
-- Published as `ghcr.io/camfinc/needletail:<semver>`. `Image()` builds `<repo>:<image_tag or v+version>` and returns an error for an empty tag or `latest`.
+- Multi-stage. The builder is `golang:1.26.2-alpine` pinned by its multi-arch index digest; it cross-compiles `CGO_ENABLED=0 go build ./cmd/needletail` on the build platform for amd64 and arm64. Its context is only `go.mod`, `go.sum`, `cmd/needletail` and `internal/needletail` (`Dockerfile.dockerignore`), so the build fetches no module besides `go.yaml.in/yaml/v3`.
+- The final stage is `alpine:3.22` pinned by digest, with `bash`, `python3`, `git` and `ca-certificates`. Existing skill scripts are bash and python, so the `terminal` tool needs them.
+- `USER 10000:10000` (`shared.PosixUID`), `AGENT_HOME=/opt/data`, a `HEALTHCHECK` running `needletail healthcheck`.
+- `ENTRYPOINT ["/usr/local/bin/needletail"]`, `CMD ["serve"]`. The bench runs `<image> needletail oneshot …` (`BenchArgv`), so the binary drops a first argument equal to its own name.
+- Built locally as `needletail:<tag>`; where it is published is open (§11). `Image()` builds `<repo>:<image_tag or v+version>` and returns an error for an empty tag or `latest`.
 
 ## 3. Engine contract
 
@@ -199,7 +200,7 @@ Names stay Hermes-compatible, so bench files, `schedules.tools`, `ShellTools` an
 | Tool | Behaviour |
 |---|---|
 | `terminal` | `bash -lc` with cwd `$AGENT_HOME`, `command_timeout`, capped output, and the scrubbed environment plus the passthrough allowlist. When it runs from a skill it exports `SKILL_DIR`. |
-| `read_file`, `write_file`, `patch`, `search_files` | Paths are confined by `sandbox.Resolve` to `$AGENT_HOME` or `/shared/{group,<unit>}`, with symlinks evaluated and re-checked. Direct writes to `/shared` are allowed for parity and followed by an automatic `fs_note`; prompts prefer `fs_write`. |
+| `read_file`, `write_file`, `patch`, `search_files` | Paths are confined by `sandbox.Resolve` to `$AGENT_HOME` or `/shared/{group,<unit>}`, with symlinks evaluated and re-checked. Direct writes to `/shared` are allowed for parity and followed by an automatic `fs_note` (decided, §11; the note is sent from M2); prompts prefer `fs_write`. The runtime's own files (`sessions/**`, `state/needletail/**`, `needletail.yaml`) are never written by these tools, and `search_files` skips them. |
 | `memory` | Actions add, replace and remove on the `memory` or `user` target. The budget is counted in UTF-16 units; when over, it returns an error showing the current usage. |
 | `skills_list`, `skill_view`, `skill_manage` | `skill_view` loads skills progressively and resolves `${SKILL_DIR}`. `skill_manage` creates, edits, patches and deletes under `skills/`. For `.luau` files it validates the header and compiles before saving. |
 | `luau_test` | Dry-runs a Luau tool with writes and http disabled, so the agent can iterate. |
@@ -265,7 +266,7 @@ A Socket Mode client:
 - Each thread maps to a session `slack-<channel>-<thread_ts>`.
 - Replies use `chat.postMessage` with `SLACK_BOT_TOKEN`. `SLACK_HOME_CHANNEL` is the delivery target.
 
-The websocket library choice is an open question (§10).
+The websocket client is `github.com/gorilla/websocket` v1.5.3 (decided, §11), added in M5.
 
 ### 4.10 Core MCP (`mcp`)
 
@@ -400,7 +401,9 @@ return function(args) ... end
 **Sessions.** One file per session, `sessions/<id>.jsonl`.
 - Header line: `{v:1,id,parent,end_reason,created,source,title}`.
 - Message lines: `{role,content,tool_calls,tool_call_id,at}`.
-- Files are append-only, fsynced at turn boundaries, with `sessions/index.json` replaced by atomic rename. This keeps the home crash-consistent for the nap's hashing, with no SQLite and no `SQLite:true` rule.
+- Message lines are only appended, and fsynced at turn boundaries; a torn last line (a crash mid-append) is dropped at boot. The header is rewritten once, when the session ends (`end_reason`), through a temporary file, fsync and rename. `sessions/index.json` (every conversation's summary, for readers outside the runtime) is replaced by atomic rename; the runtime rebuilds its own index from the files at boot. This keeps the home crash-consistent for the nap's hashing, with no SQLite and no `SQLite:true` rule.
+- A compaction ends the session (`end_reason: compression`) and continues in a new session (a fresh id) whose `parent` is the old one. The new file starts with one `system` row holding the summary, then the recent rows it carries over, copied verbatim with their `at`, so a session file alone resumes the conversation. The cut is always at a row before which every tool call has its result.
+- The API follows the lineage: a conversation is listed as its tip with `root` set, `/chat` on any of its sessions runs on the tip, a transcript runs from the root and leaves out the summary rows and the carried copies, and `DELETE` removes every session of it. Tool rows carry `tool_name` in transcripts only; files pair them with their call by id.
 - `modernc.org/sqlite` is already in `go.mod` and remains an option for an index if JSONL scanning becomes slow. It would add no module.
 
 **Layout fields**
@@ -529,10 +532,12 @@ A `pkg/engines` test checks that `needletail` resolves for both `Get` and `Runti
 8. **Skill scripts depend on Hermes helpers** and `HERMES_*` env. Audit them before each cutover.
 9. **The runtime uid stays tied to `shared.PosixUID`** until the mounts plan's step 3.
 
+**Decided**
+1. **Websocket for Slack:** `github.com/gorilla/websocket` v1.5.3, pinned (a second module, added in M5 and checked against the two-week rule then).
+2. **`/shared` writes from the file tools:** direct, each followed by an automatic `fs_note` to the core (parity, the MVP default).
+3. **Luau tool header:** inside the `.luau` file (§5.4). Grants stay outside `skills/`.
+
 **Open questions**
-1. **Websocket for Slack.** Hand-roll an RFC6455 client of about 250 lines (no new module, more reconnect risk), or pin `github.com/gorilla/websocket` v1.5.3 (a second module)? Recommendation: gorilla, decided at M5.
-2. **`/shared` writes from the file tools.** Allow them directly with an automatic `fs_note` (parity, the MVP default), or route them through `fs_write` only?
-3. **Default Luau grants.** Is `core:msg_*` on by default acceptable, or should every core cap be explicit?
-4. **First cutover agent:** the test agent or a named low-risk production agent?
-5. **Image registry:** ghcr or ECR?
-6. **Tool header location.** Keep the header inside the `.luau` file, or use a `<tool>.tool.yaml` sidecar? Either way, grants stay outside `skills/`.
+1. **Default Luau grants.** Is `core:msg_*` on by default acceptable, or should every core cap be explicit?
+2. **First cutover agent:** the test agent or a named low-risk production agent?
+3. **Image registry:** ghcr or ECR?
