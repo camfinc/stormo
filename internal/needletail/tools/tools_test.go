@@ -297,3 +297,26 @@ func TestTerminalBackgroundChild(t *testing.T) {
 	}
 	t.Error("the background process was killed")
 }
+
+// Tools join a registry while turns read it (the core's tools arrive after boot).
+func TestRegistryAddWhileInUse(t *testing.T) {
+	r := NewRegistry(Builtins()...)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			r.Add(Tool{Name: fmt.Sprintf("mcp_core_t%d", i), Run: func(context.Context, *Env, json.RawMessage) (any, error) { return map[string]int{"n": 1}, nil }})
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		_ = r.Filter(nil)
+		_, _ = r.Call(context.Background(), &Env{}, "mcp_core_t0", "{}")
+	}
+	<-done
+	if out, failed := r.Call(context.Background(), &Env{}, "mcp_core_t49", "{}"); failed || out != `{"n":1}` {
+		t.Errorf("added tool: %s", out)
+	}
+	if len(r.Names()) != len(Builtins())+50 {
+		t.Errorf("names %d", len(r.Names()))
+	}
+}

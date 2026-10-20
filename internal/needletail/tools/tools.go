@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
@@ -47,8 +48,9 @@ type Tool struct {
 	Run         func(ctx context.Context, env *Env, args json.RawMessage) (any, error)
 }
 
-// Registry is a set of tools.
+// Registry is a set of tools; safe for concurrent use (the core's tools join it after boot).
 type Registry struct {
+	mu     sync.RWMutex
 	byName map[string]Tool
 }
 
@@ -61,6 +63,15 @@ func NewRegistry(tools ...Tool) *Registry {
 	return r
 }
 
+// Add registers tools, replacing any of the same name.
+func (r *Registry) Add(tools ...Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range tools {
+		r.byName[t.Name] = t
+	}
+}
+
 // Builtins are the M1 built-in tools.
 func Builtins() []Tool {
 	return []Tool{terminalTool(), readFileTool(), writeFileTool(), patchTool(), searchFilesTool(), memoryTool()}
@@ -68,6 +79,12 @@ func Builtins() []Tool {
 
 // Names is the tools' names, sorted.
 func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.names()
+}
+
+func (r *Registry) names() []string {
 	out := make([]string, 0, len(r.byName))
 	for n := range r.byName {
 		out = append(out, n)
@@ -77,12 +94,19 @@ func (r *Registry) Names() []string {
 }
 
 // Get is one tool.
-func (r *Registry) Get(name string) (Tool, bool) { t, ok := r.byName[name]; return t, ok }
+func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.byName[name]
+	return t, ok
+}
 
 // Filter is the tools named in allow (all when allow is empty).
 func (r *Registry) Filter(allow []string) []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := []Tool{}
-	for _, n := range r.Names() {
+	for _, n := range r.names() {
 		if len(allow) == 0 || slices.Contains(allow, n) {
 			out = append(out, r.byName[n])
 		}
@@ -93,7 +117,7 @@ func (r *Registry) Filter(allow []string) []Tool {
 // Call runs one tool call and returns its result as the JSON text the model gets, redacted, and
 // whether it failed.
 func (r *Registry) Call(ctx context.Context, env *Env, name, args string) (string, bool) {
-	t, ok := r.byName[name]
+	t, ok := r.Get(name)
 	var out any
 	var err error
 	if !ok {
