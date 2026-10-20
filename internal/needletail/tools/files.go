@@ -24,6 +24,7 @@ const (
 	searchMax        = 500
 	searchFileMax    = 2 << 20
 	searchScanMax    = 20_000 // files visited per search
+	patchMaxBytes    = 8 << 20
 )
 
 // protected are home paths the file tools never write: the runtime's own files. (The terminal can
@@ -55,6 +56,66 @@ func writable(env *Env, p string) (string, error) {
 		return "", fmt.Errorf("%s is a directory", env.Sandbox.Display(real))
 	}
 	return real, nil
+}
+
+// openRead opens a resolved path for reading: a regular file only (a FIFO would block the call,
+// and the turn with it, until a writer came), never through a symlink swapped in since Resolve.
+func openRead(real, display string) (*os.File, os.FileInfo, error) {
+	info, err := os.Lstat(real)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
+	}
+	if info.IsDir() {
+		return nil, nil, fmt.Errorf("%s is a directory: use search_files with target files to list it", display)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s is not a regular file", display)
+	}
+	f, err := os.OpenFile(real, os.O_RDONLY|oNoFollow|oNonblock, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
+	}
+	got, err := f.Stat()
+	if err != nil || !got.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%s is not a regular file", display)
+	}
+	return f, got, nil
+}
+
+// writeFile replaces the content of the resolved path real (created with mode when missing): a
+// regular file only, opened without following a final symlink, and only when the path still
+// resolves to itself and names the file opened (nothing was swapped in since Resolve). The file
+// is truncated only after those checks.
+func writeFile(env *Env, real string, body []byte, mode os.FileMode) error {
+	display := env.Sandbox.Display(real)
+	if info, err := os.Lstat(real); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", display)
+	}
+	f, err := os.OpenFile(real, os.O_WRONLY|os.O_CREATE|oNoFollow|oNonblock, mode)
+	if err != nil {
+		return fmt.Errorf("%s: %w", display, unwrapPath(err))
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", display)
+	}
+	again, err := env.Sandbox.Resolve(real)
+	now, serr := os.Lstat(real)
+	if err != nil || again != real || serr != nil || !os.SameFile(opened, now) {
+		return fmt.Errorf("%s moved while writing", display)
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := f.Write(body); err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func noteShared(ctx context.Context, env *Env, real string) {
@@ -102,18 +163,11 @@ type readResult struct {
 }
 
 func readLines(real, display string, offset, limit int) (any, error) {
-	f, err := os.Open(real)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
-	}
-	defer f.Close()
-	info, err := f.Stat()
+	f, _, err := openRead(real, display)
 	if err != nil {
 		return nil, err
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory: use search_files with target files to list it", display)
-	}
+	defer f.Close()
 	head := make([]byte, 8192)
 	n, _ := io.ReadFull(f, head)
 	if bytes.IndexByte(head[:n], 0) >= 0 {
@@ -131,17 +185,22 @@ func readLines(real, display string, offset, limit int) (any, error) {
 	limit = min(limit, readMaxLines)
 	res := readResult{Path: display}
 	var b strings.Builder
-	br := bufio.NewReader(f)
+	br := bufio.NewReaderSize(f, 64<<10)
 	line := 0
+	var buf []byte
 	for {
-		s, err := br.ReadString('\n')
-		if s == "" && err != nil {
+		// at most lineMaxBytes and a line ending of each line is held, however long it is
+		kept, raw, err := readLine(br, lineMaxBytes+2, buf)
+		buf = kept
+		if raw == 0 && err != nil {
 			break
 		}
 		line++
 		if line >= offset && line < offset+limit && !res.Truncated {
-			s = strings.TrimRight(s, "\r\n")
-			if len(s) > lineMaxBytes {
+			s := string(kept)
+			if raw > len(kept) {
+				s = s[:lineMaxBytes] + "…"
+			} else if s = strings.TrimRight(s, "\r\n"); len(s) > lineMaxBytes {
 				s = s[:lineMaxBytes] + "…"
 			}
 			entry := fmt.Sprintf("%6d|%s\n", line, strings.ToValidUTF8(s, "�"))
@@ -159,6 +218,24 @@ func readLines(real, display string, offset, limit int) (any, error) {
 	}
 	res.Content, res.TotalLines = b.String(), line
 	return res, nil
+}
+
+// readLine reads one line (up to and including '\n', or to the end) keeping its first keep
+// bytes in buf: the kept bytes, the line's full length and the read error (io.EOF at the end).
+func readLine(br *bufio.Reader, keep int, buf []byte) ([]byte, int, error) {
+	buf = buf[:0]
+	raw := 0
+	for {
+		frag, err := br.ReadSlice('\n')
+		if room := keep - len(buf); room > 0 {
+			buf = append(buf, frag[:min(room, len(frag))]...)
+		}
+		raw += len(frag)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return buf, raw, err
+	}
 }
 
 func unwrapPath(err error) error {
@@ -206,8 +283,8 @@ func writeFileTool() Tool {
 			if info, err := os.Stat(real); err == nil {
 				mode = info.Mode().Perm()
 			}
-			if err := os.WriteFile(real, []byte(*a.Content), mode); err != nil {
-				return nil, unwrapPath(err)
+			if err := writeFile(env, real, []byte(*a.Content), mode); err != nil {
+				return nil, err
 			}
 			noteShared(ctx, env, real)
 			return map[string]any{"path": env.Sandbox.Display(real), "bytes_written": len(*a.Content)}, nil
@@ -245,13 +322,23 @@ func patchTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			info, err := os.Stat(real)
+			display := env.Sandbox.Display(real)
+			f, info, err := openRead(real, display)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", a.Path, unwrapPath(err))
+				return nil, err
 			}
-			body, err := os.ReadFile(real)
+			tooLarge := fmt.Errorf("%s is too large to patch (%d bytes, at most %d): use the terminal", display, info.Size(), patchMaxBytes)
+			if info.Size() > patchMaxBytes {
+				_ = f.Close()
+				return nil, tooLarge
+			}
+			body, err := io.ReadAll(io.LimitReader(f, patchMaxBytes+1))
+			_ = f.Close()
 			if err != nil {
 				return nil, unwrapPath(err)
+			}
+			if len(body) > patchMaxBytes {
+				return nil, tooLarge
 			}
 			s := string(body)
 			n := strings.Count(s, a.Old)
@@ -266,8 +353,8 @@ func patchTool() Tool {
 			} else {
 				s = strings.Replace(s, a.Old, a.New, 1)
 			}
-			if err := os.WriteFile(real, []byte(s), info.Mode().Perm()); err != nil {
-				return nil, unwrapPath(err)
+			if err := writeFile(env, real, []byte(s), info.Mode().Perm()); err != nil {
+				return nil, err
 			}
 			noteShared(ctx, env, real)
 			if !a.ReplaceAll {
@@ -326,6 +413,9 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 	root, err := env.Sandbox.Resolve(a.Path)
 	if err != nil {
 		return nil, err
+	}
+	if runtimeDir(env, root) {
+		return nil, fmt.Errorf("%s is the runtime's own directory and is not searched", env.Sandbox.Display(root))
 	}
 	var re *regexp.Regexp
 	switch a.Target {
@@ -387,11 +477,22 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 	return map[string]any{"target": a.Target, "matches": results, "count": len(results), "truncated": truncated}, nil
 }
 
-// runtimeDir: the runtime's own directories in the home are not searched (sessions hold whole
+// runtimeDirs are the runtime's own directories in the home, never searched (sessions hold whole
 // conversations).
+var runtimeDirs = []string{"sessions", "state/needletail", "logs"}
+
+// runtimeDir: p is one of runtimeDirs or inside one.
 func runtimeDir(env *Env, p string) bool {
 	rel, ok := env.Sandbox.HomeRel(p)
-	return ok && (rel == "sessions" || rel == "state/needletail" || rel == "logs")
+	if !ok {
+		return false
+	}
+	for _, d := range runtimeDirs {
+		if rel == d || strings.HasPrefix(rel, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func nameMatch(pattern, name string) bool {
@@ -403,12 +504,12 @@ func nameMatch(pattern, name string) bool {
 }
 
 func grep(p, show string, re *regexp.Regexp, results *[]string, max int) {
-	f, err := os.Open(p)
+	f, info, err := openRead(p, show)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err != nil || info.Size() > searchFileMax {
+	if info.Size() > searchFileMax {
 		return
 	}
 	body, err := io.ReadAll(f)

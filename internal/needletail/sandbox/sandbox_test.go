@@ -21,6 +21,9 @@ func TestResolve(t *testing.T) {
 	_ = os.Symlink(other, filepath.Join(home, "to-ops"))
 	_ = os.Symlink(filepath.Join(group, "x"), filepath.Join(home, "to-group"))
 	_ = os.Symlink("/etc/passwd", filepath.Join(home, "passwd"))
+	// planted in the shared space (another agent can write there), pointing into this agent's home
+	_ = os.Symlink(filepath.Join(home, "skills"), filepath.Join(group, "x2"))
+	_ = os.Symlink(filepath.Join(group, "d2"), filepath.Join(unit, "to-group"))
 	s := Sandbox{Home: home, Shared: []string{group, unit}}
 	real := func(p string) string { r, _ := evalExisting(p); return r }
 
@@ -30,15 +33,19 @@ func TestResolve(t *testing.T) {
 		"~/a.txt":                    filepath.Join(home, "a.txt"),
 		filepath.Join(group, "d.md"): filepath.Join(group, "d.md"),
 		filepath.Join(unit, "u.md"):  filepath.Join(unit, "u.md"),
-		"to-group/y":                 filepath.Join(group, "x", "y"),
 		"skills/../b.txt":            filepath.Join(home, "b.txt"),
+		// the root by its resolved spelling (macOS: /var is /private/var)
+		filepath.Join(real(home), "r.md"): filepath.Join(home, "r.md"),
 	} {
 		got, err := s.Resolve(in)
 		if err != nil || got != real(want) {
 			t.Errorf("%s: %s %v (want %s)", in, got, err, real(want))
 		}
 	}
-	for _, bad := range []string{"../escape", filepath.Join(other, "o.md"), "to-ops/o.md", "passwd", "/etc/hosts", "", "a\x00b", "skills/../../x"} {
+	// a path stays in the root it names: a symlink from one allowed root into another is refused
+	// (a write to /shared/group/x2/SKILL.md must not land in the home's skills)
+	for _, bad := range []string{"../escape", filepath.Join(other, "o.md"), "to-ops/o.md", "passwd", "/etc/hosts", "", "a\x00b", "skills/../../x",
+		"to-group/y", filepath.Join(group, "x2", "SKILL.md"), filepath.Join(group, "x2"), filepath.Join(unit, "to-group", "z")} {
 		if got, err := s.Resolve(bad); err == nil {
 			t.Errorf("%q resolved to %s", bad, got)
 		} else if bad != "" && bad != "a\x00b" && !errors.Is(err, ErrOutside) {

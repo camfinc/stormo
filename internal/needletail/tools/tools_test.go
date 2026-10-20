@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,69 @@ func TestTerminalCapKeepsSecretsWhole(t *testing.T) {
 		if strings.Contains(out, c.part) || !strings.Contains(out, "elided") {
 			t.Errorf("%s: output keeps %q (%d bytes)", c.cmd, c.part, len(out))
 		}
+	}
+}
+
+// A symlink planted in the shared space that points into the home does not let a shared write
+// land in the home.
+func TestSharedSymlinkIntoHome(t *testing.T) {
+	r, env := setup(t)
+	_ = os.MkdirAll(filepath.Join(env.Home, "skills", "crm"), 0o755)
+	if err := os.Symlink(filepath.Join(env.Home, "skills"), filepath.Join(env.Sandbox.Shared[0], "x")); err != nil {
+		t.Fatal(err)
+	}
+	m, failed := call(t, r, env, "write_file", map[string]any{"path": filepath.Join(env.Sandbox.Shared[0], "x", "crm", "SKILL.md"), "content": "evil"})
+	if !failed || !strings.Contains(m["error"].(string), "outside") {
+		t.Errorf("write = %v", m)
+	}
+	if _, err := os.Stat(filepath.Join(env.Home, "skills", "crm", "SKILL.md")); !os.IsNotExist(err) {
+		t.Error("the shared write landed in the home")
+	}
+}
+
+// read_file holds at most one capped line of a file in memory, however long the line; patch
+// refuses a file over its size cap.
+func TestFileToolsBounded(t *testing.T) {
+	r, env := setup(t)
+	big := filepath.Join(env.Home, "one-line.txt")
+	f, _ := os.Create(big)
+	chunk := []byte(strings.Repeat("a", 1<<20))
+	for i := 0; i < 48; i++ {
+		_, _ = f.Write(chunk)
+	}
+	_, _ = f.Write([]byte("\nsecond line\n"))
+	_ = f.Close()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	m, failed := call(t, r, env, "read_file", map[string]any{"path": "one-line.txt"})
+	runtime.ReadMemStats(&after)
+	if failed || m["total_lines"] != float64(2) || !strings.Contains(m["content"].(string), "     2|second line") {
+		t.Errorf("read = %v", m["error"])
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 8<<20 {
+		t.Errorf("read_file allocated %d MiB for a 48 MiB line", got>>20)
+	}
+	m, failed = call(t, r, env, "patch", map[string]any{"path": "one-line.txt", "old_string": "second", "new_string": "2nd"})
+	if !failed || !strings.Contains(m["error"].(string), "too large") {
+		t.Errorf("patch = %v", m)
+	}
+}
+
+// search_files does not search the runtime's own directories, also when asked for one directly.
+func TestSearchRuntimeDirs(t *testing.T) {
+	r, env := setup(t)
+	_ = os.MkdirAll(filepath.Join(env.Home, "sessions", "sub"), 0o700)
+	_ = os.MkdirAll(filepath.Join(env.Home, "logs"), 0o700)
+	_ = os.WriteFile(filepath.Join(env.Home, "sessions", "sub", "s.jsonl"), []byte("private talk\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(env.Home, "logs", "x.log"), []byte("private talk\n"), 0o600)
+	for _, p := range []string{"sessions", "sessions/sub", "logs", "state/needletail"} {
+		_ = os.MkdirAll(filepath.Join(env.Home, p), 0o700)
+		if m, failed := call(t, r, env, "search_files", map[string]any{"pattern": "private", "path": p}); !failed {
+			t.Errorf("%s searched: %v", p, m)
+		}
+	}
+	if m, _ := call(t, r, env, "search_files", map[string]any{"pattern": "private"}); m["count"] != float64(0) {
+		t.Errorf("home search = %v", m)
 	}
 }

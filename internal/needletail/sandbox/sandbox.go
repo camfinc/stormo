@@ -1,6 +1,6 @@
 // Package sandbox confines the file tools' paths (docs/needletail.md §4.5, §6): every path must
 // resolve, symlinks evaluated, inside the agent's home or one of its shared-space directories
-// (/shared/group and /shared/<unit>). It does not confine the terminal, whose boundary is the
+// (/shared/group and /shared/<unit>), and inside the same one it names. It does not confine the terminal, whose boundary is the
 // container (§7).
 package sandbox
 
@@ -22,8 +22,12 @@ type Sandbox struct {
 }
 
 // Resolve is p as the file tools will open it: absolute, cleaned, symlinks of its existing part
-// evaluated, and inside a root. The returned path is the one to use (never p itself), so a
-// symlink cannot be swapped in between lexical and physical checks of the same string.
+// evaluated, and inside the root p names. The returned path is the one to use (never p itself),
+// so a symlink cannot be swapped in between lexical and physical checks of the same string.
+//
+// A path stays in its own root: one under /shared/group must resolve under /shared/group, not
+// into the home or the unit's directory through a symlink someone planted there (another agent
+// can write the shared space), and one in the home must not leave it for the shared space.
 func (s Sandbox) Resolve(p string) (string, error) {
 	if strings.TrimSpace(p) == "" {
 		return "", errors.New("empty path")
@@ -37,30 +41,41 @@ func (s Sandbox) Resolve(p string) (string, error) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(s.Home, p)
 	}
-	real, err := evalExisting(filepath.Clean(p))
+	p = filepath.Clean(p)
+	root, ok := s.rootOf(p)
+	if !ok {
+		return "", fmt.Errorf("%s: %w", p, ErrOutside)
+	}
+	real, err := evalExisting(p)
 	if err != nil {
 		return "", err
 	}
-	for _, root := range s.roots() {
-		if within(real, root) {
-			return real, nil
-		}
+	if !within(real, root) {
+		return "", fmt.Errorf("%s: %w", p, ErrOutside)
 	}
-	return "", fmt.Errorf("%s: %w", p, ErrOutside)
+	return real, nil
 }
 
-// roots are the allowed roots, themselves resolved.
-func (s Sandbox) roots() []string {
-	out := []string{}
+// rootOf is the root (resolved) that the cleaned absolute path p is lexically inside, by the
+// root's configured spelling or its resolved one; the longest when roots nest.
+func (s Sandbox) rootOf(p string) (string, bool) {
+	best, n := "", -1
 	for _, r := range append([]string{s.Home}, s.Shared...) {
 		if r == "" {
 			continue
 		}
-		if rr, err := evalExisting(filepath.Clean(r)); err == nil {
-			out = append(out, rr)
+		clean := filepath.Clean(r)
+		rr, err := evalExisting(clean)
+		if err != nil {
+			continue
+		}
+		for _, spelling := range []string{clean, rr} {
+			if within(p, spelling) && len(spelling) > n {
+				best, n = rr, len(spelling)
+			}
 		}
 	}
-	return out
+	return best, n >= 0
 }
 
 // InShared: a resolved path inside the shared space (writes there are noted to the core).
