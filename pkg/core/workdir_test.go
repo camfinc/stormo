@@ -2,12 +2,14 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
 )
 
@@ -456,5 +458,44 @@ func TestReadCapsAtMaxRead(t *testing.T) {
 	c, err := f.w.Read(Owner, "/shared/group/big.txt")
 	if err != nil || !c.Truncated || c.Binary || len(c.Text) != maxRead-1 {
 		t.Fatalf("truncated %v binary %v len %d %v", c.Truncated, c.Binary, len(c.Text), err)
+	}
+}
+
+// An engine whose hooks carry Stormo's own kind names (tool_start, tool_done) instead of Hermes'
+// gets the same terminal inference.
+func TestScanAttributionWithKindNamedEvents(t *testing.T) {
+	f := newWorkdir(t)
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	send := func(kind engine.HookKind, call string, at time.Time) {
+		t.Helper()
+		deliverySeq++
+		e := &engine.HookEvent{Kind: kind, Name: string(kind), Delivery: fmt.Sprintf("k%d-%d", deliverySeq, at.UnixNano()), At: at,
+			Session: "s", Tool: "terminal", ToolInput: map[string]any{"command": "make report"}, CallID: call}
+		if err := f.m.Ingest("nova", e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t0 := f.now
+	send(engine.ToolStart, "k1", t0)
+	f.file(t, "group/report.md", "made by a script")
+	_ = os.Chtimes(filepath.Join(f.root, "group/report.md"), t0.Add(time.Second), t0.Add(time.Second))
+	send(engine.ToolDone, "k1", t0.Add(3*time.Second))
+	// Written well after the call ended: nobody is named.
+	f.file(t, "group/later.md", "x")
+	_ = os.Chtimes(filepath.Join(f.root, "group/later.md"), t0.Add(time.Minute), t0.Add(time.Minute))
+	f.now = time.Now().Add(5 * time.Second)
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"/shared/group/report.md": "nova terminal (inferred)", "/shared/group/later.md": "unknown scan"} {
+		info, err := f.w.Info("atlas", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.LastWriter + " " + info.How; got != want {
+			t.Errorf("%s: %s, want %s", path, got, want)
+		}
 	}
 }

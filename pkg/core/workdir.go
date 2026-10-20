@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/shared"
 )
 
@@ -809,7 +810,9 @@ func (w *Workdir) takeClaim(key string, mtime int64) (claim, bool) {
 }
 
 // shellAt is the one agent with access to layer that had a shell tool call running at ms, if
-// exactly one did (the activity timeline holds the calls; delivery lag allowed for).
+// exactly one did (the activity timeline holds the calls; delivery lag allowed for). The timeline
+// keeps each engine's own event name: Hermes' pre/post_tool_call, or Stormo's kind names
+// (engine.ToolStart, engine.ToolDone) for an engine that uses them.
 func (w *Workdir) shellAt(layer string, ms int64) string {
 	if w.o.Monitor == nil {
 		return ""
@@ -842,9 +845,10 @@ func (w *Workdir) shellAt(layer string, ms int64) string {
 			s = &span{start: -1, end: -1}
 			calls[k] = s
 		}
-		if event == "pre_tool_call" {
+		switch event {
+		case "pre_tool_call", string(engine.ToolStart):
 			s.start = at
-		} else if event == "post_tool_call" {
+		case "post_tool_call", string(engine.ToolDone):
 			s.end = at
 		}
 	}
