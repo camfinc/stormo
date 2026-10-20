@@ -46,13 +46,16 @@ func New(inst *instance.Instance) *Needletail {
 			{Class: engine.Learning, Glob: "skills/.usage.json"},
 			{Class: engine.Learning, Glob: "skills/[!.]*/**"},
 			{Class: engine.Learning, Glob: "cron/jobs.json"},
+			// The rendered config is rebuilt from the repo on every boot (as Hermes' config.yaml):
+			// never restored from a nap, so a changed agent.yaml or grant reaches the agent on its
+			// next start, and nothing the agent writes into it survives one.
+			{Class: engine.Learning, Glob: "needletail.yaml"},
 			// raw: conversation history and the Luau audit log (PII)
 			{Class: engine.Raw, Glob: "sessions/**"},
 			{Class: engine.Raw, Glob: "logs/audit/**"},
-			// state: tool state, the runtime's own state, its rendered config
+			// state: tool state and the runtime's own state
 			{Class: engine.State, Glob: sd + "/**"},
 			{Class: engine.State, Glob: "state/needletail/**"},
-			{Class: engine.State, Glob: "needletail.yaml"},
 		},
 	}
 	l.Memory.Memory, l.Memory.User = "memories/MEMORY.md", "memories/USER.md"

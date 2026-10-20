@@ -391,9 +391,9 @@ return function(args) ... end
 
 | Class | Paths |
 |---|---|
-| Learning | `memories/MEMORY.md`, `memories/USER.md`, `skills/.usage.json`, `skills/[!.]*/**` (including `tools/*.luau`), `cron/jobs.json` |
+| Learning | `memories/MEMORY.md`, `memories/USER.md`, `skills/.usage.json`, `skills/[!.]*/**` (including `tools/*.luau`), `cron/jobs.json`, `needletail.yaml` (napped but rebuilt from the baseline on every boot, as Hermes' `config.yaml`: a changed manifest or grant reaches the agent, and nothing the agent writes into it survives a restart) |
 | Raw (PII) | `sessions/**`, `logs/audit/**` |
-| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, Slack cursor), `needletail.yaml` |
+| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, Slack cursor) |
 
 `SOUL.md` and `scripts/**` are rebuilt from the baseline.
 

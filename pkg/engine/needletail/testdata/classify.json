@@ -83,7 +83,7 @@
   },
   {
    "path": "needletail.yaml",
-   "class": "state",
+   "class": "learning",
    "glob": "needletail.yaml"
   },
   {
