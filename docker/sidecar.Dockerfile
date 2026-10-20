@@ -15,6 +15,7 @@ COPY embed.go ./
 COPY docs/instances.md ./docs/
 COPY examples/minimal ./examples/minimal
 COPY cmd ./cmd
+COPY internal ./internal
 COPY pkg ./pkg
 ARG VERSION=dev
 ARG TARGETOS
