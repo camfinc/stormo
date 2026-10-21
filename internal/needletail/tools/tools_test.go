@@ -429,3 +429,26 @@ func TestSkillTools(t *testing.T) {
 		t.Errorf("index = %+v %v", s, err)
 	}
 }
+
+// A group (the Luau tools) is replaced whole each time, never shadows another tool, and a tool
+// that went away is no longer offered.
+func TestSetGroup(t *testing.T) {
+	r := NewRegistry(Tool{Name: "terminal", Description: "static"})
+	r.SetGroup("luau", []Tool{{Name: "a__x", Hook: "luau:a__x"}, {Name: "terminal", Description: "shadow"}})
+	if got := r.Names(); !slices.Equal(got, []string{"a__x", "terminal"}) {
+		t.Fatalf("names %q", got)
+	}
+	if tl, _ := r.Get("terminal"); tl.Description != "static" {
+		t.Fatal("a group tool replaced a static one")
+	}
+	if tl, _ := r.Get("a__x"); tl.ObservedName() != "luau:a__x" {
+		t.Fatalf("observed %q", tl.ObservedName())
+	}
+	if !r.Taken("luau", "terminal") || r.Taken("luau", "a__x") || r.Taken("luau", "free") {
+		t.Fatal("Taken")
+	}
+	r.SetGroup("luau", []Tool{{Name: "b__y"}})
+	if got := r.Names(); !slices.Equal(got, []string{"b__y", "terminal"}) {
+		t.Fatalf("after replace %q", got)
+	}
+}

@@ -4,6 +4,15 @@
 // needs a new version and a migration.
 package wire
 
+import "regexp"
+
+// Capability is the Luau capability grammar (docs/needletail.md §5.4): what a tool's header
+// declares and what engine/needletail/config.yaml grants, read by the adapter and the runtime.
+//
+//	fs.read:home  fs.read:shared  fs.write:home[/<glob>]  fs.write:shared
+//	http:<host>   http:*.<suffix>  core:<tool>  core:<prefix>*
+var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?)$`)
+
 // Contract versions.
 const (
 	// HookVersion is Hook's "v".

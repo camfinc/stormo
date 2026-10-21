@@ -1,0 +1,770 @@
+package luau
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/netip"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/mcp"
+	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/wire"
+)
+
+// Per-run quotas and bounds of the host side.
+const (
+	ReadQuota  = 8 << 20 // bytes nt.fs reads in one run
+	WriteQuota = 4 << 20 // bytes nt.fs writes in one run
+	maxList    = 1000    // entries of one fs.list
+	maxLogs    = 64 << 10
+	// SharedPrefix is how scripts name the shared space (the agents' mount point).
+	SharedPrefix = "/shared"
+)
+
+// CoreCaller calls the swarm core's tools as the agent (mcp.Client).
+type CoreCaller interface {
+	Call(ctx context.Context, name string, args json.RawMessage) (*mcp.Result, error)
+}
+
+// Runtime is what Luau runs against in one agent home. Fields are set once at boot.
+type Runtime struct {
+	Runner Runner
+	Home   string
+	// SharedDir is where the shared space is mounted here ($SWARM_SHARED_DIR); scripts name it
+	// /shared. Layers are the shared directories this agent has: group and its unit.
+	SharedDir string
+	Layers    []string
+	// Grants are needletail.yaml's luau.grants; HTTPSecrets its http_secrets, whose values
+	// Secret gives (by env name).
+	Grants      []string
+	HTTPSecrets []wire.HTTPSecret
+	Secret      func(env string) string
+	// Core is the swarm core (nil when the agent is not on one); CoreURLs its addresses (the MCP
+	// and ingest URLs), which nt.http never dials.
+	Core     CoreCaller
+	CoreURLs []string
+	Memory   *memory.Store
+	// Redact masks secret values in every answer a script gets, its logs and results.
+	Redact func(string) string
+	Log    func(string)
+	// ScriptTimeout bounds a run (limits.script_timeout); a header's timeout may only lower it.
+	ScriptTimeout time.Duration
+	Now           func() time.Time
+
+	// tests only: extra roots for nt.http's TLS, and a resolver standing in for DNS
+	rootCAs *tls.Config
+	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+
+	auditMu sync.Mutex
+}
+
+func (rt *Runtime) redact(s string) string {
+	if rt.Redact == nil {
+		return s
+	}
+	return rt.Redact(s)
+}
+
+func (rt *Runtime) logf(format string, args ...any) {
+	if rt.Log != nil {
+		rt.Log(rt.redact(fmt.Sprintf(format, args...)))
+	}
+}
+
+func (rt *Runtime) now() time.Time {
+	if rt.Now != nil {
+		return rt.Now()
+	}
+	return time.Now()
+}
+
+func (rt *Runtime) timeout(h *Header) time.Duration {
+	t := rt.ScriptTimeout
+	if t <= 0 {
+		t = DefaultTimeout
+	}
+	if h != nil && h.Timeout > 0 && h.Timeout < t {
+		t = h.Timeout
+	}
+	return t
+}
+
+// Call is one run's host: the script, its effective capabilities and what it used. It is the
+// engine's Host.
+type Call struct {
+	rt      *Runtime
+	Tool    string
+	Session string
+	Caps    Caps
+	// DryRun refuses every binding that writes or reaches out (luau_test).
+	DryRun bool
+
+	mu      sync.Mutex
+	read    int64
+	wrote   int64
+	touched []string // /shared paths written (the hooks attribute them)
+	logs    []string
+	logSize int
+	denied  []string
+}
+
+// NewCall is a run of tool (its name, for the audit) in session with caps.
+func (rt *Runtime) NewCall(tool, session string, caps Caps, dryRun bool) *Call {
+	return &Call{rt: rt, Tool: tool, Session: session, Caps: caps, DryRun: dryRun}
+}
+
+// Touched are the shared-space paths the run wrote (as /shared/<layer>/…).
+func (c *Call) Touched() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.touched...)
+}
+
+// Logs are the run's nt.log lines (redacted).
+func (c *Call) Logs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.logs...)
+}
+
+// Denied are the calls refused for a capability, as "<binding> <cap>".
+func (c *Call) Denied() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.denied...)
+}
+
+var registry = bindingByName()
+
+// hostError is a refusal with a code the script sees ("denied: …").
+type hostError struct{ code, msg string }
+
+func (e *hostError) Error() string { return e.code + ": " + e.msg }
+
+func errf(code, format string, args ...any) error {
+	return &hostError{code: code, msg: fmt.Sprintf(format, args...)}
+}
+
+func (c *Call) deny(binding, capability string) error {
+	c.mu.Lock()
+	c.denied = append(c.denied, binding+" "+capability)
+	c.mu.Unlock()
+	return errf("denied", "%s needs %s, which this tool does not have (its caps, as granted)", binding, capability)
+}
+
+// Call answers one host call (Host).
+func (c *Call) Call(ctx context.Context, name string, in []byte) []byte {
+	b, ok := registry[name]
+	var v any
+	var err error
+	switch {
+	case !ok || b.Local || b.run == nil:
+		err = errf("unknown", "no binding %q", name)
+	case c.DryRun && b.Write:
+		err = errf("dry_run", "%s is not run in a dry run (luau_test): writes, http and core calls are off", name)
+	default:
+		raw := json.RawMessage(in)
+		if !json.Valid(raw) || len(raw) == 0 || raw[0] != '{' {
+			err = errf("bad_args", "%s: arguments must be an object", name)
+		} else {
+			v, err = b.run(ctx, c, raw)
+		}
+	}
+	var out []byte
+	status := "ok"
+	if err != nil {
+		code, msg := "error", err.Error()
+		var he *hostError
+		if errors.As(err, &he) {
+			code, msg = he.code, he.msg
+		}
+		status = code
+		out = failure(code, c.rt.redact(msg))
+	} else {
+		out, err = json.Marshal(map[string]any{"ok": true, "v": v})
+		if err != nil {
+			status, out = "error", failure("error", "the answer could not be encoded")
+		}
+	}
+	// Nothing a script gets back holds a secret value: an echo of an injected header included.
+	out = []byte(c.rt.redact(string(out)))
+	c.audit(name, b.Grant, in, len(out), status)
+	return out
+}
+
+// audit appends the call to logs/audit/<session>.jsonl (Raw: its arguments are hashed, not kept).
+func (c *Call) audit(binding, capability string, in []byte, out int, status string) {
+	if c.rt.Home == "" {
+		return
+	}
+	sum := sha256.Sum256(in)
+	line, _ := json.Marshal(map[string]any{"ts": c.rt.now().UTC().Format(time.RFC3339Nano), "tool": c.Tool, "call": binding,
+		"cap": capability, "args_sha256": hex.EncodeToString(sum[:]), "bytes_in": len(in), "bytes_out": out, "status": status})
+	session := c.Session
+	if session == "" {
+		session = "none"
+	}
+	dir := filepath.Join(c.rt.Home, "logs", "audit")
+	c.rt.auditMu.Lock()
+	defer c.rt.auditMu.Unlock()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, safeName(session)+".jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(line, '\n'))
+	_ = f.Close()
+}
+
+var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+func safeName(s string) string {
+	s = unsafeName.ReplaceAllString(s, "_")
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	if s == "" || s == "." || s == ".." {
+		s = "_"
+	}
+	return s
+}
+
+// ---- places --------------------------------------------------------------------------------
+
+// place is a path a script named: in the home (rel to it) or in a shared layer.
+type place struct {
+	shared bool
+	root   string // the home, or the layer's directory
+	rel    string // slash-separated, relative to root ("" for root itself)
+	agent  string // the shared path as agents and the core name it: /shared/<layer>/<rel>
+}
+
+func (p place) real() string {
+	if p.rel == "" {
+		return p.root
+	}
+	return filepath.Join(p.root, filepath.FromSlash(p.rel))
+}
+
+// protected are home paths a script never writes: the runtime's own files, the agent's memory
+// (the memory tool), its skills (skill_manage checks every change), its schedules
+// (cronjob_manage) and the temp dir.
+var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "state", "memories", "skills", "cron", ".needletail-tmp", ".swarm"}
+
+func isProtected(rel string) bool {
+	for _, p := range protected {
+		if rel == p || strings.HasPrefix(rel, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// place reads a script's path: lexically cleaned, never outside its root, and with no symlink in
+// any component that exists (each is checked with Lstat).
+func (c *Call) place(p string) (place, error) {
+	if strings.TrimSpace(p) == "" {
+		return place{}, errf("bad_args", "empty path")
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return place{}, errf("bad_args", "the path has a control character")
+		}
+	}
+	var pl place
+	clean := path.Clean(filepath.ToSlash(p))
+	shared := filepath.ToSlash(filepath.Clean(c.rt.SharedDir))
+	switch {
+	case clean == SharedPrefix || strings.HasPrefix(clean, SharedPrefix+"/") || c.rt.SharedDir != "" && (clean == shared || strings.HasPrefix(clean, shared+"/")):
+		rest := strings.TrimPrefix(strings.TrimPrefix(clean, SharedPrefix), "/")
+		if !strings.HasPrefix(clean, SharedPrefix) {
+			rest = strings.TrimPrefix(strings.TrimPrefix(clean, shared), "/")
+		}
+		layer, rel, _ := strings.Cut(rest, "/")
+		ok := false
+		for _, l := range c.rt.Layers {
+			if l == layer && layer != "" {
+				ok = true
+			}
+		}
+		if !ok || c.rt.SharedDir == "" {
+			return place{}, errf("outside", "%s: only /shared/<%s> is reachable", p, strings.Join(c.rt.Layers, "|"))
+		}
+		pl = place{shared: true, root: filepath.Join(c.rt.SharedDir, layer), rel: rel, agent: path.Join(SharedPrefix, layer, rel)}
+	default:
+		rel := clean
+		switch {
+		case clean == "~":
+			rel = "."
+		case strings.HasPrefix(clean, "~/"):
+			rel = strings.TrimPrefix(clean, "~/")
+		case path.IsAbs(clean):
+			home := filepath.ToSlash(filepath.Clean(c.rt.Home))
+			if clean != home && !strings.HasPrefix(clean, home+"/") {
+				return place{}, errf("outside", "%s is outside the home and the shared space", p)
+			}
+			rel = strings.TrimPrefix(strings.TrimPrefix(clean, home), "/")
+		}
+		rel = path.Clean("/" + rel)[1:] // never above the home
+		if strings.HasPrefix(path.Clean(filepath.ToSlash(p)), "..") {
+			return place{}, errf("outside", "%s leaves the home", p)
+		}
+		pl = place{root: c.rt.Home, rel: rel}
+	}
+	if pl.rel == "." {
+		pl.rel = ""
+	}
+	// every existing component below the root: no symlinks
+	cur := pl.root
+	if pl.rel != "" {
+		for _, seg := range strings.Split(pl.rel, "/") {
+			cur = filepath.Join(cur, seg)
+			info, err := os.Lstat(cur)
+			if errors.Is(err, fs.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return place{}, errf("io", "%s: %v", p, err)
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				return place{}, errf("symlink", "%s: a symlink is in the way (Luau never follows symlinks)", p)
+			}
+		}
+	}
+	return pl, nil
+}
+
+func scope(p place) string {
+	if p.shared {
+		return "shared"
+	}
+	return "home"
+}
+
+type pathArgs struct {
+	Path    string   `json:"path"`
+	Content *string  `json:"content"`
+	Minutes *float64 `json:"minutes"`
+}
+
+func pathArg(in json.RawMessage) (pathArgs, error) {
+	var a pathArgs
+	if err := json.Unmarshal(in, &a); err != nil {
+		return a, errf("bad_args", "path must be a string (and content a string): %v", err)
+	}
+	return a, nil
+}
+
+func (c *Call) readPlace(name string, in json.RawMessage) (place, error) {
+	a, err := pathArg(in)
+	if err != nil {
+		return place{}, err
+	}
+	p, err := c.place(a.Path)
+	if err != nil {
+		return place{}, err
+	}
+	if !c.Caps.FSRead(scope(p)) {
+		return place{}, c.deny(name, "fs.read:"+scope(p))
+	}
+	return p, nil
+}
+
+func (c *Call) writePlace(name string, a pathArgs) (place, error) {
+	p, err := c.place(a.Path)
+	if err != nil {
+		return place{}, err
+	}
+	if p.shared {
+		if !c.Caps.FSWrite("shared", "") {
+			return place{}, c.deny(name, "fs.write:shared")
+		}
+		return p, nil
+	}
+	if p.rel == "" || isProtected(p.rel) {
+		return place{}, errf("protected", "%s is protected: Luau never writes the runtime's files, memories/, skills/, cron/ or logs/", a.Path)
+	}
+	if !c.Caps.FSWrite("home", p.rel) {
+		return place{}, c.deny(name, "fs.write:home/"+p.rel)
+	}
+	return p, nil
+}
+
+func (c *Call) quota(read, wrote int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.read+read > ReadQuota {
+		return errf("quota", "the run's read quota (%d bytes) is used up", ReadQuota)
+	}
+	if c.wrote+wrote > WriteQuota {
+		return errf("quota", "the run's write quota (%d bytes) is used up", WriteQuota)
+	}
+	c.read += read
+	c.wrote += wrote
+	return nil
+}
+
+func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+	p, err := c.readPlace("fs.read", in)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(p.real(), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errf("not_file", "%s is not a regular file", display(p))
+	}
+	if err := c.quota(info.Size(), 0); err != nil {
+		return nil, err
+	}
+	b, err := io.ReadAll(io.LimitReader(f, ReadQuota+1))
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	return string(b), nil
+}
+
+func display(p place) string {
+	if p.shared {
+		return p.agent
+	}
+	if p.rel == "" {
+		return "~"
+	}
+	return p.rel
+}
+
+func ioErr(p place, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return errf("not_found", "%s does not exist", display(p))
+	case errors.Is(err, syscall.ELOOP):
+		return errf("symlink", "%s is a symlink", display(p))
+	}
+	return errf("io", "%s: %v", display(p), errors.Unwrap(err))
+}
+
+func fsWrite(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	return c.write(ctx, "fs.write", in, false)
+}
+
+func fsAppend(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	return c.write(ctx, "fs.append", in, true)
+}
+
+func (c *Call) write(ctx context.Context, name string, in json.RawMessage, appendTo bool) (any, error) {
+	a, err := pathArg(in)
+	if err != nil {
+		return nil, err
+	}
+	if a.Content == nil {
+		return nil, errf("bad_args", "%s needs content (a string)", name)
+	}
+	p, err := c.writePlace(name, a)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.quota(0, int64(len(*a.Content))); err != nil {
+		return nil, err
+	}
+	if p.shared {
+		mode := "overwrite"
+		if appendTo {
+			mode = "append"
+		}
+		if _, err := c.core(ctx, "fs_write", map[string]any{"path": p.agent, "content": *a.Content, "mode": mode}); err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		c.touched = append(c.touched, p.agent)
+		c.mu.Unlock()
+		return nil, nil
+	}
+	dir := filepath.Dir(p.real())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, ioErr(p, err)
+	}
+	// MkdirAll may have walked a symlink planted since the check: check again.
+	if _, err := c.place(a.Path); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(p.real()); err == nil && !info.Mode().IsRegular() {
+		return nil, errf("not_file", "%s is not a regular file", display(p))
+	}
+	flags := os.O_WRONLY | os.O_CREATE | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	if appendTo {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(p.real(), flags, 0o644)
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	_, werr := f.WriteString(*a.Content)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		return nil, ioErr(p, errors.Join(werr, cerr))
+	}
+	return nil, nil
+}
+
+func fsList(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	p, err := c.readPlace("fs.list", in)
+	if err != nil {
+		return nil, err
+	}
+	if p.shared && c.rt.Core != nil {
+		return c.core(ctx, "fs_ls", map[string]any{"path": p.agent})
+	}
+	info, err := os.Lstat(p.real())
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	if !info.IsDir() {
+		return nil, errf("not_dir", "%s is not a directory", display(p))
+	}
+	ents, err := os.ReadDir(p.real())
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	out := []map[string]any{}
+	for _, e := range ents {
+		if len(out) == maxList {
+			break
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, map[string]any{"name": e.Name(), "type": kind(fi), "size": fi.Size()})
+	}
+	return out, nil
+}
+
+func kind(fi fs.FileInfo) string {
+	switch {
+	case fi.Mode().IsRegular():
+		return "file"
+	case fi.IsDir():
+		return "dir"
+	case fi.Mode()&fs.ModeSymlink != 0:
+		return "symlink"
+	}
+	return "other"
+}
+
+func fsStat(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	p, err := c.readPlace("fs.stat", in)
+	if err != nil {
+		return nil, err
+	}
+	if p.shared && c.rt.Core != nil {
+		return c.core(ctx, "fs_info", map[string]any{"path": p.agent})
+	}
+	fi, err := os.Lstat(p.real())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	return map[string]any{"type": kind(fi), "size": fi.Size(), "mtime": fi.ModTime().Unix()}, nil
+}
+
+func fsRemove(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+	a, err := pathArg(in)
+	if err != nil {
+		return nil, err
+	}
+	p, err := c.place(a.Path)
+	if err != nil {
+		return nil, err
+	}
+	if p.shared {
+		return nil, errf("unsupported", "shared files cannot be removed from Luau")
+	}
+	if p, err = c.writePlace("fs.remove", a); err != nil {
+		return nil, err
+	}
+	fi, err := os.Lstat(p.real())
+	if err != nil {
+		return nil, ioErr(p, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errf("not_file", "%s is not a regular file", display(p))
+	}
+	if err := os.Remove(p.real()); err != nil {
+		return nil, ioErr(p, err)
+	}
+	return nil, nil
+}
+
+func fsLock(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	return c.lock(ctx, "fs.lock", "fs_lock", in)
+}
+
+func fsUnlock(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	return c.lock(ctx, "fs.unlock", "fs_unlock", in)
+}
+
+func (c *Call) lock(ctx context.Context, name, tool string, in json.RawMessage) (any, error) {
+	a, err := pathArg(in)
+	if err != nil {
+		return nil, err
+	}
+	p, err := c.place(a.Path)
+	if err != nil {
+		return nil, err
+	}
+	if !p.shared {
+		return nil, errf("unsupported", "%s: locks are for the shared space", name)
+	}
+	if !c.Caps.FSWrite("shared", "") {
+		return nil, c.deny(name, "fs.write:shared")
+	}
+	args := map[string]any{"path": p.agent}
+	if a.Minutes != nil && tool == "fs_lock" {
+		args["minutes"] = *a.Minutes
+	}
+	return c.core(ctx, tool, args)
+}
+
+// ---- core, memory, log, time, messages -----------------------------------------------------
+
+var coreTool = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	var a struct {
+		Tool string          `json:"tool"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(in, &a); err != nil || !coreTool.MatchString(a.Tool) {
+		return nil, errf("bad_args", "core.call needs a tool name and an args table")
+	}
+	if !c.Caps.Core(a.Tool) {
+		return nil, c.deny("core.call", "core:"+a.Tool)
+	}
+	args := map[string]any{}
+	if len(a.Args) > 0 && string(a.Args) != "null" {
+		if err := json.Unmarshal(a.Args, &args); err != nil {
+			return nil, errf("bad_args", "core.call: args must be a table with string keys")
+		}
+	}
+	// A shared write through the core is the script's: the hooks attribute it.
+	if p, ok := args["path"].(string); ok && a.Tool == "fs_write" && strings.HasPrefix(path.Clean(p), SharedPrefix+"/") {
+		defer func() {
+			c.mu.Lock()
+			c.touched = append(c.touched, path.Clean(p))
+			c.mu.Unlock()
+		}()
+	}
+	return c.core(ctx, a.Tool, args)
+}
+
+// core calls one of the core's tools: an object answer as it is, any other text as {result}.
+func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any, error) {
+	if c.rt.Core == nil {
+		return nil, errf("unavailable", "%s: the agent is not on a swarm core", tool)
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return nil, errf("bad_args", "%s: %v", tool, err)
+	}
+	res, err := c.rt.Core.Call(ctx, tool, b)
+	if err != nil {
+		if mcp.Away(err) {
+			return nil, errf("core_away", "%s: the swarm core is unreachable right now", tool)
+		}
+		return nil, errf("core", "%s: %v", tool, err)
+	}
+	text := strings.TrimSpace(res.Text)
+	if res.IsError {
+		return nil, errf("core", "%s: %s", tool, text)
+	}
+	if strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
+		return json.RawMessage(text), nil
+	}
+	return map[string]string{"result": text}, nil
+}
+
+func memoryRead(_ context.Context, c *Call, _ json.RawMessage) (any, error) {
+	if !c.Caps.FSRead("home") {
+		return nil, c.deny("memory.read", "fs.read:home")
+	}
+	if c.rt.Memory == nil {
+		return map[string]any{"memory": []string{}, "user": []string{}}, nil
+	}
+	out := map[string]any{}
+	for _, t := range []string{memory.TargetMemory, memory.TargetUser} {
+		e, err := c.rt.Memory.Entries(t)
+		if err != nil {
+			return nil, errf("io", "memory: %v", err)
+		}
+		if e == nil {
+			e = []string{}
+		}
+		out[t] = e
+	}
+	return out, nil
+}
+
+var levels = map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+
+func logLine(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+	var a struct {
+		Level any `json:"level"`
+		Msg   any `json:"msg"`
+	}
+	_ = json.Unmarshal(in, &a)
+	level, _ := a.Level.(string)
+	if !levels[level] {
+		level = "info"
+	}
+	msg := fmt.Sprint(a.Msg)
+	if s, ok := a.Msg.(string); ok {
+		msg = s
+	}
+	if len(msg) > 2000 {
+		msg = msg[:2000] + "…"
+	}
+	line := c.rt.redact(level + ": " + msg)
+	c.mu.Lock()
+	if c.logSize+len(line) <= maxLogs {
+		c.logs = append(c.logs, line)
+		c.logSize += len(line)
+	}
+	c.mu.Unlock()
+	c.rt.logf("luau %s: %s", c.Tool, line)
+	return nil, nil
+}
+
+func timeNow(_ context.Context, c *Call, _ json.RawMessage) (any, error) {
+	return float64(c.rt.now().UnixMicro()) / 1e6, nil
+}
+
+// messageSend is the registry's messaging entry; M6b implements it through the runtime's one
+// messaging policy.
+func messageSend(context.Context, *Call, json.RawMessage) (any, error) {
+	return nil, errf("unavailable", "send_message is not available yet")
+}

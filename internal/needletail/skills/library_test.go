@@ -304,3 +304,45 @@ func TestUsageKeepsHermesKeys(t *testing.T) {
 		t.Errorf("after a torn file = %v", u)
 	}
 }
+
+// .luau files go through CheckLuau with the whole file they would leave; without it they are
+// refused, and a view lists the skill's tools.
+func TestLuauFiles(t *testing.T) {
+	l := library(t)
+	if _, _, err := l.WriteFile("solo", "tools/t.luau", "x"); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("without CheckLuau: %v", err)
+	}
+	var seen []string
+	l.CheckLuau = func(rel string, body []byte) error {
+		seen = append(seen, rel+"="+string(body))
+		if strings.Contains(string(body), "bad") {
+			return errors.New("does not compile")
+		}
+		return nil
+	}
+	l.LuauTools = func(dir string) []ToolStatus {
+		return []ToolStatus{{File: "tools/t.luau", Name: filepath.Base(dir) + "__t"}}
+	}
+	if _, _, err := l.WriteFile("solo", "tools/t.luau", "good one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.WriteFile("solo", "tools/u.luau", "bad"); err == nil {
+		t.Fatal("an invalid tool was written")
+	}
+	if _, _, _, err := l.Patch("solo", "tools/t.luau", "good", "bad", false); err == nil {
+		t.Fatal("a patch that breaks a tool was applied")
+	}
+	if b, _ := os.ReadFile(filepath.Join(l.Home, "skills", "solo", "tools", "t.luau")); string(b) != "good one" {
+		t.Fatalf("file %q", b)
+	}
+	if !slices.Contains(seen, "tools/t.luau=bad one") {
+		t.Fatalf("the check did not see the patched file: %q", seen)
+	}
+	v, err := l.View("s", "solo", "")
+	if err != nil || len(v.Tools) != 1 || v.Tools[0].Name != "solo__t" {
+		t.Fatalf("view %+v %v", v, err)
+	}
+	if _, _, err := l.RemoveFile("solo", "tools/t.luau"); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -20,9 +20,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// grantRe is the Luau capability grammar (docs/needletail.md §5.4).
-var grantRe = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?)$`)
-
 var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // agentConfig is engine/needletail/config.yaml.
@@ -55,7 +52,7 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 		}
 	}
 	for _, g := range c.Luau.Grants {
-		if !grantRe.MatchString(g) {
+		if !wire.Capability.MatchString(g) {
 			return nil, fmt.Errorf("%s: luau grant %q is not a capability (fs.read:home, fs.write:home[/glob], fs.*:shared, http:<host>, core:<tool>)", ConfigFile, g)
 		}
 	}

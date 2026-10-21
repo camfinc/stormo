@@ -9,6 +9,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/pflag v1.0.10
+	github.com/tetratelabs/wazero v1.12.0
 	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/sqlite v1.59.0
 )

@@ -43,6 +43,12 @@ type Library struct {
 	// Check, when set, refuses text a skill file may not hold (the runtime's secret values): it
 	// sees every file skill_manage would write as a whole, so text split across calls is caught.
 	Check func(text string) error
+	// CheckLuau, when set, validates a .luau file skill_manage would leave (rel is its path in the
+	// skill, body the whole file: header and compile); without it .luau files are refused.
+	CheckLuau func(rel string, body []byte) error
+	// LuauTools, when set, is a skill's Luau tools as a view of its SKILL.md lists them (an invalid
+	// one with its error).
+	LuauTools func(dir string) []ToolStatus
 
 	mu     sync.Mutex
 	viewed map[string]string // session → dir of the skill it last viewed
@@ -244,6 +250,18 @@ type View struct {
 	Truncated   bool     `json:"truncated,omitempty"`
 	Files       []string `json:"files,omitempty"`
 	MoreFiles   bool     `json:"more_files,omitempty"`
+	// Tools are the skill's Luau tools (tools/<name>.luau): registered, or why not.
+	Tools []ToolStatus `json:"tools,omitempty"`
+}
+
+// ToolStatus is one Luau tool of a skill: its file, its registered name and declared and
+// effective caps, or the error that keeps it from being registered.
+type ToolStatus struct {
+	File      string   `json:"file"`
+	Name      string   `json:"name,omitempty"`
+	Caps      []string `json:"caps,omitempty"`
+	Effective []string `json:"effective_caps,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // View shows the skill name names: its SKILL.md and file list, or one of its files (file, relative
@@ -278,6 +296,9 @@ func (l *Library) View(session, name, file string) (*View, error) {
 		File: rel, Content: l.Resolve(s, strings.ToValidUTF8(string(body), "")), Truncated: cut}
 	if rel == "SKILL.md" {
 		v.Files, v.MoreFiles = l.files(s)
+		if l.LuauTools != nil {
+			v.Tools = l.LuauTools(s.Dir)
+		}
 		l.Viewed(session, s)
 	} else {
 		l.Used(s)

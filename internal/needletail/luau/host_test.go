@@ -1,0 +1,576 @@
+package luau
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/mcp"
+	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/wire"
+)
+
+const secret = "s3cr3t-token-value-0123456789"
+
+type fakeCore struct {
+	mu    sync.Mutex
+	calls []string
+	reply func(name string, args map[string]any) (*mcp.Result, error)
+}
+
+func (f *fakeCore) Call(_ context.Context, name string, args json.RawMessage) (*mcp.Result, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, name+" "+string(args))
+	f.mu.Unlock()
+	if f.reply != nil {
+		var m map[string]any
+		_ = json.Unmarshal(args, &m)
+		return f.reply(name, m)
+	}
+	return &mcp.Result{Text: `{"done":true}`}, nil
+}
+
+func (f *fakeCore) got() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func newRuntime(t *testing.T) (*Runtime, *fakeCore) {
+	t.Helper()
+	home, shared := t.TempDir(), t.TempDir()
+	for _, d := range []string{"group", "sales", "other"} {
+		if err := os.MkdirAll(filepath.Join(shared, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	core := &fakeCore{}
+	rep := strings.NewReplacer(secret, "[REDACTED]")
+	rt := &Runtime{Runner: engine(t), Home: home, SharedDir: shared, Layers: []string{"group", "sales"},
+		Grants: []string{"fs.read:home", "fs.write:home", "core:msg_*"}, Core: core, Redact: rep.Replace,
+		Memory: &memory.Store{Home: home}, ScriptTimeout: 30 * time.Second,
+		Secret: func(env string) string {
+			if env == "API_TOKEN" {
+				return secret
+			}
+			return ""
+		}}
+	return rt, core
+}
+
+func write(t *testing.T, p, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// exec runs src as a script declaring caps.
+func exec(t *testing.T, rt *Runtime, caps []string, src string) (*Result, *Call) {
+	t.Helper()
+	res, call, err := rt.Exec(context.Background(), Exec{Name: "t", Session: "s1", Source: []byte(src), Header: &Header{Format: 1, Caps: caps}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, call
+}
+
+// fails runs src and wants the script to fail with code in the message.
+func fails(t *testing.T, rt *Runtime, caps []string, src, code string) {
+	t.Helper()
+	res, _ := exec(t, rt, caps, src)
+	if res.Err == nil || !strings.Contains(res.Err.Msg, code+":") {
+		t.Fatalf("%s: got %v (value %s), want %s", src, res.Err, res.Value, code)
+	}
+}
+
+var homeRW = []string{"fs.read:home", "fs.write:home"}
+
+func TestFSHome(t *testing.T) {
+	rt, _ := newRuntime(t)
+	res, _ := exec(t, rt, homeRW, `
+		write_file("reports/a.md", "one")
+		append_file("reports/a.md", "+two")
+		local s = stat_file("reports/a.md")
+		local names = {}
+		for _, e in list_files("reports") do table.insert(names, e.name .. ":" .. e.type) end
+		write_file("~/b.txt", "x") remove_file("b.txt")
+		return {read_file("reports/a.md"), s.size, names, stat_file("b.txt") == nil, read_file(nt.args == nil and "reports/a.md" or "")}`)
+	wantValue(t, res, `["one+two", 7, ["a.md:file"], true, "one+two"]`)
+	if b, _ := os.ReadFile(filepath.Join(rt.Home, "reports", "a.md")); string(b) != "one+two" {
+		t.Fatalf("file %q", b)
+	}
+	// an absolute path inside the home works too
+	res, _ = exec(t, rt, homeRW, fmt.Sprintf(`return read_file(%q)`, filepath.Join(rt.Home, "reports", "a.md")))
+	wantValue(t, res, `"one+two"`)
+}
+
+func TestFSTraversal(t *testing.T) {
+	rt, _ := newRuntime(t)
+	for _, p := range []string{"../x", "../../etc/passwd", "/etc/passwd", "reports/../../x", "/shared/other/x", "/shared/../etc/passwd",
+		filepath.Join(rt.SharedDir, "other", "x"), "/sharedx/y"} {
+		res, _ := exec(t, rt, []string{"fs.read:home", "fs.read:shared"}, fmt.Sprintf(`return read_file(%q)`, p))
+		if res.Err == nil || !strings.Contains(res.Err.Msg, "outside:") && !strings.Contains(res.Err.Msg, "not_found:") {
+			t.Errorf("%s: %v %s", p, res.Err, res.Value)
+		}
+	}
+	fails(t, rt, homeRW, `write_file("a\nb", "x")`, "bad_args")
+}
+
+func TestFSSymlinks(t *testing.T) {
+	rt, _ := newRuntime(t)
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "secret.txt"), "outside")
+	write(t, filepath.Join(rt.Home, "notes", "in.txt"), "inside")
+	links := map[string]string{
+		"dirlink":         outside,
+		"filelink":        filepath.Join(outside, "secret.txt"),
+		"inlink":          filepath.Join(rt.Home, "notes", "in.txt"), // even a link inside the home
+		"notes/skillslnk": filepath.Join(rt.Home, "skills"),
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(rt.Home, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(rt.Home, "notes"), filepath.Join(rt.SharedDir, "group", "tohome")); err != nil {
+		t.Fatal(err)
+	}
+	caps := []string{"fs.read:home", "fs.write:home", "fs.read:shared"}
+	for _, src := range []string{`return read_file("dirlink/secret.txt")`, `return read_file("filelink")`, `return read_file("inlink")`,
+		`write_file("dirlink/new.txt", "x")`, `write_file("filelink", "x")`, `append_file("inlink", "x")`, `remove_file("inlink")`,
+		`write_file("notes/skillslnk/x/tools/t.luau", "x")`, `return list_files("dirlink")`, `return read_file("/shared/group/tohome/in.txt")`} {
+		fails(t, rt, caps, src, "symlink")
+	}
+	if b, _ := os.ReadFile(filepath.Join(outside, "secret.txt")); string(b) != "outside" {
+		t.Fatal("the file outside was changed")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); err == nil {
+		t.Fatal("a file was made outside")
+	}
+}
+
+func TestProtectedPaths(t *testing.T) {
+	rt, _ := newRuntime(t)
+	for _, p := range []string{"needletail.yaml", "SOUL.md", "memories/MEMORY.md", "skills/crm/tools/x.luau", "skills/.usage.json",
+		"cron/jobs.json", "sessions/a.jsonl", "logs/audit/s1.jsonl", "state/needletail/idem.json", ".needletail-tmp/x", ".swarm/booted.json", "~"} {
+		fails(t, rt, homeRW, fmt.Sprintf(`write_file(%q, "x")`, p), "protected")
+	}
+	fails(t, rt, homeRW, `remove_file("SOUL.md")`, "protected")
+}
+
+func TestCapabilities(t *testing.T) {
+	rt, _ := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "a.txt"), "a")
+	fails(t, rt, nil, `return read_file("a.txt")`, "denied")                     // declared nothing
+	fails(t, rt, []string{"fs.read:home"}, `write_file("b.txt", "x")`, "denied") // read only
+	fails(t, rt, []string{"fs.write:shared", "fs.read:shared"}, `write_file("/shared/group/x", "x")`, "denied")
+	fails(t, rt, []string{"http:api.example.com"}, `return http_request{url = "https://api.example.com/"}`, "denied") // not granted
+	fails(t, rt, []string{"core:fs_write"}, `return core_call("fs_write", {path = "/shared/group/x", content = "x"})`, "denied")
+	// a glob grant narrows what a broad declaration gets
+	rt.Grants = []string{"fs.read:home", "fs.write:home/reports/**"}
+	res, call := exec(t, rt, homeRW, `write_file("reports/q3/a.md", "ok") return pcall(write_file, "notes.md", "x")`)
+	wantValue(t, res, `false`)
+	if d := call.Denied(); len(d) != 1 || !strings.Contains(d[0], "fs.write:home/notes.md") {
+		t.Fatalf("denied %q", d)
+	}
+	// effective caps for display
+	caps, _ := NewCaps([]string{"fs.write:home", "http:api.example.com", "core:msg_send"}, []string{"fs.write:home/reports/**", "core:msg_*"})
+	if got := strings.Join(caps.Effective(), " "); got != "fs.write:home/reports/** core:msg_send" {
+		t.Fatalf("effective %q", got)
+	}
+}
+
+func TestSharedThroughTheCore(t *testing.T) {
+	rt, core := newRuntime(t)
+	rt.Grants = append(rt.Grants, "fs.read:shared", "fs.write:shared")
+	write(t, filepath.Join(rt.SharedDir, "group", "plan.md"), "the plan")
+	caps := []string{"fs.read:shared", "fs.write:shared"}
+	res, call := exec(t, rt, caps, `
+		write_file("/shared/group/out.md", "hello")
+		append_file("/shared/sales/log.md", "x")
+		lock("/shared/group/plan.md", 5)
+		return read_file("/shared/group/plan.md")`)
+	wantValue(t, res, `"the plan"`)
+	got := core.got()
+	want := []string{`fs_write {"content":"hello","mode":"overwrite","path":"/shared/group/out.md"}`,
+		`fs_write {"content":"x","mode":"append","path":"/shared/sales/log.md"}`, `fs_lock {"minutes":5,"path":"/shared/group/plan.md"}`}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("core calls\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if _, err := os.Stat(filepath.Join(rt.SharedDir, "group", "out.md")); err == nil {
+		t.Fatal("Luau wrote the mount directly")
+	}
+	if tp := call.Touched(); strings.Join(tp, " ") != "/shared/group/out.md /shared/sales/log.md" {
+		t.Fatalf("touched %q", tp)
+	}
+	fails(t, rt, caps, `remove_file("/shared/group/plan.md")`, "unsupported")
+	rt.Core = nil
+	fails(t, rt, caps, `write_file("/shared/group/out.md", "x")`, "unavailable")
+}
+
+func TestQuotas(t *testing.T) {
+	if raceEnabled {
+		t.Skip("megabytes through the interpreter under the race detector")
+	}
+	rt, _ := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "big.txt"), strings.Repeat("x", 3<<20))
+	fails(t, rt, homeRW, `for i = 1, 3 do read_file("big.txt") end`, "quota")
+	fails(t, rt, homeRW, `local s = string.rep("y", 1024 * 1024) for i = 1, 5 do write_file("w" .. i, s) end`, "quota")
+}
+
+func TestMemoryAndLog(t *testing.T) {
+	rt, _ := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "memories", "MEMORY.md"), "likes tea\n§\nworks late")
+	res, call := exec(t, rt, []string{"fs.read:home"}, `log("info", "found " .. 2) log("bogus", "token `+secret+`") return read_memory()`)
+	// an empty Luau table is {} once it crosses back (json.encode's rule)
+	wantValue(t, res, `{"memory": ["likes tea", "works late"], "user": {}}`)
+	if logs := strings.Join(call.Logs(), "|"); logs != "info: found 2|info: token [REDACTED]" {
+		t.Fatalf("logs %q", logs)
+	}
+	fails(t, rt, nil, `return read_memory()`, "denied")
+	fails(t, rt, nil, `return send_message("slack", "hi")`, "unavailable")
+}
+
+func TestAudit(t *testing.T) {
+	rt, _ := newRuntime(t)
+	exec(t, rt, []string{"fs.read:home"}, `pcall(read_file, "missing.txt") pcall(write_file, "x", "the content")`)
+	b, err := os.ReadFile(filepath.Join(rt.Home, "logs", "audit", "s1.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 || strings.Contains(string(b), "the content") {
+		t.Fatalf("audit %s", b)
+	}
+	var first, second map[string]any
+	_ = json.Unmarshal([]byte(lines[0]), &first)
+	_ = json.Unmarshal([]byte(lines[1]), &second)
+	if first["call"] != "fs.read" || first["status"] != "not_found" || second["status"] != "denied" || first["tool"] != "t" || first["args_sha256"] == "" {
+		t.Fatalf("audit %v %v", first, second)
+	}
+	if info, _ := os.Stat(filepath.Join(rt.Home, "logs", "audit", "s1.jsonl")); info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", info.Mode())
+	}
+}
+
+func TestDryRun(t *testing.T) {
+	rt, core := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "a.txt"), "a")
+	res, call, err := rt.Exec(context.Background(), Exec{Name: "t", Source: []byte(`
+		local r = {read_file("a.txt")}
+		for _, f in {function() write_file("b.txt", "x") end, function() core_call("msg_send", {}) end,
+			function() http_request{url = "https://api.example.com"} end, function() remove_file("a.txt") end} do
+			local ok, e = pcall(f) table.insert(r, string.match(e, "dry_run") or e)
+		end
+		return r`), Header: &Header{Format: 1, Caps: []string{"fs.read:home", "fs.write:home", "core:msg_send", "http:api.example.com"}}, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantValue(t, res, `["a", "dry_run", "dry_run", "dry_run", "dry_run"]`)
+	if len(core.got()) != 0 || len(call.Touched()) != 0 {
+		t.Fatal("a dry run reached the core")
+	}
+}
+
+func TestCoreCall(t *testing.T) {
+	rt, core := newRuntime(t)
+	core.reply = func(name string, args map[string]any) (*mcp.Result, error) {
+		if name == "msg_list" {
+			return &mcp.Result{Text: "plain text with " + secret}, nil
+		}
+		if name == "msg_send" && args["to"] == "nobody" {
+			return &mcp.Result{Text: "no such agent", IsError: true}, nil
+		}
+		return &mcp.Result{Text: `{"queued":true}`}, nil
+	}
+	res, _ := exec(t, rt, []string{"core:msg_*"}, `return {core_call("msg_send", {to = "atlas"}), core_call("msg_list")}`)
+	wantValue(t, res, `[{"queued": true}, {"result": "plain text with [REDACTED]"}]`)
+	fails(t, rt, []string{"core:msg_*"}, `return core_call("msg_send", {to = "nobody"})`, "core")
+	fails(t, rt, []string{"core:msg_*"}, `return core_call("BAD NAME")`, "bad_args")
+	rt.Grants = append(rt.Grants, "core:fs_write")
+	_, call := exec(t, rt, []string{"core:fs_write"}, `return core_call("fs_write", {path = "/shared/group/n.md", content = "x"})`)
+	if tp := call.Touched(); len(tp) != 1 || tp[0] != "/shared/group/n.md" {
+		t.Fatalf("touched %q", tp)
+	}
+}
+
+// ---- http ------------------------------------------------------------------------------------
+
+// tlsServer is an HTTPS server on 127.0.0.1 that rt trusts; requests are reached by its IP, which
+// a test grants exactly (internal addresses are otherwise refused).
+func tlsServer(t *testing.T, rt *Runtime, h http.HandlerFunc) (*httptest.Server, string) {
+	t.Helper()
+	srv := httptest.NewTLSServer(h)
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	rt.rootCAs = &tls.Config{RootCAs: pool}
+	return srv, srv.URL
+}
+
+func TestHTTP(t *testing.T) {
+	rt, _ := newRuntime(t)
+	var seen sync.Map
+	_, base := tlsServer(t, rt, func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Path, r.Header.Get("Authorization")+"|"+r.Header.Get("X-Mine"))
+		switch r.URL.Path {
+		case "/echo":
+			w.Header().Set("X-Echo", r.Header.Get("Authorization"))
+			fmt.Fprintf(w, "auth=%s body=%s", r.Header.Get("Authorization"), readAll(r))
+		case "/hop":
+			http.Redirect(w, r, "/echo", http.StatusFound)
+		case "/away":
+			http.Redirect(w, r, "https://evil.example.com/x", http.StatusFound)
+		case "/plain":
+			http.Redirect(w, r, "http://127.0.0.1/x", http.StatusFound)
+		case "/loop":
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	rt.Grants = append(rt.Grants, "http:127.0.0.1")
+	rt.HTTPSecrets = []wire.HTTPSecret{{Host: "127.0.0.1", Env: "API_TOKEN", Header: "Authorization", Template: "Bearer {value}"}}
+	caps := []string{"http:127.0.0.1"}
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1") // ignored: the client has no proxy
+	res, _ := exec(t, rt, caps, fmt.Sprintf(`
+		local r = http_request{method = "POST", url = %q, body = "hi", headers = {["X-Mine"] = "1"}}
+		local h = http_request{url = %q}
+		return {r.status, r.body, r.headers["x-echo"], h.status, h.body}`, base+"/echo", base+"/hop"))
+	wantValue(t, res, `[200, "auth=Bearer [REDACTED] body=hi", "Bearer [REDACTED]", 200, "auth=Bearer [REDACTED] body="]`)
+	if v, _ := seen.Load("/echo"); v != "Bearer "+secret+"|" {
+		// the last /echo was the redirect's GET (no X-Mine); the secret reached the server
+		t.Fatalf("server saw %v", v)
+	}
+	if strings.Contains(string(res.Value), secret) {
+		t.Fatal("the secret reached the script")
+	}
+	fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, base+"/away"), "denied")
+	fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, base+"/plain"), "denied")
+	fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, base+"/loop"), "http")
+	fails(t, rt, caps, `return http_request{url = "http://127.0.0.1/"}`, "denied")
+	fails(t, rt, caps, `return http_request{url = "https://user:pw@127.0.0.1/"}`, "bad_args")
+	fails(t, rt, caps, `return http_request{url = "https://evil.example.com/"}`, "denied")
+	fails(t, rt, caps, `return http_request{url = "ftp://127.0.0.1/"}`, "denied")
+}
+
+func readAll(r *http.Request) string {
+	b := make([]byte, 100)
+	n, _ := r.Body.Read(b)
+	return string(b[:n])
+}
+
+func TestHTTPInternalAddresses(t *testing.T) {
+	rt, _ := newRuntime(t)
+	hits := 0
+	_, base := tlsServer(t, rt, func(w http.ResponseWriter, r *http.Request) { hits++ })
+	u, _ := url.Parse(base)
+	addrs := map[string][]netip.Addr{
+		"internal.example.com": {netip.MustParseAddr("10.0.0.5")},
+		"meta.example.com":     {netip.MustParseAddr("169.254.169.254")},
+		"loop.example.com":     {netip.MustParseAddr("127.0.0.1")},
+		"mapped.example.com":   {netip.MustParseAddr("::ffff:127.0.0.1")},
+		"rebind.example.com":   {netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("192.168.1.1")},
+		"ula.example.com":      {netip.MustParseAddr("fd12::1")},
+		"cgnat.example.com":    {netip.MustParseAddr("100.64.1.1")},
+	}
+	rt.resolve = func(_ context.Context, host string) ([]netip.Addr, error) {
+		if a, ok := addrs[host]; ok {
+			return a, nil
+		}
+		return nil, fmt.Errorf("no such host %s", host)
+	}
+	rt.Grants = append(rt.Grants, "http:*.example.com", "http:169.254.169.254", "http:127.0.0.1")
+	caps := []string{"http:*.example.com", "http:169.254.169.254"}
+	for host := range addrs {
+		fails(t, rt, caps, fmt.Sprintf(`return http_request{url = "https://%s:%s/"}`, host, u.Port()), "denied")
+	}
+	// granted by its exact IP, the metadata address is still refused
+	fails(t, rt, caps, `return http_request{url = "https://169.254.169.254/latest/meta-data/"}`, "denied")
+	// a loopback IP the tool does not name exactly is refused (the wildcard does not cover it)
+	fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, base), "denied")
+	// the core's address, even granted
+	rt.CoreURLs = []string{"http://127.0.0.1:" + u.Port() + "/mcp"}
+	fails(t, rt, []string{"http:127.0.0.1"}, fmt.Sprintf(`return http_request{url = %q}`, base), "denied")
+	if hits != 0 {
+		t.Fatalf("the server was reached %d times", hits)
+	}
+	if !internal(netip.MustParseAddr("::ffff:10.1.2.3")) || internal(netip.MustParseAddr("93.184.216.34")) {
+		t.Fatal("internal")
+	}
+}
+
+// ---- tools, luau_test, schedule scripts ------------------------------------------------------
+
+const goodTool = `--[[needletail
+format: 1
+name: double
+description: Doubles n.
+args: {type: object, properties: {n: {type: number}}, required: [n]}
+caps: [fs.read:home, fs.write:shared]
+timeout: 5s
+]]
+return function(args)
+  log("info", "doubling")
+  return {n = args.n * 2}
+end
+`
+
+func skill(t *testing.T, home, dir string, files map[string]string) {
+	t.Helper()
+	write(t, filepath.Join(home, "skills", dir, "SKILL.md"), "---\nname: "+filepath.Base(dir)+"\ndescription: test skill\n---\nbody\n")
+	for rel, body := range files {
+		write(t, filepath.Join(home, "skills", dir, rel), body)
+	}
+}
+
+func TestDiscoverAndRunTools(t *testing.T) {
+	rt, _ := newRuntime(t)
+	skill(t, rt.Home, "math/calc", map[string]string{
+		"tools/double.luau":   goodTool,
+		"tools/badhdr.luau":   "return function() end\n",
+		"tools/mismatch.luau": strings.Replace(goodTool, "name: double", "name: other", 1),
+		"tools/syntax.luau":   strings.NewReplacer("return {n = args.n * 2}", "return {n = ", "name: double", "name: syntax").Replace(goodTool),
+		"tools/notes.txt":     "not a tool",
+	})
+	skill(t, rt.Home, "dup/calc", map[string]string{"tools/double.luau": goodTool})
+	if err := os.Symlink(filepath.Join(rt.Home, "skills", "math", "calc", "tools", "double.luau"), filepath.Join(rt.Home, "skills", "math", "calc", "tools", "link.luau")); err != nil {
+		t.Fatal(err)
+	}
+	reserved := func(n string) bool { return n == "reserved__x" }
+	found := rt.Discover(context.Background(), reserved)
+	errs := map[string]string{}
+	for _, tf := range found {
+		e := ""
+		if tf.Err != nil {
+			e = tf.Err.Error()
+		}
+		errs[tf.File] = e
+	}
+	for file, want := range map[string]string{
+		"skills/dup/calc/tools/double.luau":    "",
+		"skills/math/calc/tools/double.luau":   "is also the name of skills/dup/calc/tools/double.luau",
+		"skills/math/calc/tools/badhdr.luau":   "must start with",
+		"skills/math/calc/tools/mismatch.luau": `the header's name "other" must be the file's name "mismatch"`,
+		"skills/math/calc/tools/syntax.luau":   "syntax:",
+	} {
+		got, ok := errs[file]
+		if !ok || want == "" && got != "" || want != "" && !strings.Contains(got, want) {
+			t.Errorf("%s: %q, want %q", file, got, want)
+		}
+	}
+	if _, ok := errs["skills/math/calc/tools/link.luau"]; ok || len(found) != 5 {
+		t.Fatalf("found %v", errs)
+	}
+
+	ts := rt.Tools(context.Background(), reserved)
+	if len(ts) != 1 || ts[0].Name != "calc__double" || ts[0].Hook != "luau:calc__double" || !strings.Contains(ts[0].Description, "caps: fs.read:home, fs.write:shared") {
+		t.Fatalf("tools %+v", ts)
+	}
+	reg := tools.NewRegistry()
+	reg.SetGroup("luau", ts)
+	out, failed := reg.Call(context.Background(), &tools.Env{Session: "s2", Redact: rt.Redact}, "calc__double", `{"n": 21}`)
+	if failed || out != `{"logs":["info: doubling"],"result":{"n":42}}` {
+		t.Fatalf("call: %s %v", out, failed)
+	}
+	out, failed = reg.Call(context.Background(), &tools.Env{}, "calc__double", `{"n": "x"}`)
+	if !failed || !strings.Contains(out, "runtime:") {
+		t.Fatalf("bad args call: %s", out)
+	}
+	st := rt.Status(context.Background(), "math/calc", reserved)
+	if len(st) != 4 {
+		t.Fatalf("status %+v", st)
+	}
+
+	lt := rt.TestTool(reserved)
+	for _, name := range []string{"calc__double", "skills/dup/calc/tools/double.luau", "dup/calc/tools/double.luau"} {
+		res, err := lt.Run(context.Background(), &tools.Env{Session: "s3"}, json.RawMessage(`{"tool": "`+name+`", "args": {"n": 2}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := res.(map[string]any)
+		if m["ok"] != true || string(m["result"].(json.RawMessage)) != `{"n":4}` {
+			t.Fatalf("luau_test %s: %v", name, m)
+		}
+	}
+	res, _ := lt.Run(context.Background(), &tools.Env{}, json.RawMessage(`{"tool": "math/calc/tools/syntax.luau"}`))
+	if m := res.(map[string]any); m["valid"] != false {
+		t.Fatalf("luau_test of a broken tool: %v", m)
+	}
+}
+
+func TestCheckTool(t *testing.T) {
+	rt, _ := newRuntime(t)
+	ctx := context.Background()
+	if err := rt.CheckTool(ctx, "tools/double.luau", []byte(goodTool)); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{
+		"double.luau":           goodTool,
+		"tools/sub/double.luau": goodTool,
+		"tools/Double.luau":     goodTool,
+		"tools/other.luau":      goodTool,
+		"tools/double.luau ":    goodTool,
+	} {
+		if err := rt.CheckTool(ctx, rel, []byte(body)); err == nil {
+			t.Errorf("%q accepted", rel)
+		}
+	}
+	for _, bad := range []string{
+		strings.Replace(goodTool, "format: 1", "format: 2", 1),
+		strings.Replace(goodTool, "caps: [fs.read:home, fs.write:shared]", "caps: [exec:bash]", 1),
+		strings.Replace(goodTool, "timeout: 5s", "timeout: 1h", 1),
+		strings.Replace(goodTool, "description: Doubles n.\n", "", 1),
+		strings.Replace(goodTool, "args: {type: object", "args: {type: array", 1),
+		strings.Replace(goodTool, "format: 1\n", "format: 1\nextra: x\n", 1),
+		strings.Replace(goodTool, "]]\n", "", 1),
+		"--[[needletail\nformat: 1\nname: double\ndescription: &a [*a, *a]\n]]\nreturn function() end",
+		strings.Replace(goodTool, "--[[needletail\n", "--[[needletail\n"+strings.Repeat("# pad\n", 4000), 1),
+	} {
+		if err := rt.CheckTool(ctx, "tools/double.luau", []byte(bad)); err == nil {
+			t.Errorf("accepted:\n%s", bad[:min(len(bad), 300)])
+		}
+	}
+}
+
+func TestRunScript(t *testing.T) {
+	rt, _ := newRuntime(t)
+	dir := filepath.Join(rt.Home, "scripts")
+	write(t, filepath.Join(dir, "ok.luau"), "--[[needletail\nformat: 1\ncaps: [fs.read:home]\n]]\nprint('line one')\nreturn {count = 2}\n")
+	write(t, filepath.Join(dir, "str.luau"), "--[[needletail\nformat: 1\n]]\nreturn 'just text'\n")
+	write(t, filepath.Join(dir, "fail.luau"), "--[[needletail\nformat: 1\n]]\nprint('before') error('boom')\n")
+	write(t, filepath.Join(dir, "nohdr.luau"), "return 1\n")
+	write(t, filepath.Join(dir, "slow.luau"), "--[[needletail\nformat: 1\ntimeout: 300ms\n]]\nwhile true do end\n")
+	for name, want := range map[string]struct {
+		ok  bool
+		out string
+	}{
+		"ok.luau":    {true, "line one\n{\"count\":2}"},
+		"str.luau":   {true, "just text"},
+		"fail.luau":  {false, "Script failed: runtime: ok"},
+		"nohdr.luau": {false, "must start with"},
+		"slow.luau":  {false, "timeout"},
+	} {
+		ok, out := rt.RunScript(context.Background(), filepath.Join(dir, name), name)
+		if ok != want.ok || !strings.Contains(out, strings.Replace(want.out, "runtime: ok", "runtime: ", 1)) {
+			t.Errorf("%s: %v %q, want %v %q", name, ok, out, want.ok, want.out)
+		}
+	}
+}

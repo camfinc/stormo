@@ -194,7 +194,7 @@ func (l *Library) Edit(name, content string) (Skill, error) {
 }
 
 // fileOf is a file of s to change: SKILL.md when file is empty.
-func fileOf(s Skill, file string) (string, error) {
+func (l *Library) fileOf(s Skill, file string) (string, error) {
 	if strings.TrimSpace(file) == "" || path.Clean(filepath.ToSlash(strings.TrimSpace(file))) == "SKILL.md" {
 		return "SKILL.md", nil
 	}
@@ -205,8 +205,8 @@ func fileOf(s Skill, file string) (string, error) {
 	if err := notSkillMD(rel); err != nil {
 		return "", err
 	}
-	if strings.HasSuffix(rel, ".luau") {
-		return "", errors.New("Luau tools (.luau) are not supported by this runtime yet")
+	if strings.HasSuffix(rel, ".luau") && l.CheckLuau == nil {
+		return "", errors.New("Luau tools (.luau) are not enabled in this runtime")
 	}
 	return rel, nil
 }
@@ -221,13 +221,16 @@ func notSkillMD(rel string) error {
 	return nil
 }
 
-// check refuses body for rel when l.Check does.
+// check refuses body for rel when l.Check does, and a .luau file CheckLuau refuses (an invalid
+// header, a file outside tools/, source that does not compile).
 func (l *Library) check(rel string, body []byte) error {
-	if l.Check == nil {
-		return nil
+	if l.Check != nil {
+		if err := l.Check(string(body)); err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		}
 	}
-	if err := l.Check(string(body)); err != nil {
-		return fmt.Errorf("%s: %w", rel, err)
+	if strings.HasSuffix(rel, ".luau") && l.CheckLuau != nil {
+		return l.CheckLuau(rel, body)
 	}
 	return nil
 }
@@ -255,7 +258,7 @@ func (l *Library) Patch(name, file, old, repl string, all bool) (Skill, string, 
 	if err := l.writable(s); err != nil {
 		return Skill{}, "", 0, err
 	}
-	rel, err := fileOf(s, file)
+	rel, err := l.fileOf(s, file)
 	if err != nil {
 		return Skill{}, "", 0, err
 	}
@@ -323,7 +326,7 @@ func (l *Library) WriteFile(name, file, content string) (Skill, string, error) {
 	if err := l.writable(s); err != nil {
 		return Skill{}, "", err
 	}
-	rel, err := fileOf(s, file)
+	rel, err := l.fileOf(s, file)
 	if err != nil {
 		return Skill{}, "", err
 	}

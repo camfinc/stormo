@@ -42,6 +42,9 @@ type Env struct {
 	SharedWrite func(ctx context.Context, path string)
 	// Session is the calling session's id.
 	Session string
+	// Touched, set per call by the loop, is told the /shared paths a tool wrote another way than
+	// the file tools (a Luau tool through the core), so its tool_done hook names them.
+	Touched func(path string)
 }
 
 // Tool is one function the model may call.
@@ -50,17 +53,29 @@ type Tool struct {
 	Description string
 	Schema      json.RawMessage
 	Run         func(ctx context.Context, env *Env, args json.RawMessage) (any, error)
+	// Hook is the name observers (the core's hooks, the bench) see; "" is Name. Luau tools are
+	// luau:<name>.
+	Hook string
+}
+
+// ObservedName is the name observers see.
+func (t Tool) ObservedName() string {
+	if t.Hook != "" {
+		return t.Hook
+	}
+	return t.Name
 }
 
 // Registry is a set of tools; safe for concurrent use (the core's tools join it after boot).
 type Registry struct {
 	mu     sync.RWMutex
 	byName map[string]Tool
+	groups map[string][]string // a group's names (SetGroup)
 }
 
 // NewRegistry holds tools (later ones replace earlier ones of the same name).
 func NewRegistry(tools ...Tool) *Registry {
-	r := &Registry{byName: map[string]Tool{}}
+	r := &Registry{byName: map[string]Tool{}, groups: map[string][]string{}}
 	for _, t := range tools {
 		r.byName[t.Name] = t
 	}
@@ -74,6 +89,36 @@ func (r *Registry) Add(tools ...Tool) {
 	for _, t := range tools {
 		r.byName[t.Name] = t
 	}
+}
+
+// SetGroup replaces the tools of group (the Luau tools, found again every turn): the group's
+// previous tools go, so a deleted or broken tool is no longer offered. A tool whose name a tool
+// outside the group has is left out.
+func (r *Registry) SetGroup(group string, tools []Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.groups[group] {
+		delete(r.byName, n)
+	}
+	names := []string{}
+	for _, t := range tools {
+		if _, taken := r.byName[t.Name]; taken {
+			continue
+		}
+		r.byName[t.Name] = t
+		names = append(names, t.Name)
+	}
+	r.groups[group] = names
+}
+
+// Taken reports a name a tool outside group has.
+func (r *Registry) Taken(group, name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.byName[name]; !ok {
+		return false
+	}
+	return !slices.Contains(r.groups[group], name)
 }
 
 // Builtins are the built-in tools.
