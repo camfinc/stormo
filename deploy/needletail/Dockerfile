@@ -16,7 +16,7 @@ COPY cmd/needletail ./cmd/needletail
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
-# Only the binary's own modules are fetched (the std lib and go.yaml.in/yaml/v3), checked against go.sum.
+# Only the binary's own modules are fetched (go.yaml.in/yaml/v3 and github.com/gorilla/websocket), checked against go.sum.
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X github.com/camfinc/stormo/internal/needletail/cli.Version=${VERSION}" \
     -o /out/needletail ./cmd/needletail

@@ -391,6 +391,9 @@ func (s *Scheduler) advanceNext(j *Job, from, now time.Time) bool {
 // SetTurns gives the scheduler its turn slots (the API server's); before Start.
 func (s *Scheduler) SetTurns(t Turns) { s.o.Turns = t }
 
+// SetDeliverer gives the scheduler its deliverer (the Slack gateway's); before Start.
+func (s *Scheduler) SetDeliverer(d Deliverer) { s.o.Deliver = d }
+
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
 func (s *Scheduler) Start(ctx context.Context) {
 	if err := s.Boot(); err != nil {
@@ -552,6 +555,11 @@ func (s *Scheduler) start(id string, now time.Time) {
 			slot.Release()
 		}
 		s.finish(s.runCtx, job, o)
+		// a slot is free again: a job the busy agent left due starts now, not a tick later
+		select {
+		case s.kick <- struct{}{}:
+		default:
+		}
 	}()
 }
 

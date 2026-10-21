@@ -59,8 +59,8 @@ proposal for review.
   again at the next start. A run still marked running at boot (a crash, a kill) is recorded as
   failed.
 - A job never overlaps itself. Needletail runs an agent's turn only in one of the API's two turn
-  slots. A job with no script takes its slot first: a busy agent leaves it due for the next tick
-  before anything of it has run. A job's scripts (monitor, pre-run script, a script-only job) run
+  slots. A job with no script takes its slot first: a busy agent leaves it due, before anything of
+  it has run, for the next tick or the end of a run, whichever comes first. A job's scripts (monitor, pre-run script, a script-only job) run
   first, holding no turn slot, under their own cap of two at a time (a third waits for one): an
   unchanged monitor, an empty script output or a wake gate ends the run with no turn and no slot.
   When the gate says the agent runs and no slot is free, the job is due again on the next tick,
@@ -180,8 +180,12 @@ scripts lands when main (789b22c, 754c6b7) is merged into it.
 | `slack`, `home`, `all` | the home channel (`SLACK_HOME_CHANNEL`) |
 | `slack:<channel>`, `slack:<channel>:<thread>` | that channel, or a thread in it |
 
-Hermes also delivers to its other platforms and Bot Chat. Needletail delivers to Slack only (M5);
-another platform's target is a delivery error.
+Hermes also delivers to its other platforms and Bot Chat. Needletail delivers to Slack only,
+through its Slack gateway (docs/needletail.md §4.9): a user id as the channel is that user's DM;
+the output is posted as it is (Hermes wraps it in a "Cronjob Response" header unless
+`cron.wrap_response: false`); a Slack error is the run's `delivery_failed`. Another platform's
+target is a delivery error. An agent with no Slack gateway running accepts a Slack target and
+only logs it (the output stays in the run's record).
 
 ## 7. The agent's own jobs
 
@@ -223,5 +227,5 @@ runs less than 5 minutes apart).
 - Not implemented: `monitor_url`, `context_from` and `continuity`, `workdir`, the per-job notepad,
   `attach_to_session`, the prompt-injection scan of the assembled prompt, the automatic re-run of a
   run that never reached the model, quota holds, Hermes' other platforms.
-- Slack delivery waits for the Slack gateway (M5): until then a Slack target is accepted and
-  logged, and the output stays in the run's record.
+- A Slack origin thread in the home channel is kept (Hermes drops it as stale), and a delivery is
+  not wrapped in Hermes' "Cronjob Response" header.

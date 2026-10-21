@@ -65,6 +65,7 @@ type Server struct {
 	redact   func(string) string
 	now      func() time.Time
 	jobs     func() ([]string, time.Time)
+	platform func() map[string]wire.Platform
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -98,6 +99,8 @@ type Options struct {
 	// Jobs is the scheduler's running jobs and when the last one started (the activity's
 	// running_jobs and last_job_at; nil: none).
 	Jobs func() (running []string, lastStart time.Time)
+	// Platforms is the messaging gateways' states (the activity's platforms; nil: none).
+	Platforms func() map[string]wire.Platform
 }
 
 // New builds the server.
@@ -107,7 +110,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -368,6 +371,11 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		a.RunningJobs = append(a.RunningJobs, running...)
 		if !last.IsZero() {
 			a.LastJobAt = last.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	if s.platform != nil {
+		for name, p := range s.platform() {
+			a.Platforms[name] = p
 		}
 	}
 	writeJSON(w, http.StatusOK, a)

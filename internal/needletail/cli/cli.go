@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/secrets"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/skills"
+	"github.com/camfinc/stormo/internal/needletail/slack"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -172,6 +174,78 @@ func (r reservations) Reserve(session string, create wire.Session) (sched.Slot, 
 	return res, nil
 }
 
+// slackTurns are the same slots as the Slack gateway takes them.
+type slackTurns struct{ srv *api.Server }
+
+func (r slackTurns) Reserve(session string, create wire.Session) (slack.Slot, error) {
+	res, err := r.srv.Reserve(session, create)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// SlackAPIEnv overrides Slack's Web API URL; tests only: it must be a loopback address.
+const SlackAPIEnv = "NEEDLETAIL_SLACK_API_URL"
+
+// startSlack is the Slack gateway (§4.9), when needletail.yaml names the channel and both tokens
+// are there; nil otherwise. Its settings are the channel's, in Hermes' SLACK_* env.
+func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
+	if !slices.Contains(rt.cfg.Channels, "slack") {
+		return nil
+	}
+	bot, app := rt.sec.Get(secrets.SlackBot), rt.sec.Get(secrets.SlackApp)
+	if bot == "" || app == "" {
+		rt.logger.Printf("slack: the agent has a Slack channel but %s or %s is missing: the gateway is off", secrets.SlackBot, secrets.SlackApp)
+		return nil
+	}
+	users := []string{}
+	for _, u := range strings.Split(os.Getenv("SLACK_ALLOWED_USERS"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			users = append(users, u)
+		}
+	}
+	store := rt.store
+	gw, err := slack.New(slack.Options{
+		Web:          &slack.Web{BaseURL: os.Getenv(SlackAPIEnv), BotToken: bot, AppToken: app},
+		Turns:        slackTurns{srv},
+		Exists:       func(session string) bool { _, ok := store.Root(session); return ok },
+		Channels:     func() []string { return slackChannels(store) },
+		AllowedUsers: users,
+		AllowAll:     strings.EqualFold(os.Getenv("SLACK_ALLOW_ALL_USERS"), "true"),
+		AllowBots:    os.Getenv("SLACK_ALLOW_BOTS"),
+		HomeChannel:  os.Getenv("SLACK_HOME_CHANNEL"),
+		Redact:       rt.red.Redact,
+		Log:          func(s string) { rt.logger.Println(s) },
+	})
+	if err != nil {
+		rt.logger.Printf("slack: %v: the gateway is off", err)
+		return nil
+	}
+	rt.agent.Tools.Add(gw.SendTool())
+	rt.sched.SetDeliverer(gw)
+	gw.Start()
+	return gw
+}
+
+// slackChannels are the channels the agent has Slack conversations in (send_message's targets).
+func slackChannels(store *sessions.Store) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range store.List(1000) {
+		id := s.ID
+		if s.Root != "" {
+			id = s.Root
+		}
+		rest, ok := strings.CutPrefix(id, "slack-")
+		if ch, _, _ := strings.Cut(rest, "-"); ok && ch != "" && !seen[ch] {
+			seen[ch] = true
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
 func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -195,8 +269,15 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
+	var gw *slack.Gateway
 	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
-		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running})
+		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running,
+		Platforms: func() map[string]wire.Platform {
+			if gw == nil {
+				return nil
+			}
+			return map[string]wire.Platform{"slack": gw.Platform()}
+		}})
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
 		return 1
@@ -207,6 +288,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	rt.sched.SetTurns(reservations{srv})
+	gw = startSlack(rt, srv)
 	ticks, stopTicks := context.WithCancel(context.Background())
 	defer stopTicks()
 	rt.sched.Start(ticks)
@@ -222,15 +304,23 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	rt.logger.Printf("shutting down")
 	stopTicks() // no job starts from here on
+	if gw != nil {
+		gw.BeginShutdown() // no Slack message starts a turn; new events are left for Slack to resend
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = hs.Shutdown(sctx)
 	cancel()
 	dctx, cancel := context.WithTimeout(context.Background(), drainTurns)
-	srv.Shutdown(dctx) // jobs' turns drain (or are cancelled) with the API's
+	srv.Shutdown(dctx) // jobs' and Slack's turns drain (or are cancelled) with the API's
 	cancel()
 	jctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	rt.sched.Shutdown(jctx) // and script-only jobs get a few seconds more
+	rt.sched.Shutdown(jctx) // and script-only jobs get a few seconds more (deliveries included)
 	cancel()
+	if gw != nil {
+		gctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		gw.Shutdown(gctx) // the drained turns' replies are posted, then the socket closes
+		cancel()
+	}
 	return 0
 }
 
