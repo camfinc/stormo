@@ -205,3 +205,68 @@ func TestWritesKeepSkillDir(t *testing.T) {
 		t.Errorf("literal.md = %q", got)
 	}
 }
+
+// A skill the instance booted with (from the agent's repository) is not deleted at runtime:
+// rehydrate would bring it back and the dream proposes no deletion.
+func TestDeleteRefusesBootedSkill(t *testing.T) {
+	l := library(t)
+	put(t, l.Home, BootedFile, `{"gitSha":"abc","skills":{"crm/crm-api/quotes":"h1","solo":"h2"},"settings":{}}`)
+	if _, err := l.Delete("solo"); err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Errorf("delete of a repo skill: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Home, "skills", "solo", "SKILL.md")); err != nil {
+		t.Error("repo skill deleted")
+	}
+	// it can still be changed (the dream proposes the change)
+	if _, _, err := l.WriteFile("solo", "notes.md", "x"); err != nil {
+		t.Errorf("write to a repo skill: %v", err)
+	}
+	// a skill the agent made is deleted
+	if _, err := l.Create("mine", "", "---\nname: mine\ndescription: d\n---\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Delete("mine"); err != nil {
+		t.Errorf("delete of the agent's skill: %v", err)
+	}
+	// without a booted.json (a bench, a test home) nothing is refused for it
+	_ = os.Remove(filepath.Join(l.Home, BootedFile))
+	if _, err := l.Delete("solo"); err != nil {
+		t.Errorf("delete without booted.json: %v", err)
+	}
+}
+
+// Delete takes the skill out of skills/ in one rename before removing its files, so a nap taken
+// meanwhile never sees half a skill, and a skill whose files resist removal is still gone.
+func TestDeleteIsOneStep(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	l := library(t)
+	if _, err := l.Create("stuck", "", "---\nname: stuck\ndescription: d\n---\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.WriteFile("stuck", "data/a.md", "a"); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(l.Home, "skills", "stuck", "data")
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(l.Home, func(p string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+	if _, err := l.Delete("stuck"); err != nil {
+		t.Errorf("delete: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(l.Home, "skills", "stuck")); !os.IsNotExist(err) {
+		t.Errorf("skills/stuck is still there: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(l.Home, TmpDir)); len(entries) != 0 {
+		t.Errorf("left in the temp dir: %v", entries)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/pkg/engine"
 	adapter "github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -186,6 +187,15 @@ func TestServe(t *testing.T) {
 	setenv(t, h)
 	port := freePort(t)
 	t.Setenv("NEEDLETAIL_API_PORT", strconv.Itoa(port))
+	// what a crash left in the unclaimed temp dir (a half-written file, a skill mid-delete) is
+	// swept when serve starts
+	stale := filepath.Join(h, fsx.TmpDir, "deleted-skill", "ro")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(stale, "x"), []byte("x"), 0o644)
+	_ = os.Chmod(stale, 0o555)
+	_ = os.WriteFile(filepath.Join(h, fsx.TmpDir, ".SKILL.md.tmp-1"), []byte("half"), 0o600)
 
 	var stderr bytes.Buffer
 	var mu sync.Mutex
@@ -222,6 +232,9 @@ func TestServe(t *testing.T) {
 		defer res.Body.Close()
 		raw, err := io.ReadAll(res.Body)
 		return res.StatusCode, raw, err
+	}
+	if entries, _ := os.ReadDir(filepath.Join(h, fsx.TmpDir)); len(entries) != 0 {
+		t.Errorf("temp dir not swept: %v", entries)
 	}
 	conv := adapter.NewRuntime().Conversations(engine.APICall(call))
 	reply, tip, err := conv.Send(context.Background(), "chat-1", "hello")

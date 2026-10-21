@@ -19,6 +19,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/config"
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/memory"
@@ -182,6 +183,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
 		return 1
+	}
+	// Nothing writes through the temp dir yet: what a crash left there goes (oneshot, which may
+	// run beside a serving runtime, never sweeps).
+	if err := fsx.Sweep(rt.cfg.Home); err != nil {
+		rt.logger.Printf("could not empty %s: %v", fsx.TmpDir, err)
 	}
 	key := rt.sec.Get(secrets.APIKey)
 	if len(key) < api.MinKey {

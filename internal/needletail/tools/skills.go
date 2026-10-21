@@ -92,7 +92,7 @@ func skillManageTool() Tool {
 			"edit (name, content: the whole new SKILL.md); " +
 			"patch (name, old_string, new_string, optional file_path, replace_all; old_string must match exactly once unless replace_all); " +
 			"write_file (name, file_path relative to the skill, file_content: a reference, template or script); " +
-			"remove_file (name, file_path); delete (name: the whole skill). " +
+			"remove_file (name, file_path); delete (name: the whole skill; one from the agent's repository is not deleted at runtime). " +
 			"Write ${SKILL_DIR} for the skill's own directory (its absolute path, as a view shows it, is put back as ${SKILL_DIR}) and env var names (never values) for credentials. " +
 			"Skills the build generates (the knowledge and shared-docs skills) cannot be changed.",
 		Schema: schema(`{"type":"object","properties":{

@@ -2,6 +2,7 @@ package skills
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -411,13 +412,49 @@ func (l *Library) Delete(name string) (Skill, error) {
 			return Skill{}, fmt.Errorf("%s holds skill %s: delete that one first", s.Dir, o.Dir)
 		}
 	}
+	if l.booted(s.Dir) {
+		return Skill{}, fmt.Errorf("%s comes from the agent's repository: deleted here, it would come back at the next restart (rehydrate restores it) and no deletion is proposed for review. Change it with edit or patch, or ask a person to remove it from the repository", s.Dir)
+	}
 	p, err := l.real("skills/" + s.Dir)
 	if err != nil {
 		return Skill{}, err
 	}
-	if err := os.RemoveAll(p); err != nil {
+	// One rename takes the skill out of skills/ (a nap taken meanwhile sees all of it or none);
+	// its files are removed from the unclaimed temp dir, which boot sweeps if this is cut short.
+	if err := os.MkdirAll(l.tmp(), 0o700); err != nil {
 		return Skill{}, err
 	}
+	gone, err := os.MkdirTemp(l.tmp(), "deleted-")
+	if err != nil {
+		return Skill{}, err
+	}
+	if err := os.Rename(p, filepath.Join(gone, "skill")); err != nil {
+		_ = os.Remove(gone)
+		return Skill{}, err
+	}
+	_ = fsx.RemoveAll(gone)
 	l.deleted(s)
 	return s, nil
+}
+
+// BootedFile is where rehydrate records, in the home, the baseline the instance booted from
+// (pkg/loop.BootedPath): {"gitSha", "skills": {dir: hash}, "settings"}. Its skills are the
+// agent's repository's.
+const BootedFile = ".swarm/booted.json"
+
+// booted reports a skill dir the instance booted with from the agent's repository. Without a
+// readable booted.json (a bench, a test home) none is.
+func (l *Library) booted(dir string) bool {
+	body, err := os.ReadFile(filepath.Join(l.Home, filepath.FromSlash(BootedFile)))
+	if err != nil {
+		return false
+	}
+	var b struct {
+		Skills map[string]string `json:"skills"`
+	}
+	if json.Unmarshal(body, &b) != nil {
+		return false
+	}
+	_, ok := b.Skills[dir]
+	return ok
 }

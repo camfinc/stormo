@@ -3,6 +3,7 @@
 package fsx
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -57,4 +58,39 @@ func WriteAtomicIn(path, tmpDir string, body []byte, perm os.FileMode) error {
 		_ = d.Close()
 	}
 	return nil
+}
+
+// RemoveAll removes path and everything below it, also what directories made read-only hold
+// (they are made writable first). It is for the home's own trees, never followed through links.
+func RemoveAll(path string) error {
+	if err := os.RemoveAll(path); err == nil {
+		return nil
+	}
+	_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
+}
+
+// Sweep empties the home's temp dir (home/TmpDir): what a crash left there, a half-written file or
+// a skill taken out of skills/ to be deleted. Only at boot, before anything writes through it.
+func Sweep(home string) error {
+	dir := filepath.Join(home, TmpDir)
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, e := range entries {
+		if err := RemoveAll(filepath.Join(dir, e.Name())); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }

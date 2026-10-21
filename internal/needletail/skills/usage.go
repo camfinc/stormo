@@ -25,6 +25,9 @@ import (
 //	created_by                           "agent" for a skill skill_manage created, else null
 //	state                                "active"
 //
+// Entries are keyed by name, as in Hermes, not by dir: Create refuses a name another skill has,
+// but two repo skills with the same front-matter name share one entry.
+//
 // Times are RFC 3339 with microseconds and +00:00, as Hermes writes them. Keys this runtime does
 // not maintain (Hermes' curator fields) are kept as they are.
 const UsageFile = "skills/.usage.json"

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/pkg/build"
 	adapter "github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -22,6 +23,13 @@ import (
 	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
+
+// The skills library reads the booted set where rehydrate writes it.
+func TestBootedFile(t *testing.T) {
+	if skills.BootedFile != loop.BootedPath {
+		t.Errorf("skills.BootedFile = %s, rehydrate writes %s", skills.BootedFile, loop.BootedPath)
+	}
+}
 
 // scripted is an OpenAI-compatible endpoint that answers each request with the next step of a
 // script: a tool call, or the final text.
