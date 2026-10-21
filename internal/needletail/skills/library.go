@@ -132,6 +132,35 @@ func (l *Library) Resolve(s Skill, text string) string {
 	return strings.ReplaceAll(text, "${"+DirVar+"}", l.Abs(s))
 }
 
+// Unresolve is text with the skill's directory put back as ${SKILL_DIR} (what View resolved): the
+// directory followed by "/", a quote, a space or the end, never a longer name that starts like it
+// (crm-api2). Text that is not UTF-8, or holds a NUL, is left as it is.
+func (l *Library) Unresolve(s Skill, text string) string {
+	abs := l.Abs(s)
+	if !strings.Contains(text, abs) || !utf8.ValidString(text) || strings.IndexByte(text, 0) >= 0 {
+		return text
+	}
+	var b strings.Builder
+	from := 0
+	for {
+		i := strings.Index(text[from:], abs)
+		if i < 0 {
+			break
+		}
+		i += from
+		end := i + len(abs)
+		if end < len(text) && nameByte(text[end]) {
+			b.WriteString(text[from:end])
+		} else {
+			b.WriteString(text[from:i])
+			b.WriteString("${" + DirVar + "}")
+		}
+		from = end
+	}
+	b.WriteString(text[from:])
+	return b.String()
+}
+
 // cleanRel is a file path inside a skill, cleaned: relative, never leaving the skill, and with no
 // hidden segment (which also refuses "..") or control character.
 func cleanRel(file string) (string, error) {

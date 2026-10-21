@@ -154,3 +154,54 @@ func TestCheckSeesTheWholeFile(t *testing.T) {
 		t.Errorf("notes.md = %q", b)
 	}
 }
+
+// skill_view shows ${SKILL_DIR} resolved; what the agent writes back from that view keeps the
+// placeholder, and a patch whose old_string came from the view matches the file.
+func TestWritesKeepSkillDir(t *testing.T) {
+	l := library(t)
+	abs := filepath.Join(l.Home, "skills", "crm", "fare-lookup")
+	md := "---\nname: fare-lookup\ndescription: Fares.\n---\nRun " + abs + "/scripts/fare.sh\n"
+	if _, err := l.Create("fare-lookup", "crm", md); err != nil {
+		t.Fatal(err)
+	}
+	read := func(rel string) string {
+		b, _ := os.ReadFile(filepath.Join(abs, rel))
+		return string(b)
+	}
+	if got := read("SKILL.md"); !strings.Contains(got, "Run ${SKILL_DIR}/scripts/fare.sh") {
+		t.Errorf("created = %q", got)
+	}
+	v, err := l.View("s1", "fare-lookup", "")
+	if err != nil || !strings.Contains(v.Content, "Run "+abs+"/scripts/fare.sh") {
+		t.Fatalf("view = %+v %v", v, err)
+	}
+	if _, _, _, err := l.Patch("fare-lookup", "", "Run "+abs+"/scripts/fare.sh", "Run "+abs+"/scripts/price.sh", false); err != nil {
+		t.Errorf("patch from the view: %v", err)
+	}
+	if got := read("SKILL.md"); !strings.Contains(got, "Run ${SKILL_DIR}/scripts/price.sh") {
+		t.Errorf("patched = %q", got)
+	}
+	if _, err := l.Edit("fare-lookup", "---\nname: fare-lookup\ndescription: Fares.\n---\ncd "+abs+" && ls '"+abs+"'\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read("SKILL.md"); !strings.Contains(got, "cd ${SKILL_DIR} && ls '${SKILL_DIR}'") {
+		t.Errorf("edited = %q", got)
+	}
+	// another directory that only starts like this one's is left alone
+	if _, _, err := l.WriteFile("fare-lookup", "notes.md", "see "+abs+"/x and "+abs+"-old/y and "+abs+"2\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read("notes.md"); got != "see ${SKILL_DIR}/x and "+abs+"-old/y and "+abs+"2\n" {
+		t.Errorf("notes.md = %q", got)
+	}
+	// a file that holds the literal path (written by the terminal) is still patched by it
+	if err := os.WriteFile(filepath.Join(abs, "literal.md"), []byte("at "+abs+"/data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := l.Patch("fare-lookup", "literal.md", "at "+abs+"/data", "at "+abs+"/cache", false); err != nil {
+		t.Errorf("patch of a literal path: %v", err)
+	}
+	if got := read("literal.md"); got != "at ${SKILL_DIR}/cache\n" {
+		t.Errorf("literal.md = %q", got)
+	}
+}

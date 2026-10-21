@@ -147,6 +147,7 @@ func (l *Library) Create(name, category, content string) (Skill, error) {
 	if _, err := os.Lstat(p); err == nil {
 		return Skill{}, fmt.Errorf("skills/%s exists already", dir)
 	}
+	content = l.Unresolve(Skill{Dir: dir}, content)
 	if err := checkSkillMD([]byte(content), nil, name, name, true, true); err != nil {
 		return Skill{}, err
 	}
@@ -177,6 +178,7 @@ func (l *Library) Edit(name, content string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
+	content = l.Unresolve(s, content)
 	if err := checkSkillMD([]byte(content), prev, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
 		return Skill{}, err
 	}
@@ -276,6 +278,12 @@ func (l *Library) Patch(name, file, old, repl string, all bool) (Skill, string, 
 	if cut {
 		return Skill{}, "", 0, fmt.Errorf("%s is over %d bytes", rel, MaxFile)
 	}
+	// old_string and new_string come from a view, where ${SKILL_DIR} is resolved; a file that
+	// holds the literal directory (written by the terminal) is still matched by it.
+	if u := l.Unresolve(s, old); u != old && strings.Contains(string(body), u) {
+		old = u
+	}
+	repl = l.Unresolve(s, repl)
 	n := strings.Count(string(body), old)
 	switch {
 	case n == 0:
@@ -324,6 +332,7 @@ func (l *Library) WriteFile(name, file, content string) (Skill, string, error) {
 	if err := l.inNested(s, rel); err != nil {
 		return Skill{}, "", err
 	}
+	content = l.Unresolve(s, content)
 	if len(content) > MaxFile {
 		return Skill{}, "", fmt.Errorf("%s would be over %d bytes", rel, MaxFile)
 	}
