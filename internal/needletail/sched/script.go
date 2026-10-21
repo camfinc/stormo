@@ -20,7 +20,8 @@ const maxScriptOutput = 1 << 20
 
 // runScript runs one of the home's scripts (scripts/<path>; an absolute path must lie inside
 // scripts/ too) as Hermes does: .sh and .bash with bash, .py and anything else with python3, the
-// shebang ignored; cwd the home, the terminal's environment, the script timeout, its whole
+// shebang ignored; cwd the script's own directory (Hermes': scripts/ for a script there), the
+// terminal's environment, the script timeout, its whole
 // process group killed at the end. It returns whether it exited 0 and its trimmed, redacted
 // stdout, or a description of the failure (exit code, stderr, stdout).
 func (s *Scheduler) runScript(ctx context.Context, script string) (bool, string) {
@@ -40,7 +41,7 @@ func (s *Scheduler) runScript(ctx context.Context, script string) (bool, string)
 	cctx, cancel := context.WithTimeout(ctx, s.o.ScriptTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...)
-	cmd.Dir = s.o.Home
+	cmd.Dir = filepath.Dir(path)
 	env := s.o.Env
 	cmd.Env = tools.CommandEnv(&env)
 	var stdout, stderr limited

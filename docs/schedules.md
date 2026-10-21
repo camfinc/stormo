@@ -104,7 +104,9 @@ In this order:
 | `error` | the turn failed, a `[CRON_FAILURE]` reply, an empty reply, a failing monitor or script-only script, an unrunnable job | a failure notice | one more |
 | `delivery_failed` | the run worked but a target refused its output | (it was attempted) | unchanged |
 
-Hermes has two more: `blocked_config` and `delivery_queued`. `stormo review` (Engine.Schedules)
+Hermes (v2026.9.24) records silent and unchanged runs as `ok` (its statuses are `ok`, `error` and
+`delivery_failed`, plus `blocked_config` and `delivery_queued`); `silent` and `no_change` are
+needletail's finer names for them, which the adapters read as successes. `stormo review` (Engine.Schedules)
 flags a job whose last status is none of `ok`, `silent`, `no_change`, a failure streak, a delivery
 error, and a job overdue by more than 15 minutes.
 
@@ -130,7 +132,7 @@ A job's `script` and `monitor_script` are files in the home's `scripts/` (the ag
 `agents/<id>/scripts/`, rebuilt from the repo at every boot); a path that resolves outside it,
 symlinks included, is refused. The interpreter comes from the extension, never the shebang:
 `.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` from M6 on).
-The working directory is the home, the environment the terminal's (secrets scrubbed, the
+The working directory is the script's own directory (`scripts/` for a script there), the environment the terminal's (secrets scrubbed, the
 passthrough allowlist kept), the bound 1 hour (Hermes' default), and the whole process tree is
 killed at the end. stdout and stderr are trimmed and redacted; a non-zero exit is a failure
 described as `Script exited with code N`, then its stderr and stdout.

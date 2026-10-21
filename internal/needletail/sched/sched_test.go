@@ -25,7 +25,7 @@ import (
 )
 
 // fixtureScript prints fixture/<name>.out from the home and exits with fixture/<name>.code.
-const fixtureScript = `name=$(basename "$0"); cat "$HOME/fixture/$name.out" 2>/dev/null; exit $(cat "$HOME/fixture/$name.code" 2>/dev/null || echo 0)` + "\n"
+const fixtureScript = `name=$(basename "$0"); cat "$HOME/fixture/$name.out" 2>/dev/null; [ -f "$HOME/fixture/$name.pwd" ] && pwd; exit $(cat "$HOME/fixture/$name.code" 2>/dev/null || echo 0)` + "\n"
 
 const fixturePy = `import os, sys
 name = os.path.basename(sys.argv[0])
@@ -327,8 +327,18 @@ func TestRealJobs(t *testing.T) {
 		{name: "script-only watchdog: its output is delivered as is", at: 2 * time.Minute, job: sla,
 			prepare: func() { r.fixture("sla_watchdog.sh", "SLA: 2 chats over 60 min (sekret-value)\n", 0) },
 			status:  "ok streak=0 err=\"\"", noTurn: true, deliver: "slack (home)|SLA: 2 chats over 60 min ([REDACTED])"},
+		{name: "a script runs in its own directory, as in Hermes", at: 2 * time.Minute, job: sla,
+			prepare: func() {
+				r.fixture("sla_watchdog.sh", "cwd: ", 0)
+				_ = os.WriteFile(filepath.Join(home, "fixture", "sla_watchdog.sh.pwd"), nil, 0o644)
+			},
+			status: "ok streak=0 err=\"\"", noTurn: true, deliver: "slack (home)|cwd: " + realScripts(t, home)},
 		{name: "script-only watchdog: empty output is silent", at: 2 * time.Minute, job: sla,
-			prepare: func() { r.fixture("sla_watchdog.sh", "", 0) }, status: "silent streak=0 err=\"\"", noTurn: true},
+			prepare: func() {
+				_ = os.Remove(filepath.Join(home, "fixture", "sla_watchdog.sh.pwd"))
+				r.fixture("sla_watchdog.sh", "", 0)
+			},
+			status: "silent streak=0 err=\"\"", noTurn: true},
 		{name: "script-only watchdog: the wake gate is silent", at: 2 * time.Minute, job: sla,
 			prepare: func() { r.fixture("sla_watchdog.sh", "checked 14 chats\n{\"wakeAgent\": false}\n", 0) }, status: "silent streak=0 err=\"\"", noTurn: true},
 		{name: "script-only watchdog: a failing script alerts the failure lane", at: 2 * time.Minute, job: sla,
@@ -500,6 +510,16 @@ func TestRealJobs(t *testing.T) {
 			}
 		}
 	}
+}
+
+// realScripts is the home's scripts/ with symlinks resolved (macOS' /var is /private/var).
+func realScripts(t *testing.T, home string) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks(filepath.Join(home, "scripts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func sameSet(a, b []string) bool {
