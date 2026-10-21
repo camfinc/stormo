@@ -95,6 +95,7 @@ type Sender struct {
 	queue   []item
 	sending bool
 	dropped int
+	refused int // the worker's alone
 	signal  chan struct{}
 	idle    chan struct{} // closed and replaced when the queue empties
 	done    chan struct{}
@@ -267,7 +268,12 @@ func (s *Sender) deliver(ctx context.Context, it item) bool {
 		case ctx.Err() != nil:
 			return false
 		case errors.Is(err, errRefused):
-			s.logf("hooks: the core refused %s: %v", it.what, err)
+			// The first refusal and every 100th: a core refusing everything (a wrong key) would
+			// otherwise log every tool call.
+			s.refused++
+			if s.refused == 1 || s.refused%100 == 0 {
+				s.logf("hooks: the core refused %s: %v (%d refused so far)", it.what, err, s.refused)
+			}
 			return true
 		case s.o.Now().Sub(it.at) > s.o.MaxAge:
 			s.logf("hooks: %s dropped after %d attempts: %v", it.what, attempt, err)
@@ -306,7 +312,7 @@ func (s *Sender) post(ctx context.Context, it item) error {
 	case res.StatusCode >= 200 && res.StatusCode < 300:
 		return nil
 	case res.StatusCode >= 400 && res.StatusCode < 500:
-		return fmt.Errorf("%w: HTTP %d %s", errRefused, res.StatusCode, strings.TrimSpace(string(msg)))
+		return fmt.Errorf("%w: %s", errRefused, strings.TrimSpace(fmt.Sprintf("HTTP %d %s", res.StatusCode, strings.TrimSpace(string(msg)))))
 	}
 	return fmt.Errorf("HTTP %d", res.StatusCode)
 }

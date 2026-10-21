@@ -284,3 +284,27 @@ func flush(t *testing.T, s *Sender) {
 		t.Fatal("hooks not flushed")
 	}
 }
+
+// A core that refuses every event (a wrong key, say) is logged once and then every 100th time,
+// not once per event.
+func TestRefusalsAreLoggedSparingly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	var mu sync.Mutex
+	lines := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(Options{URL: srv.URL, Key: coreKey, Queue: 300, Log: func(l string) { mu.Lock(); lines = append(lines, l); mu.Unlock() }})
+	for i := range 250 {
+		s.ToolStart("s", wire.ToolCall{ID: fmt.Sprint(i), Name: "terminal"})
+	}
+	s.Start(ctx)
+	flush(t, s)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 3 || !strings.Contains(lines[0], "refused") || !strings.Contains(lines[2], "HTTP 401 (200 refused so far)") {
+		t.Errorf("%d lines: %q", len(lines), lines)
+	}
+}
