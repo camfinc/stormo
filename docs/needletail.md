@@ -117,7 +117,7 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 2. **Per-engine version validation.** `engine.version` and `image_tag` are validated today with Hermes-shaped rules. Move the check behind an optional `engine.VersionValidator` interface (`ValidVersion(string) error`). Hermes keeps its current rule; needletail accepts semver or a pinned tag. This lands before any manifest uses needletail.
 
 **Made in M2, engine-neutral, Hermes unchanged.**
-- The sidecar relay (`pkg/link`) forwarded only Hermes' hook headers, so another engine's signed hook reached the core unsigned (401). It now forwards any `X-<Engine>-Signature[-…]`, `-Event` or `-Delivery` header (bounded), besides its fixed set.
+- The sidecar relay (`pkg/link`) forwarded only Hermes' hook headers, so another engine's signed hook reached the core unsigned (401). It now forwards any `X-<Engine>-Signature[-…]`, `-Event` or `-Delivery` header (each value at most 512 bytes, at most 8 of them, signatures first), besides its fixed set.
 - The workdir's terminal inference (`shellAt`) read only Hermes' event names (`pre_tool_call`, `post_tool_call`). It also reads Stormo's kind names (`tool_start`, `tool_done`, `engine.HookKind`), which needletail's hooks carry; what the core stores is unchanged. The office timeline labels the kind names too.
 
 **Deliberately not changed in the MVP.**
