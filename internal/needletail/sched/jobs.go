@@ -201,6 +201,9 @@ func (j *Job) Has(k string) bool { _, ok := j.raw[k]; return ok }
 
 func marshal(v any) (json.RawMessage, error) {
 	if r, ok := v.(json.RawMessage); ok {
+		if len(bytes.TrimSpace(r)) == 0 {
+			return json.RawMessage("null"), nil
+		}
 		return r, nil
 	}
 	var b bytes.Buffer

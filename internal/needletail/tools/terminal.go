@@ -159,6 +159,13 @@ func fromSkill(env *Env, a terminalArgs) (string, error) {
 	return env.Skills.Abs(s), nil
 }
 
+// CommandEnv is the environment a command the runtime starts gets (the terminal's, a schedule's
+// script): the scrubbed process env with HOME set to the agent's home.
+func CommandEnv(env *Env) []string { return terminalEnv(env) }
+
+// KillGroup runs cmd in its own process group, killed whole when cmd is cancelled (unix).
+func KillGroup(cmd *exec.Cmd) { killGroup(cmd) }
+
 // terminalEnv is the scrubbed process env with HOME set to the agent's home.
 func terminalEnv(env *Env) []string {
 	var base []string
