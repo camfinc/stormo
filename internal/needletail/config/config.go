@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"go.yaml.in/yaml/v3"
 )
@@ -121,6 +122,9 @@ func (c *Config) SharedRoots() []string {
 
 // StateDir is the runtime's own state (idempotency keys, later monitor outputs and cursors).
 func (c *Config) StateDir() string { return filepath.Join(c.Home, "state", "needletail") }
+
+// TmpDir is the home's unclaimed temp dir (fsx.TmpDir).
+func (c *Config) TmpDir() string { return filepath.Join(c.Home, fsx.TmpDir) }
 
 // SessionsDir holds the session files.
 func (c *Config) SessionsDir() string { return filepath.Join(c.Home, "sessions") }

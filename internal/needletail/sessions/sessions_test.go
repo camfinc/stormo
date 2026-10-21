@@ -237,3 +237,26 @@ func TestCompactDurableOrder(t *testing.T) {
 		t.Errorf("after restart tip(p2) = %s", x)
 	}
 }
+
+// Rewrites of a session's header and of index.json put their temporary file in the home's
+// unclaimed temp dir, not in sessions/ (Raw: a nap taken mid-write would keep it, and rehydrate
+// would bring it back). A temp dir that cannot be made fails the write instead.
+func TestRewritesUseTheUnclaimedTempDir(t *testing.T) {
+	home := t.TempDir()
+	s, err := Open(filepath.Join(home, "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(wire.Session{ID: "a", Source: "cli"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".needletail-tmp"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.End("a", "done"); err == nil {
+		t.Error("End wrote its header without the temp dir")
+	}
+	if _, err := s.DeleteLineage("a"); err == nil {
+		t.Error("index.json was written without the temp dir")
+	}
+}

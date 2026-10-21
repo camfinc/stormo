@@ -84,8 +84,9 @@ type Options struct {
 	Key   string
 	Store *sessions.Store
 	Agent Turns
-	// StateDir holds idem.json.
-	StateDir string
+	// StateDir holds idem.json; TmpDir is where its temporary file goes (the home's fsx.TmpDir,
+	// which no snapshot rule claims; "": beside it).
+	StateDir, TmpDir string
 	// MaxTurns is the global cap (default 2).
 	MaxTurns int
 	// StopGrace is how long Shutdown waits for turns it cancelled to stop (default 3 s).
@@ -97,7 +98,7 @@ type Options struct {
 
 // New builds the server.
 func New(o Options) (*Server, error) {
-	idem, err := loadIdem(o.StateDir, o.Now)
+	idem, err := loadIdem(o.StateDir, o.TmpDir, o.Now)
 	if err != nil {
 		return nil, err
 	}

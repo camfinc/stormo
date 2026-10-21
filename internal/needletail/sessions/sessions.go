@@ -68,6 +68,7 @@ type meta struct {
 // lineage (one writer per session).
 type Store struct {
 	dir    string
+	tmp    string // the home's unclaimed temp dir (fsx.TmpDir), beside dir
 	redact func(string) string
 	now    func() time.Time
 	fsync  func(*os.File) error // (*os.File).Sync; tests watch or fail it
@@ -85,7 +86,7 @@ func Open(dir string, redact func(string) string) (*Store, error) {
 	if redact == nil {
 		redact = func(s string) string { return s }
 	}
-	s := &Store{dir: dir, redact: redact, now: time.Now, fsync: (*os.File).Sync, metas: map[string]*meta{}}
+	s := &Store{dir: dir, tmp: filepath.Join(filepath.Dir(dir), fsx.TmpDir), redact: redact, now: time.Now, fsync: (*os.File).Sync, metas: map[string]*meta{}}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -414,7 +415,7 @@ func (s *Store) end(id, reason string) error {
 	} else {
 		rest = nil
 	}
-	if err := fsx.WriteAtomic(s.path(id), append(append(line, '\n'), rest...), 0o600); err != nil {
+	if err := fsx.WriteAtomicIn(s.path(id), s.tmp, append(append(line, '\n'), rest...), 0o600); err != nil {
 		return err
 	}
 	m.Session = h
@@ -615,5 +616,5 @@ func (s *Store) writeIndex() error {
 	if err != nil {
 		return err
 	}
-	return fsx.WriteAtomic(filepath.Join(s.dir, "index.json"), append(body, '\n'), 0o600)
+	return fsx.WriteAtomicIn(filepath.Join(s.dir, "index.json"), s.tmp, append(body, '\n'), 0o600)
 }

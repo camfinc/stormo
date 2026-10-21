@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 )
 
 // DirVar is the placeholder a skill's text uses for its own directory (Stormo form). The build
@@ -55,9 +57,8 @@ func (l *Library) now() time.Time {
 
 func (l *Library) root() string { return filepath.Join(l.Home, "skills") }
 
-// TmpDir is where skill files are written before they are renamed into place, relative to the
-// home: a directory no snapshot rule claims, so a half-written file never reaches a nap.
-const TmpDir = ".needletail-tmp"
+// TmpDir is where skill files are written before they are renamed into place (fsx.TmpDir).
+const TmpDir = fsx.TmpDir
 
 func (l *Library) tmp() string { return filepath.Join(l.Home, TmpDir) }
 

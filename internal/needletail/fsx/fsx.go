@@ -7,6 +7,12 @@ import (
 	"path/filepath"
 )
 
+// TmpDir is the home's directory for temporary files, relative to the home: no snapshot rule
+// claims it, so a half-written file (a nap taken mid-write, a crash before the rename) never
+// reaches a nap. Files under a claimed glob (skills/, sessions/, state/needletail/) are written
+// through it with WriteAtomicIn.
+const TmpDir = ".needletail-tmp"
+
 // WriteAtomic writes path through a fsynced temporary file in the same directory and a rename,
 // then fsyncs the directory. perm is the new file's mode.
 func WriteAtomic(path string, body []byte, perm os.FileMode) error {

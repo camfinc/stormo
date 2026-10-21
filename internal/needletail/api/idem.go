@@ -19,6 +19,7 @@ const idemTTL = 24 * time.Hour
 type idemStore struct {
 	mu   sync.Mutex // held by the caller across get and put
 	path string
+	tmp  string // where its temporary file goes (the home's unclaimed temp dir; "": beside it)
 	now  func() time.Time
 	keys map[string]idemEntry
 }
@@ -33,11 +34,11 @@ type idemFile struct {
 	Keys map[string]idemEntry `json:"keys"`
 }
 
-func loadIdem(dir string, now func() time.Time) (*idemStore, error) {
+func loadIdem(dir, tmp string, now func() time.Time) (*idemStore, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &idemStore{now: now, keys: map[string]idemEntry{}}
+	s := &idemStore{now: now, tmp: tmp, keys: map[string]idemEntry{}}
 	if dir == "" {
 		return s, nil
 	}
@@ -84,5 +85,9 @@ func (s *idemStore) put(key string, a wire.RunAccepted) error {
 	if err != nil {
 		return err
 	}
-	return fsx.WriteAtomic(s.path, append(body, '\n'), 0o600)
+	tmp := s.tmp
+	if tmp == "" {
+		tmp = filepath.Dir(s.path)
+	}
+	return fsx.WriteAtomicIn(s.path, tmp, append(body, '\n'), 0o600)
 }

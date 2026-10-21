@@ -148,7 +148,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
-	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(),
+	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact})
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
