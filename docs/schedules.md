@@ -43,7 +43,9 @@ proposal for review.
   a list of `*`, `n`, `a-b` with an optional `/step` (`5/10` is 5 to the field's end); month and
   weekday names (`JAN`, `MON-FRI`); weekday 7 is Sunday. When both day fields are restricted a
   day matches either (Vixie cron, croniter); `*` or `?` is unrestricted. Expressions run on a wall
-  clock: Hermes' configured zone; needletail the container's (`TZ`, else UTC). A time a DST change
+  clock: Hermes' configured zone (`timezone:` in `engine/hermes/config.yaml`); needletail the
+  `timezone` of `engine/needletail/config.yaml`, else the container's `TZ` (agent.yaml `env:`),
+  else UTC (§8). A time a DST change
   skips does not run that day.
 - The scheduler ticks (needletail every 30 s). A due job whose time has passed runs **once**, even
   when several of its times passed while the agent was down: the backlog collapses into one run,
@@ -198,6 +200,16 @@ runs more often than every 5 minutes (an interval under 5 minutes, or a cron exp
 runs less than 5 minutes apart).
 
 ## 8. Where needletail differs (M4)
+
+- **Timezone.** The agent's wall clock is `timezone:` in `agents/<id>/engine/needletail/config.yaml`
+  (an IANA name, checked at build and rendered into `needletail.yaml`), else `TZ` in the
+  container's env (agent.yaml `env: {TZ: …}`), else UTC. Cron expressions and the system prompt's
+  "current time" use it; the times in `cron/jobs.json` carry its offset. To move a Hermes agent,
+  copy the `timezone:` line of its `engine/hermes/config.yaml` into
+  `engine/needletail/config.yaml`; the stamps Hermes left in `cron/jobs.json` carry its offset and
+  keep their meaning (a cron time whose own wall clock matches is kept, §1). An image older than
+  this key refuses a `needletail.yaml` that has it (the file's keys are checked), so a timezone
+  needs this runtime or later.
 
 - One-time schedules (`in 30m`, a timestamp) are refused: agent.yaml has no form for them, so the
   dream could not propose them.

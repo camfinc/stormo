@@ -131,9 +131,9 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
-	// Cron expressions run on the container's wall clock: TZ when it is set, else UTC.
+	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
 	s := sched.New(sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
-		End: store.End, Location: time.Local, Log: logf})
+		End: store.End, Location: cfg.Location, Log: logf})
 	agent.Tools.Add(s.Tool(origin(store)))
 	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, logger: logger}, nil
 }

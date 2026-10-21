@@ -226,6 +226,9 @@ type Config struct {
 	Memory    MemoryConfig `json:"memory" yaml:"memory"`
 	Skills    SkillsConfig `json:"skills,omitempty" yaml:"skills,omitempty"`
 	Luau      LuauConfig   `json:"luau" yaml:"luau"`
+	// Timezone is the IANA zone the agent's wall clock is on (schedules' cron expressions, the
+	// system prompt's time); "": the container's $TZ, else UTC.
+	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
 }
 
 // SkillsConfig is what the runtime is told about the home's skills. Generated are the skill dirs

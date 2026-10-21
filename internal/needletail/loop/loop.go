@@ -409,8 +409,12 @@ func (a *Agent) SystemPrompt() string {
 		}
 		b.WriteString(". Read and write them with the file tools; never use another unit's directory.\n\n")
 	}
-	now := a.now()
-	fmt.Fprintf(&b, "## Now\nThe current time is %s (%s, UTC).\n", now.UTC().Format(time.RFC3339), now.UTC().Weekday())
+	loc := a.Cfg.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	now := a.now().In(loc)
+	fmt.Fprintf(&b, "## Now\nThe current time is %s (%s, %s).\n", now.Format(time.RFC3339), now.Weekday(), loc)
 	return b.String()
 }
 

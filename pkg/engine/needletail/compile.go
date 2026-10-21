@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
@@ -26,7 +27,9 @@ var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // agentConfig is engine/needletail/config.yaml.
 type agentConfig struct {
-	Luau struct {
+	// Timezone is the agent's wall clock (an IANA zone, as Hermes' config.yaml timezone).
+	Timezone string `yaml:"timezone"`
+	Luau     struct {
 		Grants      []string          `yaml:"grants"`
 		HTTPSecrets []wire.HTTPSecret `yaml:"http_secrets"`
 	} `yaml:"luau"`
@@ -45,6 +48,11 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", ConfigFile, err)
+	}
+	if c.Timezone != "" {
+		if _, err := time.LoadLocation(c.Timezone); err != nil || c.Timezone == "Local" {
+			return nil, fmt.Errorf("%s: timezone %q is not an IANA zone (America/New_York, Europe/Lisbon, UTC)", ConfigFile, c.Timezone)
+		}
 	}
 	for _, g := range c.Luau.Grants {
 		if !grantRe.MatchString(g) {
@@ -89,6 +97,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 		}
 	}
 	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
+	c.Timezone = ac.Timezone
 	for _, ch := range a.Channels {
 		if ch.Kind == "slack" { // the only gateway in the MVP
 			c.Channels = append(c.Channels, ch.Kind)

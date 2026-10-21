@@ -188,3 +188,29 @@ func TestGeneratedSkills(t *testing.T) {
 		t.Errorf("golden skills = %+v %v", cfg.Skills, err)
 	}
 }
+
+// engine/needletail/config.yaml's timezone (the one Hermes keeps in engine/hermes/config.yaml)
+// reaches needletail.yaml; a zone that does not exist is refused at build.
+func TestTimezoneRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("timezone: America/New_York\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	raw, _ := yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac))
+	if !strings.Contains(string(raw), "\ntimezone: America/New_York\n") {
+		t.Errorf("needletail.yaml:\n%s", raw)
+	}
+	raw, _ = yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{}))
+	if strings.Contains(string(raw), "timezone") {
+		t.Errorf("an unset timezone is rendered:\n%s", raw)
+	}
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("timezone: Mars/Olympus\n"), 0o644)
+	if _, err := readAgentConfig(dir); err == nil {
+		t.Error("a bad timezone was accepted")
+	}
+}

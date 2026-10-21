@@ -53,3 +53,25 @@ func TestLoadRefuses(t *testing.T) {
 		t.Errorf("AGENT_HOME: %v", err)
 	}
 }
+
+// The wall clock schedules run on: needletail.yaml's timezone, else $TZ, else UTC.
+func TestLocation(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	for _, c := range []struct{ yaml, tz, want string }{
+		{"timezone: America/New_York\n", "Europe/Lisbon", "America/New_York"},
+		{"", "Europe/Lisbon", "Europe/Lisbon"},
+		{"", "", "UTC"},
+		{"", "Not/AZone", "UTC"},
+	} {
+		_ = os.WriteFile(filepath.Join(dir, File), []byte(base+c.yaml), 0o644)
+		cfg, err := Load(dir, env(map[string]string{"TZ": c.tz}))
+		if err != nil || cfg.Location == nil || cfg.Location.String() != c.want {
+			t.Errorf("%q TZ=%q: %v %v", c.yaml, c.tz, cfg.Location, err)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base+"timezone: Not/AZone\n"), 0o644)
+	if _, err := Load(dir, env(nil)); err == nil {
+		t.Error("a bad timezone was accepted")
+	}
+}

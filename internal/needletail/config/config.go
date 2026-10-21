@@ -43,6 +43,9 @@ type Config struct {
 	Unit      string
 	// Port is the API's port ($NEEDLETAIL_API_PORT).
 	Port int
+	// Location is the agent's wall clock: Timezone, else $TZ (a zone Go cannot load is UTC, as
+	// for time.Local), else UTC.
+	Location *time.Location
 }
 
 // Load reads home's needletail.yaml and the env (getenv is os.Getenv outside tests). Unknown keys
@@ -84,6 +87,21 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	}
 	if c.Memory.UserCharLimit <= 0 {
 		c.Memory.UserCharLimit = DefaultUserLimit
+	}
+	c.Location = time.UTC
+	if c.Timezone != "" {
+		loc, err := time.LoadLocation(c.Timezone)
+		if err == nil && c.Timezone == "Local" {
+			err = errors.New("not an IANA zone")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s: timezone %q: %w", File, c.Timezone, err)
+		}
+		c.Location = loc
+	} else if tz := getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			c.Location = loc
+		}
 	}
 	c.SharedDir = getenv("SWARM_SHARED_DIR")
 	if c.SharedDir == "" {

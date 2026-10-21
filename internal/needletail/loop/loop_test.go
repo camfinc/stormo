@@ -512,3 +512,17 @@ func TestSystemPromptSkillsBounded(t *testing.T) {
 		t.Errorf("system prompt is %d bytes", len(sys))
 	}
 }
+
+// The system prompt's current time is on the agent's wall clock (needletail.yaml's timezone).
+func TestSystemPromptTimeZone(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	a := newAgent(t, srv)
+	if !strings.Contains(a.SystemPrompt(), "The current time is 2026-10-20T08:00:00Z (Tuesday, UTC).") {
+		t.Error("UTC time line changed")
+	}
+	a.Cfg.Location, _ = time.LoadLocation("America/New_York")
+	if sys := a.SystemPrompt(); !strings.Contains(sys, "The current time is 2026-10-20T04:00:00-04:00 (Tuesday, America/New_York).") {
+		t.Errorf("system prompt: %s", sys[strings.Index(sys, "## Now"):])
+	}
+}
