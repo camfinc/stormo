@@ -490,21 +490,6 @@ func (s *Scheduler) start(id string, now time.Time) {
 		s.warnOnce("turns:"+id, fmt.Sprintf("job %s: no agent to run it", id))
 		return
 	}
-	// A job with a script (a monitor, a pre-run script, a script-only job) runs it under the
-	// gates' own cap, holding no turn slot: a script may take an hour, and the agent's two turns
-	// are for turns. Its turn slot is taken once the gate says the agent runs (execute).
-	release := func() {}
-	if gated {
-		select {
-		case s.gates <- struct{}{}:
-			var once sync.Once
-			release = func() { once.Do(func() { <-s.gates }) }
-		default:
-			s.warnOnce("gates:"+id, fmt.Sprintf("job %s is due but %d job scripts are running; next tick tries again", id, cap(s.gates)))
-			return
-		}
-		s.warnOnce("gates:"+id, "")
-	}
 	var slot Slot
 	if agent && !gated {
 		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: job.Name()})
@@ -529,7 +514,6 @@ func (s *Scheduler) start(id string, now time.Time) {
 		return true, nil
 	})
 	if !started {
-		release()
 		if slot != nil {
 			slot.Release()
 		}
@@ -547,6 +531,21 @@ func (s *Scheduler) start(id string, now time.Time) {
 			delete(s.running, id)
 			s.runMu.Unlock()
 		}()
+		// A job with a script (a monitor, a pre-run script, a script-only job) runs it under
+		// the gates' own cap, holding no turn slot: a script may take an hour, and the agent's
+		// two turns are for turns. Its turn slot is taken once the gate says the agent runs
+		// (execute).
+		release := func() {}
+		if gated {
+			select {
+			case s.gates <- struct{}{}:
+				var once sync.Once
+				release = func() { once.Do(func() { <-s.gates }) }
+			case <-s.runCtx.Done():
+				s.finish(s.runCtx, job, interrupted(""))
+				return
+			}
+		}
 		o := s.execute(s.runCtx, job, &slot, session, release)
 		release()
 		if slot != nil {

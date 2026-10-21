@@ -61,7 +61,7 @@ proposal for review.
 - A job never overlaps itself. Needletail runs an agent's turn only in one of the API's two turn
   slots. A job with no script takes its slot first: a busy agent leaves it due for the next tick
   before anything of it has run. A job's scripts (monitor, pre-run script, a script-only job) run
-  first, holding no turn slot, under their own cap of two at a time (a third stays due): an
+  first, holding no turn slot, under their own cap of two at a time (a third waits for one): an
   unchanged monitor, an empty script output or a wake gate ends the run with no turn and no slot.
   When the gate says the agent runs and no slot is free, the job is due again on the next tick,
   nothing recorded and the monitor's new output not stored (so the next tick sees the change

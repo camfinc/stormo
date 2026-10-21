@@ -64,32 +64,26 @@ func TestGateBeforeSlot(t *testing.T) {
 	}
 }
 
-// Gates run under their own cap of two, holding no turn slot while they run; a third gated job
-// stays due.
+// Gates run under their own cap of two, holding no turn slot while they run: a third gated job
+// waits for one of them.
 func TestGateCap(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, t0String)
 	r := bareRig(t, t0, gatedJob("g1", "script", "slow.sh"), gatedJob("g2", "script", "slow.sh"), gatedJob("g3", "script", "slow.sh"))
 	writeScript(t, r.home, "slow.sh", "sleep 1; echo data\n")
+	started := time.Now()
 	r.s.Tick()
 	time.Sleep(300 * time.Millisecond)
-	running, _ := r.s.Running()
 	r.turns.mu.Lock()
 	held := r.turns.held
 	r.turns.mu.Unlock()
-	if len(running) != 2 || held != 0 {
-		t.Errorf("running %v, %d slots held during the scripts", running, held)
+	if held != 0 {
+		t.Errorf("%d slots held during the scripts", held)
 	}
 	r.s.Wait()
-	due := 0
-	for _, id := range []string{"g1", "g2", "g3"} {
-		if r.job(id).Str("last_status") == "" {
-			due++
-			if r.job(id).Str("next_run_at") != "2026-10-21T08:00:00Z" {
-				t.Errorf("%s moved: %s", id, r.job(id).Str("next_run_at"))
-			}
-		}
+	if took := time.Since(started); took < 2*time.Second {
+		t.Errorf("three 1 s scripts took %s: more than two ran at once", took)
 	}
-	if due != 1 || len(r.turns.taken()) != 2 {
-		t.Errorf("%d left due", due)
+	if c := r.turns.taken(); len(c) != 3 {
+		t.Errorf("%d turns", len(c))
 	}
 }
