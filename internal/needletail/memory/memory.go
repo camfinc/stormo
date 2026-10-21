@@ -41,11 +41,18 @@ type Store struct {
 // Units is s's length in UTF-16 code units.
 func Units(s string) int { return len(utf16.Encode([]rune(s))) }
 
+// space is what an entry is trimmed of: every Unicode space and line terminator and the BOM, the
+// set the dream and rehydrate trim (pkg/learning), so the runtime, the ledger and the merge at boot
+// see the same entries. (strings.TrimSpace differs: it also trims U+0085 and not U+FEFF.)
+const space = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+func trim(s string) string { return strings.Trim(s, space) }
+
 // Parse splits a file into its entries, dropping empty ones.
 func Parse(raw string) []string {
 	out := []string{}
 	for _, e := range strings.Split(raw, Delimiter) {
-		if e = strings.TrimSpace(e); e != "" {
+		if e = trim(e); e != "" {
 			out = append(out, e)
 		}
 	}
@@ -174,7 +181,7 @@ func (s *Store) Remove(target, old string) (Usage, error) {
 }
 
 func clean(content string) (string, error) {
-	c := strings.TrimSpace(content)
+	c := trim(content)
 	if c == "" {
 		return "", ErrEmpty
 	}
@@ -185,7 +192,7 @@ func clean(content string) (string, error) {
 }
 
 func match(entries []string, old string) (int, error) {
-	old = strings.TrimSpace(old)
+	old = trim(old)
 	if old == "" {
 		return -1, errors.New("old_text is empty")
 	}
