@@ -398,9 +398,7 @@ func (a *Agent) SystemPrompt() string {
 		b.WriteString("## Skills\nBefore a task a skill covers, load it with skill_view and follow it. " +
 			"When you work out how to do something well that no skill covers, or a skill was wrong or incomplete, " +
 			"save it with skill_manage so it is there next time.\n")
-		for _, s := range idx {
-			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Dir)
-		}
+		b.WriteString(skills.PromptIndex(idx, skills.PromptIndexBytes))
 		b.WriteString("\n")
 	}
 	if roots := a.Cfg.SharedRoots(); len(roots) > 0 {

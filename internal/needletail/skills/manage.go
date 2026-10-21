@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"go.yaml.in/yaml/v3"
@@ -47,9 +48,10 @@ const skillMDHelp = "a SKILL.md starts with front matter:\n---\nname: <name>\nde
 
 // checkSkillMD refuses a SKILL.md that would not index as the skill it is written for: the name
 // the index gives it (its front matter's, else its directory's, leaf) must stay want, and a skill
-// with a description keeps one. needFront asks for front matter (a new skill); a repo skill
-// without any may stay without.
-func checkSkillMD(body []byte, leaf, want string, needDesc, needFront bool) error {
+// with a description keeps one, of at most MaxDescription characters (prev is the SKILL.md it
+// replaces, nil for a new skill: a description that was already longer may stay as it was).
+// needFront asks for front matter (a new skill); a repo skill without any may stay without.
+func checkSkillMD(body, prev []byte, leaf, want string, needDesc, needFront bool) error {
 	if len(body) > MaxFile {
 		return fmt.Errorf("SKILL.md is over %d bytes", MaxFile)
 	}
@@ -57,17 +59,30 @@ func checkSkillMD(body []byte, leaf, want string, needDesc, needFront bool) erro
 	if !ok && needFront {
 		return errors.New("no front matter: " + skillMDHelp)
 	}
-	indexed := name
+	indexed := oneLine(name)
 	if indexed == "" {
 		indexed = leaf
 	}
+	_, prevDesc, _ := frontMatter(prev)
 	switch {
 	case indexed != want:
 		return fmt.Errorf("the skill's name would become %q, it is %q: a skill is not renamed (create the new one and delete this one)", indexed, want)
 	case needDesc && desc == "":
 		return errors.New("front matter needs a description: " + skillMDHelp)
+	case utf8.RuneCountInString(oneLine(desc)) > MaxDescription && (prev == nil || desc != prevDesc):
+		return fmt.Errorf("the description is over %d characters: say in one line when to use the skill, and put the rest in the body", MaxDescription)
 	}
 	return nil
+}
+
+// current is s's SKILL.md as it is now.
+func (l *Library) current(s Skill) ([]byte, error) {
+	p, err := l.real(s.Path)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := readRegular(p, MaxFile)
+	return body, err
 }
 
 // writable is s, refused when the agent may not change it.
@@ -132,7 +147,7 @@ func (l *Library) Create(name, category, content string) (Skill, error) {
 	if _, err := os.Lstat(p); err == nil {
 		return Skill{}, fmt.Errorf("skills/%s exists already", dir)
 	}
-	if err := checkSkillMD([]byte(content), name, name, true, true); err != nil {
+	if err := checkSkillMD([]byte(content), nil, name, name, true, true); err != nil {
 		return Skill{}, err
 	}
 	if err := l.write("skills/"+dir+"/SKILL.md", []byte(content)); err != nil {
@@ -155,7 +170,11 @@ func (l *Library) Edit(name, content string) (Skill, error) {
 	if err := l.writable(s); err != nil {
 		return Skill{}, err
 	}
-	if err := checkSkillMD([]byte(content), path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
+	prev, err := l.current(s)
+	if err != nil {
+		return Skill{}, err
+	}
+	if err := checkSkillMD([]byte(content), prev, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
 		return Skill{}, err
 	}
 	if err := l.write(s.Path, []byte(content)); err != nil {
@@ -239,7 +258,7 @@ func (l *Library) Patch(name, file, old, repl string, all bool) (Skill, string, 
 		return Skill{}, "", 0, fmt.Errorf("%s would be over %d bytes", rel, MaxFile)
 	}
 	if rel == "SKILL.md" {
-		if err := checkSkillMD(out, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
+		if err := checkSkillMD(out, body, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
 			return Skill{}, "", 0, err
 		}
 	}

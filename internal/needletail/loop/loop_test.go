@@ -485,3 +485,21 @@ func TestContextLengthExceeded(t *testing.T) {
 		t.Errorf("%d requests", n)
 	}
 }
+
+// A skill with a huge description, or very many skills, never make the system prompt outgrow the
+// context: the index section is bounded and points to skills_list for the rest.
+func TestSystemPromptSkillsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	a := newAgent(t, srv)
+	huge := strings.Repeat("deals ", 400)
+	for i := 0; i < 300; i++ {
+		dir := filepath.Join(a.Cfg.Home, "skills", "many", fmt.Sprintf("s%03d", i))
+		_ = os.MkdirAll(dir, 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(fmt.Sprintf("---\nname: s%03d\ndescription: %s\n---\n", i, huge)), 0o644)
+	}
+	sys := a.SystemPrompt()
+	if len(sys) > 40_000 || !strings.Contains(sys, " more (skills_list)") || !strings.Contains(sys, "crm-api: Query deals.") || !strings.Contains(sys, "## Now") {
+		t.Errorf("system prompt is %d bytes", len(sys))
+	}
+}

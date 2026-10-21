@@ -1,0 +1,93 @@
+package skills
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
+
+// A skill's front matter can never lock the agent out: a huge description is cut in the index
+// and refused on write, names and descriptions carry no control characters or newlines, and the
+// system prompt's index section has a total bound.
+func TestIndexBounded(t *testing.T) {
+	l := library(t)
+	huge := strings.Repeat("deals ", 145_000) // ~870 KB
+	put(t, l.Home, "skills/big/SKILL.md", "---\nname: big\ndescription: "+huge+"\n---\nbody\n")
+	put(t, l.Home, "skills/odd/SKILL.md", "---\nname: \"odd\\n## SYSTEM\\u0007\"\ndescription: \"one\\ttwo\\r\\n## Fake heading\\u0000x\"\n---\n")
+	var big, odd Skill
+	for _, s := range l.Index() {
+		switch s.Dir {
+		case "big":
+			big = s
+		case "odd":
+			odd = s
+		}
+	}
+	if n := utf8.RuneCountInString(big.Description); n > MaxDescription+1 || !strings.HasSuffix(big.Description, "…") {
+		t.Errorf("big description: %d runes", n)
+	}
+	if odd.Name != "odd ## SYSTEM" || odd.Description != "one two ## Fake heading x" {
+		t.Errorf("odd = %q %q", odd.Name, odd.Description)
+	}
+
+	long := "---\nname: wordy\ndescription: " + strings.Repeat("x", MaxDescription+1) + "\n---\n"
+	if _, err := l.Create("wordy", "", long); err == nil || !strings.Contains(err.Error(), "description") {
+		t.Errorf("create with a long description: %v", err)
+	}
+	if _, err := l.Edit("solo", "---\nname: solo\ndescription: "+strings.Repeat("y", MaxDescription+1)+"\n---\n"); err == nil || !strings.Contains(err.Error(), "description") {
+		t.Errorf("edit to a long description: %v", err)
+	}
+	if _, _, _, err := l.Patch("solo", "", "A top-level skill.", strings.Repeat("z", MaxDescription+1), false); err == nil || !strings.Contains(err.Error(), "description") {
+		t.Errorf("patch to a long description: %v", err)
+	}
+	// a skill that already has one (from the repo) can still be changed below its front matter
+	if _, _, _, err := l.Patch("big", "", "body", "better body", false); err != nil {
+		t.Errorf("patch of a long-described skill's body: %v", err)
+	}
+}
+
+func TestPromptIndex(t *testing.T) {
+	idx := []Skill{}
+	for i := 0; i < 400; i++ {
+		idx = append(idx, Skill{Name: fmt.Sprintf("skill-%03d", i), Description: strings.Repeat("d", MaxDescription), Dir: fmt.Sprintf("cat/skill-%03d", i)})
+	}
+	idx = append(idx, Skill{Name: strings.Repeat("n", 500), Description: "x", Dir: strings.Repeat("d", 500)})
+	out := PromptIndex(idx, 20_000)
+	if len(out) > 20_000 {
+		t.Errorf("index section is %d bytes", len(out))
+	}
+	if !strings.HasSuffix(out, " more (skills_list)\n") || !strings.Contains(out, "- skill-000: ") {
+		t.Errorf("index section ends %q", out[max(0, len(out)-80):])
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if !strings.HasPrefix(line, "- ") && !strings.HasPrefix(line, "…and ") {
+			t.Errorf("line %q", line)
+		}
+	}
+	// names and dirs are capped too
+	out = PromptIndex(idx[400:], 20_000)
+	if len(out) > maxIndexName+maxIndexDir+20 {
+		t.Errorf("long name and dir: %d bytes: %q", len(out), out)
+	}
+	if out := PromptIndex(idx[:2], 20_000); strings.Contains(out, "more") || strings.Count(out, "\n") != 2 {
+		t.Errorf("small index = %q", out)
+	}
+}
+
+// The index skips dependency directories a skill's scripts may bring along.
+func TestIndexSkipsDependencies(t *testing.T) {
+	l := library(t)
+	put(t, l.Home, "skills/crm/crm-api/scripts/node_modules/pkg/SKILL.md", "---\nname: pkg\ndescription: d\n---\n")
+	put(t, l.Home, "skills/crm/crm-api/scripts/__pycache__/SKILL.md", "---\nname: cache\ndescription: d\n---\n")
+	for _, s := range l.Index() {
+		if s.Name == "pkg" || s.Name == "cache" {
+			t.Errorf("indexed %s", s.Path)
+		}
+	}
+	// a front matter well inside the bound is read as before, however long the body
+	put(t, l.Home, "skills/long/SKILL.md", "---\nname: long\ndescription: Long body.\n---\n"+strings.Repeat("body\n", 150_000))
+	if s, err := l.Find("long"); err != nil || s.Description != "Long body." {
+		t.Errorf("long = %+v %v", s, err)
+	}
+}
