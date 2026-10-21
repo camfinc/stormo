@@ -64,6 +64,7 @@ type Server struct {
 	log      func(string)
 	redact   func(string) string
 	now      func() time.Time
+	jobs     func() ([]string, time.Time)
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -94,6 +95,9 @@ type Options struct {
 	Log       func(string)
 	Redact    func(string) string
 	Now       func() time.Time
+	// Jobs is the scheduler's running jobs and when the last one started (the activity's
+	// running_jobs and last_job_at; nil: none).
+	Jobs func() (running []string, lastStart time.Time)
 }
 
 // New builds the server.
@@ -103,7 +107,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -224,17 +228,64 @@ func (s *Server) release(root string) {
 // Turn runs one turn on session, creating it (with create's title and source) when it does not
 // exist. It is the scheduler every caller goes through: the API, and later the gateway and cron.
 func (s *Server) Turn(ctx context.Context, session, input string, create wire.Session, opts loop.Options) (*loop.Result, error) {
-	root, err := s.ensure(session, create)
+	r, err := s.Reserve(session, create)
 	if err != nil {
 		return nil, err
 	}
-	h, _ := s.store.Get(root)
-	if err := s.acquire(root, h.Source); err != nil {
+	defer r.Release()
+	return r.Turn(ctx, input, opts)
+}
+
+// Reservation is a turn slot held for one conversation (Reserve): it counts against the caps
+// from the moment it is taken until Release, whether or not a turn runs in it.
+type Reservation struct {
+	s       *Server
+	root    string
+	session string
+	create  wire.Session
+	once    sync.Once
+}
+
+// Reserve takes a turn slot for session's conversation without running anything yet: a
+// scheduled job takes its slot before its monitor and script run, so it never does that work
+// and then finds the agent busy. A session that does not exist is created (with create's title
+// and source) only when the turn runs. Errors as for a turn: ErrSessionBusy, ErrBusy,
+// ErrClosing.
+func (s *Server) Reserve(session string, create wire.Session) (*Reservation, error) {
+	if !sessions.ValidID(session) {
+		return nil, sessions.ErrBadID
+	}
+	root, source := session, create.Source
+	if r, ok := s.store.Root(session); ok {
+		root = r
+		h, _ := s.store.Get(root)
+		source = h.Source
+	}
+	if err := s.acquire(root, source); err != nil {
 		return nil, err
 	}
-	defer s.release(root)
-	return s.run(ctx, session, input, opts)
+	return &Reservation{s: s, root: root, session: session, create: create}, nil
 }
+
+// Turn runs one turn in the slot (creating the session if needed). It is cancelled with ctx,
+// and when Shutdown gives up waiting, as the API's own turns are.
+func (r *Reservation) Turn(ctx context.Context, input string, opts loop.Options) (*loop.Result, error) {
+	root, err := r.s.ensure(r.session, r.create)
+	if err != nil {
+		return nil, err
+	}
+	if root != r.root {
+		return nil, fmt.Errorf("session %s moved to another conversation", r.session)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(r.s.base, cancel)
+	defer stop()
+	return r.s.run(ctx, r.session, input, opts)
+}
+
+// Release gives the slot back; calls after the first do nothing.
+func (r *Reservation) Release() { r.once.Do(func() { r.s.release(r.root) }) }
 
 func (s *Server) run(ctx context.Context, session, input string, opts loop.Options) (*loop.Result, error) {
 	started := time.Now()
@@ -312,6 +363,13 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		a.LastActive = s.lastActive.UTC().Format(time.RFC3339Nano)
 	}
 	s.mu.Unlock()
+	if s.jobs != nil {
+		running, last := s.jobs()
+		a.RunningJobs = append(a.RunningJobs, running...)
+		if !last.IsZero() {
+			a.LastJobAt = last.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	writeJSON(w, http.StatusOK, a)
 }
 

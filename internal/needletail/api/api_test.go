@@ -375,3 +375,66 @@ func TestShutdownBounded(t *testing.T) {
 		t.Errorf("runs = %v", fa.runs)
 	}
 }
+
+// A scheduled job reserves its turn before it runs anything (its monitor, its script), so it
+// shares the cap with the API and never loses its slot halfway; the session is made only when the
+// turn runs, and the job shows in the activity while it runs.
+func TestReserveSharesTheCap(t *testing.T) {
+	store, err := sessions.Open(filepath.Join(t.TempDir(), "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fa := &fakeAgent{store: store, release: make(chan struct{}), stuck: make(chan struct{})}
+	jobs := []string{"j1"}
+	last := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+	s, err := New(Options{Key: key, Store: store, Agent: fa, Jobs: func() ([]string, time.Time) { return jobs, last }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	cron := wire.Session{Source: "cron", Title: "Daily digest"}
+	r1, err := s.Reserve("cron-j1-20261021T090000", cron)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Get("cron-j1-20261021T090000"); ok {
+		t.Error("a reservation made the session")
+	}
+	if _, err := s.Reserve("cron-j1-20261021T090000", cron); !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("same session: %v", err)
+	}
+	r2, err := s.Reserve("cron-j2-20261021T090000", cron)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reserve("cron-j3-20261021T090000", cron); !errors.Is(err, ErrBusy) {
+		t.Errorf("over the cap: %v", err)
+	}
+	if _, err := store.Create(wire.Session{ID: "c", Source: SourceAPI}); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _ := call(srv, key)(context.Background(), http.MethodPost, "/v1/sessions/c/chat", wire.ChatRequest{Message: "x"}); status != http.StatusTooManyRequests {
+		t.Errorf("chat while two jobs hold the slots = %d", status)
+	}
+	r2.Release()
+	r2.Release() // twice is once
+	res, err := r1.Turn(context.Background(), "go", loop.Options{})
+	if err != nil || res.Text != "echo go" {
+		t.Fatalf("turn = %+v %v", res, err)
+	}
+	if h, ok := store.Get("cron-j1-20261021T090000"); !ok || h.Source != "cron" || h.Title != "Daily digest" {
+		t.Errorf("session = %+v %v", h, ok)
+	}
+	_, raw, _ := call(srv, key)(context.Background(), http.MethodGet, "/v1/activity", nil)
+	var act wire.Activity
+	_ = json.Unmarshal(raw, &act)
+	if act.ActiveTurns != 1 || act.Source != "cron" || len(act.RunningJobs) != 1 || act.RunningJobs[0] != "j1" || act.LastJobAt != "2026-10-21T09:00:00Z" {
+		t.Errorf("activity = %+v", act)
+	}
+	r1.Release()
+	s.Shutdown(context.Background())
+	if _, err := s.Reserve("cron-j4-20261021T090000", cron); !errors.Is(err, ErrClosing) {
+		t.Errorf("after shutdown: %v", err)
+	}
+}
