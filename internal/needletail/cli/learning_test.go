@@ -208,6 +208,14 @@ func TestNapRehydrateDream(t *testing.T) {
 	if body, _ := os.ReadFile(filepath.Join(home1, "needletail.yaml")); !strings.Contains(string(body), "generated:\n        - acme-knowledge\n        - acme-shared-docs") {
 		t.Fatalf("needletail.yaml = %s", body)
 	}
+	// rehydrate's record of the booted skills is where the runtime looks: a repo skill is not
+	// deleted at runtime (it would come back, and no deletion is proposed)
+	if _, err := os.Stat(filepath.Join(home1, skills.BootedFile)); err != nil {
+		t.Fatalf("booted.json: %v", err)
+	}
+	if _, err := (&skills.Library{Home: home1}).Delete("crm-api"); err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Errorf("delete of a repo skill after rehydrate: %v", err)
+	}
 
 	// 2. The agent works: it writes a skill of its own (with a script), loads it, runs the script
 	// from it, improves a repo skill, and keeps two memories. A generated skill is refused.
