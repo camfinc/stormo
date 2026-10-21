@@ -499,3 +499,73 @@ func TestScanAttributionWithKindNamedEvents(t *testing.T) {
 		}
 	}
 }
+
+// One write that both the file tool's hook and an fs_note claim leaves one claim, so a later
+// change by another agent is not credited to the first writer; a read claims nothing.
+func TestClaimsDoNotOutliveTheirChange(t *testing.T) {
+	f := newWorkdir(t)
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	t0 := f.now
+	// nova writes with its file tool: the tool_done hook names the path and an fs_note follows.
+	f.file(t, "group/plan.md", "nova's draft")
+	_ = os.Chtimes(filepath.Join(f.root, "group/plan.md"), t0, t0)
+	ingest(t, f.m, "nova", "pre_tool_call", "write_file", map[string]any{"path": "/shared/group/plan.md"}, "w1", t0)
+	ingest(t, f.m, "nova", "post_tool_call", "write_file", map[string]any{"path": "/shared/group/plan.md"}, "w1", t0)
+	if err := f.w.Note("nova", "/shared/group/plan.md", "created"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	// A minute later scout overwrites it from its terminal.
+	t1 := t0.Add(time.Minute)
+	ingest(t, f.m, "scout", "pre_tool_call", "terminal", map[string]any{"command": "make plan"}, "s1", t1)
+	f.file(t, "group/plan.md", "scout's rewrite")
+	_ = os.Chtimes(filepath.Join(f.root, "group/plan.md"), t1.Add(time.Second), t1.Add(time.Second))
+	ingest(t, f.m, "scout", "post_tool_call", "terminal", nil, "s1", t1.Add(2*time.Second))
+	// atlas reads a file that scout then overwrites: the read names nobody.
+	f.file(t, "sales/list.md", "v1")
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	ingest(t, f.m, "atlas", "pre_tool_call", "read_file", map[string]any{"path": "/shared/sales/list.md"}, "r1", t1)
+	ingest(t, f.m, "atlas", "post_tool_call", "read_file", map[string]any{"path": "/shared/sales/list.md"}, "r1", t1)
+	ingest(t, f.m, "atlas", "pre_tool_call", "search_files", map[string]any{"path": "/shared/sales/list.md"}, "r2", t1)
+	ingest(t, f.m, "atlas", "post_tool_call", "search_files", map[string]any{"path": "/shared/sales/list.md"}, "r2", t1)
+	f.file(t, "sales/list.md", "v2 by scout")
+	_ = os.Chtimes(filepath.Join(f.root, "sales/list.md"), t1.Add(time.Second), t1.Add(time.Second))
+	f.now = t1.Add(5 * time.Second)
+	if err := f.w.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{
+		"/shared/group/plan.md": "scout terminal (inferred)",
+		"/shared/sales/list.md": "scout terminal (inferred)",
+	} {
+		info, err := f.w.Info("scout", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.LastWriter + " " + info.How; got != want {
+			t.Errorf("%s: %s, want %s (history %+v)", path, got, want, info.History)
+		}
+	}
+}
+
+func TestClaimMergeKeepsTheToolsName(t *testing.T) {
+	f := newWorkdir(t)
+	ms := f.now.UnixMilli()
+	f.w.claim("group/a.md", "nova", "tool:write_file", ms)
+	f.w.claim("group/a.md", "nova", "note", ms+500)
+	f.w.claim("group/a.md", "atlas", "note", ms+600)
+	if cs := f.w.claims["group/a.md"]; len(cs) != 2 || cs[0] != (claim{"nova", "tool:write_file", ms + 500}) || cs[1].agent != "atlas" {
+		t.Errorf("claims %+v", cs)
+	}
+	// Outside the window it is another change.
+	f.w.claim("group/a.md", "nova", "note", ms+claimWindow.Milliseconds()+1000)
+	if cs := f.w.claims["group/a.md"]; len(cs) != 3 {
+		t.Errorf("claims %+v", cs)
+	}
+}

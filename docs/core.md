@@ -402,7 +402,9 @@ work alike in both places; there is no separate `/workdir` mount.
 - *Attribution*: a scan every 5 s (stat, then SHA-256 only when size or mtime moved; a touch is
   not a change) records created, modified and deleted files. The writer is, in order: `fs_write`
   (exact); a file tool's `post_tool_call` naming the path (`tool:write_file`, within 2 min of the
-  change); `fs_note`; the one agent that mounts that layer and had a `terminal`, `execute_code` or
+  change; `read_file` and `search_files` claim nothing); `fs_note`. One agent's claims for a path
+  within 2 min are one change (a tool's hook and the `fs_note` after it), so a spare never credits
+  the next writer's change to it. Else the one agent that mounts that layer and had a `terminal`, `execute_code` or
   `process` call running at the file's mtime (`terminal (inferred)`, from the activity timeline);
   else `unknown`, which a later `fs_note` claims. The first scan of an empty table only takes
   stock. Locks are released when they expire and 5 minutes after their owner stops; a change by

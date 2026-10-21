@@ -48,6 +48,9 @@ const (
 // ShellTools are the tool calls that may write files without naming them (terminal attribution).
 var ShellTools = []string{"terminal", "execute_code", "process"}
 
+// ReadTools name a path without changing it: their calls claim no change.
+var ReadTools = []string{"read_file", "search_files"}
+
 // Lock is a lock as agents and the owner see it.
 type Lock struct {
 	Owner   string `json:"owner"`
@@ -130,6 +133,9 @@ func NewWorkdir(o WorkdirOptions) *Workdir {
 	w := &Workdir{o: o, claims: map[string][]claim{}, downAt: map[string]int64{}}
 	if o.Monitor != nil {
 		o.Monitor.OnToolDone(func(e ToolEvent) {
+			if slices.Contains(ReadTools, e.Tool) {
+				return
+			}
 			if key, ok := w.keyOf(e.Path); ok {
 				w.claim(key, e.Agent, "tool:"+e.Tool, e.At)
 			}
@@ -788,10 +794,22 @@ func (w *Workdir) Note(agent, p, action string) error {
 	return err
 }
 
+// claim records that agent changed key at at. An agent's claims for one key within claimWindow are
+// one change (a file tool's hook and the fs_note after it, in either order), so the newer
+// replaces the older, keeping the tool's name over "note": a spare would credit the next
+// writer's change to this agent.
 func (w *Workdir) claim(key, agent, how string, at int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.claims[key] = append(w.claims[key], claim{agent, how, at})
+	cs := slices.DeleteFunc(w.claims[key], func(c claim) bool {
+		d := c.at - at
+		same := c.agent == agent && d > -claimWindow.Milliseconds() && d < claimWindow.Milliseconds()
+		if same && how == "note" && strings.HasPrefix(c.how, "tool:") {
+			how = c.how
+		}
+		return same
+	})
+	w.claims[key] = append(cs, claim{agent, how, at})
 }
 
 // takeClaim is the claim for a change of key at mtime, removing it.
