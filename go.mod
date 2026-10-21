@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.2
 	github.com/bmatcuk/doublestar/v4 v4.10.2
+	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/pflag v1.0.10
 	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/sqlite v1.59.0
