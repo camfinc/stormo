@@ -326,13 +326,19 @@ func (j *Job) Skills() []string {
 	return out
 }
 
-// Enabled is whether the job runs on its schedule: enabled, and not paused or completed.
+// Enabled is whether the job runs on its schedule: enabled, not paused or completed, and with
+// runs left when repeat.times is set.
 func (j *Job) Enabled() bool {
 	if raw, ok := j.raw["enabled"]; ok && strings.TrimSpace(string(raw)) == "false" {
 		return false
 	}
 	st := j.Str("state")
-	return st != "paused" && st != "completed"
+	if st == "paused" || st == "completed" {
+		return false
+	}
+	// runs used up (a restart's merge gives a completed job the repo's enabled and state back)
+	times, done := j.Repeat()
+	return times <= 0 || done < times
 }
 
 // monitorState is Hermes' monitor_state: the hash of the output that last woke the agent.

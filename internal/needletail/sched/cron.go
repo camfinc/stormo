@@ -137,6 +137,12 @@ func (c *Cron) dayMatches(t time.Time) bool {
 	return dom || dow
 }
 
+// Matches is whether t's wall clock (in t's own location) is one of the expression's times.
+func (c *Cron) Matches(t time.Time) bool {
+	return t.Second() == 0 && t.Nanosecond() == 0 && has(c.minute, t.Minute()) && has(c.hour, t.Hour()) &&
+		has(c.month, int(t.Month())) && c.dayMatches(t)
+}
+
 // searchYears bounds Next: an expression that matches nothing (Feb 30) has no next run.
 const searchYears = 5
 

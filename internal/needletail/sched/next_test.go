@@ -188,3 +188,43 @@ func TestShutdownInterruptsRuns(t *testing.T) {
 		t.Errorf("an interrupted run counted: %d", done)
 	}
 }
+
+// When the repo changes a job's schedule under a stored next run (rehydrate keeps the run state,
+// the repo's definition wins), a future time the new schedule would not give is re-anchored to
+// it without firing (Hermes' _reanchor_stale_cron); a past one still fires once, so a `run` or an
+// overdue time is never swallowed.
+func TestReanchorAChangedSchedule(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String) // Wednesday 09:00
+	r := bareRig(t, t0,
+		jobJSON("cron", `{"kind":"cron","expr":"0 9 * * *"}`, `"2026-10-26T10:00:00Z"`),        // was weekly, Monday 10:00
+		jobJSON("ival", `{"kind":"interval","minutes":30}`, `"2026-10-21T11:00:00Z"`),          // was every 2h
+		jobJSON("ran", `{"kind":"cron","expr":"0 9 * * *"}`, `"2026-10-21T08:47:13Z"`),         // a `run` (off the lattice, past)
+		jobJSON("same", `{"kind":"cron","expr":"0 10 * * 1"}`, `"2026-10-26T10:00:00Z"`),       // unchanged
+		jobJSON("offset", `{"kind":"cron","expr":"0 9 * * *"}`, `"2026-10-22T09:00:00+02:00"`)) // its own wall clock matches: kept
+	r.turns.reply("ran", "done")
+	r.tick()
+	for id, want := range map[string]string{"cron": "2026-10-22T09:00:00Z", "ival": "2026-10-21T09:30:00Z", "ran": "2026-10-22T09:00:00Z",
+		"same": "2026-10-26T10:00:00Z", "offset": "2026-10-22T09:00:00+02:00"} {
+		if got := r.job(id).Str("next_run_at"); got != want {
+			t.Errorf("%s: next %s, want %s", id, got, want)
+		}
+	}
+	if c := r.turns.taken(); len(c) != 1 || c[0].job != "ran" {
+		t.Errorf("turns %+v", c)
+	}
+}
+
+// A job whose repeat count is used up does not run again, even when a restart's merge gives it
+// the repo's enabled and state back.
+func TestCompletedRepeatStaysDone(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":30}`, `"2026-10-21T08:00:00Z"`),
+		`"repeat":{"times":null,"completed":0}`, `"repeat":{"times":2,"completed":2}`, 1))
+	if r.job("a").Enabled() {
+		t.Error("a job with its runs done is enabled")
+	}
+	r.tick()
+	if c := r.turns.taken(); len(c) != 0 {
+		t.Errorf("a completed job ran: %+v", c)
+	}
+}

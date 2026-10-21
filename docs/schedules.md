@@ -23,7 +23,13 @@ Keys an engine does not model are kept as they are on every write.
 
 **Across a restart** (rehydrate, `Engine.MergeSchedules`): for a job in both the repo's render and
 the napped file, the repo's definition wins and the napped run state is kept; a job only the
-napped file has (one the agent made) is kept whole; a job a reviewer rejected is dropped. So an
+napped file has (one the agent made) is kept whole; a job a reviewer rejected is dropped. When
+the repo changed a job's schedule, its kept `next_run_at` may not follow the new one: a future
+time the new schedule would not give is re-anchored to the schedule's next time without firing
+(Hermes' `_reanchor_stale_cron`; needletail does it for intervals too, when the stored time is more
+than one interval away), while a past one fires once. A cron time whose own wall clock matches the
+expression (stamped in another zone's offset) is kept. A job whose `repeat.times` runs are done
+stays done even though the merge gives it the repo's `enabled` and `state` back. So an
 agent's change to a repo job (a pause, a new prompt) lasts until the next restart, and the
 dream proposes the live jobs, the agent's own and its changes to the repo's, as a schedules
 proposal for review.

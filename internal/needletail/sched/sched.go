@@ -280,8 +280,8 @@ func (s *Scheduler) settleNext(j *Job, now time.Time) bool {
 	if _, err := s.nextRun(j, now); err != nil {
 		return s.noNext(j, err.Error())
 	}
-	if _, ok := parseStamp(j.Str("next_run_at")); ok {
-		return false
+	if next, ok := parseStamp(j.Str("next_run_at")); ok {
+		return s.reanchor(j, next, now)
 	}
 	base := now
 	if last, ok := parseStamp(j.Str("last_run_at")); ok && j.Schedule().Kind == "interval" {
@@ -298,6 +298,47 @@ func (s *Scheduler) settleNext(j *Job, now time.Time) bool {
 	if j.Str("state") == "error" {
 		j.Set("state", "scheduled")
 	}
+	return true
+}
+
+// reanchor moves a future next run that the job's schedule would not give (the repo changed the
+// schedule under it: rehydrate keeps the run state, the repo's definition wins) to the schedule's
+// own next time, without firing, as Hermes' _reanchor_stale_cron does for a cron job; a past one is
+// left due (a `run`, an overdue time), so it fires once and its finish follows the new schedule.
+// A cron time is kept when its own wall clock matches the expression (stamped in another zone:
+// Hermes' timezone-migration case); an interval's when it is at most one interval away. True
+// when it changed the job.
+func (s *Scheduler) reanchor(j *Job, next, now time.Time) bool {
+	if !next.After(now) {
+		return false
+	}
+	sch := j.Schedule()
+	from := now
+	switch sch.Kind {
+	case "cron":
+		c, err := ParseCron(sch.Expr)
+		if err != nil || c.Matches(next.In(s.o.Location)) || c.Matches(next) {
+			return false
+		}
+	case "interval":
+		if !next.After(now.Add(time.Duration(sch.Minutes) * time.Minute)) {
+			return false
+		}
+		if last, ok := parseStamp(j.Str("last_run_at")); ok && last.Before(now) {
+			from = last
+		}
+	default:
+		return false
+	}
+	n, err := s.nextRun(j, from)
+	if err != nil {
+		return false
+	}
+	if n.Before(now) {
+		n = now
+	}
+	s.logf("job %s: next run %s does not follow its schedule (%s): re-anchored to %s", j.ID(), s.at(next), orDefault(sch.Display, sch.Expr), s.at(n))
+	j.Set("next_run_at", s.at(n))
 	return true
 }
 
