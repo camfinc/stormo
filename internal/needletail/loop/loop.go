@@ -428,6 +428,9 @@ func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history
 	if err != nil {
 		return "", nil, err
 	}
+	if a.Env.Skills != nil {
+		a.Env.Skills.Moved(tip, newTip) // the terminal's SKILL_DIR follows the conversation
+	}
 	rows, err := a.Store.Messages(newTip)
 	if err != nil {
 		return "", nil, err

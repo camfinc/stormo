@@ -19,6 +19,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
+	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -245,7 +246,11 @@ func TestCompaction(t *testing.T) {
 	defer srv.Close()
 	a := newAgent(t, srv)
 	a.ContextLength = 1500 // tokens: a few turns fill it
+	a.Env.Skills = &skills.Library{Home: a.Cfg.Home}
 	_, _ = a.Store.Create(wire.Session{ID: "conv", Source: "api_server"})
+	if _, err := a.Env.Skills.View("conv", "crm-api", ""); err != nil {
+		t.Fatal(err)
+	}
 	tip := "conv"
 	for i := 0; i < 8; i++ {
 		input := fmt.Sprintf("question %d %s", i, strings.Repeat("q", 300))
@@ -267,6 +272,10 @@ func TestCompaction(t *testing.T) {
 	}
 	if h, _ := a.Store.Get("conv"); h.EndReason != wire.EndCompression {
 		t.Errorf("root = %+v", h)
+	}
+	// the skill the conversation last viewed is still its current one (the terminal's SKILL_DIR)
+	if s, ok := a.Env.Skills.LastViewed(tip); !ok || s.Dir != "crm/crm-api" {
+		t.Errorf("last viewed after compaction = %+v %v", s, ok)
 	}
 	// every request is well formed: each tool row answers a call made before it
 	for n, req := range st.requests {

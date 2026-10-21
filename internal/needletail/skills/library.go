@@ -386,6 +386,17 @@ func (l *Library) LastViewed(session string) (Skill, bool) {
 	return s, err == nil && s.Dir == dir
 }
 
+// Moved carries the skill session from last viewed to session to, which continues it (a
+// compaction's child). from keeps it too: a call still running under it finds it.
+func (l *Library) Moved(from, to string) {
+	l.mu.Lock()
+	dir, ok := l.viewed[from]
+	l.mu.Unlock()
+	if ok {
+		l.setViewed(to, dir)
+	}
+}
+
 // maxSessions bounds the sessions whose last viewed skill is remembered.
 const maxSessions = 256
 
