@@ -261,6 +261,9 @@ func (s *Scheduler) settleNext(j *Job, now time.Time) bool {
 	return true
 }
 
+// SetTurns gives the scheduler its turn slots (the API server's); before Start.
+func (s *Scheduler) SetTurns(t Turns) { s.o.Turns = t }
+
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
 func (s *Scheduler) Start(ctx context.Context) {
 	if err := s.Boot(); err != nil {

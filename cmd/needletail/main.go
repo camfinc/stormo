@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata" // TZ names resolve in an image without a zoneinfo database (schedules' cron)
 
 	"github.com/camfinc/stormo/internal/needletail/cli"
 )

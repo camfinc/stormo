@@ -23,6 +23,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
+	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/skills"
@@ -82,6 +83,7 @@ type runtime struct {
 	red    *secrets.Redactor
 	store  *sessions.Store
 	agent  *loop.Agent
+	sched  *sched.Scheduler
 	logger *log.Logger
 }
 
@@ -127,7 +129,46 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
-	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, logger: logger}, nil
+	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
+	// Cron expressions run on the container's wall clock: TZ when it is set, else UTC.
+	s := sched.New(sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
+		End: store.End, Location: time.Local, Log: logf})
+	agent.Tools.Add(s.Tool(origin(store)))
+	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, logger: logger}, nil
+}
+
+// origin is the chat a session belongs to, as a job's "origin" (Hermes' {platform, chat_id,
+// thread_id}): a Slack thread's session (slack-<channel>-<thread_ts>); none for the API's.
+func origin(store *sessions.Store) func(session string) json.RawMessage {
+	return func(session string) json.RawMessage {
+		root, ok := store.Root(session)
+		if !ok {
+			return nil
+		}
+		h, _ := store.Get(root)
+		rest, ok := strings.CutPrefix(root, "slack-")
+		if h.Source != "slack" || !ok {
+			return nil
+		}
+		channel, thread, _ := strings.Cut(rest, "-")
+		o := map[string]any{"platform": "slack", "chat_id": channel, "thread_id": nil}
+		if thread != "" {
+			o["thread_id"] = thread
+		}
+		b, _ := json.Marshal(o)
+		return b
+	}
+}
+
+// reservations are the API server's turn slots as the scheduler takes them.
+type reservations struct{ srv *api.Server }
+
+func (r reservations) Reserve(session string, create wire.Session) (sched.Slot, error) {
+	res, err := r.srv.Reserve(session, create)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 func serve(ctx context.Context, args []string, stderr io.Writer) int {
@@ -149,7 +190,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
 	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
-		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact})
+		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running})
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
 		return 1
@@ -159,6 +200,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
 		return 1
 	}
+	rt.sched.SetTurns(reservations{srv})
+	ticks, stopTicks := context.WithCancel(context.Background())
+	defer stopTicks()
+	rt.sched.Start(ticks)
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: rt.logger}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
@@ -170,11 +215,15 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	rt.logger.Printf("shutting down")
+	stopTicks() // no job starts from here on
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = hs.Shutdown(sctx)
 	cancel()
 	dctx, cancel := context.WithTimeout(context.Background(), drainTurns)
-	srv.Shutdown(dctx)
+	srv.Shutdown(dctx) // jobs' turns drain (or are cancelled) with the API's
+	cancel()
+	jctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rt.sched.Shutdown(jctx) // and script-only jobs get a few seconds more
 	cancel()
 	return 0
 }
