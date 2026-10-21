@@ -95,7 +95,7 @@ func (l *Library) write(rel string, body []byte) error {
 	if _, err := l.real(rel); err != nil {
 		return err
 	}
-	return fsx.WriteAtomic(p, body, 0o644)
+	return fsx.WriteAtomicIn(p, l.tmp(), body, 0o644)
 }
 
 // Create makes skills/[<category>/]<name>/SKILL.md with content, recorded as the agent's own.

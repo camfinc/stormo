@@ -239,6 +239,16 @@ func TestManage(t *testing.T) {
 	if _, _, err := l.RemoveFile("fare-lookup", "SKILL.md"); err == nil {
 		t.Error("removed SKILL.md")
 	}
+	// files are written through the unclaimed temp dir, never beside themselves
+	_ = filepath.WalkDir(filepath.Join(l.Home, "skills"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.Contains(d.Name(), ".tmp-") {
+			t.Errorf("temp file in skills: %s", p)
+		}
+		return nil
+	})
+	if info, err := os.Stat(filepath.Join(l.Home, TmpDir)); err != nil || !info.IsDir() {
+		t.Errorf("temp dir: %v", err)
+	}
 	if _, err := l.Delete("crm-api"); err == nil || !strings.Contains(err.Error(), "quotes") {
 		t.Errorf("delete of a skill holding another: %v", err)
 	}

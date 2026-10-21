@@ -27,6 +27,16 @@
    "glob": null
   },
   {
+   "path": "skills/crm/crm-api/.SKILL.md.tmp-123",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": ".needletail-tmp/.SKILL.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
    "path": "skills/crm/crm-api/SKILL.md",
    "class": "learning",
    "glob": "skills/[!.]*/**"

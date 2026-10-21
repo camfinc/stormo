@@ -55,6 +55,12 @@ func (l *Library) now() time.Time {
 
 func (l *Library) root() string { return filepath.Join(l.Home, "skills") }
 
+// TmpDir is where skill files are written before they are renamed into place, relative to the
+// home: a directory no snapshot rule claims, so a half-written file never reaches a nap.
+const TmpDir = ".needletail-tmp"
+
+func (l *Library) tmp() string { return filepath.Join(l.Home, TmpDir) }
+
 // Abs is a skill's directory as an absolute path: what ${SKILL_DIR} stands for.
 func (l *Library) Abs(s Skill) string { return filepath.Join(l.root(), filepath.FromSlash(s.Dir)) }
 

@@ -425,7 +425,7 @@ return function(args) ... end
 | Raw (PII) | `sessions/**`, `logs/audit/**` |
 | State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, Slack cursor) |
 
-`SOUL.md` and `scripts/**` are rebuilt from the baseline.
+`SOUL.md` and `scripts/**` are rebuilt from the baseline. `.needletail-tmp/` is claimed by no rule: `skill_manage` and the usage counts write their temporary files there before renaming them into `skills/` (a temporary file beside a skill file would be claimed by `skills/[!.]*/**`, so a nap taken mid-write, or a crash before the rename, would keep it as part of the skill).
 
 **Sessions.** One file per session, `sessions/<id>.jsonl`.
 - Header line: `{v:1,id,parent,end_reason,created,source,title}`.

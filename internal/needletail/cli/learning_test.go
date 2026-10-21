@@ -246,6 +246,9 @@ func TestNapRehydrateDream(t *testing.T) {
 	}
 	sessions := 0
 	for p, c := range classes {
+		if strings.Contains(p, ".tmp-") {
+			t.Errorf("nap holds a temp file: %s", p)
+		}
 		if strings.HasPrefix(p, "sessions/") {
 			sessions++
 			if c != "raw" {
