@@ -255,3 +255,33 @@ func TestBackground(t *testing.T) {
 		t.Error("ErrAway wraps")
 	}
 }
+
+// A core slower than the call's deadline is away for a background call: it is retried, not
+// dropped.
+func TestBackgroundRetriesASlowCore(t *testing.T) {
+	srv, calls := coreMCP(t)
+	var slow atomic.Int32
+	slow.Store(2)
+	front := httptest.NewServer(proxyTo(srv.URL, func(w http.ResponseWriter) bool {
+		if slow.Add(-1) >= 0 {
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return false
+		}
+		return true
+	}))
+	defer front.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := New(front.URL, agentKey, logTo(t))
+	b := c.Background(ctx, 4)
+	b.Timeout, b.Wait, b.MaxWait = 50*time.Millisecond, 5*time.Millisecond, 10*time.Millisecond
+	b.Go("fs_note", map[string]string{"path": "/shared/group/slow.md"})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(calls()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := strings.Join(calls(), " "); !strings.Contains(got, "slow.md") {
+		t.Errorf("the note was dropped: calls %q", got)
+	}
+}

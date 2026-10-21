@@ -315,7 +315,7 @@ Each event is a `POST {ingest_url}/needletail` with header `X-Needletail-Signatu
 - Events: `session_start` when a turn begins and `session_end` when it ends (`status` ok, error or cancelled), `tool_start` and `tool_done` around each tool call (`call_id` the model's own id, `status` ok or error, `duration_ms`). `session` is the conversation's root, so a compaction mid-turn does not split start from end; `platform` is the session's source (`api_server`, `slack`, `cron`, …). Approval events wait for M8.
 - No events are sent for LLM calls, and none for the assistant's text (client data).
 - `input` is the call's arguments, redacted, each string cut to 512 bytes, objects to 32 keys (the path and command keys first), arrays to 16 items, 4 levels deep; an input still over 32 KiB keeps only its path and command keys. The relay accepts at most 1 MiB.
-- After a file tool writes under `/shared`, an `fs_note` for its `/shared/<layer>/…` path is sent in the background (64 queued, retried while the core is away for up to 10 min). The `tool_done` hook names the path too, so the core's workdir attributes the write either way; a terminal write is attributed by the core's terminal inference.
+- After a file tool writes under `/shared`, an `fs_note` for its `/shared/<layer>/…` path is sent in the background (64 queued, retried while the core is away for up to 10 min; an attempt the core does not answer within 60 s counts as away). The `tool_done` hook names the path too, so the core's workdir attributes the write either way; a terminal write is attributed by the core's terminal inference.
 - On SIGTERM the hooks and notes outlive the drain of running turns, and get up to 3 s more to go.
 
 ## 5. Luau

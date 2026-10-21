@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 )
@@ -13,8 +14,9 @@ import (
 type Background struct {
 	c   *Client
 	max int
-	// MaxAge is how long a call is retried (default 10 min); Wait the first retry's delay.
-	MaxAge, Wait, MaxWait time.Duration
+	// MaxAge is how long a call is retried (default 10 min); Wait the first retry's delay;
+	// Timeout bounds one attempt (default CallTimeout).
+	MaxAge, Wait, MaxWait, Timeout time.Duration
 
 	mu      sync.Mutex
 	queue   []bgCall
@@ -31,7 +33,7 @@ type bgCall struct {
 
 // Background starts a worker for calls in the background; it stops when ctx ends.
 func (c *Client) Background(ctx context.Context, size int) *Background {
-	b := &Background{c: c, max: max(size, 1), MaxAge: 10 * time.Minute, Wait: 5 * time.Second, MaxWait: time.Minute,
+	b := &Background{c: c, max: max(size, 1), MaxAge: 10 * time.Minute, Wait: 5 * time.Second, MaxWait: time.Minute, Timeout: CallTimeout,
 		signal: make(chan struct{}, 1), done: make(chan struct{})}
 	go b.run(ctx)
 	return b
@@ -117,7 +119,7 @@ func (b *Background) run(ctx context.Context) {
 func (b *Background) send(ctx context.Context, call bgCall) bool {
 	wait := b.Wait
 	for {
-		cctx, cancel := context.WithTimeout(ctx, CallTimeout)
+		cctx, cancel := context.WithTimeout(ctx, b.Timeout)
 		res, err := b.c.Call(cctx, call.name, call.args)
 		cancel()
 		switch {
@@ -128,7 +130,8 @@ func (b *Background) send(ctx context.Context, call bgCall) bool {
 			return true
 		case err == nil:
 			return true
-		case !Away(err):
+		// The attempt's own deadline (ctx is alive) is a core too slow to answer: away too.
+		case !Away(err) && !errors.Is(err, context.DeadlineExceeded):
 			b.c.logf("mcp: %s failed: %v", call.name, err)
 			return true
 		case time.Since(call.at) > b.MaxAge:
