@@ -6,6 +6,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -89,6 +90,9 @@ type Agent struct {
 	ContextLength int
 	// Observer hears every turn (the core's hooks), besides a turn's own Options.Observer.
 	Observer Observer
+	// Refresh, when set, runs as a turn starts, before the tools are offered: the Luau tools are
+	// found again, so a tool the agent wrote last turn is offered in this one.
+	Refresh func(ctx context.Context)
 }
 
 // Options shape one turn.
@@ -186,6 +190,9 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 
 	turn := a.LLM.NewTurn()
 	system := a.SystemPrompt()
+	if a.Refresh != nil {
+		a.Refresh(ctx)
+	}
 	offered := a.Tools.Filter(opts.Tools)
 	var specs []llm.Tool
 	for _, t := range offered {
@@ -264,16 +271,20 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 		env.Session = res.Session
 		for _, c := range calls {
-			obs.ToolStart(res.Session, c)
+			seen := observed(a.Tools, c)
+			obs.ToolStart(res.Session, seen)
 			started := time.Now()
 			var out string
 			var failed bool
+			var touched []string
+			env.Touched = func(p string) { touched = append(touched, p) }
 			if allowed[c.Name] {
 				out, failed = a.Tools.Call(ctx, &env, c.Name, c.Arguments)
 			} else {
 				out, failed = fmt.Sprintf(`{"error":"tool %q is not available in this turn"}`, c.Name), true
 			}
-			obs.ToolDone(res.Session, c, out, failed, time.Since(started))
+			env.Touched = nil
+			obs.ToolDone(res.Session, withPaths(seen, touched), out, failed, time.Since(started))
 			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out})
 			if err != nil {
 				return res, err
@@ -282,6 +293,38 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			sinceTotal += len(out)
 		}
 	}
+}
+
+// observed is the call as observers see it: under the tool's hook name (luau:<tool>).
+func observed(reg *tools.Registry, c wire.ToolCall) wire.ToolCall {
+	if t, ok := reg.Get(c.Name); ok {
+		c.Name = t.ObservedName()
+	}
+	return c
+}
+
+// withPaths names the /shared paths a tool wrote through the core in its arguments, as the hooks
+// send them (path, and paths when there are more), so the core attributes the writes. A call
+// whose arguments already name a path keeps it.
+func withPaths(c wire.ToolCall, touched []string) wire.ToolCall {
+	if len(touched) == 0 {
+		return c
+	}
+	args := map[string]any{}
+	_ = json.Unmarshal([]byte(c.Arguments), &args)
+	if args == nil {
+		args = map[string]any{}
+	}
+	if _, ok := args["path"]; !ok {
+		args["path"] = touched[0]
+	}
+	if len(touched) > 1 {
+		args["paths"] = touched
+	}
+	if b, err := json.Marshal(args); err == nil {
+		c.Arguments = string(b)
+	}
+	return c
 }
 
 func (a *Agent) window(ctx context.Context, turn *llm.Turn) int {

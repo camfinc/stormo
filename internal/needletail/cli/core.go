@@ -47,6 +47,9 @@ func connectCore(rt *runtime) *coreLink {
 	ctx, cancel := context.WithCancel(context.Background())
 	client := mcp.New(c.MCPURL, key, logf)
 	go client.Register(ctx, rt.agent.Tools, toolsFirstRetry, toolsMaxRetry)
+	if rt.luau != nil {
+		rt.luau.Core = client // nt.core and shared writes from Luau go through the core
+	}
 
 	notes := client.Background(ctx, notesQueue)
 	shared := sharedPath(rt.cfg)

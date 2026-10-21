@@ -56,7 +56,9 @@ func (rt *Runtime) Exec(ctx context.Context, x Exec) (*Result, *Call, error) {
 	if err != nil {
 		return nil, call, err
 	}
-	res.Value = json.RawMessage(rt.redact(string(res.Value)))
+	if len(res.Value) > 0 {
+		res.Value = json.RawMessage(rt.redact(string(res.Value)))
+	}
 	res.Stdout, res.Stderr = rt.redact(res.Stdout), rt.redact(res.Stderr)
 	if res.Err != nil {
 		res.Err.Msg = rt.redact(res.Err.Msg)

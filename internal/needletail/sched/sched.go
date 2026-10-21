@@ -76,7 +76,10 @@ type Options struct {
 	// End ends a run's session after its turn (sessions.Store.End).
 	End func(session, reason string) error
 	// Location is the wall clock cron expressions run on (nil: UTC).
-	Location      *time.Location
+	Location *time.Location
+	// Luau runs a .luau script (its real path, and its name as the job gives it): whether it
+	// succeeded and its output (nil: .luau scripts fail as unsupported).
+	Luau          func(ctx context.Context, real, name string) (bool, string)
 	Now           func() time.Time
 	Log           func(string)
 	ScriptTimeout time.Duration

@@ -107,15 +107,24 @@ func readJSON(t *testing.T, p string, v any) {
 	}
 }
 
-// M3's done-when (docs/needletail.md §9): a nap, rehydrate and dream cycle on a needletail home
-// yields ledger sightings and a skill proposal from an agent-created skill, with the learning
-// loop's code (pkg/loop) unchanged. Everything here is the real code: `stormo build` of the
-// example atlas agent on needletail, rehydrate into a home, the runtime's oneshot turn (its tools
-// driven by a scripted model), then the nap, the dream, and a second boot from the nap.
-func TestNapRehydrateDream(t *testing.T) {
+// learningWorld is the example instance's atlas agent on needletail, built for real, with a
+// scripted model and a nap store: what TestNapRehydrateDream and TestLuauToolLifecycle run on.
+type learningWorld struct {
+	model     *scripted
+	root      string
+	tmp       string
+	learnings string
+	rehydrate func(home string) *loop.RehydrateReport
+	oneshot   func(home, prompt string) []string
+	nap       func(home, instance string, at time.Time) *loop.Nap
+	dream     func() (*loop.DreamReport, []string)
+}
+
+func newLearningWorld(t *testing.T) *learningWorld {
+	t.Helper()
 	model := &scripted{}
 	srv := httptest.NewServer(model)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "instance")
@@ -198,7 +207,19 @@ func TestNapRehydrateDream(t *testing.T) {
 		}
 		return r, spy.reads
 	}
-	learnings := filepath.Join(root, "agents", "atlas", "learnings")
+	return &learningWorld{model: model, root: root, tmp: tmp, learnings: filepath.Join(root, "agents", "atlas", "learnings"),
+		rehydrate: rehydrate, oneshot: oneshot, nap: nap, dream: dream}
+}
+
+// M3's done-when (docs/needletail.md §9): a nap, rehydrate and dream cycle on a needletail home
+// yields ledger sightings and a skill proposal from an agent-created skill, with the learning
+// loop's code (pkg/loop) unchanged. Everything here is the real code: `stormo build` of the
+// example atlas agent on needletail, rehydrate into a home, the runtime's oneshot turn (its tools
+// driven by a scripted model), then the nap, the dream, and a second boot from the nap.
+func TestNapRehydrateDream(t *testing.T) {
+	w := newLearningWorld(t)
+	model, root, tmp, rehydrate, oneshot, nap, dream := w.model, w.root, w.tmp, w.rehydrate, w.oneshot, w.nap, w.dream
+	learnings := w.learnings
 
 	// 1. First boot: the baseline alone. The generated skills reach the runtime as read-only.
 	home1 := filepath.Join(tmp, "home1")

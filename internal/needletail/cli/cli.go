@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
+	"github.com/camfinc/stormo/internal/needletail/luau"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/sched"
@@ -43,6 +45,8 @@ const usage = `usage: needletail <command>
   oneshot -q <prompt> [--format stream-json|text]
                                           one turn in a new session, then exit (the bench)
   healthcheck                             exit 0 when the local API answers /health
+  luau check <file>                       validate a .luau tool's header (or a script's) and compile it
+  luau reference                          print the Luau functions tools may call (markdown)
   version                                 print the version
 `
 
@@ -68,6 +72,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return oneshot(ctx, args[1:], stdout, stderr)
 	case "healthcheck":
 		return healthcheck(stderr)
+	case "luau":
+		return luauCommand(ctx, args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "needletail", Version)
 		return 0
@@ -87,6 +93,7 @@ type runtime struct {
 	store  *sessions.Store
 	agent  *loop.Agent
 	sched  *sched.Scheduler
+	luau   *luau.Runtime // nil when the Luau engine could not start
 	logger *log.Logger
 }
 
@@ -132,12 +139,97 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
+	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
-	s := sched.New(sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
-		End: store.End, Location: cfg.Location, Log: logf})
+	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
+		End: store.End, Location: cfg.Location, Log: logf}
+	if lr != nil {
+		opts.Luau = lr.RunScript
+	}
+	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, logger: logger}, nil
+	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger}, nil
+}
+
+// luauGroup is the registry group of the Luau tools (found again every turn).
+const luauGroup = "luau"
+
+// startLuau gives the agent its Luau tools (§5): found in its skills every turn, checked when
+// skill_manage writes one, dry-run by luau_test, and run by schedules. Without the engine the
+// agent runs without them.
+func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, mem *memory.Store, lib *skills.Library,
+	agent *loop.Agent, logf func(string)) *luau.Runtime {
+	eng, err := luau.Shared()
+	if err != nil {
+		logf(fmt.Sprintf("luau: the engine did not start, no Luau tools: %v", err))
+		return nil
+	}
+	layers := []string{"group"}
+	if cfg.Unit != "" {
+		layers = append(layers, cfg.Unit)
+	}
+	lr := &luau.Runtime{Runner: eng, Home: cfg.Home, SharedDir: cfg.SharedDir, Layers: layers, Grants: cfg.Luau.Grants,
+		HTTPSecrets: cfg.Luau.HTTPSecrets, Secret: sec.Get, Memory: mem, Redact: red.Redact, Log: logf,
+		ScriptTimeout: time.Duration(cfg.Limits.ScriptTimeout) * time.Second}
+	if u := os.Getenv("SWARM_CORE_URL"); u != "" {
+		lr.CoreURLs = append(lr.CoreURLs, u)
+	}
+	if cfg.Core != nil {
+		lr.CoreURLs = append(lr.CoreURLs, cfg.Core.MCPURL, cfg.Core.IngestURL)
+	}
+	reserved := func(name string) bool { return agent.Tools.Taken(luauGroup, name) }
+	lib.CheckLuau = func(rel string, body []byte) error { return lr.CheckTool(context.Background(), rel, body) }
+	lib.LuauTools = func(dir string) []skills.ToolStatus { return lr.Status(context.Background(), dir, reserved) }
+	agent.Refresh = func(ctx context.Context) { agent.Tools.SetGroup(luauGroup, lr.Tools(ctx, reserved)) }
+	agent.Tools.Add(lr.TestTool(reserved))
+	return lr
+}
+
+// luauCommand is `needletail luau check <file>` and `needletail luau reference`.
+func luauCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "reference" {
+		fmt.Fprint(stdout, luau.Reference())
+		return 0
+	}
+	if len(args) != 2 || args[0] != "check" {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	file := args[1]
+	body, err := os.ReadFile(file)
+	if err != nil {
+		fmt.Fprintf(stderr, "needletail luau check: %v\n", err)
+		return 1
+	}
+	eng, err := luau.Shared()
+	if err != nil {
+		fmt.Fprintf(stderr, "needletail luau check: %v\n", err)
+		return 1
+	}
+	lr := &luau.Runtime{Runner: eng}
+	// A tool (…/tools/<name>.luau) needs a tool's header; any other file a script's.
+	slash := filepath.ToSlash(file)
+	tool := strings.Contains("/"+slash, "/tools/") && strings.HasSuffix(slash, ".luau")
+	var h *luau.Header
+	if tool {
+		err = lr.CheckTool(ctx, "tools/"+filepath.Base(file), body)
+		if err == nil {
+			h, err = luau.ParseHeader(body, true)
+		}
+	} else if h, err = luau.ParseHeader(body, false); err == nil {
+		err = eng.Check(ctx, body)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", file, err)
+		return 1
+	}
+	what := "script"
+	if tool {
+		what = "tool " + h.Name
+	}
+	fmt.Fprintf(stdout, "%s: ok (%s; caps: %s)\n", file, what, strings.Join(h.Caps, ", "))
+	return 0
 }
 
 // origin is the chat a session belongs to, as a job's "origin" (Hermes' {platform, chat_id,

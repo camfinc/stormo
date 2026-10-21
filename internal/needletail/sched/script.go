@@ -34,7 +34,11 @@ func (s *Scheduler) runScript(ctx context.Context, script string) (bool, string)
 	case ".sh", ".bash":
 		argv = []string{"bash", path}
 	case ".luau":
-		return false, fmt.Sprintf("%s: Luau scripts are not run yet (they arrive with the Luau sandbox)", script)
+		if s.o.Luau == nil {
+			return false, fmt.Sprintf("%s: Luau is not available in this runtime", script)
+		}
+		// in the Luau sandbox, bounded by the script timeout (limits.script_timeout)
+		return s.o.Luau(ctx, path, script)
 	default:
 		argv = []string{"python3", path}
 	}

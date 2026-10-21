@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -524,5 +525,59 @@ func TestSystemPromptTimeZone(t *testing.T) {
 	a.Cfg.Location, _ = time.LoadLocation("America/New_York")
 	if sys := a.SystemPrompt(); !strings.Contains(sys, "The current time is 2026-10-20T04:00:00-04:00 (Tuesday, America/New_York).") {
 		t.Errorf("system prompt: %s", sys[strings.Index(sys, "## Now"):])
+	}
+}
+
+// pathEvents records what observers get: names and arguments.
+type pathEvents struct{ log []string }
+
+func (e *pathEvents) ToolStart(s string, c wire.ToolCall) {
+	e.log = append(e.log, "start:"+c.Name+":"+c.Arguments)
+}
+func (e *pathEvents) ToolDone(s string, c wire.ToolCall, out string, failed bool, _ time.Duration) {
+	e.log = append(e.log, "done:"+c.Name+":"+c.Arguments)
+}
+func (e *pathEvents) Text(string, string) {}
+
+// Refresh runs before the tools are offered; a tool's hook name is what observers see, and the
+// /shared paths it wrote another way are named in tool_done's arguments (the core attributes
+// them), while the model still calls it by its own name.
+func TestRefreshAndObservedCalls(t *testing.T) {
+	st := &stub{}
+	n := 0
+	st.pick = func(req map[string]any) string {
+		n++
+		if n == 1 {
+			names := []string{}
+			for _, x := range req["tools"].([]any) {
+				names = append(names, x.(map[string]any)["function"].(map[string]any)["name"].(string))
+			}
+			if !slices.Contains(names, "crm__quote") {
+				t.Errorf("the refreshed tool was not offered: %v", names)
+			}
+			return callTool("c1", "crm__quote", `{"route":"LIS-JFK"}`)
+		}
+		return say("done")
+	}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	a := newAgent(t, srv)
+	a.Refresh = func(context.Context) {
+		a.Tools.SetGroup("luau", []tools.Tool{{Name: "crm__quote", Hook: "luau:crm__quote", Schema: json.RawMessage(`{"type":"object"}`),
+			Run: func(_ context.Context, env *tools.Env, _ json.RawMessage) (any, error) {
+				env.Touched("/shared/group/a.md")
+				env.Touched("/shared/sales/b.md")
+				return map[string]any{"ok": true}, nil
+			}}})
+	}
+	h, _ := a.Store.Create(wire.Session{ID: "s1", Source: "api_server"})
+	ev := &pathEvents{}
+	if _, err := a.Run(context.Background(), h.ID, "quote", Options{Observer: ev}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`start:luau:crm__quote:{"route":"LIS-JFK"}`,
+		`done:luau:crm__quote:{"path":"/shared/group/a.md","paths":["/shared/group/a.md","/shared/sales/b.md"],"route":"LIS-JFK"}`}
+	if !slices.Equal(ev.log, want) {
+		t.Fatalf("observed\n%s\nwant\n%s", strings.Join(ev.log, "\n"), strings.Join(want, "\n"))
 	}
 }
