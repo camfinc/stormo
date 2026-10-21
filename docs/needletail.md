@@ -146,6 +146,7 @@ The runtime is the process `needletail serve`, running as uid 10000 with `HOME=$
 - `core {mcp_url, ingest_url, key_env: SWARM_CORE_KEY}`, only when on core
 - `channels`
 - memory budgets
+- `skills {generated}`: the skill dirs the build generates from the instance (the knowledge and shared-docs skills, from `CompileContext.Knowledge`), which `skill_manage` refuses to change (from M3)
 - `luau {grants, http_secrets}`, taken from the agent's `engine/needletail/config.yaml`, which only the adapter reads
 
 ### 4.2 Secrets
@@ -181,7 +182,7 @@ A turn is `Run(ctx, session, input, opts{tools filter, model override})`.
 1. SOUL.md
 2. the MEMORY block
 3. the USER block
-4. the skills index (name and description per SKILL.md)
+4. the skills index (name, description and dir per SKILL.md, read from the home every turn so a skill the agent just made is listed), pointing to `skill_view` and `skill_manage`
 5. shared-space instructions
 6. the current time
 
@@ -204,23 +205,35 @@ Names stay Hermes-compatible, so bench files, `schedules.tools`, `ShellTools` an
 
 | Tool | Behaviour |
 |---|---|
-| `terminal` | `bash -lc` with cwd `$AGENT_HOME`, `command_timeout`, capped output, and an explicit environment: the process env without the runtime's own secrets, plus the passthrough allowlist. At the timeout (or when the turn is cancelled) the command's whole process group is killed. A process the command leaves running in the background after a normal exit (`cmd &`, say a server the agent starts on purpose) is **not** killed: once the command has exited, the tool waits 2 s for the output to close, then returns the output so far and the exit code with a note that background processes are still running; what they write later is not captured. When it runs from a skill it exports `SKILL_DIR`. |
+| `terminal` | `bash -lc` with cwd `$AGENT_HOME`, `command_timeout`, capped output, and an explicit environment: the process env without the runtime's own secrets, plus the passthrough allowlist. At the timeout (or when the turn is cancelled) the command's whole process group is killed. A process the command leaves running in the background after a normal exit (`cmd &`, say a server the agent starts on purpose) is **not** killed: once the command has exited, the tool waits 2 s for the output to close, then returns the output so far and the exit code with a note that background processes are still running; what they write later is not captured. When it runs from a skill it exports `SKILL_DIR` (the skill's absolute directory) and counts a use of it: the skill the call names (`skill`, a name or dir), else the one skill whose directory the command names (`skills/<dir>/…`, absolute or relative), else, for a command that uses `SKILL_DIR`, the skill the session last viewed. A command that uses `SKILL_DIR` with none of these is refused rather than run with it empty. |
 | `read_file`, `write_file`, `patch`, `search_files` | Paths are confined by `sandbox.Resolve` to `$AGENT_HOME` or `/shared/{group,<unit>}`, with symlinks evaluated and re-checked; a path must resolve inside the same root it names, so a symlink from one root into another (say `/shared/group/x` → the home's `skills/`) is refused. Only regular files are opened (a FIFO would block the turn), without following a symlink in the final component, and a write truncates only after checking that the path still resolves to the file it opened. `read_file` holds at most one capped line in memory; `patch` refuses files over 8 MiB. Direct writes to `/shared` are allowed for parity and followed by an automatic `fs_note` (decided, §11; §4.11); prompts prefer `fs_write`. The runtime's own files (`sessions/**`, `state/needletail/**`, `needletail.yaml`) are never written by these tools, and `search_files` skips them (`logs/**` too) and refuses to start in one. |
 | `memory` | Actions add, replace and remove on the `memory` or `user` target. The budget is counted in UTF-16 units; when over, it returns an error showing the current usage. |
-| `skills_list`, `skill_view`, `skill_manage` | `skill_view` loads skills progressively and resolves `${SKILL_DIR}`. `skill_manage` creates, edits, patches and deletes under `skills/`. For `.luau` files it validates the header and compiles before saving. |
+| `skills_list`, `skill_view`, `skill_manage` | Hermes' names and arguments. A skill is named by its dir under `skills/` (`crm/crm-api`), its front-matter name or its dir's last segment; an ambiguous name is refused with the candidates. `skills_list` lists name, description, dir and `read_only`. `skill_view {name, file_path?}` loads progressively: SKILL.md (or one file of the skill, at most 100 KB, binary refused) with `${SKILL_DIR}` resolved to the skill's absolute directory, plus the skill's other files (hidden files and nested skills left out). `skill_manage {action, name, …}`: `create` (name and optional one-segment `category`, both `[a-z0-9][a-z0-9_-]*`; `content` is the whole SKILL.md and must start with front matter naming the skill and describing it), `edit`, `patch` (`old_string` must match once unless `replace_all`; `file_path` omitted is SKILL.md), `write_file`, `remove_file` (empty directories it leaves are removed) and `delete`. It refuses the build's generated skills (`skills.generated`, by dir or by name anywhere, since the dream skips them by name), hidden dirs, symlinks anywhere below the home, `..` and absolute paths, a file of a nested skill, a rename (the front-matter name must stay), files over 1 MiB, and text holding a secret value the runtime knows. Repo skills may be changed (the dream proposes them as changed). Writes are atomic (`fsx.WriteAtomic`), files 0644 and directories 0755 as rehydrate makes them. `.luau` files are refused until M6, which adds the header check and compile before saving. `read_file` of a SKILL.md counts as a view. |
 | `luau_test` | Dry-runs a Luau tool with writes and http disabled, so the agent can iterate. |
 | `send_message` | Posts to the Slack home channel or a thread. |
 | `cronjob` | Creates, lists, pauses and removes agent-made jobs. |
 | `mcp_core_<name>` | The core MCP tools. |
 | `<skill>__<tool>` | Valid Luau tools (§5). |
 
-Skill usage counts go to `skills/.usage.json` as `{name:{uses,last_used}}`.
+Skill usage counts go to `skills/.usage.json`, an object keyed by skill name in Hermes' keys, so the file (which the dream copies to the agent's `learnings/skill-usage.json`) reads the same for agents on either engine, and one an agent brings from Hermes keeps counting (keys needletail does not maintain, such as Hermes' curator fields, are kept):
+
+| Key | Meaning |
+|---|---|
+| `use_count`, `last_used_at` | a SKILL.md view, a file of the skill viewed, or a terminal command run from it |
+| `view_count`, `last_viewed_at` | its SKILL.md viewed (`skill_view` or `read_file`) |
+| `patch_count`, `last_patched_at` | changed with `skill_manage` (refused changes are not counted) |
+| `created_at`, `created_by` | first counted, or created by the agent (`"agent"`; otherwise `null`) |
+| `state` | `"active"` |
+
+Times are RFC 3339 with microseconds and `+00:00`, as Hermes writes them. `delete` drops the skill's entry. A count that cannot be written is lost; it never fails the tool call.
 
 ### 4.6 Skills and memory
 
-- Skills are read from `skills/` in Stormo form, with no rendering. Needletail resolves `${SKILL_DIR}` itself.
-- The generated knowledge and shared skills arrive through `CompileContext.Knowledge`.
-- Memory is `memories/MEMORY.md` and `memories/USER.md`, entries separated by `\n§\n`. The seed is merged by the existing rehydrate code.
+- Skills are read from `skills/` in Stormo form, with no rendering. Needletail resolves `${SKILL_DIR}` itself (`skill_view`, and the terminal's `SKILL_DIR`).
+- The generated knowledge and shared skills arrive through `CompileContext.Knowledge`; Compile lists their dirs in `needletail.yaml` (`skills.generated`), and the runtime shows them like any skill but never changes them.
+- What the agent writes under `skills/[!.]*/**` is Learning: the nap keeps it, rehydrate brings an agent-created skill back always and a changed repo skill back while the repo has not moved under it, and the dream proposes both (new or changed) with no change to `pkg/loop`. `skills/.usage.json` comes back through rehydrate's `skills/.*` rule and is copied by the dream.
+- Memory is `memories/MEMORY.md` and `memories/USER.md`, entries separated by `\n§\n`, with no trailing newline. The seed is merged by the existing rehydrate code. Entries are trimmed of the same characters the dream and rehydrate trim (every Unicode space and the BOM; `strings.TrimSpace` would differ on U+0085 and U+FEFF), and both budgets count UTF-16 units of the whole file, so the memory tool, the merge at boot and the ledger see the same entries within the same budget (`TestMemoryParity`).
+- Conversation lineage (a compaction ends a session and continues it in a child, §6) is Raw: it comes back verbatim at rehydrate, and the dream never reads it.
 
 ### 4.7 Schedules (`sched`)
 
@@ -232,6 +245,8 @@ Skill usage counts go to `skills/.usage.json` as `{name:{uses,last_used}}`.
 | State | `last_run_at`, `next_run_at`, `last_status`, `last_error`, `last_delivery_error`, `failure_streak`, and a new `running` bool |
 
 `docs/schedules.md` is normative.
+
+**Notes for M4 (from M3).** A job's `skills` should load each skill as `skill_view` does (`skills.Library.View` with the job's session: the SKILL.md text, `${SKILL_DIR}` resolved, a counted view, and the skill set as the session's current one, so the terminal's `SKILL_DIR` resolves in the job's commands). `schedules.tools` and `enabled_toolsets` carry Hermes toolset names (the example atlas job has `tools: [terminal, skills]`); `skills` has to expand to `skills_list`, `skill_view` and `skill_manage` (and the other toolsets to their tools) before `loop.Options.Tools` filters by tool name, or a job offers no skill tool.
 
 **Semantics**
 - `every` and 5-field `cron`. The cron parser is written in-house, with no new dependency.
@@ -463,6 +478,7 @@ return function(args) ... end
 
 Each is frozen at the first nap of a needletail agent and covered by golden tests in `pkg/engine/needletail/testdata`:
 - the memory separator `\n§\n`
+- the `skills/.usage.json` shape (Hermes' keys, §4.5)
 - the `cron/jobs.json` shape (shared with Hermes)
 - session JSONL v1
 - hook body v1 and its signature header
@@ -479,7 +495,7 @@ Every milestone ships as a draft PR behind `engine.kind: needletail`.
 | M0 | **Adapter skeleton**: `pkg/engine/needletail`, `internal/needletail/wire`, registry lines, Layout and rules, Compile, Env, schedules codec, Runtime and Conversations clients, bench parser, this doc. Preceded by the neutral version-validator PR. | `gofmt`, `go vet` and `go test ./...` are green. `stormo build` of the examples/minimal atlas agent with `engine.kind: needletail` matches the golden home. Every emitted and runtime path is classified. Hermes goldens are unchanged. |
 | M1 | **Runtime core**: `serve`, `oneshot` and `healthcheck`; llm with fallback; loop with compaction; sessions JSONL; API; `terminal`, file and memory tools; secrets scrub and redactor; Dockerfile. | Locally on the core, the agent answers `stormo chat`. The bench passes on the atlas bench files. Activity and wake work against a real core. |
 | M2 | **Core integration**: MCP client (`mcp_core_*`), signed hooks, ParseHook, automatic `fs_note`. | The office shows live tool calls with real call ids. A `msg_send` between a Hermes agent and a needletail agent round-trips with a wake. Shared-file attribution credits the needletail agent. |
-| M3 | **Skills and memory parity**: index, `skill_view`, `skill_manage`, `${SKILL_DIR}`, usage counts, lineage compaction. | A nap, rehydrate and dream cycle on a needletail home yields ledger sightings and a skill proposal from an agent-created skill, with loop code unchanged. |
+| M3 | **Skills and memory parity**: index, `skill_view`, `skill_manage`, `${SKILL_DIR}`, usage counts, lineage compaction. | A nap, rehydrate and dream cycle on a needletail home yields ledger sightings and a skill proposal from an agent-created skill, with loop code unchanged. Proven by `TestNapRehydrateDream` (`internal/needletail/cli`): the real build, rehydrate, oneshot turn, nap and dream, then a second boot from the nap. |
 | M4 | **Scheduler** plus `docs/schedules.md`. | Table tests built from real agent job definitions pass. `stormo review` shows schedule status. An agent-made job survives a rehydrate. |
 | M5 | **Slack gateway**. | A test Slack app talks to a needletail agent in DMs and threads, and schedules deliver to the home channel. |
 | M6 | **Luau tools**: build script, embedded wasm, wazero host, `nt.*`, the grants file, `luau check`, `luau_test`, `.luau` schedule scripts and monitors. Preceded by the longjmp/EH spike. | An agent writes a tool through `skill_manage`, calls it next turn, and the dream proposes it. The adversarial suite passes. The image builds `CGO_ENABLED=0` for amd64 and arm64. |
