@@ -85,8 +85,10 @@ type Scheduler struct {
 	o                     Options
 	path, state, tmp, out string
 	mu                    sync.Mutex // cron/jobs.json
-	runMu                 sync.Mutex // running, lastStart, warned
+	runMu                 sync.Mutex // running, requested, stopping, lastStart, warned
 	running               map[string]bool
+	requested             map[string]bool // `run` asked while the job was running
+	stopping              bool            // the ticks ended: a run cut short now is interrupted
 	lastStart             time.Time
 	warned                map[string]string
 	wg                    sync.WaitGroup
@@ -119,7 +121,7 @@ func New(o Options) *Scheduler {
 		o.Env.Home = o.Home
 	}
 	s := &Scheduler{o: o, path: filepath.Join(o.Home, "cron", "jobs.json"), state: filepath.Join(o.Home, "state", "needletail"),
-		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1)}
+		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]bool{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1)}
 	s.out = filepath.Join(s.state, "jobs")
 	s.runCtx, s.cancelRuns = context.WithCancel(context.Background())
 	return s
@@ -165,6 +167,38 @@ func (s *Scheduler) isRunning(id string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	return s.running[id]
+}
+
+// request asks for another run of a running job once this one ends (the tool's run); false when
+// the job is not running (its next_run_at alone makes it due).
+func (s *Scheduler) request(id string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.running[id] {
+		s.requested[id] = true
+	}
+	return s.running[id]
+}
+
+// takeRequest reports and clears a run asked for while the job ran.
+func (s *Scheduler) takeRequest(id string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	r := s.requested[id]
+	delete(s.requested, id)
+	return r
+}
+
+func (s *Scheduler) setStopping() {
+	s.runMu.Lock()
+	s.stopping = true
+	s.runMu.Unlock()
+}
+
+func (s *Scheduler) isStopping() bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.stopping
 }
 
 // mutate changes cron/jobs.json under the lock: read, change (write when change says so).
@@ -316,6 +350,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 			s.Tick()
 			select {
 			case <-ctx.Done():
+				s.setStopping()
 				return
 			case <-t.C:
 			case <-s.kick:
@@ -326,6 +361,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 // Shutdown waits for running jobs until ctx ends, then cancels them and waits a moment more.
 func (s *Scheduler) Shutdown(ctx context.Context) {
+	s.setStopping()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
 	select {
@@ -461,6 +497,14 @@ type outcome struct {
 
 func (o outcome) failed() bool { return o.status == wire.StatusError }
 
+// statusInterrupted is a run the runtime's shutdown cut short: never written as last_status.
+const statusInterrupted = "interrupted"
+
+// interrupted is the outcome of a run the shutdown cut short.
+func interrupted(session string) outcome {
+	return outcome{status: statusInterrupted, err: "interrupted: the runtime stopped during the run", session: session}
+}
+
 // execute runs one job: its script alone (no_agent), or its monitor, script and turn.
 func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session string) (o outcome) {
 	name, id := j.Name(), j.ID()
@@ -479,6 +523,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 		}
 		ok, out := s.runScript(ctx, script)
 		switch {
+		case !ok && s.isStopping():
+			return interrupted("")
 		case !ok:
 			return outcome{status: wire.StatusError, err: out, text: fmt.Sprintf("⚠ Job '%s' script failed\n\n%s", name, out), doc: out}
 		case !wakes(out) || out == "":
@@ -493,6 +539,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 	runContext := ""
 	if mon := strings.TrimSpace(j.Str("monitor_script")); mon != "" {
 		ok, out := s.runScript(ctx, mon)
+		if !ok && s.isStopping() {
+			return interrupted("")
+		}
 		if !ok {
 			return outcome{status: wire.StatusError, err: "monitor: " + out, text: fmt.Sprintf("⚠ Job '%s' monitor failed\n\n%s", name, out)}
 		}
@@ -506,6 +555,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 	if sc := strings.TrimSpace(j.Str("script")); sc != "" {
 		ok, out := s.runScript(ctx, sc)
 		switch {
+		case !ok && s.isStopping():
+			return interrupted("")
 		case ok && !wakes(out):
 			return outcome{status: wire.StatusSilent, doc: "the script's wake gate said not to wake the agent"}
 		case ok && out == "":
@@ -528,8 +579,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 		}
 	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return outcome{status: wire.StatusError, err: "interrupted: the runtime stopped during the run", session: session}
+		if ctx.Err() != nil || s.isStopping() {
+			return interrupted(session)
 		}
 		return outcome{status: wire.StatusError, err: s.o.Env.Redact(err.Error()), session: session}
 	}
@@ -677,6 +728,23 @@ func (s *Scheduler) monitorGate(j *Job, out string) (string, bool) {
 // (re-anchored on the end of the run; none once repeat.times runs are done).
 func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	id, now := j.ID(), s.o.Now()
+	if o.status == statusInterrupted {
+		s.takeRequest(id)
+		s.record(j, o, now)
+		if err := s.mutate(func(f *File) (bool, error) {
+			if live := f.Find(id); live != nil {
+				live.Set("running", false)
+				live.Set("next_run_at", s.at(now)) // due again at the next start
+				return true, nil
+			}
+			return false, nil
+		}); err != nil {
+			s.logf("job %s: %v", id, err)
+		}
+		s.logf("job %s: interrupted by the shutdown; due again at the next start", id)
+		return
+	}
+	requested := s.takeRequest(id)
 	streak := j.Int("failure_streak")
 	if o.failed() {
 		streak++
@@ -730,7 +798,9 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 			live.Set("next_run_at", nil)
 		default:
 			live.Set("running", true) // the run's own status stands (noNext)
-			s.advanceNext(live, now, now)
+			if s.advanceNext(live, now, now) && requested {
+				live.Set("next_run_at", s.at(now)) // `run` was asked while it ran
+			}
 		}
 		live.Set("running", false)
 		return true, nil

@@ -102,6 +102,8 @@ type fakeTurns struct {
 	calls   []turnCall
 	// onTurn runs at the start of each turn, outside the lock (a change made while a job runs).
 	onTurn func()
+	// block makes turns wait for their context to end (a turn the shutdown cancels).
+	block bool
 }
 
 type turnCall struct {
@@ -149,13 +151,17 @@ type fakeSlot struct {
 	released bool
 }
 
-func (s *fakeSlot) Turn(_ context.Context, input string, opts loop.Options) (*loop.Result, error) {
+func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*loop.Result, error) {
 	f := s.f
 	f.mu.Lock()
-	hook := f.onTurn
+	hook, block := f.onTurn, f.block
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if block {
+		<-ctx.Done()
+		return nil, fmt.Errorf("model endpoint 0: %w", ctx.Err())
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -132,3 +132,59 @@ func TestIntervalBounds(t *testing.T) {
 		}
 	}
 }
+
+// `run` on a job that is running is not lost when the run finishes: the job is due again at once.
+func TestRunWhileRunning(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`))
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	r.turns.reply("a", "first", "second")
+	r.turns.onTurn = func() {
+		r.turns.onTurn = nil
+		if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"run","job_id":"a"}`); failed {
+			t.Errorf("run: %s", out)
+		}
+	}
+	r.tick()
+	if j := r.job("a"); j.Str("next_run_at") != t0String || j.Bool("running") {
+		t.Fatalf("after the run: next %q running %v", j.Str("next_run_at"), j.Bool("running"))
+	}
+	r.tick()
+	if c := r.turns.taken(); len(c) != 2 {
+		t.Errorf("turns %d, want 2", len(c))
+	}
+	if j := r.job("a"); j.Str("next_run_at") != "2026-10-21T10:00:00Z" {
+		t.Errorf("after the requested run: next %q", j.Str("next_run_at"))
+	}
+}
+
+// A run the shutdown cuts short is "interrupted": not delivered, no failure counted, its status
+// kept, and due again at the next start.
+func TestShutdownInterruptsRuns(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`), `"deliver":"local"`, `"deliver":"slack","last_status":"ok","failure_streak":0`, 1))
+	r.turns.block = true
+	r.s.o.Tick = time.Hour
+	ctx, stopTicks := context.WithCancel(context.Background())
+	r.s.Start(ctx)
+	for i := 0; i < 200 && !r.job("a").Bool("running"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if running, _ := r.s.Running(); len(running) != 1 || running[0] != "a" {
+		t.Fatalf("running %v", running)
+	}
+	stopTicks()
+	sctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	r.s.Shutdown(sctx)
+	cancel()
+	j := r.job("a")
+	if j.Bool("running") || j.Str("last_status") != "ok" || j.Int("failure_streak") != 0 || j.Str("next_run_at") != t0String || j.Str("last_run_at") != "" {
+		t.Errorf("interrupted: running %v status %q streak %d next %q last %q", j.Bool("running"), j.Str("last_status"), j.Int("failure_streak"), j.Str("next_run_at"), j.Str("last_run_at"))
+	}
+	if d := r.sink.taken(); len(d) != 0 {
+		t.Errorf("an interrupted run delivered %+v", d)
+	}
+	if _, done := j.Repeat(); done != 0 {
+		t.Errorf("an interrupted run counted: %d", done)
+	}
+}

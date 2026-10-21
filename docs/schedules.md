@@ -43,7 +43,13 @@ proposal for review.
   when several of its times passed while the agent was down: the backlog collapses into one run,
   and the next time is computed from then.
 - `next_run_at` moves to the next time **before** the run starts, and the job is marked running, so
-  a crash mid-run never runs it twice. A run a restart cut short is recorded as a failure at boot.
+  a crash mid-run never runs it twice. A run a crash cut short is recorded as a failure at boot.
+- `run` on a job that is running makes it due again as soon as that run ends (needletail keeps
+  the request in memory, so a restart forgets it).
+- A run the runtime's shutdown cuts short is **interrupted** (needletail): nothing is delivered,
+  the failure streak, `last_status` and `repeat.completed` stay as they were, and the job is due
+  again at the next start. A run still marked running at boot (a crash, a kill) is recorded as
+  failed.
 - A job never overlaps itself. Needletail runs an agent job only when it gets a turn slot (the
   API's cap of two turns): a busy agent leaves the job due for the next tick, before anything of it
   (monitor, script) has run.

@@ -193,6 +193,7 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 				return false, fmt.Errorf("job %s cannot run: %v (update its schedule)", a.JobID, err)
 			}
 			j.Set("next_run_at", s.at(now))
+			s.request(a.JobID) // running: once this run ends
 			kick = true
 		case "update":
 			if err := s.apply(j, a, now, false); err != nil {
