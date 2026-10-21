@@ -135,4 +135,5 @@ func NewRuntime() engine.Runtime { return runtime{} }
 var (
 	_ engine.Engine           = (*Needletail)(nil)
 	_ engine.VersionValidator = (*Needletail)(nil)
+	_ engine.ScheduleDropper  = (*Needletail)(nil)
 )

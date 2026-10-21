@@ -3,6 +3,7 @@ package needletail
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/instance"
@@ -59,5 +60,22 @@ func TestSchedules(t *testing.T) {
 	}
 	if !status[0].Failed || status[0].FailureStreak != 2 || status[0].LastError != "exit 1" || status[1].Failed || status[1].NextRunAt.IsZero() {
 		t.Errorf("status = %+v", status)
+	}
+}
+
+// DropSchedules removes the named jobs from either shape, keeping the rest as written.
+func TestDropSchedules(t *testing.T) {
+	n := &Needletail{}
+	obj := `{"v": 1, "jobs": [{"id": "a", "prompt": "<keep>"}, {"id": "b"}, {"id": 7}]}`
+	out, err := n.DropSchedules([]byte(obj), []string{"b", "7"})
+	if err != nil || !strings.Contains(string(out), `"<keep>"`) || strings.Contains(string(out), `"b"`) || strings.Contains(string(out), "7") || !strings.HasPrefix(string(out), "{\n  \"v\": 1,") {
+		t.Errorf("object: %s %v", out, err)
+	}
+	out, err = n.DropSchedules([]byte(`[{"id": "a"}, {"id": "b"}]`), []string{"a"})
+	if err != nil || strings.Contains(string(out), `"a"`) || !strings.Contains(string(out), `"b"`) {
+		t.Errorf("list: %s %v", out, err)
+	}
+	if out, _ := n.DropSchedules([]byte(obj), nil); string(out) != obj {
+		t.Errorf("no ids changed the file: %s", out)
 	}
 }

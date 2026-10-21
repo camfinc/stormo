@@ -205,6 +205,37 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 		t.Errorf("after the rehydrate: %v (turns %d)", j, len(turns.inputs))
 	}
 	t.Logf("agent job %s: %s %s, next %v; proposal runtime jobs %v", mine, j["last_status"], j["schedule"], j["next_run_at"], meta.RuntimeJobs)
+
+	// 6. A reviewer rejects the agent's job (review records it in the watermark): the next build
+	// carries it, and the real rehydrate drops it from the napped file (Engine ScheduleDropper),
+	// while the repo's job stays.
+	if _, err := loop.NapOnce(loop.NapOptions{Agent: "atlas", Unit: agent.Unit, Engine: eng, Home: home2, Store: store, Instance: "nt-2", BaselineDir: base, Now: clock}); err != nil {
+		t.Fatal(err)
+	}
+	wmPath := filepath.Join(root, "agents", "atlas", "learnings", "watermark.json")
+	wm := map[string]any{}
+	if body, err := os.ReadFile(wmPath); err == nil {
+		_ = json.Unmarshal(body, &wm)
+	}
+	wm["rejectedJobs"] = []string{mine}
+	body, _ := json.Marshal(wm)
+	_ = os.MkdirAll(filepath.Dir(wmPath), 0o755)
+	if err := os.WriteFile(wmPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.RemoveAll(base)
+	if _, err := build.Agent(inst, "atlas", build.Options{Out: base, Target: manifest.AWS}); err != nil {
+		t.Fatal(err)
+	}
+	home3 := filepath.Join(tmp, "home3")
+	rehydrate(home3)
+	final := jobsIn(t, home3)
+	if _, ok := final[mine]; ok {
+		t.Errorf("the rejected job came back: %v", final[mine])
+	}
+	if _, ok := final[repoJob.ID]; !ok {
+		t.Errorf("the repo job was dropped too: %v", final)
+	}
 }
 
 // serve runs a due job on its own: through the API's turn slots, in a cron session the core's
