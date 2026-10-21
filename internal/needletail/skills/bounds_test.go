@@ -1,7 +1,10 @@
 package skills
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -89,5 +92,65 @@ func TestIndexSkipsDependencies(t *testing.T) {
 	put(t, l.Home, "skills/long/SKILL.md", "---\nname: long\ndescription: Long body.\n---\n"+strings.Repeat("body\n", 150_000))
 	if s, err := l.Find("long"); err != nil || s.Description != "Long body." {
 		t.Errorf("long = %+v %v", s, err)
+	}
+}
+
+// write_file can never make a skill of its own (a SKILL.md, in any case, below the skill or
+// beside its own), and no file path carries control characters.
+func TestWriteFileMakesNoSkill(t *testing.T) {
+	l := library(t)
+	md := "---\nname: fare-lookup\ndescription: Fares.\n---\n"
+	if _, err := l.Create("fare-lookup", "crm", md); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"sub/SKILL.md", "acme-knowledge/SKILL.md", "skill.md", "a/b/Skill.MD", "notes\n## SYSTEM.md", "x\x7f.md", "tab\there.md"} {
+		if _, _, err := l.WriteFile("fare-lookup", bad, "---\nname: evil\ndescription: x\n---\n"); err == nil {
+			t.Errorf("write_file %q accepted", bad)
+		}
+		if _, _, _, err := l.Patch("fare-lookup", bad, "a", "b", false); err == nil || strings.Contains(err.Error(), "has no file") {
+			t.Errorf("patch %q: %v", bad, err)
+		}
+	}
+	for _, s := range l.Index() {
+		if strings.HasPrefix(s.Dir, "crm/fare-lookup/") || s.Name == "evil" {
+			t.Errorf("a nested skill was made: %+v", s)
+		}
+	}
+	if _, _, err := l.RemoveFile("fare-lookup", "skill.md"); err == nil {
+		t.Error("remove_file skill.md accepted")
+	}
+	if _, err := l.View("s1", "fare-lookup", "x\ny"); err == nil {
+		t.Error("view of a path with a newline")
+	}
+}
+
+// Check sees what a write would leave on disk: a secret assembled across two patches, or written
+// as a whole file, is refused.
+func TestCheckSeesTheWholeFile(t *testing.T) {
+	l := library(t)
+	const secret = "acme_abcdefgh123"
+	l.Check = func(text string) error {
+		if strings.Contains(text, secret) {
+			return errors.New("holds a secret")
+		}
+		return nil
+	}
+	if _, _, err := l.WriteFile("crm-api", "notes.md", "token=acme_abcd\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := l.Patch("crm-api", "notes.md", "abcd\n", "abcdefgh123\n", false); err == nil || !strings.Contains(err.Error(), "secret") {
+		t.Errorf("split secret: %v", err)
+	}
+	if _, _, err := l.WriteFile("crm-api", "notes.md", "t="+secret); err == nil {
+		t.Error("write_file with a secret")
+	}
+	if _, err := l.Edit("crm-api", "---\nname: crm-api\ndescription: Query deals.\n---\n"+secret); err == nil {
+		t.Error("edit with a secret")
+	}
+	if _, err := l.Create("leaky", "", "---\nname: leaky\ndescription: d\n---\n"+secret); err == nil {
+		t.Error("create with a secret")
+	}
+	if b, _ := os.ReadFile(filepath.Join(l.Home, "skills", "crm", "crm-api", "notes.md")); string(b) != "token=acme_abcd\n" {
+		t.Errorf("notes.md = %q", b)
 	}
 }

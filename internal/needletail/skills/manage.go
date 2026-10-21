@@ -150,6 +150,9 @@ func (l *Library) Create(name, category, content string) (Skill, error) {
 	if err := checkSkillMD([]byte(content), nil, name, name, true, true); err != nil {
 		return Skill{}, err
 	}
+	if err := l.check("SKILL.md", []byte(content)); err != nil {
+		return Skill{}, err
+	}
 	if err := l.write("skills/"+dir+"/SKILL.md", []byte(content)); err != nil {
 		return Skill{}, err
 	}
@@ -177,6 +180,9 @@ func (l *Library) Edit(name, content string) (Skill, error) {
 	if err := checkSkillMD([]byte(content), prev, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
 		return Skill{}, err
 	}
+	if err := l.check("SKILL.md", []byte(content)); err != nil {
+		return Skill{}, err
+	}
 	if err := l.write(s.Path, []byte(content)); err != nil {
 		return Skill{}, err
 	}
@@ -193,10 +199,34 @@ func fileOf(s Skill, file string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := notSkillMD(rel); err != nil {
+		return "", err
+	}
 	if strings.HasSuffix(rel, ".luau") {
 		return "", errors.New("Luau tools (.luau) are not supported by this runtime yet")
 	}
 	return rel, nil
+}
+
+// notSkillMD refuses a file other than the skill's own SKILL.md named SKILL.md in any case: below
+// the skill it would make a skill of its own, bypassing create's checks (and on a case-insensitive
+// filesystem skill.md is the skill's own).
+func notSkillMD(rel string) error {
+	if strings.EqualFold(path.Base(rel), "SKILL.md") {
+		return fmt.Errorf("%s: a file named SKILL.md would be a skill of its own; make a new skill with create, and change this one's SKILL.md with edit or patch", rel)
+	}
+	return nil
+}
+
+// check refuses body for rel when l.Check does.
+func (l *Library) check(rel string, body []byte) error {
+	if l.Check == nil {
+		return nil
+	}
+	if err := l.Check(string(body)); err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	return nil
 }
 
 // inNested refuses a file of s that lies in a skill nested inside it.
@@ -262,6 +292,9 @@ func (l *Library) Patch(name, file, old, repl string, all bool) (Skill, string, 
 			return Skill{}, "", 0, err
 		}
 	}
+	if err := l.check(rel, out); err != nil {
+		return Skill{}, "", 0, err
+	}
 	if err := l.write("skills/"+s.Dir+"/"+rel, out); err != nil {
 		return Skill{}, "", 0, err
 	}
@@ -294,6 +327,9 @@ func (l *Library) WriteFile(name, file, content string) (Skill, string, error) {
 	if len(content) > MaxFile {
 		return Skill{}, "", fmt.Errorf("%s would be over %d bytes", rel, MaxFile)
 	}
+	if err := l.check(rel, []byte(content)); err != nil {
+		return Skill{}, "", err
+	}
 	if err := l.write("skills/"+s.Dir+"/"+rel, []byte(content)); err != nil {
 		return Skill{}, "", err
 	}
@@ -319,6 +355,9 @@ func (l *Library) RemoveFile(name, file string) (Skill, string, error) {
 	}
 	if rel == "SKILL.md" {
 		return Skill{}, "", errors.New("SKILL.md is the skill: delete the skill instead")
+	}
+	if err := notSkillMD(rel); err != nil {
+		return Skill{}, "", err
 	}
 	if err := l.inNested(s, rel); err != nil {
 		return Skill{}, "", err

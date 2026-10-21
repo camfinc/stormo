@@ -40,6 +40,9 @@ type Library struct {
 	// only be lost at the next build.
 	Generated []string
 	Now       func() time.Time
+	// Check, when set, refuses text a skill file may not hold (the runtime's secret values): it
+	// sees every file skill_manage would write as a whole, so text split across calls is caught.
+	Check func(text string) error
 
 	mu     sync.Mutex
 	viewed map[string]string // session → dir of the skill it last viewed
@@ -130,14 +133,14 @@ func (l *Library) Resolve(s Skill, text string) string {
 }
 
 // cleanRel is a file path inside a skill, cleaned: relative, never leaving the skill, and with no
-// hidden segment (which also refuses "..").
+// hidden segment (which also refuses "..") or control character.
 func cleanRel(file string) (string, error) {
 	f := filepath.ToSlash(strings.TrimSpace(file))
 	if f == "" {
 		return "", errors.New("file_path is empty")
 	}
-	if strings.ContainsRune(f, 0) {
-		return "", errors.New("file_path contains NUL")
+	if strings.ContainsFunc(f, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", errors.New("file_path contains a control character")
 	}
 	if strings.HasPrefix(f, "/") {
 		return "", fmt.Errorf("%s: give the path relative to the skill's directory", file)

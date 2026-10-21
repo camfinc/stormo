@@ -122,15 +122,28 @@ type manageArgs struct {
 	ReplaceAll  bool   `json:"replace_all"`
 }
 
-// noSecrets refuses text holding a secret value the runtime knows: a skill is reviewed into git
-// and read by people, so it names env vars instead.
-func noSecrets(env *Env, texts ...string) error {
-	if env.Redact == nil {
+// errSecret is the refusal of text holding a secret value the runtime knows: a skill is reviewed
+// into git and read by people, so it names env vars instead.
+var errSecret = errors.New("the text holds a secret value: write the env var's name (e.g. $CRM_API_TOKEN) instead")
+
+// SecretCheck is a skills.Library's Check for a runtime's redactor: it refuses text holding a
+// secret value redact knows.
+func SecretCheck(redact func(string) string) func(string) error {
+	return func(text string) error {
+		if redact != nil && text != "" && redact(text) != text {
+			return errSecret
+		}
 		return nil
 	}
+}
+
+// noSecrets refuses a call whose arguments hold a secret value the runtime knows (the library's
+// Check sees the files they would leave).
+func noSecrets(env *Env, texts ...string) error {
+	check := SecretCheck(env.Redact)
 	for _, t := range texts {
-		if t != "" && env.Redact(t) != t {
-			return errors.New("the text holds a secret value: write the env var's name (e.g. $CRM_API_TOKEN) instead")
+		if err := check(t); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -145,7 +158,7 @@ func runSkillManage(_ context.Context, env *Env, raw json.RawMessage) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	if err := noSecrets(env, a.Content, a.FileContent, a.NewString); err != nil {
+	if err := noSecrets(env, a.Name, a.Category, a.FilePath, a.Content, a.FileContent, a.NewString); err != nil {
 		return nil, err
 	}
 	done := func(action string, s skills.Skill, extra map[string]any) map[string]any {

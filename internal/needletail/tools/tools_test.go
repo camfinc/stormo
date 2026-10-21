@@ -328,7 +328,7 @@ func TestRegistryAddWhileInUse(t *testing.T) {
 func TestSkillTools(t *testing.T) {
 	r, env := setup(t)
 	env.Session = "s1"
-	env.Skills = &skills.Library{Home: env.Home, Generated: []string{"acme-knowledge"}}
+	env.Skills = &skills.Library{Home: env.Home, Generated: []string{"acme-knowledge"}, Check: SecretCheck(env.Redact)}
 	for rel, body := range map[string]string{
 		"skills/crm/crm-api/SKILL.md":         "---\nname: crm-api\ndescription: Query deals.\n---\nRun bash ${SKILL_DIR}/scripts/deals.sh\n",
 		"skills/crm/crm-api/scripts/deals.sh": "echo \"deals from $SKILL_DIR\"\n",
@@ -380,6 +380,22 @@ func TestSkillTools(t *testing.T) {
 	}
 	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "write_file", "name": "deal-digest", "file_path": "digest.sh", "file_content": "echo token=acme_abcdefgh123"}); !failed || !strings.Contains(m["error"].(string), "secret") {
 		t.Errorf("secret written = %v", m)
+	}
+	// a secret anywhere in the call (a path, a name) or assembled across two patches is refused
+	for _, args := range []map[string]any{
+		{"action": "write_file", "name": "deal-digest", "file_path": "acme_abcdefgh123.md", "file_content": "x"},
+		{"action": "create", "name": "acme_abcdefgh123", "content": md},
+		{"action": "create", "name": "other", "category": "acme_abcdefgh123", "content": md},
+	} {
+		if m, failed := call(t, r, env, "skill_manage", args); !failed || !strings.Contains(m["error"].(string), "secret") {
+			t.Errorf("secret in %v = %v", args, m)
+		}
+	}
+	if _, failed := call(t, r, env, "skill_manage", map[string]any{"action": "write_file", "name": "deal-digest", "file_path": "notes.md", "file_content": "token=acme_abcd\n"}); failed {
+		t.Error("write notes.md")
+	}
+	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "patch", "name": "deal-digest", "file_path": "notes.md", "old_string": "abcd\n", "new_string": "abcdefgh123\n"}); !failed || !strings.Contains(m["error"].(string), "secret") {
+		t.Errorf("split secret = %v", m)
 	}
 	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "patch", "name": "acme-knowledge", "old_string": "Knowledge", "new_string": "x"}); !failed || !strings.Contains(m["error"].(string), "generated") {
 		t.Errorf("generated patched = %v", m)

@@ -290,6 +290,10 @@ func TestTerminalEnvClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// skill_manage's library refuses a file that would hold a secret the runtime knows
+	if rt.agent.Env.Skills.Check == nil || rt.agent.Env.Skills.Check("token "+crmToken) == nil || rt.agent.Env.Skills.Check("plain") != nil {
+		t.Error("the skills library does not check for secrets")
+	}
 	t.Setenv("OPENROUTER_API_KEY", cloudKey)
 	env := strings.Join(rt.agent.Env.Environ(), "\n")
 	if strings.Contains(env, cloudKey) || strings.Contains(env, apiKey) || !strings.Contains(env, "CRM_API_TOKEN="+crmToken) || !strings.Contains(env, "SWARM_CORE_KEY=") {
