@@ -1,5 +1,6 @@
 // Package tools is the runtime's built-in tools (docs/needletail.md §4.5). Names stay
-// Hermes-compatible (terminal, read_file, write_file, patch, search_files, memory) so bench files,
+// Hermes-compatible (terminal, read_file, write_file, patch, search_files, memory, skills_list,
+// skill_view, skill_manage) so bench files,
 // schedules' tool lists and the core's wake text keep working when an agent switches engines.
 //
 // Every result is a JSON object; a failure is {"error": "..."} so the model can read and recover.
@@ -18,6 +19,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
+	"github.com/camfinc/stormo/internal/needletail/skills"
 )
 
 // Env is what a tool call may use.
@@ -29,6 +31,8 @@ type Env struct {
 	// Environ is the terminal's environment (the scrubbed process env).
 	Environ func() []string
 	Memory  *memory.Store
+	// Skills is the home's skills (the skill tools, and the terminal's SKILL_DIR).
+	Skills *skills.Library
 	// Redact masks secret values in results.
 	Redact func(string) string
 	// LongestSecret is the length of the longest text Redact masks: the terminal keeps that much
@@ -72,9 +76,10 @@ func (r *Registry) Add(tools ...Tool) {
 	}
 }
 
-// Builtins are the M1 built-in tools.
+// Builtins are the built-in tools.
 func Builtins() []Tool {
-	return []Tool{terminalTool(), readFileTool(), writeFileTool(), patchTool(), searchFilesTool(), memoryTool()}
+	return []Tool{terminalTool(), readFileTool(), writeFileTool(), patchTool(), searchFilesTool(), memoryTool(),
+		skillsListTool(), skillViewTool(), skillManageTool()}
 }
 
 // Names is the tools' names, sorted.

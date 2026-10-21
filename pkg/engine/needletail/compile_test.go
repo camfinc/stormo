@@ -162,3 +162,29 @@ func TestGrantsRender(t *testing.T) {
 		t.Error("exec:bash granted")
 	}
 }
+
+// The build's generated skills reach the runtime (needletail.yaml skills.generated), which never
+// lets skill_manage change them.
+func TestGeneratedSkills(t *testing.T) {
+	got := generatedSkills(map[string]string{
+		"acme-knowledge/SKILL.md":            "x",
+		"acme-knowledge/references/agent.md": "x",
+		"acme-shared-docs/SKILL.md":          "x",
+		"acme-shared-docs/scripts/s.py":      "x",
+		"loose/notes.md":                     "x",
+	})
+	if strings.Join(got, ",") != "acme-knowledge,acme-shared-docs,loose" {
+		t.Errorf("generated = %v", got)
+	}
+	if got := generatedSkills(nil); len(got) != 0 {
+		t.Errorf("none = %v", got)
+	}
+	var cfg wire.Config
+	body, err := os.ReadFile(filepath.Join("testdata", "home", "needletail.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(body, &cfg); err != nil || strings.Join(cfg.Skills.Generated, ",") != "acme-knowledge,acme-shared-docs" {
+		t.Errorf("golden skills = %+v %v", cfg.Skills, err)
+	}
+}

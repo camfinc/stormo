@@ -118,6 +118,21 @@ func writeFile(env *Env, real string, body []byte, mode os.FileMode) error {
 	return f.Close()
 }
 
+// noteSkillRead counts a read of a skill's SKILL.md with read_file as a view of it (skill_view
+// is the tool for it, but a model may use either).
+func noteSkillRead(env *Env, real string) {
+	if env.Skills == nil || filepath.Base(real) != "SKILL.md" {
+		return
+	}
+	rel, ok := env.Sandbox.HomeRel(real)
+	if !ok || !strings.HasPrefix(rel, "skills/") {
+		return
+	}
+	if s, err := env.Skills.Find(rel); err == nil && s.Path == rel {
+		env.Skills.Viewed(env.Session, s)
+	}
+}
+
 func noteShared(ctx context.Context, env *Env, real string) {
 	if env.SharedWrite != nil && env.Sandbox.InShared(real) {
 		env.SharedWrite(ctx, real)
@@ -149,7 +164,11 @@ func readFileTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			return readLines(real, env.Sandbox.Display(real), a.Offset, a.Limit)
+			out, err := readLines(real, env.Sandbox.Display(real), a.Offset, a.Limit)
+			if err == nil {
+				noteSkillRead(env, real)
+			}
+			return out, err
 		},
 	}
 }

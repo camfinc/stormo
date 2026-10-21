@@ -224,7 +224,16 @@ type Config struct {
 	Core      *CoreConfig  `json:"core,omitempty" yaml:"core,omitempty"`
 	Channels  []string     `json:"channels,omitempty" yaml:"channels,omitempty"`
 	Memory    MemoryConfig `json:"memory" yaml:"memory"`
+	Skills    SkillsConfig `json:"skills,omitempty" yaml:"skills,omitempty"`
 	Luau      LuauConfig   `json:"luau" yaml:"luau"`
+}
+
+// SkillsConfig is what the runtime is told about the home's skills. Generated are the skill dirs
+// (relative to skills/) the build generates from the instance, such as its knowledge and
+// shared-docs skills: the agent may use them but skill_manage never changes them (the dream never
+// proposes them, so a change would only be lost at the next build).
+type SkillsConfig struct {
+	Generated []string `json:"generated,omitempty" yaml:"generated,omitempty"`
 }
 
 // Endpoint is an OpenAI chat-completions endpoint; KeyEnv names the env var holding its key.

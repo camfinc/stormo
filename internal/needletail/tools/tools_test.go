@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
+	"github.com/camfinc/stormo/internal/needletail/skills"
 )
 
 func setup(t *testing.T) (*Registry, *Env) {
@@ -158,7 +160,7 @@ func TestMemoryAndErrors(t *testing.T) {
 	if out, failed := panicky.Call(context.Background(), env, "boom", ""); !failed || !strings.Contains(out, "crashed") {
 		t.Errorf("panic = %s", out)
 	}
-	if names := r.Names(); len(names) != 6 || names[0] != "memory" {
+	if names := r.Names(); !slices.Equal(names, []string{"memory", "patch", "read_file", "search_files", "skill_manage", "skill_view", "skills_list", "terminal", "write_file"}) {
 		t.Errorf("names = %v", names)
 	}
 	if f := r.Filter([]string{"terminal", "ghost"}); len(f) != 1 || f[0].Name != "terminal" {
@@ -318,5 +320,89 @@ func TestRegistryAddWhileInUse(t *testing.T) {
 	}
 	if len(r.Names()) != len(Builtins())+50 {
 		t.Errorf("names %d", len(r.Names()))
+	}
+}
+
+// The skill tools: list, view (with ${SKILL_DIR} resolved), the agent's own changes, the
+// terminal run from a skill, and the usage they leave in skills/.usage.json.
+func TestSkillTools(t *testing.T) {
+	r, env := setup(t)
+	env.Session = "s1"
+	env.Skills = &skills.Library{Home: env.Home, Generated: []string{"acme-knowledge"}}
+	for rel, body := range map[string]string{
+		"skills/crm/crm-api/SKILL.md":         "---\nname: crm-api\ndescription: Query deals.\n---\nRun bash ${SKILL_DIR}/scripts/deals.sh\n",
+		"skills/crm/crm-api/scripts/deals.sh": "echo \"deals from $SKILL_DIR\"\n",
+		"skills/acme-knowledge/SKILL.md":      "---\nname: acme-knowledge\ndescription: Knowledge.\n---\n",
+	} {
+		p := filepath.Join(env.Home, filepath.FromSlash(rel))
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, []byte(body), 0o644)
+	}
+	dir := filepath.Join(env.Home, "skills", "crm", "crm-api")
+
+	m, failed := call(t, r, env, "skills_list", map[string]any{})
+	if failed || m["count"] != float64(2) {
+		t.Errorf("list = %v", m)
+	}
+	m, failed = call(t, r, env, "skill_view", map[string]any{"name": "crm-api"})
+	if failed || !strings.Contains(m["content"].(string), "bash "+dir+"/scripts/deals.sh") || m["skill_dir"] != dir {
+		t.Errorf("view = %v", m)
+	}
+	// the session viewed crm-api: a command using SKILL_DIR runs from it
+	m, failed = call(t, r, env, "terminal", map[string]any{"command": `bash "$SKILL_DIR/scripts/deals.sh"`})
+	if failed || m["output"] != "deals from "+dir+"\n" {
+		t.Errorf("terminal from the viewed skill = %v", m)
+	}
+	m, _ = call(t, r, env, "terminal", map[string]any{"command": "echo [$SKILL_DIR]"})
+	if !strings.Contains(m["output"].(string), dir) {
+		t.Errorf("SKILL_DIR = %v", m)
+	}
+	// another session has viewed nothing
+	env2 := *env
+	env2.Session = "s2"
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "echo $SKILL_DIR"}); !failed || !strings.Contains(m["error"].(string), "pass skill") {
+		t.Errorf("no skill = %v", m)
+	}
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "echo [$SKILL_DIR]", "skill": "crm/crm-api"}); failed || !strings.Contains(m["output"].(string), dir) {
+		t.Errorf("explicit skill = %v", m)
+	}
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "bash skills/crm/crm-api/scripts/deals.sh"}); failed || !strings.Contains(m["output"].(string), dir) {
+		t.Errorf("by path = %v", m)
+	}
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "echo plain"}); failed || m["output"] != "plain\n" {
+		t.Errorf("plain = %v", m)
+	}
+
+	md := "---\nname: deal-digest\ndescription: Digest the week's deals.\n---\nRun ${SKILL_DIR}/digest.sh\n"
+	m, failed = call(t, r, env, "skill_manage", map[string]any{"action": "create", "name": "deal-digest", "category": "crm", "content": md})
+	if failed || m["dir"] != "crm/deal-digest" || m["path"] != "skills/crm/deal-digest/SKILL.md" {
+		t.Errorf("create = %v", m)
+	}
+	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "write_file", "name": "deal-digest", "file_path": "digest.sh", "file_content": "echo token=acme_abcdefgh123"}); !failed || !strings.Contains(m["error"].(string), "secret") {
+		t.Errorf("secret written = %v", m)
+	}
+	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "patch", "name": "acme-knowledge", "old_string": "Knowledge", "new_string": "x"}); !failed || !strings.Contains(m["error"].(string), "generated") {
+		t.Errorf("generated patched = %v", m)
+	}
+	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "write_file", "name": "deal-digest", "file_path": "../crm-api/SKILL.md", "file_content": "x"}); !failed {
+		t.Errorf("traversal = %v", m)
+	}
+	if m, failed := call(t, r, env, "skill_manage", map[string]any{"action": "rename", "name": "deal-digest"}); !failed {
+		t.Errorf("unknown action = %v", m)
+	}
+	// read_file of a SKILL.md counts as a view
+	if _, failed := call(t, r, env, "read_file", map[string]any{"path": "skills/crm/deal-digest/SKILL.md"}); failed {
+		t.Error("read_file")
+	}
+	u, _ := env.Skills.Usage()
+	if e := u["crm-api"]; e["view_count"] != float64(1) || e["use_count"] != float64(5) {
+		t.Errorf("crm-api usage = %v", e)
+	}
+	if e := u["deal-digest"]; e["created_by"] != "agent" || e["view_count"] != float64(1) {
+		t.Errorf("deal-digest usage = %v", e)
+	}
+	// the system prompt's index shows the new skill (it is read from the home every turn)
+	if s, err := env.Skills.Find("deal-digest"); err != nil || s.Description != "Digest the week's deals." {
+		t.Errorf("index = %+v %v", s, err)
 	}
 }

@@ -134,6 +134,35 @@ func readTree(dir, prefix string, out map[string][]byte, skip []string) error {
 	})
 }
 
+// generatedSkills is the skill dirs the build generates (the knowledge files' skills, keyed by
+// their path under skills/): each dir holding a SKILL.md among them, else a file's top directory.
+// The runtime refuses to change them (needletail.yaml skills.generated).
+func generatedSkills(knowledge map[string]string) []string {
+	dirs := map[string]bool{}
+	for p := range knowledge {
+		if strings.HasSuffix(p, "/SKILL.md") {
+			dirs[strings.TrimSuffix(p, "/SKILL.md")] = true
+		}
+	}
+	for p := range knowledge {
+		covered := false
+		for d := range dirs {
+			if strings.HasPrefix(p, d+"/") {
+				covered = true
+			}
+		}
+		if top, _, ok := strings.Cut(p, "/"); !covered && ok {
+			dirs[top] = true
+		}
+	}
+	out := make([]string, 0, len(dirs))
+	for d := range dirs {
+		out = append(out, d)
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Compile returns the baseline files relative to the engine home. Skills stay in Stormo's form
 // (the runtime resolves ${SKILL_DIR} itself). A new engine has no format 0, so there is no legacy
 // schedules file to reconcile: schedules come from agent.yaml only.
@@ -156,7 +185,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	if err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
-	cfg, err := yaml.Marshal(renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac))
+	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
+	rendered.Skills.Generated = generatedSkills(ctx.Knowledge)
+	cfg, err := yaml.Marshal(rendered)
 	if err != nil {
 		return nil, err
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
+	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -120,6 +121,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		CommandTimeout: cfg.CommandTimeout(),
 		Environ:        func() []string { return sec.Clean(os.Environ()) },
 		Memory:         mem,
+		Skills:         &skills.Library{Home: cfg.Home, Generated: cfg.Skills.Generated},
 		Redact:         red.Redact,
 		LongestSecret:  red.Longest,
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
