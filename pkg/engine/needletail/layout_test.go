@@ -55,7 +55,9 @@ func TestClassify(t *testing.T) {
 	}
 	// The runtime's own paths, by class.
 	for p, class := range map[string]engine.FileClass{"sessions/x.jsonl": engine.Raw, "logs/audit/s.jsonl": engine.Raw,
-		"skills/a/b/tools/t.luau": engine.Learning, "state/needletail/idem.json": engine.State} {
+		"skills/a/b/tools/t.luau": engine.Learning, "state/needletail/idem.json": engine.State,
+		// a monitor's output and a run's reply are client data
+		"state/needletail/monitor/j.out": engine.Raw, "state/needletail/jobs/j/t.md": engine.Raw} {
 		if r := engine.Classify(p, rules); r == nil || r.Class != class {
 			t.Errorf("%s: want %s, got %v", p, class, r)
 		}

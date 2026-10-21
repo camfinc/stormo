@@ -88,13 +88,13 @@
   },
   {
    "path": "state/needletail/monitor/a1.out",
-   "class": "state",
-   "glob": "state/needletail/**"
+   "class": "raw",
+   "glob": "state/needletail/monitor/**"
   },
   {
    "path": "state/needletail/jobs/a1/20261012T090000.000.md",
-   "class": "state",
-   "glob": "state/needletail/**"
+   "class": "raw",
+   "glob": "state/needletail/jobs/**"
   },
   {
    "path": ".needletail-tmp/.jobs.json.tmp-123",

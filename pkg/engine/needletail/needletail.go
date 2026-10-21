@@ -53,6 +53,10 @@ func New(inst *instance.Instance) *Needletail {
 			// raw: conversation history and the Luau audit log (PII)
 			{Class: engine.Raw, Glob: "sessions/**"},
 			{Class: engine.Raw, Glob: "logs/audit/**"},
+			// a monitor's last output and each run's record hold what jobs fetched and replied:
+			// client data, before the state rule that would claim them
+			{Class: engine.Raw, Glob: "state/needletail/jobs/**"},
+			{Class: engine.Raw, Glob: "state/needletail/monitor/**"},
 			// state: tool state and the runtime's own state
 			{Class: engine.State, Glob: sd + "/**"},
 			{Class: engine.State, Glob: "state/needletail/**"},

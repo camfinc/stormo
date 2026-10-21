@@ -411,8 +411,8 @@ return function(args) ... end
 | Class | Paths |
 |---|---|
 | Learning | `memories/MEMORY.md`, `memories/USER.md`, `skills/.usage.json`, `skills/[!.]*/**` (including `tools/*.luau`), `cron/jobs.json`, `needletail.yaml` (napped but rebuilt from the baseline on every boot, as Hermes' `config.yaml`: a changed manifest or grant reaches the agent, and nothing the agent writes into it survives a restart) |
-| Raw (PII) | `sessions/**`, `logs/audit/**` |
-| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, schedule run records, Slack cursor) |
+| Raw (PII) | `sessions/**`, `logs/audit/**`, `state/needletail/jobs/**` (schedule run records) and `state/needletail/monitor/**` (monitor outputs): what jobs fetched and replied is client data |
+| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, Slack state) |
 
 `SOUL.md` and `scripts/**` are rebuilt from the baseline. `.needletail-tmp/` is claimed by no rule, and `serve` empties it at boot before anything writes through it (`oneshot`, which may run beside a serving runtime, does not): `skill_manage` and the usage counts write their temporary files there before renaming them into `skills/`, and so do the session header and `sessions/index.json` rewrites, `state/needletail/idem.json` and the scheduler's files (`cron/jobs.json`, monitor snapshots, run outputs) (a temporary file beside a skill file would be claimed by `skills/[!.]*/**`, so a nap taken mid-write, or a crash before the rename, would keep it as part of the skill). A deleted skill is moved there in one rename before its files are removed, so a nap never keeps half of it.
 
