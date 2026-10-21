@@ -172,7 +172,7 @@ An OpenAI chat-completions client with streaming SSE.
 
 **Other**
 - `reasoning_effort` comes from `limits.reasoning`.
-- Tool call ids are returned verbatim, so the core can replay encrypted reasoning.
+- Tool call ids are returned verbatim, so the core can replay encrypted reasoning. A call that comes without one gets `call_<12 random hex>_<n>`, unique per response, so the core's call spans and live calls never mix two steps' calls.
 
 ### 4.4 Loop (`loop`)
 

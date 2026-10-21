@@ -275,3 +275,28 @@ func TestToolCallsWithoutIndex(t *testing.T) {
 		t.Errorf("calls =\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// A provider that sends calls with no id: each gets one that no other response of the process
+// reuses, so the core's call spans and live calls stay apart across a turn's steps.
+func TestSynthesizedCallIDsAreUnique(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"terminal","arguments":"{}"}},{"index":1,"function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`, ``,
+	}, "\n\n")
+	seen := map[string]bool{}
+	for range 3 {
+		resp, f := readStream(strings.NewReader(body), func() {})
+		if f != nil {
+			t.Fatal(f)
+		}
+		if len(resp.ToolCalls) != 2 {
+			t.Fatalf("calls %+v", resp.ToolCalls)
+		}
+		for _, c := range resp.ToolCalls {
+			if !strings.HasPrefix(c.ID, "call_") || seen[c.ID] {
+				t.Errorf("id %q reused or malformed (seen %v)", c.ID, seen)
+			}
+			seen[c.ID] = true
+		}
+	}
+}

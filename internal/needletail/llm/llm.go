@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -568,10 +570,15 @@ func readStream(body io.Reader, alive func()) (*Response, *Failure) {
 		return nil, &Failure{Code: "incomplete_stream", Message: msg}
 	}
 	resp.Content, resp.Reasoning = content.String(), reasoning.String()
+	prefix := ""
 	for n, i := range order {
 		c := calls[i]
 		if c.ID == "" {
-			c.ID = fmt.Sprintf("call_%d", n)
+			// The core keys call spans and live calls by id: one unique to this response.
+			if prefix == "" {
+				prefix = randomID()
+			}
+			c.ID = fmt.Sprintf("call_%s_%d", prefix, n)
 		}
 		resp.ToolCalls = append(resp.ToolCalls, *c)
 	}
@@ -579,6 +586,13 @@ func readStream(body io.Reader, alive func()) (*Response, *Failure) {
 		resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	}
 	return resp, nil
+}
+
+// randomID is 12 random hex digits.
+func randomID() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // ContextLength is the endpoint's context window for its model, from GET {base}/models
