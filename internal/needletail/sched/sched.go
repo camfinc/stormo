@@ -45,6 +45,8 @@ const (
 	maxShown             = 8000      // characters of the monitor's output in the prompt
 	failureNudgeAt       = 3         // failures in a row that add a "worth a review" line
 	maxScriptPrompt      = 16 << 10  // bytes of a pre-run script's output in the prompt
+	// MaxGates is how many job scripts (monitors, pre-run scripts, script-only jobs) run at once.
+	MaxGates = 2
 )
 
 // Turns hands out turn slots (api.Server.Reserve), shared with the API's turns.
@@ -96,6 +98,7 @@ type Scheduler struct {
 	runCtx                context.Context
 	cancelRuns            context.CancelFunc
 	kick                  chan struct{}
+	gates                 chan struct{} // the scripts running before (or as) a job: MaxGates
 }
 
 // New builds a scheduler; Start runs it.
@@ -122,7 +125,7 @@ func New(o Options) *Scheduler {
 		o.Env.Home = o.Home
 	}
 	s := &Scheduler{o: o, path: filepath.Join(o.Home, "cron", "jobs.json"), state: filepath.Join(o.Home, "state", "needletail"),
-		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1)}
+		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1), gates: make(chan struct{}, MaxGates)}
 	s.out = filepath.Join(s.state, "jobs")
 	s.runCtx, s.cancelRuns = context.WithCancel(context.Background())
 	return s
@@ -482,12 +485,28 @@ func (s *Scheduler) start(id string, now time.Time) {
 		return
 	}
 	session := fmt.Sprintf("cron-%s-%s", safeID(id), now.UTC().Format("20060102T150405"))
-	var slot Slot
-	if !job.Bool("no_agent") {
-		if s.o.Turns == nil {
-			s.warnOnce("turns:"+id, fmt.Sprintf("job %s: no agent to run it", id))
+	agent, gated := !job.Bool("no_agent"), hasGate(job)
+	if agent && s.o.Turns == nil {
+		s.warnOnce("turns:"+id, fmt.Sprintf("job %s: no agent to run it", id))
+		return
+	}
+	// A job with a script (a monitor, a pre-run script, a script-only job) runs it under the
+	// gates' own cap, holding no turn slot: a script may take an hour, and the agent's two turns
+	// are for turns. Its turn slot is taken once the gate says the agent runs (execute).
+	release := func() {}
+	if gated {
+		select {
+		case s.gates <- struct{}{}:
+			var once sync.Once
+			release = func() { once.Do(func() { <-s.gates }) }
+		default:
+			s.warnOnce("gates:"+id, fmt.Sprintf("job %s is due but %d job scripts are running; next tick tries again", id, cap(s.gates)))
 			return
 		}
+		s.warnOnce("gates:"+id, "")
+	}
+	var slot Slot
+	if agent && !gated {
 		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: job.Name()})
 		if err != nil {
 			s.warnOnce("busy:"+id, fmt.Sprintf("job %s is due but not started: %v; next tick tries again", id, err))
@@ -510,6 +529,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 		return true, nil
 	})
 	if !started {
+		release()
 		if slot != nil {
 			slot.Release()
 		}
@@ -527,7 +547,8 @@ func (s *Scheduler) start(id string, now time.Time) {
 			delete(s.running, id)
 			s.runMu.Unlock()
 		}()
-		o := s.execute(s.runCtx, job, slot, session)
+		o := s.execute(s.runCtx, job, &slot, session, release)
+		release()
 		if slot != nil {
 			slot.Release()
 		}
@@ -547,16 +568,29 @@ type outcome struct {
 
 func (o outcome) failed() bool { return o.status == wire.StatusError }
 
-// statusInterrupted is a run the runtime's shutdown cut short: never written as last_status.
-const statusInterrupted = "interrupted"
+// Outcomes never written as last_status: a run the runtime's shutdown cut short, and a gated
+// job whose gate said to run the agent when no turn slot was free.
+const (
+	statusInterrupted = "interrupted"
+	statusBusy        = "busy"
+)
+
+// hasGate is a job that runs a script before (or instead of) a turn.
+func hasGate(j *Job) bool {
+	return strings.TrimSpace(j.Str("script")) != "" || !j.Bool("no_agent") && strings.TrimSpace(j.Str("monitor_script")) != ""
+}
 
 // interrupted is the outcome of a run the shutdown cut short.
 func interrupted(session string) outcome {
 	return outcome{status: statusInterrupted, err: "interrupted: the runtime stopped during the run", session: session}
 }
 
-// execute runs one job: its script alone (no_agent), or its monitor, script and turn.
-func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session string) (o outcome) {
+// execute runs one job: its script alone (no_agent), or its monitor, script and turn. A gated job
+// (hasGate) comes with no slot: once its gate says the agent runs, it releases the gates' cap
+// and takes a turn slot into *slot (the caller releases it); none free is statusBusy, and the
+// monitor's new output is stored only once the slot is held, so the next tick sees the change
+// again.
+func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session string, release func()) (o outcome) {
 	name, id := j.Name(), j.ID()
 	defer func() {
 		if p := recover(); p != nil {
@@ -586,7 +620,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 	if strings.TrimSpace(prompt) == "" && len(j.Skills()) == 0 && strings.TrimSpace(j.Str("script")) == "" {
 		return outcome{status: wire.StatusError, err: "the job has no prompt, skills or script", pause: "the job has no prompt, skills or script"}
 	}
-	runContext := ""
+	runContext, commit := "", func() {}
 	if mon := strings.TrimSpace(j.Str("monitor_script")); mon != "" {
 		ok, out := s.runScript(ctx, mon)
 		if !ok && s.isStopping() {
@@ -595,11 +629,11 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 		if !ok {
 			return outcome{status: wire.StatusError, err: "monitor: " + out, text: fmt.Sprintf("⚠ Job '%s' monitor failed\n\n%s", name, out)}
 		}
-		block, changed := s.monitorGate(j, out)
+		block, changed, store := s.monitorGate(j, out)
 		if !changed {
 			return outcome{status: wire.StatusNoChange}
 		}
-		runContext = block
+		runContext, commit = block, store
 	}
 	scriptBlock := ""
 	if sc := strings.TrimSpace(j.Str("script")); sc != "" {
@@ -620,11 +654,21 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 			scriptBlock = fence("Script Error", "The job's script failed. Report this.", out)
 		}
 	}
+	release()
+	if *slot == nil {
+		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: name})
+		if err != nil {
+			return outcome{status: statusBusy, err: err.Error()}
+		}
+		*slot = r
+	}
+	s.warnOnce("busy:"+id, "")
+	commit()
 	if j.Str("model") != "" || j.Str("provider") != "" {
 		s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, j.Str("model"), j.Str("provider")))
 	}
 	input := s.buildPrompt(j, session, prompt, scriptBlock, runContext)
-	res, err := slot.Turn(ctx, input, loop.Options{Tools: s.toolsFor(j)})
+	res, err := (*slot).Turn(ctx, input, loop.Options{Tools: s.toolsFor(j)})
 	if res != nil {
 		session = res.Session
 		if s.o.End != nil {
@@ -735,14 +779,15 @@ func (s *Scheduler) buildPrompt(j *Job, session, prompt, scriptBlock, runContext
 
 // monitorGate compares the monitor's output with the one that last woke the agent (its exact
 // bytes' hash, Hermes' monitor_state). Unchanged: false. Changed, or the first run: the block
-// for the prompt (the diff and the current output), after storing the new output and hash, so a
-// failed run does not alert on the same output again.
-func (s *Scheduler) monitorGate(j *Job, out string) (string, bool) {
+// for the prompt (the diff and the current output), and store, which keeps the new output and
+// hash; execute calls it once the run holds its turn slot and before the turn, so a failed run
+// does not alert on the same output again, and a run the busy agent could not take does.
+func (s *Scheduler) monitorGate(j *Job, out string) (string, bool, func()) {
 	sum := sha256.Sum256([]byte(out))
 	hash := hex.EncodeToString(sum[:])
 	prev, had := j.monitor()
 	if had && prev.LastOutputHash == hash {
-		return "", false
+		return "", false, nil
 	}
 	snap := filepath.Join(s.state, "monitor", safeID(j.ID())+".out")
 	shown := out
@@ -759,21 +804,22 @@ func (s *Scheduler) monitorGate(j *Job, out string) (string, bool) {
 		}
 		block = "## MONITOR CHANGE DETECTED\n\nThe monitored source's output changed since the last run.\n\n### Diff (previous → current)\n\n```diff\n" + diff + "\n```\n\n" + current
 	}
-	if err := fsx.WriteAtomicIn(snap, s.tmp, []byte(out), 0o600); err != nil {
-		s.logf("job %s: monitor snapshot: %v", j.ID(), err)
-	}
 	id := j.ID()
-	state := monitorState{LastOutputHash: hash, LastChangedAt: s.at(s.o.Now())}
-	if err := s.mutate(func(f *File) (bool, error) {
-		if live := f.Find(id); live != nil {
-			live.Set("monitor_state", state)
-			return true, nil
+	return block, true, func() {
+		if err := fsx.WriteAtomicIn(snap, s.tmp, []byte(out), 0o600); err != nil {
+			s.logf("job %s: monitor snapshot: %v", id, err)
 		}
-		return false, nil
-	}); err != nil {
-		s.logf("job %s: monitor state: %v", id, err)
+		state := monitorState{LastOutputHash: hash, LastChangedAt: s.at(s.o.Now())}
+		if err := s.mutate(func(f *File) (bool, error) {
+			if live := f.Find(id); live != nil {
+				live.Set("monitor_state", state)
+				return true, nil
+			}
+			return false, nil
+		}); err != nil {
+			s.logf("job %s: monitor state: %v", id, err)
+		}
 	}
-	return block, true
 }
 
 // finish delivers a run's output and records it on the job: last run, status, error, failure
@@ -781,6 +827,25 @@ func (s *Scheduler) monitorGate(j *Job, out string) (string, bool) {
 // (re-anchored on the end of the run; none once repeat.times runs are done).
 func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	id, now := j.ID(), s.o.Now()
+	if o.status == statusBusy {
+		// the gate ran but no turn was free: due again as it was, nothing recorded
+		s.warnOnce("busy:"+id, fmt.Sprintf("job %s: its gate wants a turn but none is free (%s); next tick runs it again", id, o.err))
+		if err := s.mutate(func(f *File) (bool, error) {
+			if live := f.Find(id); live != nil {
+				live.Set("running", false)
+				due := j.Str("next_run_at")
+				if _, ok := parseStamp(due); !ok {
+					due = s.at(now)
+				}
+				live.Set("next_run_at", due)
+				return true, nil
+			}
+			return false, nil
+		}); err != nil {
+			s.logf("job %s: %v", id, err)
+		}
+		return
+	}
 	if o.status == statusInterrupted {
 		s.takeRequest(id)
 		s.record(j, o, now)

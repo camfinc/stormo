@@ -246,9 +246,9 @@ type Reservation struct {
 	once    sync.Once
 }
 
-// Reserve takes a turn slot for session's conversation without running anything yet: a
-// scheduled job takes its slot before its monitor and script run, so it never does that work
-// and then finds the agent busy. A session that does not exist is created (with create's title
+// Reserve takes a turn slot for session's conversation without running anything yet (a
+// scheduled job holds it while it builds its prompt; one with scripts reserves only after
+// they said the agent runs). A session that does not exist is created (with create's title
 // and source) only when the turn runs. Errors as for a turn: ErrSessionBusy, ErrBusy,
 // ErrClosing.
 func (s *Server) Reserve(session string, create wire.Session) (*Reservation, error) {

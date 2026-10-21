@@ -58,9 +58,14 @@ proposal for review.
   the failure streak, `last_status` and `repeat.completed` stay as they were, and the job is due
   again at the next start. A run still marked running at boot (a crash, a kill) is recorded as
   failed.
-- A job never overlaps itself. Needletail runs an agent job only when it gets a turn slot (the
-  API's cap of two turns): a busy agent leaves the job due for the next tick, before anything of it
-  (monitor, script) has run.
+- A job never overlaps itself. Needletail runs an agent's turn only in one of the API's two turn
+  slots. A job with no script takes its slot first: a busy agent leaves it due for the next tick
+  before anything of it has run. A job's scripts (monitor, pre-run script, a script-only job) run
+  first, holding no turn slot, under their own cap of two at a time (a third stays due): an
+  unchanged monitor, an empty script output or a wake gate ends the run with no turn and no slot.
+  When the gate says the agent runs and no slot is free, the job is due again on the next tick,
+  nothing recorded and the monitor's new output not stored (so the next tick sees the change
+  again; a pre-run script then runs again too).
 - `enabled: false` (`state: paused`) and `state: completed` jobs do not run.
 - A job whose next time cannot be computed (a schedule the engine does not run, such as
   needletail's `@hourly`, `mon#1`, `L` or a one-time `once` kind; an interval over 366 days; an

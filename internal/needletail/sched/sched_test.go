@@ -104,6 +104,8 @@ type fakeTurns struct {
 	onTurn func()
 	// block makes turns wait for their context to end (a turn the shutdown cancels).
 	block bool
+	// reserved counts Reserve calls that got a slot; held is the slots not yet released.
+	reserved, held int
 }
 
 type turnCall struct {
@@ -125,6 +127,8 @@ func (f *fakeTurns) Reserve(session string, create wire.Session) (Slot, error) {
 	if create.Source != SourceCron || create.Title == "" {
 		return nil, fmt.Errorf("session created as %+v", create)
 	}
+	f.reserved++
+	f.held++
 	return &fakeSlot{f: f, session: session}, nil
 }
 
@@ -177,7 +181,14 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*
 	return &loop.Result{Text: reply, Session: s.session}, nil
 }
 
-func (s *fakeSlot) Release() { s.released = true }
+func (s *fakeSlot) Release() {
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	if !s.released {
+		s.f.held--
+	}
+	s.released = true
+}
 
 // sink records deliveries.
 type sink struct {
