@@ -308,3 +308,43 @@ func TestRefusalsAreLoggedSparingly(t *testing.T) {
 		t.Errorf("%d lines: %q", len(lines), lines)
 	}
 }
+
+// A delivery the core takes ends a run of refusals: the next refusal (a key rotated again, say)
+// is logged as the first of a new run, not swallowed until the 100th.
+func TestRefusalsCountAfreshAfterADelivery(t *testing.T) {
+	var refuse atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refuse.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	var mu sync.Mutex
+	lines := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(Options{URL: srv.URL, Key: coreKey, Log: func(l string) { mu.Lock(); lines = append(lines, l); mu.Unlock() }})
+	s.Start(ctx)
+	refuse.Store(true)
+	s.ToolStart("s", wire.ToolCall{ID: "1", Name: "terminal"})
+	flush(t, s)
+	refuse.Store(false)
+	s.ToolStart("s", wire.ToolCall{ID: "2", Name: "terminal"})
+	flush(t, s)
+	refuse.Store(true)
+	s.ToolStart("s", wire.ToolCall{ID: "3", Name: "terminal"})
+	flush(t, s)
+	mu.Lock()
+	defer mu.Unlock()
+	n := 0
+	for _, l := range lines {
+		if strings.Contains(l, "(1 refused so far)") {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("lines %q", lines)
+	}
+}

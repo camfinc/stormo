@@ -264,6 +264,7 @@ func (s *Sender) deliver(ctx context.Context, it item) bool {
 		err := s.post(ctx, it)
 		switch {
 		case err == nil:
+			s.refused = 0 // a later refusal starts a new run, logged at once
 			return true
 		case ctx.Err() != nil:
 			return false
