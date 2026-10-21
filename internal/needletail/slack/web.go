@@ -181,7 +181,7 @@ func (w *Web) PostMessage(ctx context.Context, channel, thread, text string) (st
 	return out.TS, err
 }
 
-// Update replaces a message's text.
+// Update replaces a message's text (unused until replies stream: Hermes' edit fallback).
 func (w *Web) Update(ctx context.Context, channel, ts, text string) error {
 	return w.call(ctx, "chat.update", w.BotToken, url.Values{"channel": {channel}, "ts": {ts}, "text": {text}}, nil)
 }

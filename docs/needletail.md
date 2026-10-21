@@ -50,6 +50,7 @@ internal/needletail/
   wire/                       JSON types shared by the adapter and the binary (one source of truth)
   config/  llm/  loop/  tools/  skills/  memory/  sessions/  sched/
   slack/  mcp/  hooks/  api/  sandbox/  secrets/
+  slack/slacktest/            a fake Slack (Web API and Socket Mode on the loopback) for tests
   luau/                       wazero host, caps, prelude
   luau/wasm/                  build.sh (pinned wasi-sdk + Luau tag/sha), shim.c, luau.wasm (go:embed)
 deploy/needletail/Dockerfile
