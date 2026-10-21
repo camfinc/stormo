@@ -195,7 +195,10 @@ func (c *Core) Close() error {
 	for _, b := range c.bridge {
 		_ = b.Close()
 	}
-	err := c.Server.Close()
+	var err error
+	if c.Server != nil {
+		err = c.Server.Close()
+	}
 	if c.ownDB {
 		c.DB.Close()
 	}
@@ -790,7 +793,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
 	if err != nil {
-		c.StopOffice()
+		_ = c.Close()
 		return nil, err
 	}
 	c.Addr = ln.Addr().(*net.TCPAddr)
@@ -808,7 +811,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 			for _, l := range append(bridges, ln) {
 				l.Close()
 			}
-			c.StopOffice()
+			_ = c.Close()
 			return nil, fmt.Errorf("core bridge listener %s (SWARM_CORE_BIND): %w", h, err)
 		}
 		bridges = append(bridges, bl)

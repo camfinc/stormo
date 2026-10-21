@@ -4,6 +4,7 @@ package manifest
 
 import (
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"math"
 	"os"
 	"path/filepath"
@@ -362,7 +363,7 @@ func DataDir(root, id string) string { return filepath.Join(AgentDir(root, id), 
 // EnsureDataDir creates DataDir with a .gitignore that keeps all of it out of git.
 func EnsureDataDir(root, id string) (string, error) {
 	dir := DataDir(root, id)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := privatefs.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	ignore := filepath.Join(dir, ".gitignore")

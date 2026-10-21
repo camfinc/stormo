@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"os"
 	"path/filepath"
 	"time"
@@ -202,7 +203,7 @@ type DB struct {
 
 // OpenDB opens (creating) the database at path and migrates it to the current schema.
 func OpenDB(path string) (*DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := privatefs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	// Created 0600 before SQLite touches it: activity previews and messages are private to this machine.

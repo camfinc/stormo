@@ -1,0 +1,125 @@
+<?xml version="1.0"?>
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:runtime="using:Stormo.Runtime" x:Class="Stormo.Desktop.MainWindow" Title="Stormo Preview">
+  <Window.SystemBackdrop>
+    <MicaBackdrop/>
+  </Window.SystemBackdrop>
+  <Grid x:Name="Root" Loaded="OnLoaded">
+    <NavigationView x:Name="Navigation" IsBackButtonVisible="Collapsed" IsSettingsVisible="False" PaneDisplayMode="Auto" ExpandedModeThresholdWidth="900" CompactModeThresholdWidth="640" OpenPaneLength="224" SelectionChanged="OnNavigationChanged" PaneTitle="Stormo Preview">
+      <NavigationView.MenuItems>
+        <NavigationViewItem x:Name="SetupItem" Content="Setup" Tag="setup" Icon="Home" AutomationProperties.AutomationId="SetupNav"/>
+        <NavigationViewItem Content="Agents" Tag="agents" Icon="People" AutomationProperties.AutomationId="AgentsNav"/>
+        <NavigationViewItem Content="Core" Tag="core" Icon="Setting" AutomationProperties.AutomationId="CoreNav"/>
+      </NavigationView.MenuItems>
+      <Grid Padding="32,24,32,24" RowSpacing="16" Background="{ThemeResource LayerFillColorDefaultBrush}" CornerRadius="8,0,0,0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <InfoBar x:Name="Notice" IsOpen="False" IsClosable="True" Severity="Error" Title="Couldn&#x2019;t complete this step"/>
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+          <Grid>
+            <StackPanel x:Name="SetupPage" Spacing="24" MaxWidth="760" HorizontalAlignment="Left">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Your agents, on your PC" Style="{ThemeResource TitleTextBlockStyle}" TextWrapping="Wrap"/>
+                <TextBlock Text="Let&#x2019;s get your workspace ready. We&#x2019;ll walk you through each step." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+              </StackPanel>
+              <ItemsControl x:Name="Checks" AutomationProperties.Name="Setup progress">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="runtime:SetupCheck">
+                    <Grid Padding="0,12" ColumnSpacing="16">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="28"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <FontIcon Glyph="&#xE73E;" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" Visibility="{x:Bind Ready}"/>
+                      <TextBlock Grid.Column="1" Text="{x:Bind Title}" VerticalAlignment="Center"/>
+                      <TextBlock Grid.Column="2" Text="{x:Bind StateLabel}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center"/>
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Border Padding="24" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <StackPanel Spacing="16">
+                  <TextBlock x:Name="NextTitle" Text="Checking this PC" Style="{ThemeResource SubtitleTextBlockStyle}" TextWrapping="Wrap"/>
+                  <TextBlock x:Name="Instructions" Text="Looking for your workspace and container runtime&#x2026;" TextWrapping="Wrap" MaxWidth="640" HorizontalAlignment="Left"/>
+                  <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button x:Name="NextButton" Content="Checking&#x2026;" Style="{ThemeResource AccentButtonStyle}" Click="OnNext" IsEnabled="False" AutomationProperties.AutomationId="NextStep"/>
+                    <Button x:Name="CheckButton" AutomationProperties.AutomationId="CheckAgain" Content="Check again" Click="OnCheck" IsEnabled="False"/>
+                  </StackPanel>
+                  <Expander x:Name="SetupDiagnostics" Header="Setup details" Visibility="Collapsed" HorizontalAlignment="Stretch">
+                    <TextBlock x:Name="SetupDetails" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+                  </Expander>
+                </StackPanel>
+              </Border>
+              <TextBlock Text="Docker Desktop is a separate app with its own license terms. Setup may need administrator approval, internet access or a restart. Your workspace stays on this PC when Stormo is uninstalled." TextWrapping="Wrap" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="680" HorizontalAlignment="Left"/>
+            </StackPanel>
+            <StackPanel x:Name="AgentsPage" Visibility="Collapsed" Spacing="24">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Agents" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock x:Name="FleetStatus" Text="Finish setup to connect your workspace." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+              </StackPanel>
+              <CommandBar DefaultLabelPosition="Right" HorizontalAlignment="Left" Background="Transparent">
+                <AppBarButton x:Name="StartAgent" Label="Start" Icon="Play" Click="OnAgentAction" Tag="start" IsEnabled="False"/>
+                <AppBarButton x:Name="StopAgent" Label="Stop" Icon="Stop" Click="OnAgentAction" Tag="stop" IsEnabled="False"/>
+                <AppBarButton x:Name="RestartAgent" Label="Restart" Icon="Refresh" Click="OnAgentAction" Tag="restart" IsEnabled="False"/>
+                <AppBarButton x:Name="NapAgent" Label="Nap now" Icon="Save" Click="OnAgentAction" Tag="nap-now" IsEnabled="False"/>
+                <AppBarSeparator/>
+                <AppBarButton x:Name="RefreshAgents" Label="Refresh" Icon="Sync" Click="OnRefresh" IsEnabled="False"/>
+              </CommandBar>
+              <InfoBar x:Name="EmptyFleet" IsOpen="False" IsClosable="False" Severity="Informational" Title="A fresh workspace" Message="Agent creation is coming to this preview. Existing agents created with the CLI appear here."/>
+              <ListView x:Name="AgentList" SelectionMode="Single" SelectionChanged="OnAgentSelection" AutomationProperties.Name="Agents in this workspace">
+                <ListView.ItemTemplate>
+                  <DataTemplate x:DataType="runtime:Agent">
+                    <Grid Padding="8,12" ColumnSpacing="24">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Spacing="4">
+                        <TextBlock Text="{x:Bind Name}" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind Model}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{x:Bind Unit}" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Spacing="4">
+                        <TextBlock Text="{x:Bind State}"/>
+                        <TextBlock Text="{x:Bind Health}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                      </StackPanel>
+                    </Grid>
+                  </DataTemplate>
+                </ListView.ItemTemplate>
+                <ListView.ItemContainerStyle>
+                  <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                  </Style>
+                </ListView.ItemContainerStyle>
+              </ListView>
+            </StackPanel>
+            <StackPanel x:Name="CorePage" Visibility="Collapsed" Spacing="24" MaxWidth="760" HorizontalAlignment="Left">
+              <StackPanel Spacing="8">
+                <TextBlock Text="Core" Style="{ThemeResource TitleTextBlockStyle}"/>
+                <TextBlock Text="The core coordinates your workspace. Closing this window leaves the core and your agents running." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="12">
+                <Button x:Name="StartCore" Content="Start core" Click="OnStartCore" IsEnabled="False"/>
+                <Button x:Name="StopCore" Content="Stop core" Click="OnStopCore" IsEnabled="False"/>
+              </StackPanel>
+              <StackPanel Spacing="8">
+                <TextBlock Text="Workspace" Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                <TextBlock x:Name="WorkspacePath" IsTextSelectionEnabled="True" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+              </StackPanel>
+              <Expander Header="Operation details" HorizontalAlignment="Stretch">
+                <TextBlock x:Name="Details" Text="Results appear here after an operation. Stormo does not save these details." IsTextSelectionEnabled="True" TextWrapping="Wrap" MaxWidth="680"/>
+              </Expander>
+            </StackPanel>
+          </Grid>
+        </ScrollViewer>
+        <StackPanel Grid.Row="2" Spacing="8">
+          <ProgressBar x:Name="Progress" IsIndeterminate="True" Visibility="Collapsed"/>
+          <TextBlock x:Name="Status" Text="Checking this PC&#x2026;" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.LiveSetting="Polite"/>
+        </StackPanel>
+      </Grid>
+    </NavigationView>
+  </Grid>
+</Window>

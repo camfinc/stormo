@@ -51,3 +51,6 @@ The capture does not draw system materials (the sidebar and inspector background
 
 The plan for the rest (the native office, every CLI command, configuration, signing and updates)
 is docs/macos-app.md.
+
+Desktop feature parity is tracked in [docs/apps/README.md](../../docs/apps/README.md).
+Update that ledger when changing app behavior so the Windows sibling stays in sync.

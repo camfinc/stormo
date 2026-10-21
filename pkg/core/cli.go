@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"io"
 	"net/http"
 	"net/url"
@@ -79,7 +80,7 @@ func readPid(root string) int {
 	if err != nil || pid <= 0 {
 		return 0
 	}
-	if syscall.Kill(pid, 0) != nil {
+	if !processAlive(pid) {
 		return 0
 	}
 	return pid
@@ -100,7 +101,7 @@ func up(inst *instance.Instance, o *out.Writer) error {
 		o.Result(UpResult{Port: CorePort(), Login: h.Login}, func(w io.Writer) { fmt.Fprintf(w, "core already running on %s\n", base()) })
 		return nil
 	}
-	if err := os.MkdirAll(CoreDir(root), 0o700); err != nil {
+	if err := privatefs.MkdirAll(CoreDir(root), 0o700); err != nil {
 		return err
 	}
 	logf, err := os.OpenFile(logPath(root), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -116,7 +117,7 @@ func up(inst *instance.Instance, o *out.Writer) error {
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "STORMO_INSTANCE="+root)
 	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlives this shell
+	detachCore(cmd) // outlives this shell on each supported OS
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -164,7 +165,7 @@ func down(inst *instance.Instance, o *out.Writer) error {
 		}
 		return nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := stopCoreProcess(root, pid); err != nil {
 		return err
 	}
 	_ = os.Remove(pidPath(root))
@@ -247,6 +248,11 @@ func printStatus(w io.Writer, s llm.Status) {
 }
 
 func serve(inst *instance.Instance) error {
+	stop, cleanup, err := coreStopSignal(inst.Root)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	activePort = inst.CorePort()
 	c, err := StartCore(CoreOptions{Inst: inst, Port: CorePort(), Bridge: BridgeHosts()})
 	if err != nil {
@@ -259,7 +265,11 @@ func serve(inst *instance.Instance) error {
 	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	defer signal.Stop(sig)
+	select {
+	case <-sig:
+	case <-stop:
+	}
 	return c.Close()
 }
 

@@ -1,8 +1,10 @@
 package local
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -40,12 +42,16 @@ func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
 	}
 	p := Paths{Root: inst.Root, BaselineDir: "/x/.swarm/local/atlas/baseline", EnvFile: "/x/agents/atlas/data/agent.env", StoreDir: "/x/agents/atlas/data/store", SharedDir: "/x/.swarm/shared"}
 	spec := Render(a, hermes.New(inst), p, 18642, 120, "stormo-sidecar:test")
-	if got := spec.Services["agent"].ExtraHosts; !slices.Equal(got, []string{"host.docker.internal:host-gateway"}) {
+	wantHosts := []string{"host.docker.internal:host-gateway"}
+	if runtime.GOOS == "windows" {
+		wantHosts = nil
+	}
+	if got := spec.Services["agent"].ExtraHosts; !slices.Equal(got, wantHosts) {
 		t.Errorf("extra_hosts = %v", got)
 	}
 	for _, name := range []string{"rehydrate", "nap"} {
 		s := spec.Services[name]
-		if s.Image != "stormo-sidecar:test" || !slices.Contains(s.Volumes, p.BaselineDir+":/app/dist/atlas/baseline:ro") || !slices.Contains(s.Volumes, filepath.Join(inst.Root, "stormo.yaml")+":/app/stormo.yaml:ro") {
+		if s.Image != "stormo-sidecar:test" || !slices.Contains(s.Volumes, p.BaselineDir+":/app/dist/atlas/baseline:ro") || !slices.Contains(s.Volumes, filepath.ToSlash(filepath.Join(inst.Root, "stormo.yaml"))+":/app/stormo.yaml:ro") {
 			t.Errorf("%s: %+v", name, s)
 		}
 		// Its own store only, and none of the agent's data folder (secret values) through agents/atlas.
@@ -106,8 +112,13 @@ func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
 	os.MkdirAll(filepath.Join(other, ".swarm"), 0o755)
 	os.WriteFile(filepath.Join(other, ".swarm", "ports.json"), []byte(`{"x": 18642}`), 0o644)
 	os.MkdirAll(filepath.Join(os.Getenv("STORMO_HOME"), "instances"), 0o700)
-	os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"),
-		[]byte(`{"root": "`+other+`", "name": "Other", "corePort": 18600}`), 0o600)
+	claim, err := json.Marshal(instance.Claim{Root: other, Name: "Other", CorePort: 18600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("STORMO_HOME"), "instances", instance.ClaimID(other)+".json"), claim, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := Port(t.TempDir(), "atlas"); err != nil || got != PortBase+2 {
 		t.Errorf("got %d %v, want %d (18642 is the other instance's, 18643 is busy)", got, err, PortBase+2)
 	}
