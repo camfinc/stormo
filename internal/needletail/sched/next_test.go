@@ -167,7 +167,10 @@ func TestShutdownInterruptsRuns(t *testing.T) {
 	r.s.o.Tick = time.Hour
 	ctx, stopTicks := context.WithCancel(context.Background())
 	r.s.Start(ctx)
-	for i := 0; i < 200 && !r.job("a").Bool("running"); i++ {
+	for i := 0; i < 200; i++ {
+		if running, _ := r.s.Running(); len(running) > 0 {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if running, _ := r.s.Running(); len(running) != 1 || running[0] != "a" {

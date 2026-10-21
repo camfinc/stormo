@@ -186,6 +186,17 @@ The agent manages jobs with `cronjob_manage` (Hermes' tool, toolset `cronjob`): 
 `weekdays at 9:30am`, `every day at 14:00`, or a cron expression. A job the agent makes is a job
 like the repo's; across restarts it follows §1.
 
+The prompt given to `create` and `update` is scanned as Hermes scans it (its strict cron prompt
+scan): an injection directive ("ignore previous instructions", "do not tell the user", …), a
+command that reads secrets (`cat …/.env`, SSH keys), a backdoor (`authorized_keys`, sudoers),
+`rm -rf /`, a `curl`/`wget` that sends a credential-looking variable (`$…KEY`, `$…TOKEN`, …) in a
+URL, body or `Authorization` header (a GitHub token to `api.github.com` exactly is allowed), and
+zero-width or bidirectional control characters (a joiner inside an emoji is fine) are refused.
+Needletail also bounds the agent's own jobs (Hermes does not): at most 20 (jobs with a
+`created_at`, which the repo's render never sets), a prompt of at most 8 KB, and no schedule that
+runs more often than every 5 minutes (an interval under 5 minutes, or a cron expression with two
+runs less than 5 minutes apart).
+
 ## 8. Where needletail differs (M4)
 
 - One-time schedules (`in 30m`, a timestamp) are refused: agent.yaml has no form for them, so the

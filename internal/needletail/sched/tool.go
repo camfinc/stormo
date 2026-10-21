@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
 // The cronjob_manage tool: Hermes' name and arguments (the ones that mean something here), so a
@@ -26,8 +27,8 @@ Jobs run in a fresh session with no chat context, so prompts must be self-contai
 const toolSchema = `{"type":"object","properties":{
 "action":{"type":"string","description":"One of: create, list, update, pause, resume, remove, run. create needs schedule, and prompt unless no_agent."},
 "job_id":{"type":"string","description":"Required for update, pause, resume, remove and run."},
-"prompt":{"type":"string","description":"create/update: the job's whole, self-contained prompt (paired with any skills as the task)."},
-"schedule":{"type":"string","description":"Required for create. A recurring interval ('30m', 'every 2h', 'every hour'), a day and time ('every monday 9am', 'weekdays at 9am', 'every day at 14:00') or a 5-field cron expression ('0 9 * * 1-5'). One-time schedules are not supported."},
+"prompt":{"type":"string","description":"create/update: the job's whole, self-contained prompt (paired with any skills as the task), at most 8 KB."},
+"schedule":{"type":"string","description":"Required for create. A recurring interval ('30m', 'every 2h', 'every hour'), a day and time ('every monday 9am', 'weekdays at 9am', 'every day at 14:00') or a 5-field cron expression ('0 9 * * 1-5'). One-time schedules are not supported; nothing runs more often than every 5 minutes."},
 "name":{"type":"string","description":"Optional human-friendly name."},
 "repeat":{"type":"integer","description":"Optional number of runs, after which the job completes. Omit for forever."},
 "deliver":{"type":"string","description":"Where the output is posted. Omit for the chat the job was made from (else the home channel); 'local' (record only), 'slack' (the home channel), 'slack:<channel>' or 'slack:<channel>:<thread>'. Comma-combine targets. On update, '' resets."},
@@ -87,6 +88,48 @@ func (s *Scheduler) Tool(origin func(session string) json.RawMessage) tools.Tool
 			}
 			return s.manage(a, from)
 		}}
+}
+
+// Bounds on the agent's own jobs (needletail's; Hermes has none): how many it may make, how long
+// a prompt may be and how often a job may run.
+const (
+	MaxAgentJobs   = 20
+	MaxPromptBytes = 8 << 10
+	MinEvery       = 5 * time.Minute
+)
+
+// agentMade is a job the agent made at runtime: the tool stamps created_at, the repo's render
+// leaves it null (and the merge keeps run state, so a repo job never gains one).
+func agentMade(j *Job) bool { return j.Str("created_at") != "" }
+
+// checkPrompt refuses a prompt over MaxPromptBytes or one the scan blocks.
+func checkPrompt(p string) error {
+	if len(p) > MaxPromptBytes {
+		return fmt.Errorf("the prompt is %d bytes: at most %d (put long instructions in a skill and name it in skills)", len(p), MaxPromptBytes)
+	}
+	if why := ScanPrompt(p); why != "" {
+		return errors.New(why)
+	}
+	return nil
+}
+
+// checkEvery refuses a schedule that runs more often than every MinEvery.
+func (s *Scheduler) checkEvery(sch wire.JobSchedule) error {
+	gap := time.Duration(sch.Minutes) * time.Minute
+	if sch.Kind == "cron" {
+		c, err := ParseCron(sch.Expr)
+		if err != nil {
+			return err
+		}
+		gap = c.MinGap(s.o.Now(), s.o.Location)
+		if gap == 0 {
+			return nil
+		}
+	}
+	if gap < MinEvery {
+		return fmt.Errorf("schedule %q runs every %s: jobs run at most every %s", orDefault(sch.Display, sch.Expr), gap, MinEvery)
+	}
+	return nil
 }
 
 // jobView is a job as list shows it.
@@ -253,6 +296,15 @@ func (s *Scheduler) create(a cronArgs, origin json.RawMessage) (any, error) {
 		j.Set("paused_reason", nullable(a.PausedReason))
 	}
 	err := s.mutate(func(f *File) (bool, error) {
+		n := 0
+		for _, x := range f.Jobs {
+			if agentMade(x) {
+				n++
+			}
+		}
+		if n >= MaxAgentJobs {
+			return false, fmt.Errorf("you have %d jobs of your own, the most there may be (%d): update or remove one first", n, MaxAgentJobs)
+		}
 		f.Jobs = append(f.Jobs, j)
 		return true, nil
 	})
@@ -269,11 +321,17 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 		if err != nil {
 			return err
 		}
+		if err := s.checkEvery(sch); err != nil {
+			return err
+		}
 		j.Set("schedule", sch)
 		j.Set("schedule_display", sch.Display)
 		j.Set("next_run_at", nil)
 	}
 	if a.Prompt != nil {
+		if err := checkPrompt(*a.Prompt); err != nil {
+			return err
+		}
 		j.Set("prompt", *a.Prompt)
 	}
 	if a.Name != nil {

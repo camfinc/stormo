@@ -143,6 +143,25 @@ func (c *Cron) Matches(t time.Time) bool {
 		has(c.month, int(t.Month())) && c.dayMatches(t)
 }
 
+// MinGap is the shortest time between two of the expression's runs, over the eight days after
+// from (a day-of-week pattern repeats within them); zero when it has fewer than two.
+func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
+	end := from.AddDate(0, 0, 8)
+	var gap time.Duration
+	prev := c.Next(from, loc)
+	for n := 0; !prev.IsZero() && prev.Before(end) && n < 20000; n++ {
+		next := c.Next(prev, loc)
+		if next.IsZero() {
+			break
+		}
+		if d := next.Sub(prev); gap == 0 || d < gap {
+			gap = d
+		}
+		prev = next
+	}
+	return gap
+}
+
 // searchYears bounds Next: an expression that matches nothing (Feb 30) has no next run.
 const searchYears = 5
 
