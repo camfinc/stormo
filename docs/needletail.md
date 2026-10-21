@@ -131,7 +131,7 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 - An `Engine.HomeChannel(a)` accessor
 - A `stormo check` that fails if `Layout.RuntimeUID` differs from the shared-space owner
 - Fix the "Hermes distribution" help text in `cmd/stormo/main.go`
-- `docs/schedules.md` as the spec both engines implement
+- `docs/schedules.md` as the spec both engines implement (written in M4)
 
 ## 4. Runtime
 
@@ -211,7 +211,7 @@ Names stay Hermes-compatible, so bench files, `schedules.tools`, `ShellTools` an
 | `skills_list`, `skill_view`, `skill_manage` | Hermes' names and arguments. A skill is named by its dir under `skills/` (`crm/crm-api`), its front-matter name or its dir's last segment; an ambiguous name is refused with the candidates. `skills_list` lists name, description, dir and `read_only`. `skill_view {name, file_path?}` loads progressively: SKILL.md (or one file of the skill, at most 100 KB, binary refused) with `${SKILL_DIR}` resolved to the skill's absolute directory, plus the skill's other files (hidden files and nested skills left out). `skill_manage {action, name, …}`: `create` (name and optional one-segment `category`, both `[a-z0-9][a-z0-9_-]*`; `content` is the whole SKILL.md and must start with front matter naming the skill and describing it), `edit`, `patch` (`old_string` must match once unless `replace_all`; `file_path` omitted is SKILL.md), `write_file`, `remove_file` (empty directories it leaves are removed) and `delete`. It refuses the build's generated skills (`skills.generated`, by dir or by name anywhere, since the dream skips them by name), hidden dirs, symlinks anywhere below the home, `..` and absolute paths, a file of a nested skill, a rename (the front-matter name must stay), files over 1 MiB, and text holding a secret value the runtime knows. Repo skills may be changed (the dream proposes them as changed). Writes are atomic (`fsx.WriteAtomic`), files 0644 and directories 0755 as rehydrate makes them. `.luau` files are refused until M6, which adds the header check and compile before saving. `read_file` of a SKILL.md counts as a view. |
 | `luau_test` | Dry-runs a Luau tool with writes and http disabled, so the agent can iterate. |
 | `send_message` | Posts to the Slack home channel or a thread. |
-| `cronjob` | Creates, lists, pauses and removes agent-made jobs. |
+| `cronjob_manage` | Hermes' scheduling tool (its name, toolset `cronjob`, and its arguments where they mean something here): `list`, `create`, `update`, `pause`, `resume`, `remove` and `run` (due now) on the agent's jobs and the repo's. One-time schedules are refused (agent.yaml cannot hold them). Never offered to a scheduled run. See docs/schedules.md §7. |
 | `mcp_core_<name>` | The core MCP tools. |
 | `<skill>__<tool>` | Valid Luau tools (§5). |
 
@@ -237,28 +237,16 @@ Times are RFC 3339 with microseconds and `+00:00`, as Hermes writes them. `delet
 
 ### 4.7 Schedules (`sched`)
 
-**File.** `cron/jobs.json`, in the `{"jobs":[…]}` shape `renderJobs` emits today.
+`docs/schedules.md` is normative: it writes down Hermes' semantics (read from the image's `cron/` package) and lists where needletail differs. As built in M4:
 
-| Kind | Fields |
-|---|---|
-| Definition | `id`, `name`, `schedule{kind every\|cron, expr}`, `prompt`, `skills`, `script`, `no_agent`, `monitor_script`, `deliver`, `failure_deliver`, `enabled`, `enabled_toolsets`, `model`, `provider`, `repeat{times,completed}`, `note` |
-| State | `last_run_at`, `next_run_at`, `last_status`, `last_error`, `last_delivery_error`, `failure_streak`, and a new `running` bool |
-
-`docs/schedules.md` is normative.
-
-**Notes for M4 (from M3).** A job's `skills` should load each skill as `skill_view` does (`skills.Library.View` with the job's session: the SKILL.md text, `${SKILL_DIR}` resolved, a counted view, and the skill set as the session's current one, so the terminal's `SKILL_DIR` resolves in the job's commands). `schedules.tools` and `enabled_toolsets` carry Hermes toolset names (the example atlas job has `tools: [terminal, skills]`); `skills` has to expand to `skills_list`, `skill_view` and `skill_manage` (and the other toolsets to their tools) before `loop.Options.Tools` filters by tool name, or a job offers no skill tool.
-
-**Semantics**
-- `every` and 5-field `cron`. The cron parser is written in-house, with no new dependency.
-- The tick runs every 30 s. Each run gets its own session, `cron-<id>-<ts>`.
-- Script output is prepended to the prompt. With `no_agent` the script runs alone.
-- **Monitor gate.** The last output is kept in `state/needletail/monitor/<id>.out`. If the new output is identical the run is `no_change`; otherwise the prompt receives the diff plus the current output.
-- A reply of `[SILENT]` gives status `silent` with no delivery.
-- `deliver` targets home, slack or a channel; `failure_deliver` carries errors.
-- `repeat.times` is counted down.
-- Statuses: `ok`, `silent`, `no_change`, `error`.
-- `script` and `monitor_script` may be `.sh`, `.py` or `.luau`. Luau runs in the sandbox.
-- The file is written atomically (tmp file, fsync, rename) by a single writer.
+- **File.** `cron/jobs.json` in the `{"jobs":[…]}` shape the adapter renders and Hermes writes, read and written as ordered raw objects, so keys the runtime does not model survive and an unchanged file is written back byte for byte. Needletail adds one state key, `running`, and keeps Hermes' `monitor_state` and `failure_streak`. The scheduler is the file's single writer: its tick, its runs and the `cronjob_manage` tool change it under one lock, re-reading it first, and write it through `fsx.WriteAtomicIn` and `.needletail-tmp/`.
+- **Timing.** `interval` (minutes after the last run) and 5-field `cron`, parsed in-house (`sched.ParseCron`: lists, ranges, steps, names, Sunday as 7, Vixie's day-of-month/day-of-week OR) on the container's wall clock (`TZ`, else UTC; the binary embeds the zone database). The tick runs every 30 s; a due job runs once however many of its times passed; `next_run_at` moves before the run starts and `running` is set, so a crash never runs it twice, and boot records a run a restart cut short as failed.
+- **Turns.** An agent job reserves a turn slot (`api.Server.Reserve`, the API's per-conversation and global caps of two) before its monitor or script runs; a busy agent leaves it due for the next tick. The run is a turn in its own session `cron-<id>-<UTC time>` with source `cron` (the hooks' platform), created only when the turn runs and ended (`cron_complete`) after it. Script-only jobs take no slot.
+- **Run.** Monitor first (exact-output hash in `monitor_state`, snapshot in `state/needletail/monitor/<id>.out`; unchanged is `no_change`; the baseline or the unified diff and current output go into the prompt; state stored before the turn), then the pre-run script (its output, or its error, in the prompt; empty output or `{"wakeAgent": false}` is silent), then the prompt: each skill loaded with `skills.Library.View` for the run's session (a counted view, the session's current skill for `SKILL_DIR`), a short cron hint, the script block, the job's prompt and the monitor block. `enabled_toolsets` expand Hermes' toolset names (`skills` → skills_list, skill_view, skill_manage; `file`; `terminal`; `memory`; a tool's own name) before `loop.Options.Tools` filters, the core's `mcp_core_*` tools stay unless `no_mcp`, and `cronjob_manage` and `send_message` are never offered to a run. `model`/`provider` are not applied yet (logged).
+- **Outcome.** `ok`, `silent` (`[SILENT]` as the reply or its first or last line), `no_change`, `error` (a failed turn, `[CRON_FAILURE]`, an empty reply, a failing monitor or script-only script, an unrunnable job, which is also paused) and `delivery_failed`. The failure streak counts errors and any success resets it; from the third a notice says the job is worth a review. `repeat.times` completes the job. Every run that did something is recorded in `state/needletail/jobs/<id>/<time>.md` (the newest 10).
+- **Delivery.** `deliver` and `failure_deliver` are parsed into targets (`local`, `origin`, `slack`/`home`/`all`, `slack:<channel>[:<thread>]`) and handed to a `sched.Deliverer`. Until M5 that is `sched.Pending`: a Slack target is accepted and logged (the output stays in the run's record, and `last_delivery_error` stays empty so review does not flag every job), another platform is a delivery error.
+- **Scripts** run from the home's `scripts/` (symlinks resolved and confined), `.sh`/`.bash` with bash and anything else with python3 (`.luau` from M6), cwd the home, the terminal's environment, a 1 h bound and a process-group kill.
+- `GET /v1/activity` reports `running_jobs` and `last_job_at` from the scheduler.
 
 ### 4.8 API (`api`, port 8642)
 
@@ -423,7 +411,7 @@ return function(args) ... end
 |---|---|
 | Learning | `memories/MEMORY.md`, `memories/USER.md`, `skills/.usage.json`, `skills/[!.]*/**` (including `tools/*.luau`), `cron/jobs.json`, `needletail.yaml` (napped but rebuilt from the baseline on every boot, as Hermes' `config.yaml`: a changed manifest or grant reaches the agent, and nothing the agent writes into it survives a restart) |
 | Raw (PII) | `sessions/**`, `logs/audit/**` |
-| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, Slack cursor) |
+| State | `<StateRoot>/**`, `state/needletail/**` (idempotency keys, monitor outputs, schedule run records, Slack cursor) |
 
 `SOUL.md` and `scripts/**` are rebuilt from the baseline. `.needletail-tmp/` is claimed by no rule: `skill_manage` and the usage counts write their temporary files there before renaming them into `skills/`, and so do the session header and `sessions/index.json` rewrites, `state/needletail/idem.json` and the scheduler's files (`cron/jobs.json`, monitor snapshots, run outputs) (a temporary file beside a skill file would be claimed by `skills/[!.]*/**`, so a nap taken mid-write, or a crash before the rename, would keep it as part of the skill).
 
@@ -496,7 +484,7 @@ Every milestone ships as a draft PR behind `engine.kind: needletail`.
 | M1 | **Runtime core**: `serve`, `oneshot` and `healthcheck`; llm with fallback; loop with compaction; sessions JSONL; API; `terminal`, file and memory tools; secrets scrub and redactor; Dockerfile. | Locally on the core, the agent answers `stormo chat`. The bench passes on the atlas bench files. Activity and wake work against a real core. |
 | M2 | **Core integration**: MCP client (`mcp_core_*`), signed hooks, ParseHook, automatic `fs_note`. | The office shows live tool calls with real call ids. A `msg_send` between a Hermes agent and a needletail agent round-trips with a wake. Shared-file attribution credits the needletail agent. |
 | M3 | **Skills and memory parity**: index, `skill_view`, `skill_manage`, `${SKILL_DIR}`, usage counts, lineage compaction. | A nap, rehydrate and dream cycle on a needletail home yields ledger sightings and a skill proposal from an agent-created skill, with loop code unchanged. Proven by `TestNapRehydrateDream` (`internal/needletail/cli`): the real build, rehydrate, oneshot turn, nap and dream, then a second boot from the nap. |
-| M4 | **Scheduler** plus `docs/schedules.md`. | Table tests built from real agent job definitions pass. `stormo review` shows schedule status. An agent-made job survives a rehydrate. |
+| M4 | **Scheduler** plus `docs/schedules.md`. | Table tests built from real agent job definitions pass. `stormo review` shows schedule status. An agent-made job survives a rehydrate. Proven by `TestRealJobs` and `TestReviewReadsTheRuntimesFile` (`internal/needletail/sched`: anonymised real job definitions rendered by the real build, run through every outcome; review's `AnalyzeSchedules` over the file the runtime writes), `TestAgentJobSurvivesRehydrate` and `TestServeRunsADueJob` (`internal/needletail/cli`), and a `stormo review` of a running needletail agent on a temporary copy of the example instance. |
 | M5 | **Slack gateway**. | A test Slack app talks to a needletail agent in DMs and threads, and schedules deliver to the home channel. |
 | M6 | **Luau tools**: build script, embedded wasm, wazero host, `nt.*`, the grants file, `luau check`, `luau_test`, `.luau` schedule scripts and monitors. Preceded by the longjmp/EH spike. | An agent writes a tool through `skill_manage`, calls it next turn, and the dream proposes it. The adversarial suite passes. The image builds `CGO_ENABLED=0` for amd64 and arm64. |
 | M7 | **First cutover**: one low-risk agent switches `engine.kind` with a pinned `image_tag`; ECS task definition render; soak. | One week with no regression against its Hermes baseline in architecture review, and the owner's go for the deploy. |
@@ -553,7 +541,7 @@ A `pkg/engines` test checks that `needletail` resolves for both `Get` and `Runti
 
 **Risks**
 1. **Version validation** is Hermes-shaped. The neutral validator PR must land before manifests use needletail.
-2. **Schedule semantics drift.** Hermes behaviour (monitor diff, `[SILENT]`, failure streaks) is not written down anywhere. Mitigation: `docs/schedules.md` plus table tests from real jobs.
+2. **Schedule semantics drift.** Hermes behaviour (monitor diff, `[SILENT]`, failure streaks) was not written down anywhere. Mitigation (M4): `docs/schedules.md`, read from the Hermes image's `cron/` package, plus table tests from real jobs. Before a cutover, check an agent's jobs against its §8 (a pinned `model`, `context_from`, one-time jobs and `monitor_url` are not supported yet).
 3. **Luau wasm toolchain.** Exceptions and longjmp under WASI. Spike before M6.
 4. **Parity of loop quality.** Compaction and context management regress as worse answers, not errors. Mitigation: bench plus a soak against Hermes.
 5. **Contracts freeze at the first nap.** Review M0 and M1 before any real agent naps.

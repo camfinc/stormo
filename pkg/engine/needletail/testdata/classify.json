@@ -92,6 +92,21 @@
    "glob": "state/needletail/**"
   },
   {
+   "path": "state/needletail/jobs/a1/20261012T090000.000.md",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": ".needletail-tmp/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
    "path": "needletail.yaml",
    "class": "learning",
    "glob": "needletail.yaml"
