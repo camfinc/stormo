@@ -130,6 +130,17 @@ func TestReferenced(t *testing.T) {
 	if _, ok := l.Referenced("ls skills/"); ok {
 		t.Error("no skill")
 	}
+	// skills/ only counts at a path boundary: another tree's skills dir is not the home's
+	for _, cmd := range []string{"cat /tmp/otherskills/crm/crm-api/x", "cat my-skills/crm/crm-api/x", "cat a.skills/crm/crm-api/x", "cat _skills/crm/crm-api/x"} {
+		if s, ok := l.Referenced(cmd); ok {
+			t.Errorf("%q = %+v", cmd, s)
+		}
+	}
+	for _, cmd := range []string{"cat skills/crm/crm-api/x", "cat ./skills/crm/crm-api/x", "cat $HOME/skills/crm/crm-api/x", `cat "skills/crm/crm-api/x"`, "X=skills/crm/crm-api/x", "cat /tmp/otherskills/crm/crm-api/x skills/crm/crm-api/y"} {
+		if s, ok := l.Referenced(cmd); !ok || s.Dir != "crm/crm-api" {
+			t.Errorf("%q = %+v %v", cmd, s, ok)
+		}
+	}
 }
 
 func TestManage(t *testing.T) {

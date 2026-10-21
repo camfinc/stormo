@@ -301,12 +301,13 @@ func (l *Library) files(s Skill) ([]string, bool) {
 }
 
 // Referenced is the one skill whose directory a terminal command names (as skills/<dir>/…,
-// absolute or relative): the skill the command runs from. When it names several, none.
+// absolute or relative, skills/ at a path boundary): the skill the command runs from. When it
+// names several, none.
 func (l *Library) Referenced(command string) (Skill, bool) {
 	var best Skill
 	found := false
 	for _, s := range l.Index() {
-		if !strings.Contains(command, "skills/"+s.Dir+"/") {
+		if !containsAtBoundary(command, "skills/"+s.Dir+"/") {
 			continue
 		}
 		switch {
@@ -320,6 +321,28 @@ func (l *Library) Referenced(command string) (Skill, bool) {
 		}
 	}
 	return best, found
+}
+
+// containsAtBoundary reports whether s holds sub where the byte before it (if any) cannot be part
+// of a path segment's name: "/x/skills/a/" and "skills/a/" hold "skills/a/", "/x/otherskills/a/"
+// does not.
+func containsAtBoundary(s, sub string) bool {
+	for from := 0; ; {
+		i := strings.Index(s[from:], sub)
+		if i < 0 {
+			return false
+		}
+		i += from
+		if i == 0 || !nameByte(s[i-1]) {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+// nameByte is a byte a file or directory name is usually made of.
+func nameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
 }
 
 // LastViewed is the skill session last viewed with skill_view, while it still exists.

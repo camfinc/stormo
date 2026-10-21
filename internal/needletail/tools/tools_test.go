@@ -372,6 +372,13 @@ func TestSkillTools(t *testing.T) {
 	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "echo plain"}); failed || m["output"] != "plain\n" {
 		t.Errorf("plain = %v", m)
 	}
+	// naming SKILL_DIR is not using it: only $SKILL_DIR or ${SKILL_DIR} needs a skill
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "grep -rln SKILL_DIR skills; echo $SKILL_DIRS done"}); failed || !strings.Contains(m["output"].(string), "deals.sh") {
+		t.Errorf("grep SKILL_DIR = %v", m)
+	}
+	if m, failed := call(t, r, &env2, "terminal", map[string]any{"command": "echo ${SKILL_DIR}"}); !failed || !strings.Contains(m["error"].(string), "pass skill") {
+		t.Errorf("braced SKILL_DIR = %v", m)
+	}
 
 	md := "---\nname: deal-digest\ndescription: Digest the week's deals.\n---\nRun ${SKILL_DIR}/digest.sh\n"
 	m, failed = call(t, r, env, "skill_manage", map[string]any{"action": "create", "name": "deal-digest", "category": "crm", "content": md})

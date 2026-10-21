@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -123,12 +124,16 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	return res, nil
 }
 
+// usesDirVar matches a command that expands SKILL_DIR ($SKILL_DIR or ${SKILL_DIR}), not one that
+// only names it (grep -r SKILL_DIR skills).
+var usesDirVar = regexp.MustCompile(`\$\{?` + skills.DirVar + `\b`)
+
 // fromSkill is the directory of the skill a command runs from ("" when none), with its use
 // counted: the skill named by the call, else the one skill whose directory the command names,
 // else, for a command that uses SKILL_DIR, the skill the session last viewed. A command that uses
 // SKILL_DIR with no skill to give it is refused rather than run with it empty.
 func fromSkill(env *Env, a terminalArgs) (string, error) {
-	uses := strings.Contains(a.Command, skills.DirVar)
+	uses := usesDirVar.MatchString(a.Command)
 	if env.Skills == nil {
 		if a.Skill != "" {
 			return "", errors.New("skills are not available")
