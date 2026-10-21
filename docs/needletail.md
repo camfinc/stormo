@@ -256,7 +256,7 @@ All routes except `/health` need `Authorization: Bearer API_SERVER_KEY`.
 | Route | Behaviour |
 |---|---|
 | `GET /health` | `{"status":"ok"}` |
-| `GET /v1/activity` | `{active_turns, busy, source, running_jobs[], last_job_at, last_active, platforms{slack:{state,needs_attention}}}`. Counts and ids only. |
+| `GET /v1/activity` | `{active_turns, busy, source, running_jobs[], last_job_at, last_active, platforms{slack:{state,needs_attention}}}`. Counts, states, times and the running jobs' names (as Hermes' activity gives them; the adapter cuts each to 60 characters), no titles or previews. |
 | `POST /v1/runs {input, session_id}` | Asynchronous, returns 202. The `Idempotency-Key` is kept for 24 h in `state/needletail/idem.json`, and a duplicate returns the original 202. |
 | `GET /v1/sessions?limit` | Lists sessions. |
 | `POST /v1/sessions {id}` | Creates a session; 409 if it exists. |

@@ -323,16 +323,18 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 		}
 	}
 	if a.Script != nil {
-		if err := s.checkScript(*a.Script); err != nil {
+		rel, err := s.checkScript(*a.Script)
+		if err != nil {
 			return err
 		}
-		j.Set("script", nullable(strings.TrimSpace(*a.Script)))
+		j.Set("script", nullable(rel))
 	}
 	if a.Monitor != nil {
-		if err := s.checkScript(*a.Monitor); err != nil {
+		rel, err := s.checkScript(*a.Monitor)
+		if err != nil {
 			return err
 		}
-		j.Set("monitor_script", nullable(strings.TrimSpace(*a.Monitor)))
+		j.Set("monitor_script", nullable(rel))
 		j.Set("monitor_state", nil)
 	}
 	if a.NoAgent != nil {
@@ -365,13 +367,31 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 	return nil
 }
 
-// checkScript refuses a script that does not resolve inside the home's scripts/ ("" clears).
-func (s *Scheduler) checkScript(script string) error {
-	if strings.TrimSpace(script) == "" {
-		return nil
+// checkScript refuses a script that does not resolve inside the home's scripts/ ("" clears) and
+// gives its path relative to scripts/, as agent.yaml names it (the home's absolute path is not
+// the repo's, and the dream proposes what is stored).
+func (s *Scheduler) checkScript(script string) (string, error) {
+	script = strings.TrimSpace(script)
+	if script == "" {
+		return "", nil
 	}
-	_, err := s.scriptPath(strings.TrimSpace(script))
-	return err
+	real, err := s.scriptPath(script)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(s.o.Home, "scripts")
+	if !filepath.IsAbs(script) {
+		return filepath.ToSlash(filepath.Clean(script)), nil
+	}
+	if rel, err := filepath.Rel(dir, filepath.Clean(script)); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+		return filepath.ToSlash(rel), nil
+	}
+	realDir, _ := filepath.EvalSymlinks(dir)
+	rel, err := filepath.Rel(realDir, real)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 func nullable(s string) any {

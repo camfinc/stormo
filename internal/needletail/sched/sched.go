@@ -44,6 +44,7 @@ const (
 	maxDiff              = 4000      // characters of the monitor's diff in the prompt
 	maxShown             = 8000      // characters of the monitor's output in the prompt
 	failureNudgeAt       = 3         // failures in a row that add a "worth a review" line
+	maxScriptPrompt      = 16 << 10  // bytes of a pre-run script's output in the prompt
 )
 
 // Turns hands out turn slots (api.Server.Reserve), shared with the API's turns.
@@ -84,11 +85,11 @@ type Options struct {
 type Scheduler struct {
 	o                     Options
 	path, state, tmp, out string
-	mu                    sync.Mutex // cron/jobs.json
-	runMu                 sync.Mutex // running, requested, stopping, lastStart, warned
-	running               map[string]bool
-	requested             map[string]bool // `run` asked while the job was running
-	stopping              bool            // the ticks ended: a run cut short now is interrupted
+	mu                    sync.Mutex        // cron/jobs.json
+	runMu                 sync.Mutex        // running, requested, stopping, lastStart, warned
+	running               map[string]string // id → name
+	requested             map[string]bool   // `run` asked while the job was running
+	stopping              bool              // the ticks ended: a run cut short now is interrupted
 	lastStart             time.Time
 	warned                map[string]string
 	wg                    sync.WaitGroup
@@ -121,7 +122,7 @@ func New(o Options) *Scheduler {
 		o.Env.Home = o.Home
 	}
 	s := &Scheduler{o: o, path: filepath.Join(o.Home, "cron", "jobs.json"), state: filepath.Join(o.Home, "state", "needletail"),
-		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]bool{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1)}
+		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1)}
 	s.out = filepath.Join(s.state, "jobs")
 	s.runCtx, s.cancelRuns = context.WithCancel(context.Background())
 	return s
@@ -133,13 +134,18 @@ func (s *Scheduler) logf(format string, args ...any) {
 	}
 }
 
-// warnOnce logs msg for key once until it changes (a busy agent, an override not applied).
+// warnOnce logs msg for key once until it changes (a busy agent, an override not applied); ""
+// clears the key without logging.
 func (s *Scheduler) warnOnce(key, msg string) {
 	s.runMu.Lock()
 	seen := s.warned[key] == msg
-	s.warned[key] = msg
+	if msg == "" {
+		delete(s.warned, key)
+	} else {
+		s.warned[key] = msg
+	}
 	s.runMu.Unlock()
-	if !seen {
+	if !seen && msg != "" {
 		s.logf("%s", msg)
 	}
 }
@@ -151,13 +157,14 @@ func parseStamp(s string) (time.Time, bool) {
 	return t, err == nil
 }
 
-// Running is the jobs running now and when the last run started (the API's activity).
+// Running is the names of the jobs running now (as Hermes' activity gives them) and when the
+// last one started (the API's activity).
 func (s *Scheduler) Running() ([]string, time.Time) {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	out := make([]string, 0, len(s.running))
-	for id := range s.running {
-		out = append(out, id)
+	for _, name := range s.running {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out, s.lastStart
@@ -166,7 +173,8 @@ func (s *Scheduler) Running() ([]string, time.Time) {
 func (s *Scheduler) isRunning(id string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
-	return s.running[id]
+	_, ok := s.running[id]
+	return ok
 }
 
 // request asks for another run of a running job once this one ends (the tool's run); false when
@@ -174,10 +182,11 @@ func (s *Scheduler) isRunning(id string) bool {
 func (s *Scheduler) request(id string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
-	if s.running[id] {
+	_, ok := s.running[id]
+	if ok {
 		s.requested[id] = true
 	}
-	return s.running[id]
+	return ok
 }
 
 // takeRequest reports and clears a run asked for while the job ran.
@@ -507,7 +516,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 		return
 	}
 	s.runMu.Lock()
-	s.running[id] = true
+	s.running[id] = job.Name()
 	s.lastStart = now
 	s.runMu.Unlock()
 	s.wg.Add(1)
@@ -603,6 +612,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot Slot, session stri
 		case ok && out == "":
 			return outcome{status: wire.StatusSilent, doc: "the script printed nothing"}
 		case ok:
+			if len(out) > maxScriptPrompt {
+				out = strings.ToValidUTF8(out[:maxScriptPrompt], "") + fmt.Sprintf("\n... [script output truncated: %d bytes, the first %d shown]", len(out), maxScriptPrompt)
+			}
 			scriptBlock = fence("Script Output", "The following data was collected by the job's script before this run. Use it as context.", out)
 		default:
 			scriptBlock = fence("Script Error", "The job's script failed. Report this.", out)

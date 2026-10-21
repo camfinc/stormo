@@ -82,7 +82,8 @@ In this order:
 3. **Monitor** (`monitor_script`; Hermes also `monitor_url`): runs first and decides whether the
    agent runs at all. Its exact output (trimmed stdout, no other normalisation: it must be
    deterministic, no timestamps) is hashed against `monitor_state.last_output_hash`:
-   - same hash: the run is `no_change`, no turn, no delivery, no record;
+   - same hash: the run is `no_change`, no turn, no delivery (Hermes keeps a short record of it in
+     its output dir; needletail keeps none, so its 10 records per job are runs that did something);
    - first run (no hash yet): the agent runs with a "Monitor Baseline (first run)" block holding
      the current output;
    - changed: the agent runs with a "MONITOR CHANGE DETECTED" block: a unified diff against the
@@ -94,7 +95,8 @@ In this order:
    - a monitor that fails is the run's error (an alert, `last_status: error`) and leaves the stored
      hash as it was.
 4. **Pre-run script** (`script` on an agent job): its stdout goes into the prompt as a
-   "Script Output" block. Empty stdout, or the `{"wakeAgent": false}` gate, is a silent run with no
+   "Script Output" block (needletail: at most 16 KB of it, with a note of the size; Hermes puts it
+   all). Empty stdout, or the `{"wakeAgent": false}` gate, is a silent run with no
    turn. A failing script does not fail the run: the agent gets a "Script Error" block with the
    failure and reports it.
 5. **The prompt**: each of the job's skills loaded as `skill_view` loads it (its SKILL.md, a
@@ -148,12 +150,17 @@ error, and a job overdue by more than 15 minutes.
 
 A job's `script` and `monitor_script` are files in the home's `scripts/` (the agent's
 `agents/<id>/scripts/`, rebuilt from the repo at every boot); a path that resolves outside it,
-symlinks included, is refused. The interpreter comes from the extension, never the shebang:
+symlinks included, is refused. `cronjob_manage` stores the path relative to `scripts/`, as
+agent.yaml names it, whatever form the agent gave. The interpreter comes from the extension, never the shebang:
 `.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` from M6 on).
 The working directory is the script's own directory (`scripts/` for a script there), the environment the terminal's (secrets scrubbed, the
 passthrough allowlist kept), the bound 1 hour (Hermes' default), and the whole process tree is
 killed at the end. stdout and stderr are trimmed and redacted; a non-zero exit is a failure
 described as `Script exited with code N`, then its stderr and stdout.
+
+TODO (needletail): a script the agent writes or changes under `scripts/` is not napped on this
+branch (`scripts/**` is rebuilt from the repo at every boot); the napping rule for agent-written
+scripts lands when main (789b22c, 754c6b7) is merged into it.
 
 ## 6. Delivery
 

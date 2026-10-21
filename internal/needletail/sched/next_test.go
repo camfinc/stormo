@@ -228,3 +228,38 @@ func TestCompletedRepeatStaysDone(t *testing.T) {
 		t.Errorf("a completed job ran: %+v", c)
 	}
 }
+
+// Small things: the activity names running jobs (Hermes' RunningJobs gives names); a script path
+// is stored relative to scripts/ whatever form the agent gave; a script's output in the prompt
+// is capped; a busy agent's warning clears without a bare log line.
+func TestRunningNamesPathsAndCaps(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`), `"name":"a"`, `"name":"Morning digest"`, 1))
+	if err := os.WriteFile(filepath.Join(r.home, "scripts", "big.sh"), []byte("head -c 40000 /dev/zero | tr '\\\\0' x\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool,
+		`{"action":"update","job_id":"a","script":"`+filepath.Join(r.home, "scripts", "big.sh")+`"}`)
+	if failed || r.job("a").Str("script") != "big.sh" {
+		t.Fatalf("update: %s; script %q", out, r.job("a").Str("script"))
+	}
+	r.turns.busy = true
+	r.tick()
+	r.turns.busy = false
+	r.turns.onTurn = func() {
+		if running, _ := r.s.Running(); len(running) != 1 || running[0] != "Morning digest" {
+			t.Errorf("running %v", running)
+		}
+	}
+	r.tick()
+	c := r.turns.taken()
+	if len(c) != 1 || len(c[0].input) > maxScriptPrompt+2000 || !strings.Contains(c[0].input, "[script output truncated") {
+		t.Errorf("prompt %d bytes", len(c[0].input))
+	}
+	for _, l := range r.logs {
+		if strings.TrimSpace(l) == "cron:" {
+			t.Errorf("bare log line %q", l)
+		}
+	}
+}
