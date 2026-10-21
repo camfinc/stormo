@@ -1,5 +1,7 @@
-// Package skills reads the agent's skills (skills/**/SKILL.md, Stormo form). M1 has the index the
-// system prompt lists; skill_view, skill_manage, ${SKILL_DIR} and usage counts come with M3.
+// Package skills is the agent's skills (skills/**/SKILL.md, Stormo form; docs/needletail.md §4.6):
+// the index the system prompt lists, a Library that finds and shows one (skill_view, with
+// ${SKILL_DIR} resolved), changes the agent's own (skill_manage) and counts their use in
+// skills/.usage.json, which the nap keeps and the dream copies next to the learnings.
 package skills
 
 import (
@@ -19,6 +21,9 @@ type Skill struct {
 	Description string
 	// Path is the SKILL.md, relative to the home.
 	Path string
+	// Dir is the skill's directory relative to skills/ ("crm/crm-api"): what the build's skill
+	// hashes and the dream's proposals name a skill by.
+	Dir string
 }
 
 const maxSkillFile = 1 << 20
@@ -38,7 +43,7 @@ func Index(home string) []Skill {
 			}
 			return nil
 		}
-		if d.Name() != "SKILL.md" || !d.Type().IsRegular() {
+		if d.Name() != "SKILL.md" || !d.Type().IsRegular() || filepath.Dir(p) == root {
 			return nil
 		}
 		info, err := d.Info()
@@ -52,6 +57,7 @@ func Index(home string) []Skill {
 		rel, _ := filepath.Rel(home, p)
 		s := front(body)
 		s.Path = filepath.ToSlash(rel)
+		s.Dir = strings.TrimSuffix(strings.TrimPrefix(s.Path, "skills/"), "/SKILL.md")
 		if s.Name == "" {
 			s.Name = filepath.Base(filepath.Dir(p))
 		}

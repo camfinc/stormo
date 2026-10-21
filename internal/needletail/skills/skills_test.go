@@ -15,7 +15,7 @@ func TestIndexGoldenHome(t *testing.T) {
 	found := false
 	for _, s := range idx {
 		if s.Name == "crm-api" {
-			found = s.Path == "skills/crm/crm-api/SKILL.md" && s.Description == "Query Acme deals from the CRM API ($CRM_API_TOKEN)."
+			found = s.Path == "skills/crm/crm-api/SKILL.md" && s.Dir == "crm/crm-api" && s.Description == "Query Acme deals from the CRM API ($CRM_API_TOKEN)."
 		}
 	}
 	if !found {
