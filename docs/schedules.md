@@ -48,6 +48,12 @@ proposal for review.
   API's cap of two turns): a busy agent leaves the job due for the next tick, before anything of it
   (monitor, script) has run.
 - `enabled: false` (`state: paused`) and `state: completed` jobs do not run.
+- A job whose next time cannot be computed (a schedule the engine does not run, such as
+  needletail's `@hourly`, `mon#1`, `L` or a one-time `once` kind; an interval over 366 days; an
+  expression that never matches) gets no `next_run_at`, `state: error` and the reason in
+  `last_error`, and does not run (Hermes does the same). It stays enabled: the scheduler checks
+  its schedule again on every tick (needletail checks every job's schedule, even one with a stored
+  time) and schedules it again once it works. Intervals are at most 366 days.
 
 ## 3. A run
 

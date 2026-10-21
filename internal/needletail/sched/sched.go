@@ -191,6 +191,9 @@ func (s *Scheduler) nextRun(j *Job, from time.Time) (time.Time, error) {
 		if sch.Minutes <= 0 {
 			return time.Time{}, errors.New("schedule: an interval needs minutes")
 		}
+		if sch.Minutes > MaxIntervalMinutes {
+			return time.Time{}, fmt.Errorf("schedule: an interval of %d minutes is longer than %d days", sch.Minutes, MaxIntervalMinutes/1440)
+		}
 		return from.Add(time.Duration(sch.Minutes) * time.Minute), nil
 	case "cron":
 		c, err := ParseCron(sch.Expr)
@@ -230,11 +233,18 @@ func (s *Scheduler) Boot() error {
 	})
 }
 
-// settleNext gives an enabled job with no (or an unreadable) next run its next run after now, or
-// records why it has none. True when it changed the job.
+// settleNext checks an enabled job's schedule, even when it has a next run (a schedule this
+// engine cannot run, or one changed under a stored time, must not keep a past time that fires
+// every tick): a job whose schedule gives no next run gets none, state "error" and why
+// (noNext); one with no (or an unreadable) next run gets its next run after now, and a job in
+// state "error" whose schedule works again is scheduled again (Hermes' recoverable error
+// jobs). True when it changed the job.
 func (s *Scheduler) settleNext(j *Job, now time.Time) bool {
 	if !j.Enabled() {
 		return false
+	}
+	if _, err := s.nextRun(j, now); err != nil {
+		return s.noNext(j, err.Error())
 	}
 	if _, ok := parseStamp(j.Str("next_run_at")); ok {
 		return false
@@ -245,17 +255,47 @@ func (s *Scheduler) settleNext(j *Job, now time.Time) bool {
 	}
 	n, err := s.nextRun(j, base)
 	if err != nil {
-		msg := err.Error()
-		if j.Str("last_error") == msg {
-			return false
-		}
-		j.Set("last_status", wire.StatusError)
-		j.Set("last_error", msg)
-		j.Set("state", "error")
-		return true
+		return s.noNext(j, err.Error())
 	}
 	if n.Before(now) {
 		n = now // overdue since before the restart: due now
+	}
+	j.Set("next_run_at", s.at(n))
+	if j.Str("state") == "error" {
+		j.Set("state", "scheduled")
+	}
+	return true
+}
+
+// noNext records that a job has no next run: next_run_at null, state "error", last_error why
+// (as Hermes leaves a recurring job whose next run it cannot compute: enabled, so a fixed
+// schedule recovers it), and last_status error unless a run just recorded its own. False when
+// the job already said so (the file is not rewritten every tick).
+func (s *Scheduler) noNext(j *Job, why string) bool {
+	if j.Str("state") == "error" && j.Str("next_run_at") == "" && j.Str("last_error") == why {
+		return false
+	}
+	j.Set("next_run_at", nil)
+	j.Set("state", "error")
+	if !j.Bool("running") {
+		j.Set("last_status", wire.StatusError)
+	}
+	j.Set("last_error", why)
+	s.logf("job %s has no next run: %s", j.ID(), why)
+	return true
+}
+
+// advanceNext moves a job's next run to its schedule's next time after from, which must lie
+// after now; a schedule that gives none (or a time not after now) leaves it with no next run
+// (noNext) and false.
+func (s *Scheduler) advanceNext(j *Job, from, now time.Time) bool {
+	n, err := s.nextRun(j, from)
+	if err == nil && !n.After(now) {
+		err = fmt.Errorf("schedule: the next run (%s) is not after now", s.at(n))
+	}
+	if err != nil {
+		s.noNext(j, err.Error())
+		return false
 	}
 	j.Set("next_run_at", s.at(n))
 	return true
@@ -376,11 +416,11 @@ func (s *Scheduler) start(id string, now time.Time) {
 		if j == nil || !j.Enabled() {
 			return false, nil
 		}
+		if !s.advanceNext(j, now, now) {
+			return true, nil // no next run: it does not run either
+		}
 		started = true
 		j.Set("running", true)
-		if n, err := s.nextRun(j, now); err == nil {
-			j.Set("next_run_at", s.at(n))
-		}
 		return true, nil
 	})
 	if !started {
@@ -657,7 +697,6 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 		if live == nil {
 			return false, nil // removed while it ran
 		}
-		live.Set("running", false)
 		live.Set("last_run_at", s.at(now))
 		status := o.status
 		if !o.failed() && deliveryErr != "" {
@@ -690,10 +729,10 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 			live.Set("state", "completed")
 			live.Set("next_run_at", nil)
 		default:
-			if n, err := s.nextRun(live, now); err == nil {
-				live.Set("next_run_at", s.at(n))
-			}
+			live.Set("running", true) // the run's own status stands (noNext)
+			s.advanceNext(live, now, now)
 		}
+		live.Set("running", false)
 		return true, nil
 	})
 	if err != nil {

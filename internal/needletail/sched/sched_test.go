@@ -100,6 +100,8 @@ type fakeTurns struct {
 	busy    bool
 	replies map[string][]string // job id → replies ("!err" fails the turn)
 	calls   []turnCall
+	// onTurn runs at the start of each turn, outside the lock (a change made while a job runs).
+	onTurn func()
 }
 
 type turnCall struct {
@@ -149,6 +151,12 @@ type fakeSlot struct {
 
 func (s *fakeSlot) Turn(_ context.Context, input string, opts loop.Options) (*loop.Result, error) {
 	f := s.f
+	f.mu.Lock()
+	hook := f.onTurn
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	job := jobOf(s.session)

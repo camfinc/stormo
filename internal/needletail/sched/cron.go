@@ -250,13 +250,24 @@ func duration(s string) (int, error) {
 	}
 	n := 1
 	if m[1] != "" {
-		n, _ = strconv.Atoi(m[1])
+		var err error
+		if n, err = strconv.Atoi(m[1]); err != nil || n > MaxIntervalMinutes {
+			return 0, fmt.Errorf("bad interval %q: at most %d days", s, MaxIntervalMinutes/1440)
+		}
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("bad interval %q: it must be at least a minute", s)
 	}
-	return n * map[byte]int{'m': 1, 'h': 60, 'd': 1440}[m[2][0]], nil
+	minutes := n * map[byte]int{'m': 1, 'h': 60, 'd': 1440}[m[2][0]]
+	if minutes > MaxIntervalMinutes {
+		return 0, fmt.Errorf("bad interval %q: at most %d days", s, MaxIntervalMinutes/1440)
+	}
+	return minutes, nil
 }
+
+// MaxIntervalMinutes bounds an interval (366 days): a longer one is refused, and one already in
+// a jobs file has no next run (it would overflow a time.Duration).
+const MaxIntervalMinutes = 366 * 1440
 
 // naturalCron is "<days> [at] <time>" as a cron expression: days a keyword (day, weekdays,
 // weekend) or weekday names, time 9am, 9:30pm, 14:00, noon or midnight.

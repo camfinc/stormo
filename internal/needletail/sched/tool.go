@@ -189,6 +189,9 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 			if !j.Enabled() {
 				return false, fmt.Errorf("job %s is %s: resume it first", a.JobID, orDefault(j.Str("state"), "disabled"))
 			}
+			if _, err := s.nextRun(j, now); err != nil {
+				return false, fmt.Errorf("job %s cannot run: %v (update its schedule)", a.JobID, err)
+			}
 			j.Set("next_run_at", s.at(now))
 			kick = true
 		case "update":
