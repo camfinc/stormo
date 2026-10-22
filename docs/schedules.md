@@ -58,14 +58,19 @@ proposal for review.
   the failure streak, `last_status` and `repeat.completed` stay as they were, and the job is due
   again at the next start. A run still marked running at boot (a crash, a kill) is recorded as
   failed.
-- A job never overlaps itself. Needletail runs an agent's turn only in one of the API's two turn
-  slots. A job with no script takes its slot first: a busy agent leaves it due, before anything of
-  it has run, for the next tick or the end of a run, whichever comes first. A job's scripts (monitor, pre-run script, a script-only job) run
+- A job never overlaps itself: needletail claims a job before anything of its run starts, a tick
+  while it runs leaves it alone, and `run` asked several times while it runs gives one more run.
+  Needletail runs a job's turn in the scheduled runs' own turn lane (one turn by default,
+  `schedules.turns` in `engine/needletail/config.yaml`, 1 to 4), beside the chat's two, so jobs
+  and conversations never starve each other. A job with no script takes its slot first: a busy
+  lane leaves it due, before anything of it has run, for the next tick or the end of a run,
+  whichever comes first. A job's scripts (monitor, pre-run script, a script-only job) run
   first, holding no turn slot, under their own cap of two at a time (a third waits for one): an
   unchanged monitor, an empty script output or a wake gate ends the run with no turn and no slot.
-  When the gate says the agent runs and no slot is free, the job is due again on the next tick,
-  nothing recorded and the monitor's new output not stored (so the next tick sees the change
-  again; a pre-run script then runs again too).
+  When the gate says the agent runs and no slot is free, the job is due again on the next tick
+  (not sooner: its scripts would run again at once), nothing recorded and the monitor's new
+  output not stored (so the next tick sees the change again; a pre-run script then runs again
+  too); a `run` asked meanwhile is that same due run.
 - `enabled: false` (`state: paused`) and `state: completed` jobs do not run.
 - A job whose next time cannot be computed (a schedule the engine does not run, such as
   needletail's `@hourly`, `mon#1`, `L` or a one-time `once` kind; an interval over 366 days; an
@@ -119,7 +124,7 @@ In this order:
    `memory`, …; a tool's own name stands for itself, a toolset the engine has no tool for offers
    nothing), plus the core's MCP tools unless `no_mcp` is named. A scheduled run is never offered
    the scheduling tool (a job that makes jobs loops) nor `send_message` (its reply is what is
-   delivered). `model`/`provider` pin the job's model (Hermes).
+   delivered), nor needletail's `no_reply`. `model`/`provider` pin the job's model (Hermes).
 
 ## 4. The outcome
 
@@ -193,10 +198,20 @@ scripts lands when main (789b22c, 754c6b7) is merged into it.
 
 Hermes also delivers to its other platforms and Bot Chat. Needletail delivers to Slack only,
 through its Slack gateway (docs/needletail.md §4.9): a user id as the channel is that user's DM;
-the output is posted as it is (Hermes wraps it in a "Cronjob Response" header unless
-`cron.wrap_response: false`); a Slack error is the run's `delivery_failed`. Another platform's
-target is a delivery error. An agent with no Slack gateway running accepts a Slack target and
-only logs it (the output stays in the run's record).
+`origin` for a job made in a DM is the DM itself (needletail keeps one conversation per DM); the
+output is posted as it is (Hermes wraps it in a "Cronjob Response" header unless
+`cron.wrap_response: false`), with every `@channel`, `@here`, `@everyone` and user group escaped;
+a Slack error is the run's `delivery_failed`. Another platform's target is a delivery error. An
+agent with no Slack gateway running accepts a Slack target and only logs it (the output stays in
+the run's record).
+
+**Whose targets are trusted (needletail).** A job agent.yaml defines is trusted: its targets are
+the repo's (needletail.yaml `schedules.repo` lists the repo's job ids; a job with no `created_at`
+is the repo's render too). A job the agent made delivers only where the runtime's messaging
+policy lets it (docs/needletail.md §4.9: the home channel, a channel or thread the agent is in,
+an allowed user's DM), as `send_message` does: `cronjob_manage` refuses a `deliver` or
+`failure_deliver` outside it, and each delivery checks it again (a refused target is the run's
+`delivery_failed`). Hermes has no such check.
 
 ## 7. The agent's own jobs
 
@@ -215,9 +230,14 @@ command that reads secrets (`cat …/.env`, SSH keys), a backdoor (`authorized_k
 URL, body or `Authorization` header (a GitHub token to `api.github.com` exactly is allowed), and
 zero-width or bidirectional control characters (a joiner inside an emoji is fine) are refused.
 Needletail also bounds the agent's own jobs (Hermes does not): at most 20 (jobs with a
-`created_at`, which the repo's render never sets), a prompt of at most 8 KB, and no schedule that
-runs more often than every 5 minutes (an interval under 5 minutes, or a cron expression with two
-runs less than 5 minutes apart).
+`created_at`, which the repo's render never sets, and not among the repo's jobs, so a job
+promoted from the agent's into agent.yaml no longer counts), a prompt of at most 8 KB, and no
+schedule that runs more often than every 5 minutes (an interval under 5 minutes, or a cron
+expression with two runs less than 5 minutes apart, measured from its first run on, however far
+away: `* * 15 * *` runs every minute of the 15th and is refused). The `deliver` and
+`failure_deliver` it sets meet the messaging policy (§6). `cron/**` is not written by the file
+tools, so these bounds hold for them; the terminal can still edit `cron/jobs.json` until the
+runtime and the agent's commands run as different users.
 
 ## 8. Where needletail differs (M4)
 
