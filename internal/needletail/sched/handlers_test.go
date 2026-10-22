@@ -68,3 +68,40 @@ func TestOnSchedule(t *testing.T) {
 		t.Errorf("mon's run context %q", rc)
 	}
 }
+
+// A job whose gate (its script, then its on_schedule handlers) wants a turn while the lane is
+// busy keeps the handlers' verdict and notes with its gate's result: the handlers run once per
+// due run, not again at every tick it waits (a handler that sends, then passes, would send each
+// time), and their notes reach the turn it finally gets.
+func TestBusyRunKeepsHandlerVerdict(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, gatedJob("g", "script", "data.sh"))
+	writeScript(t, r.home, "data.sh", "echo rows\n")
+	calls := 0
+	r.s.o.OnSchedule = func(_ context.Context, id, name string, ev map[string]any) messaging.Verdict {
+		r.mu.Lock()
+		calls++
+		r.mu.Unlock()
+		return messaging.Verdict{Action: "pass", Context: []string{"sent the heads-up"}}
+	}
+	r.turns.reply("g", "Done.")
+	r.turns.busy = true
+	r.tick()
+	for i := 0; i < 3; i++ {
+		r.advance(10 * time.Minute)
+		r.tick()
+	}
+	r.turns.busy = false
+	r.advance(time.Minute)
+	r.tick()
+	r.mu.Lock()
+	n := calls
+	r.mu.Unlock()
+	if n != 1 {
+		t.Errorf("the handlers ran %d times for one due run", n)
+	}
+	c := r.turns.taken()
+	if len(c) != 1 || !strings.Contains(c[0].input, "sent the heads-up") {
+		t.Errorf("turns %+v", c)
+	}
+}
