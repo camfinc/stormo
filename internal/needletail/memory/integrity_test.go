@@ -2,11 +2,15 @@ package memory
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // A hot file whose entry has a bare § line at its edge (an empty entry between two delimiters,
@@ -124,5 +128,176 @@ func TestRenamedIDsAreSaved(t *testing.T) {
 	}
 	if again := ParseRecords(read(t, home, RecordsFile), t0); again.Recs[1].ID != first.Recs[1].ID {
 		t.Errorf("ids changed between boots: %s, %s", first.Recs[1].ID, again.Recs[1].ID)
+	}
+}
+
+// Two processes (serve, a oneshot) on one home: each read, change and write happens under the
+// home's lock, so neither writes over what the other just saved.
+func TestTwoStoresLoseNothing(t *testing.T) {
+	home := newHome(t, "", "")
+	a, b := &Store{Home: home}, &Store{Home: home}
+	var wg sync.WaitGroup
+	for i, s := range []*Store{a, b, a, b} {
+		wg.Add(1)
+		go func(i int, s *Store) {
+			defer wg.Done()
+			for j := 0; j < 15; j++ {
+				if _, err := s.Save(SaveOptions{Text: fmt.Sprintf("Store %d note %d about topic%d%d.", i, j, i, j), Force: true}); err != nil {
+					t.Error(err)
+				}
+			}
+		}(i, s)
+	}
+	wg.Wait()
+	if p := ParseRecords(read(t, home, RecordsFile), t0); len(p.Recs) != 60 {
+		t.Errorf("%d records of 60", len(p.Recs))
+	}
+}
+
+// A change another process made is seen even when the file kept its size and its mtime.
+func TestFingerprintSeesASameSizeRewrite(t *testing.T) {
+	home := newHome(t, "Alpha.", "")
+	s := newStore(home)
+	if got, _ := s.Entries(TargetMemory); !slices.Equal(got, []string{"Alpha."}) {
+		t.Fatal(got)
+	}
+	p := filepath.Join(home, "memories", "MEMORY.md")
+	info, _ := os.Stat(p)
+	tmp := p + ".new"
+	_ = os.WriteFile(tmp, []byte("Gamma."), 0o640)
+	_ = os.Chtimes(tmp, info.ModTime(), info.ModTime())
+	_ = os.Rename(tmp, p)
+	if got, _ := s.Entries(TargetMemory); !slices.Equal(got, []string{"Gamma."}) {
+		t.Errorf("entries = %q (a stale read)", got)
+	}
+}
+
+// failWrite makes the n-th file a change writes fail (a crash between the writes).
+func failWrite(t *testing.T, n int) {
+	t.Helper()
+	count := 0
+	beforeWrite = func(string) error {
+		if count++; count == n {
+			return errors.New("crash")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforeWrite = nil })
+}
+
+// A removal that stops between its two writes leaves the entry archived, never back in the hot
+// file: the hot file is written first.
+func TestCrashedRemovalArchives(t *testing.T) {
+	for _, op := range []string{"remove", "delete", "unpin"} {
+		home := newHome(t, "A.\n§\nB.", "")
+		s := newStore(home)
+		id := ""
+		res, _ := s.Search(Query{Scope: "hot"})
+		for _, v := range res.Results {
+			if v.Text == "B." {
+				id = v.ID
+			}
+		}
+		failWrite(t, 2)
+		var err error
+		switch op {
+		case "remove":
+			_, err = s.Remove(TargetMemory, "B.")
+		case "delete":
+			err = s.Delete(id, false)
+		case "unpin":
+			_, _, err = s.Unpin(id)
+		}
+		if err == nil {
+			t.Fatalf("%s: the second write did not fail", op)
+		}
+		beforeWrite = nil
+		if got, _ := newStore(home).Entries(TargetMemory); !slices.Equal(got, []string{"A."}) {
+			t.Errorf("%s: entries %q: resurrected", op, got)
+		}
+	}
+}
+
+// A nap that caught an older hot file with a newer RECORDS.md (or a crash after RECORDS.md was
+// written) does not bring a deleted entry back: its tombstone in RECORDS.md drops it from the hot
+// file. Saving the text again clears the tombstone.
+func TestTombstonesStopResurrection(t *testing.T) {
+	home := newHome(t, "A.\n§\nB.\n§\nC.", "Ana likes tea.")
+	s := newStore(home)
+	if _, err := s.Remove(TargetMemory, "B."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Replace(TargetMemory, "C.", "C, corrected."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Remove(TargetUser, "Ana"); err != nil {
+		t.Fatal(err)
+	}
+	// the nap's older hot files come back with the newer archive
+	_ = os.WriteFile(filepath.Join(home, "memories", "MEMORY.md"), []byte("A.\n§\nB.\n§\nC."), 0o640)
+	_ = os.WriteFile(filepath.Join(home, "memories", "USER.md"), []byte("Ana likes tea."), 0o640)
+	s2 := newStore(home)
+	if got, _ := s2.Entries(TargetMemory); !slices.Equal(got, []string{"A."}) {
+		t.Errorf("memory entries %q", got)
+	}
+	if got, _ := s2.Entries(TargetUser); len(got) != 0 {
+		t.Errorf("user entries %q", got)
+	}
+	if f := read(t, home, "memories/MEMORY.md"); f != "A." {
+		t.Errorf("MEMORY.md = %q", f)
+	}
+	for _, r := range ParseRecords(read(t, home, RecordsFile), t0).Recs {
+		if r.Text == "B." || r.Text == "Ana likes tea." {
+			t.Errorf("resurrected: %+v", r)
+		}
+	}
+	if !strings.Contains(read(t, home, RecordsFile), "needletail-tombstones") || strings.Contains(read(t, home, RecordsFile), "B.") {
+		t.Error("no tombstone, or the deleted text in clear")
+	}
+	// saved again on purpose: no tombstone stops it
+	if _, err := s2.Add(TargetMemory, "B."); err != nil {
+		t.Fatal(err)
+	}
+	if p := ParseRecords(read(t, home, RecordsFile), t0); len(p.Tombs) != 2 {
+		t.Errorf("tombstones %+v", p.Tombs)
+	}
+	_ = os.WriteFile(filepath.Join(home, "memories", "MEMORY.md"), []byte("A.\n§\nB."), 0o640)
+	if got, _ := newStore(home).Entries(TargetMemory); !slices.Equal(got, []string{"A.", "B."}) {
+		t.Errorf("re-added entry dropped: %q", got)
+	}
+}
+
+// Tombstones are bounded: at most MaxTombstones (the newest kept), none older than TombstoneAge.
+func TestTombstonesBounded(t *testing.T) {
+	tombs := map[string]string{}
+	for i := 0; i < MaxTombstones+20; i++ {
+		tombs[fmt.Sprintf("memory\x00h%03d", i)] = stamp(t0.Add(time.Duration(i) * time.Second))
+	}
+	pruneTombs(tombs, t0.Add(time.Hour))
+	if len(tombs) != MaxTombstones || tombs["memory\x00h000"] != "" || tombs[fmt.Sprintf("memory\x00h%03d", MaxTombstones+19)] == "" {
+		t.Errorf("%d tombstones, the oldest kept or the newest dropped", len(tombs))
+	}
+	pruneTombs(tombs, t0.Add(TombstoneAge+time.Hour))
+	if len(tombs) != 0 {
+		t.Errorf("%d tombstones after they aged", len(tombs))
+	}
+	// through the store: an aged tombstone is gone at the next write
+	home := newHome(t, "", "")
+	now := t0
+	s := &Store{Home: home, Now: func() time.Time { return now }}
+	for i := 0; i < 2; i++ {
+		r, _ := s.Save(SaveOptions{Text: fmt.Sprintf("Record number %d.", i), Force: true})
+		if err := s.Delete(r.ID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p := ParseRecords(read(t, home, RecordsFile), t0); len(p.Tombs) != 2 {
+		t.Errorf("%d tombstones", len(p.Tombs))
+	}
+	now = now.Add(TombstoneAge + time.Hour)
+	r, _ := s.Save(SaveOptions{Text: "One more.", Force: true})
+	_ = s.Delete(r.ID, false)
+	if p := ParseRecords(read(t, home, RecordsFile), t0); len(p.Tombs) != 1 {
+		t.Errorf("%d tombstones after they aged", len(p.Tombs))
 	}
 }

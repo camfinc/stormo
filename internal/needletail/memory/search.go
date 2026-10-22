@@ -159,8 +159,7 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		limit = DefaultLimit
 	}
 	limit = min(limit, MaxLimit)
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.load()
 	if err != nil {
 		return SearchResult{}, err

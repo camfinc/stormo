@@ -181,7 +181,7 @@ func TestReconcile(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, rep := reconcile(c.recs, c.files, "boot", t0)
+			out, rep := reconcile(c.recs, c.files, nil, "boot", t0)
 			if rep != c.rep || len(out) != c.n {
 				t.Errorf("report %+v (want %+v), %d records", rep, c.rep, len(out))
 			}

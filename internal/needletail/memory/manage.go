@@ -130,8 +130,7 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	if err != nil {
 		return SaveResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return SaveResult{}, err
@@ -165,6 +164,7 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 		hot = []string{target}
 	}
 	r := st.create(kind, c, o.Src, now)
+	st.unbury(target, c)
 	r.Tags, r.Imp, r.Expires = tags, imp, exp
 	if o.Hot {
 		r.Hot = len(st.hot(target)) + 1
@@ -239,8 +239,7 @@ var ErrHotRecord = errors.New("the record is hot (in the system prompt): only th
 // change between user and the others moves it between USER.md and MEMORY.md. archiveOnly refuses
 // hot records (Luau).
 func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, err
@@ -300,7 +299,10 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 	}
 	now := s.now()
 	n.PII, n.Updated = PII(n.Text), stamp(now)
+	wasTarget, wasKey := r.Target(), r.key()
 	*r = *n
+	st.bury(wasTarget, wasKey, now)
+	st.unbury(r.Target(), r.Text)
 	for _, t := range changed {
 		st.renumber(t)
 	}
@@ -311,8 +313,7 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 
 // Delete removes a record (from its hot file too). archiveOnly refuses hot records (Luau).
 func (s *Store) Delete(id string, archiveOnly bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return err
@@ -329,6 +330,7 @@ func (s *Store) Delete(id string, archiveOnly bool) error {
 		changed = []string{r.Target()}
 	}
 	st.remove(r)
+	st.bury(r.Target(), r.key(), s.now())
 	for _, t := range changed {
 		st.renumber(t)
 	}
@@ -338,8 +340,7 @@ func (s *Store) Delete(id string, archiveOnly bool) error {
 // Pin moves an archive record to the end of its hot file (refused over budget); Unpin moves a hot
 // one back to the archive.
 func (s *Store) Pin(id string) (View, Usage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, Usage{}, err
@@ -368,8 +369,7 @@ func (s *Store) Pin(id string) (View, Usage, error) {
 
 // Unpin moves a hot record back to the archive.
 func (s *Store) Unpin(id string) (View, Usage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, Usage{}, err

@@ -17,15 +17,19 @@ type Reconciled struct {
 	// rehydrate merge report (not built: docs/needletail.md §11) a record a reviewer rejected
 	// cannot be told from a nap skew, so neither is deleted.
 	Demoted int
+	// Buried: hot entries no record has whose text a tombstone names (deleted lately): dropped
+	// from their hot file, not made records again.
+	Buried  int
 	Changed bool
 }
 
 // reconcile makes the records agree with the hot files as rehydrate (or anything else) left them:
 // the hot files win for the hot set. Each entry, in order, takes the record of its target with
 // the same normalized text (a hot one first, else the latest updated archived one) and its
-// position; an entry no record has becomes a record (src); a hot record no entry took goes to
-// the archive. No path drops a record.
-func reconcile(recs []*Record, files map[string][]string, src string, now time.Time) ([]*Record, Reconciled) {
+// position; an entry no record has becomes a record (src), unless a tombstone names its text: then
+// it leaves its hot file (files changes); a hot record no entry took goes to the archive. No path
+// drops a record.
+func reconcile(recs []*Record, files map[string][]string, tombs map[string]string, src string, now time.Time) ([]*Record, Reconciled) {
 	var rep Reconciled
 	byKey := map[string][]*Record{}
 	ids := map[string]bool{}
@@ -49,14 +53,18 @@ func reconcile(recs []*Record, files map[string][]string, src string, now time.T
 	used := map[*Record]bool{}
 	for _, t := range targets {
 		entries, _ := cleanEntries(files[t]) // load cleaned them; a caller that did not is not trusted
-		files[t] = entries
-		for pos, e := range entries {
+		kept := entries[:0:0]
+		for _, e := range entries {
 			var r *Record
 			for _, c := range byKey[t+"\x00"+Normalize(e)] {
 				if !used[c] {
 					r = c
 					break
 				}
+			}
+			if r == nil && tombs[t+"\x00"+TextHash(e)] != "" {
+				rep.Buried++
+				continue
 			}
 			if r == nil {
 				kind := KindFact
@@ -72,12 +80,14 @@ func reconcile(recs []*Record, files map[string][]string, src string, now time.T
 				r.Text, r.PII, r.Updated = e, PII(e), stamp(now)
 				rep.Rewritten++
 			}
-			if r.Hot != pos+1 {
-				r.Hot = pos + 1
+			kept = append(kept, e)
+			if r.Hot != len(kept) {
+				r.Hot = len(kept)
 				rep.Changed = true
 			}
 			used[r] = true
 		}
+		files[t] = kept
 	}
 	for _, r := range recs {
 		if r.Hot > 0 && !used[r] {
@@ -85,6 +95,6 @@ func reconcile(recs []*Record, files map[string][]string, src string, now time.T
 			rep.Demoted++
 		}
 	}
-	rep.Changed = rep.Changed || rep.Created > 0 || rep.Rewritten > 0 || rep.Demoted > 0
+	rep.Changed = rep.Changed || rep.Created > 0 || rep.Rewritten > 0 || rep.Demoted > 0 || rep.Buried > 0
 	return recs, rep
 }

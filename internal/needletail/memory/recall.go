@@ -62,8 +62,7 @@ func (s *Store) Recall(input string, skip func(id string) bool, max, budget int)
 	if len(terms) < 2 {
 		return "", nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.load()
 	if err != nil {
 		return "", nil

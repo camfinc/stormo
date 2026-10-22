@@ -21,6 +21,10 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 )
 
+// beforeWrite, when set (tests only), runs before each file a change writes: an error stands for
+// a crash there.
+var beforeWrite func(rel string) error
+
 // Delimiter separates entries (a frozen contract, §8).
 const Delimiter = "\n§\n"
 
@@ -53,14 +57,10 @@ type Store struct {
 	Now        func() time.Time
 	Log        func(string)
 
-	mu sync.Mutex
-	st *state
-}
-
-type fprint struct {
-	ok   bool
-	size int64
-	mod  time.Time
+	mu         sync.Mutex
+	st         *state
+	lk         *os.File // the home's lock file (lock.go), open once
+	lockWarned bool
 }
 
 // state is the records as last read or written.
@@ -73,6 +73,9 @@ type state struct {
 	idx     *index
 	prints  [3]fprint
 	use     *usage
+	// tombs are the tombstones: target + "\x00" + hash of a deleted text's normalized form → when
+	// (see bury)
+	tombs map[string]string
 }
 
 // Units is s's length in UTF-16 code units.
@@ -141,54 +144,62 @@ func (s *Store) tmp() string { return filepath.Join(s.Home, fsx.TmpDir) }
 
 func (s *Store) recordsPath() string { return filepath.Join(s.Home, filepath.FromSlash(RecordsFile)) }
 
+func (s *Store) printPaths() [3]string {
+	return [3]string{s.recordsPath(), filepath.Join(s.Home, "memories", "MEMORY.md"), filepath.Join(s.Home, "memories", "USER.md")}
+}
+
+// prints is the three files' generations now.
 func (s *Store) prints() [3]fprint {
 	var out [3]fprint
-	for i, p := range []string{s.recordsPath(), filepath.Join(s.Home, "memories", "MEMORY.md"), filepath.Join(s.Home, "memories", "USER.md")} {
-		if info, err := os.Stat(p); err == nil {
-			out[i] = fprint{true, info.Size(), info.ModTime()}
-		}
+	for i, p := range s.printPaths() {
+		out[i] = statPrint(p)
 	}
 	return out
 }
 
 // Open reads the records and reconciles them with the hot files now (boot), instead of at first use.
 func (s *Store) Open() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	_, err := s.load()
 	return err
 }
 
 // load is the current state: read again when a file changed since it was last read or written.
+// The caller holds the lock (lock), so no other process writes between the read and the change.
 func (s *Store) load() (*state, error) {
-	prints := s.prints()
-	if s.st != nil && s.st.prints == prints {
+	if s.st != nil && s.st.prints == s.prints() {
 		return s.st, nil
 	}
 	now := s.now()
-	raw, err := os.ReadFile(s.recordsPath())
-	missing := os.IsNotExist(err)
-	if err != nil && !missing {
+	paths := s.printPaths()
+	var read [3]fprint // the generations read, kept unless load writes over them
+	raw, fp, err := readGen(paths[0])
+	if err != nil {
 		return nil, err
 	}
+	read[0] = fp
+	missing := !fp.ok
 	parsed := ParseRecords(string(raw), now)
-	st := &state{version: parsed.Version, recs: parsed.Recs, bad: parsed.Bad, files: map[string][]string{}}
+	st := &state{version: parsed.Version, recs: parsed.Recs, bad: parsed.Bad, files: map[string][]string{}, tombs: map[string]string{}}
+	for _, tb := range parsed.Tombs {
+		st.tombs[tb.Target+"\x00"+tb.Hash] = tb.At
+	}
 	if s.st != nil {
 		st.use = s.st.use
 	} else {
 		st.use = loadUsage(s.Home)
 	}
-	dirty := []string{} // hot files to write again: an entry had a bare § line
-	for _, t := range targets {
-		p, _ := s.path(t)
-		body, err := os.ReadFile(p)
-		if err != nil && !os.IsNotExist(err) {
+	dirty := map[string]bool{} // hot files to write again
+	for i, t := range targets {
+		body, fp, err := readGen(paths[i+1])
+		if err != nil {
 			return nil, err
 		}
+		read[i+1] = fp
 		entries, cleaned := cleanEntries(Parse(string(body)))
 		st.files[t] = entries
 		if cleaned > 0 {
-			dirty = append(dirty, t)
+			dirty[t] = true
 			s.logf("memory: %d entries of %s had a line holding only § at an edge (an empty entry, or a § first or last): dropped", cleaned, files[t])
 		}
 	}
@@ -196,9 +207,6 @@ func (s *Store) load() (*state, error) {
 		s.logf("memory: %d entries of %s are not records (kept as they are, after the records): fix or remove them by hand", len(parsed.Bad), RecordsFile)
 	}
 	write := false
-	if st.version != RecordsVersion {
-		dirty = nil
-	}
 	if st.version == RecordsVersion && (parsed.Repaired > 0 || parsed.Renamed > 0) {
 		write = true
 		s.logf("memory: %s mended: %d damaged entries repaired, %d repeated ids renamed", RecordsFile, parsed.Repaired, parsed.Renamed)
@@ -208,16 +216,26 @@ func (s *Store) load() (*state, error) {
 		if missing {
 			src = "migration"
 		}
+		before := map[string]int{}
+		for _, t := range targets {
+			before[t] = len(st.files[t])
+		}
 		var rep Reconciled
-		st.recs, rep = reconcile(st.recs, st.files, src, now)
+		st.recs, rep = reconcile(st.recs, st.files, st.tombs, src, now)
 		if rep.Changed {
 			write = write || !missing || len(st.recs) > 0
 		}
-		if rep.Created > 0 || rep.Demoted > 0 || rep.Rewritten > 0 {
-			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or an entry a reviewer rejected)",
-				RecordsFile, rep.Created, src, rep.Rewritten, rep.Demoted)
+		for _, t := range targets {
+			if len(st.files[t]) != before[t] {
+				dirty[t] = true
+			}
+		}
+		if rep.Created > 0 || rep.Demoted > 0 || rep.Rewritten > 0 || rep.Buried > 0 {
+			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or an entry a reviewer rejected), %d deleted ones dropped from their hot file (a tombstone: a nap skew, or a crash)",
+				RecordsFile, rep.Created, src, rep.Rewritten, rep.Demoted, rep.Buried)
 		}
 	} else {
+		dirty = nil
 		s.logf("memory: %s is format v%d, newer than this runtime's v%d: memory is read-only until it runs a newer image", RecordsFile, st.version, RecordsVersion)
 	}
 	st.byID = make(map[string]*Record, len(st.recs))
@@ -227,22 +245,44 @@ func (s *Store) load() (*state, error) {
 		st.idx.add(r)
 	}
 	s.st = st
+	st.prints = read
 	if write {
-		if err := fsx.WriteAtomicIn(s.recordsPath(), s.tmp(), []byte(FormatRecords(st.recs, st.bad)), 0o640); err != nil {
+		if err := s.write(RecordsFile, []byte(st.format(now))); err != nil {
 			s.logf("memory: could not write %s: %v", RecordsFile, err)
+		} else {
+			st.prints[0] = statPrint(paths[0])
 		}
 	}
-	for _, t := range dirty {
-		p, _ := s.path(t)
+	for i, t := range targets {
+		if !dirty[t] {
+			continue
+		}
 		entries := texts(st.hot(t))
-		if err := fsx.WriteAtomicIn(p, s.tmp(), []byte(Format(entries)), 0o640); err != nil {
+		if err := s.write(files[t], []byte(Format(entries))); err != nil {
 			s.logf("memory: could not write %s: %v", files[t], err)
 			continue
 		}
 		st.files[t] = entries
+		st.prints[i+1] = statPrint(paths[i+1])
 	}
-	st.prints = s.prints()
 	return st, nil
+}
+
+// format is RECORDS.md's text for st, its tombstones pruned as of now.
+func (st *state) format(now time.Time) string {
+	pruneTombs(st.tombs, now)
+	tombs := make([]Tomb, 0, len(st.tombs))
+	for k, at := range st.tombs {
+		target, hash, _ := strings.Cut(k, "\x00")
+		tombs = append(tombs, Tomb{Target: target, Hash: hash, At: at})
+	}
+	sort.Slice(tombs, func(i, j int) bool {
+		if tombs[i].At != tombs[j].At {
+			return tombs[i].At < tombs[j].At
+		}
+		return tombs[i].Target+tombs[i].Hash < tombs[j].Target+tombs[j].Hash
+	})
+	return FormatRecords(st.recs, st.bad, tombs...)
 }
 
 // writable is the state for a change: refused when the file's format is newer than this runtime's.
@@ -257,27 +297,56 @@ func (s *Store) writable() (*state, error) {
 	return st, nil
 }
 
-// commit writes RECORDS.md, then the hot files of targets. A write that fails leaves the state to
-// be read again from disk.
+// commit writes RECORDS.md and the hot files of targets. When a hot file loses an entry (a
+// remove, a delete, an unpin, a replace, a kind move) the hot file goes first: a crash between
+// the two writes leaves the record hot in RECORDS.md and missing from its hot file, which the
+// next load archives (reconcile), never an entry back in the hot file with no record, which it
+// would make a record again. A change that only adds writes RECORDS.md first: a crash leaves the
+// new record archived. A write that fails leaves the state to be read again from disk.
 func (s *Store) commit(st *state, targets ...string) error {
-	if err := fsx.WriteAtomicIn(s.recordsPath(), s.tmp(), []byte(FormatRecords(st.recs, st.bad)), 0o640); err != nil {
-		s.st = nil
-		return err
-	}
+	now := s.now()
+	paths := s.printPaths()
+	hotFirst := false
+	rendered := map[string][]string{}
 	for _, t := range targets {
-		p, err := s.path(t)
-		if err != nil {
+		if _, ok := files[t]; !ok {
 			continue
 		}
-		entries := texts(st.hot(t))
-		// 0640: the runtime's, readable by the agent's commands (the uid split, docs/needletail.md §6)
-		if err := fsx.WriteAtomicIn(p, s.tmp(), []byte(Format(entries)), 0o640); err != nil {
+		rendered[t] = texts(st.hot(t))
+		for _, e := range st.files[t] {
+			if !slices.Contains(rendered[t], e) {
+				hotFirst = true
+			}
+		}
+	}
+	writeHot := func() error {
+		for _, t := range targets {
+			entries, ok := rendered[t]
+			if !ok {
+				continue
+			}
+			// 0640: the runtime's, readable by the agent's commands (the uid split, docs/needletail.md §6)
+			if err := s.write(files[t], []byte(Format(entries))); err != nil {
+				return err
+			}
+			st.files[t] = entries
+		}
+		return nil
+	}
+	writeRecords := func() error { return s.write(RecordsFile, []byte(st.format(now))) }
+	steps := []func() error{writeRecords, writeHot}
+	if hotFirst {
+		steps = []func() error{writeHot, writeRecords}
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
 			s.st = nil
 			return err
 		}
-		st.files[t] = entries
 	}
-	st.prints = s.prints()
+	for i, p := range paths {
+		st.prints[i] = statPrint(p)
+	}
 	s.flushUsage(st, false)
 	return nil
 }
@@ -290,8 +359,7 @@ func (s *Store) flushUsage(st *state, force bool) {
 
 // Flush writes the usage counters now (shutdown).
 func (s *Store) Flush() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	if s.st != nil {
 		s.flushUsage(s.st, true)
 	}
@@ -332,6 +400,20 @@ func (st *state) create(kind, text, src string, now time.Time) *Record {
 	return r
 }
 
+// bury leaves a tombstone for key (a normalized text) in target, unless a record of target still
+// has that text: it was deleted, or replaced by another.
+func (st *state) bury(target, key string, now time.Time) {
+	for _, r := range st.recs {
+		if r.Target() == target && r.key() == key {
+			return
+		}
+	}
+	st.tombs[target+"\x00"+TextHash(key)] = stamp(now)
+}
+
+// unbury lifts text's tombstone in target: it is saved again, on purpose.
+func (st *state) unbury(target, text string) { delete(st.tombs, target+"\x00"+TextHash(text)) }
+
 func (st *state) remove(r *Record) {
 	st.recs = slices.DeleteFunc(st.recs, func(x *Record) bool { return x == r })
 	delete(st.byID, r.ID)
@@ -365,8 +447,7 @@ func (s *Store) Entries(target string) ([]string, error) {
 	if _, err := s.path(target); err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.load()
 	if err != nil {
 		return nil, err
@@ -441,8 +522,7 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 	if err != nil {
 		return Usage{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return Usage{}, err
@@ -472,6 +552,7 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 	}
 	r.Text, r.PII, r.Updated, r.Hot = c, PII(c), stamp(now), len(before)+1
 	st.idx.add(r)
+	st.unbury(target, c)
 	return u, s.commit(st, target)
 }
 
@@ -513,8 +594,7 @@ func (s *Store) Replace(target, old, content string) (Usage, error) {
 	if err != nil {
 		return Usage{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return Usage{}, err
@@ -532,8 +612,12 @@ func (s *Store) Replace(target, old, content string) (Usage, error) {
 		return u, err
 	}
 	r := list[i]
-	r.Text, r.PII, r.Updated = c, PII(c), stamp(s.now())
+	was := r.key()
+	now := s.now()
+	r.Text, r.PII, r.Updated = c, PII(c), stamp(now)
 	st.idx.add(r)
+	st.bury(target, was, now)
+	st.unbury(target, c)
 	return u, s.commit(st, target)
 }
 
@@ -542,8 +626,7 @@ func (s *Store) Remove(target, old string) (Usage, error) {
 	if _, err := s.path(target); err != nil {
 		return Usage{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return Usage{}, err
@@ -555,6 +638,7 @@ func (s *Store) Remove(target, old string) (Usage, error) {
 		return s.usage(target, before), err
 	}
 	st.remove(list[i])
+	st.bury(target, list[i].key(), s.now())
 	st.renumber(target)
 	return s.usage(target, texts(st.hot(target))), s.commit(st, target)
 }

@@ -3,6 +3,8 @@ package memory
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"regexp"
@@ -247,6 +249,88 @@ type Records struct {
 	// Repaired is how many damaged entries were mended (see repair); Renamed how many records got a
 	// new id because theirs repeated an earlier one's. Either way the file should be written again.
 	Repaired, Renamed int
+	// Tombs are the tombstones entry's (TombsEntry).
+	Tombs []Tomb
+}
+
+// Tomb is a tombstone: a text deleted from target (its record removed, or its text replaced),
+// by a hash of its normalized form (TextHash: the text itself is not kept), and when. While it
+// lasts, the hot file's entry with that text and no record is a stale copy (a nap that caught an
+// older hot file with this RECORDS.md, a crash between the two writes): reconcile drops it from
+// the hot file instead of making it a record again. A record saved with the text again lifts it.
+type Tomb struct {
+	Target string `json:"target"`
+	Hash   string `json:"hash"`
+	At     string `json:"at"`
+}
+
+// Tombstones' bounds: the newest MaxTombstones, none older than TombstoneAge (a nap skew or a
+// crash shows at the next boot; a text deleted longer ago that comes back in a hot file is taken
+// for one put there on purpose).
+const (
+	MaxTombstones = 256
+	TombstoneAge  = 30 * 24 * time.Hour
+)
+
+// TextHash is a text's tombstone hash: 128 bits of SHA-256 over Normalize(text), in hex.
+func TextHash(text string) string {
+	sum := sha256.Sum256([]byte(Normalize(text)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// tombsRe is the tombstones entry: RECORDS.md's second entry when there are any. An older v1
+// runtime keeps it as an entry it cannot read (written back after its records, verbatim), and
+// this one reads it wherever it is.
+var tombsRe = regexp.MustCompile(`^<!-- needletail-tombstones (\{.*\}) -->$`)
+
+type tombsDoc struct {
+	Tombstones []Tomb `json:"tombstones"`
+}
+
+func parseTombs(e string) ([]Tomb, bool) {
+	m := tombsRe.FindStringSubmatch(e)
+	if m == nil {
+		return nil, false
+	}
+	var d tombsDoc
+	if json.Unmarshal([]byte(m[1]), &d) != nil {
+		return nil, false
+	}
+	out := d.Tombstones[:0:0]
+	for _, t := range d.Tombstones {
+		if (t.Target == TargetMemory || t.Target == TargetUser) && len(t.Hash) == 32 {
+			if _, err := time.Parse(time.RFC3339, t.At); err == nil {
+				out = append(out, t)
+			}
+		}
+	}
+	return out, true
+}
+
+// pruneTombs drops the tombstones older than TombstoneAge, then all but the newest MaxTombstones.
+func pruneTombs(tombs map[string]string, now time.Time) {
+	oldest := stamp(now.Add(-TombstoneAge))
+	for k, at := range tombs {
+		if at < oldest {
+			delete(tombs, k)
+		}
+	}
+	if len(tombs) <= MaxTombstones {
+		return
+	}
+	keys := make([]string, 0, len(tombs))
+	for k := range tombs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if tombs[keys[i]] != tombs[keys[j]] {
+			return tombs[keys[i]] > tombs[keys[j]]
+		}
+		return keys[i] > keys[j]
+	})
+	for _, k := range keys[MaxTombstones:] {
+		delete(tombs, k)
+	}
 }
 
 var headerRe = regexp.MustCompile(`^<!-- (\{.*\}) -->$`)
@@ -272,6 +356,10 @@ func ParseRecords(raw string, now time.Time) Records {
 				out.Version, _ = strconv.Atoi(m[1])
 				continue
 			}
+		}
+		if tombs, ok := parseTombs(e); ok {
+			out.Tombs = append(out.Tombs, tombs...)
+			continue
 		}
 		if s, changed := stripBare(e); changed {
 			out.Repaired++
@@ -439,9 +527,10 @@ func parseRecord(e string) (*Record, bool) {
 	return r, true
 }
 
-// FormatRecords is RECORDS.md's text: the version line, then each record (its header line and
-// text), then the entries that could not be read, joined by the delimiter, with a final newline.
-func FormatRecords(recs []*Record, bad []string) string {
+// FormatRecords is RECORDS.md's text: the version line, the tombstones (when there are any), then
+// each record (its header line and text), then the entries that could not be read, joined by the
+// delimiter, with a final newline.
+func FormatRecords(recs []*Record, bad []string, tombs ...Tomb) string {
 	var b bytes.Buffer
 	size := len(versionLine) + 1
 	for _, r := range recs {
@@ -449,6 +538,13 @@ func FormatRecords(recs []*Record, bad []string) string {
 	}
 	b.Grow(size)
 	b.WriteString(versionLine)
+	if len(tombs) > 0 {
+		body, _ := json.Marshal(tombsDoc{Tombstones: tombs}) // HTML-escaped: no "-->" in it
+		b.WriteString(Delimiter)
+		b.WriteString("<!-- needletail-tombstones ")
+		b.Write(body)
+		b.WriteString(" -->")
+	}
 	for _, r := range recs {
 		b.WriteString(Delimiter)
 		r.header(&b)
