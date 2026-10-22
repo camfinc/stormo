@@ -255,13 +255,6 @@ type place struct {
 	agent  string // the shared path as agents and the core name it: /shared/<layer>/<rel>
 }
 
-func (p place) real() string {
-	if p.rel == "" {
-		return p.root
-	}
-	return filepath.Join(p.root, filepath.FromSlash(p.rel))
-}
-
 // protected are the home's top-level entries a script never writes: the runtime's own files, the
 // agent's memory (the memory tool), its skills (skill_manage checks every change), its schedules
 // (cronjob_manage) and the job scripts they run (scripts/: the baseline's, and the ones the agent
@@ -362,8 +355,15 @@ func (c *Call) place(p string) (place, error) {
 			}
 		}
 	}
+	if placed != nil {
+		placed(pl.rel)
+	}
 	return pl, nil
 }
+
+// placed (tests only) runs once a path is read, before the file system is touched: where a
+// concurrent change of the tree lands.
+var placed func(rel string)
 
 func scope(p place) string {
 	if p.shared {
@@ -441,14 +441,14 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p.real(), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := p.openFile(os.O_RDONLY, false)
 	if err != nil {
-		return nil, ioErr(p, err)
+		return nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, errf("not_file", "%s is not a regular file", display(p))
+	if err != nil {
+		return nil, ioErr(p, err)
 	}
 	if err := c.quota(info.Size(), 0); err != nil {
 		return nil, err
@@ -471,13 +471,20 @@ func display(p place) string {
 }
 
 func ioErr(p place, err error) error {
+	var he *hostError
 	switch {
+	case errors.As(err, &he):
+		return he
 	case errors.Is(err, fs.ErrNotExist):
 		return errf("not_found", "%s does not exist", display(p))
 	case errors.Is(err, syscall.ELOOP):
-		return errf("symlink", "%s is a symlink", display(p))
+		return errf("symlink", "%s: a symlink is in the way (Luau never follows symlinks)", display(p))
 	}
-	return errf("io", "%s: %v", display(p), errors.Unwrap(err))
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return errf("io", "%s: %v", display(p), err)
 }
 
 func fsWrite(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
@@ -516,26 +523,21 @@ func (c *Call) write(ctx context.Context, name string, in json.RawMessage, appen
 		c.mu.Unlock()
 		return nil, nil
 	}
-	dir := filepath.Dir(p.real())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, ioErr(p, err)
-	}
-	// MkdirAll may have walked a symlink planted since the check: check again.
-	if _, err := c.place(a.Path); err != nil {
-		return nil, err
-	}
-	if info, err := os.Lstat(p.real()); err == nil && !info.Mode().IsRegular() {
-		return nil, errf("not_file", "%s is not a regular file", display(p))
-	}
-	flags := os.O_WRONLY | os.O_CREATE | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	// directories made on the way, the file opened without truncating, then truncated once it is
+	// known to be a regular file
+	flags := os.O_WRONLY | os.O_CREATE
 	if appendTo {
 		flags |= os.O_APPEND
-	} else {
-		flags |= os.O_TRUNC
 	}
-	f, err := os.OpenFile(p.real(), flags, 0o644)
+	f, err := p.openFile(flags, true)
 	if err != nil {
-		return nil, ioErr(p, err)
+		return nil, err
+	}
+	if !appendTo {
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return nil, ioErr(p, err)
+		}
 	}
 	_, werr := f.WriteString(*a.Content)
 	cerr := f.Close()
@@ -553,41 +555,7 @@ func fsList(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	if p.shared && c.rt.Core != nil {
 		return c.core(ctx, "fs_ls", map[string]any{"path": p.agent})
 	}
-	info, err := os.Lstat(p.real())
-	if err != nil {
-		return nil, ioErr(p, err)
-	}
-	if !info.IsDir() {
-		return nil, errf("not_dir", "%s is not a directory", display(p))
-	}
-	ents, err := os.ReadDir(p.real())
-	if err != nil {
-		return nil, ioErr(p, err)
-	}
-	out := []map[string]any{}
-	for _, e := range ents {
-		if len(out) == maxList {
-			break
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		out = append(out, map[string]any{"name": e.Name(), "type": kind(fi), "size": fi.Size()})
-	}
-	return out, nil
-}
-
-func kind(fi fs.FileInfo) string {
-	switch {
-	case fi.Mode().IsRegular():
-		return "file"
-	case fi.IsDir():
-		return "dir"
-	case fi.Mode()&fs.ModeSymlink != 0:
-		return "symlink"
-	}
-	return "other"
+	return p.list(ctx, maxList)
 }
 
 func fsStat(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
@@ -598,14 +566,16 @@ func fsStat(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	if p.shared && c.rt.Core != nil {
 		return c.core(ctx, "fs_info", map[string]any{"path": p.agent})
 	}
-	fi, err := os.Lstat(p.real())
-	if errors.Is(err, fs.ErrNotExist) {
+	st, err := p.lstat()
+	var he *hostError
+	if errors.As(err, &he) && he.code == "not_found" {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, ioErr(p, err)
+		return nil, err
 	}
-	return map[string]any{"type": kind(fi), "size": fi.Size(), "mtime": fi.ModTime().Unix()}, nil
+	mtime, _ := st.Mtim.Unix()
+	return map[string]any{"type": statKind(st), "size": st.Size, "mtime": mtime}, nil
 }
 
 func fsRemove(_ context.Context, c *Call, in json.RawMessage) (any, error) {
@@ -623,17 +593,7 @@ func fsRemove(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if p, err = c.writePlace("fs.remove", a); err != nil {
 		return nil, err
 	}
-	fi, err := os.Lstat(p.real())
-	if err != nil {
-		return nil, ioErr(p, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, errf("not_file", "%s is not a regular file", display(p))
-	}
-	if err := os.Remove(p.real()); err != nil {
-		return nil, ioErr(p, err)
-	}
-	return nil, nil
+	return nil, p.remove()
 }
 
 func fsLock(ctx context.Context, c *Call, in json.RawMessage) (any, error) {

@@ -166,6 +166,107 @@ func TestFSSymlinks(t *testing.T) {
 	}
 }
 
+// swapOnce makes the first path read in the next run see dir (under root) replaced by a symlink to
+// target, as a process racing the run could.
+func swapOnce(t *testing.T, root, dir, target string) {
+	t.Helper()
+	var once sync.Once
+	placed = func(string) {
+		once.Do(func() {
+			d := filepath.Join(root, dir)
+			if err := os.Rename(d, d+".old"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(target, d); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(func() { placed = nil })
+}
+
+// A directory swapped for a symlink after the path was checked is never followed: every component
+// is opened relative to its parent, refusing symlinks.
+func TestFSSymlinkRace(t *testing.T) {
+	caps := []string{"fs.read:home", "fs.write:home", "fs.read:shared"}
+	cases := []struct {
+		name, src string
+		shared    bool
+		into      string // "outside" or "skills"
+	}{
+		{"read", `return read_file("d/in.txt")`, false, "outside"},
+		{"write", `write_file("d/in.txt", "x")`, false, "outside"},
+		{"write a new file", `write_file("d/new.txt", "x")`, false, "outside"},
+		{"write a new dir", `write_file("d/sub/new.txt", "x")`, false, "outside"},
+		{"append", `append_file("d/in.txt", "x")`, false, "outside"},
+		{"remove", `remove_file("d/in.txt")`, false, "outside"},
+		{"list", `return list_files("d")`, false, "outside"},
+		{"stat", `return stat_file("d/in.txt")`, false, "outside"},
+		{"into a protected dir", `write_file("d/x/tools/t.luau", "x")`, false, "skills"},
+		{"shared read into the home", `return read_file("/shared/group/d/in.txt")`, true, "home"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, _ := newRuntime(t)
+			rt.Core = nil // shared list/stat read the mount
+			rt.Grants = append(rt.Grants, "fs.read:shared")
+			outside := t.TempDir()
+			write(t, filepath.Join(outside, "in.txt"), "outside")
+			write(t, filepath.Join(rt.Home, "notes", "in.txt"), "home")
+			write(t, filepath.Join(rt.Home, "skills", "x", "SKILL.md"), "skill")
+			root := rt.Home
+			if tc.shared {
+				root = filepath.Join(rt.SharedDir, "group")
+			}
+			write(t, filepath.Join(root, "d", "in.txt"), "inside")
+			target := map[string]string{"outside": outside, "skills": filepath.Join(rt.Home, "skills"), "home": filepath.Join(rt.Home, "notes")}[tc.into]
+			swapOnce(t, root, "d", target)
+			res, _ := exec(t, rt, caps, tc.src)
+			if res.Err == nil || !strings.Contains(res.Err.Msg, "symlink:") {
+				t.Fatalf("%s: got %v (value %s), want symlink", tc.src, res.Err, res.Value)
+			}
+			if b, _ := os.ReadFile(filepath.Join(outside, "in.txt")); string(b) != "outside" {
+				t.Fatalf("the file outside is %q", b)
+			}
+			for _, p := range []string{filepath.Join(outside, "new.txt"), filepath.Join(outside, "sub"), filepath.Join(rt.Home, "skills", "x", "tools")} {
+				if _, err := os.Lstat(p); err == nil {
+					t.Fatalf("%s was made", p)
+				}
+			}
+		})
+	}
+	// a dangling symlink as the last component is not created through
+	rt, _ := newRuntime(t)
+	outside := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "made.txt"), filepath.Join(rt.Home, "made.txt")); err != nil {
+		t.Fatal(err)
+	}
+	fails(t, rt, homeRW, `write_file("made.txt", "x")`, "symlink")
+	if _, err := os.Lstat(filepath.Join(outside, "made.txt")); err == nil {
+		t.Fatal("a file was made through a dangling symlink")
+	}
+}
+
+// fs.list reads a directory in batches up to its limit, and stops when the run is cancelled.
+func TestFSListBounded(t *testing.T) {
+	rt, _ := newRuntime(t)
+	dir := filepath.Join(rt.Home, "big")
+	for i := range maxList + 50 {
+		write(t, filepath.Join(dir, fmt.Sprintf("f%04d", i)), "x")
+	}
+	caps, _ := NewCaps(homeRW, rt.Grants)
+	call := rt.NewCall("t", "s1", caps, false)
+	v, err := fsList(context.Background(), call, json.RawMessage(`{"path":"big"}`))
+	if err != nil || len(v.([]map[string]any)) != maxList {
+		t.Fatalf("list: %v, %d entries", err, len(v.([]map[string]any)))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if v, err := fsList(ctx, call, json.RawMessage(`{"path":"big"}`)); err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("a cancelled list: %v, %v", err, v != nil)
+	}
+}
+
 func TestProtectedPaths(t *testing.T) {
 	rt, _ := newRuntime(t)
 	for _, p := range []string{"needletail.yaml", "SOUL.md", "memories/MEMORY.md", "skills/crm/tools/x.luau", "skills/.usage.json",
