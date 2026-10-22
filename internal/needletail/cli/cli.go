@@ -126,7 +126,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	logf := func(s string) { logger.Println(s) }
 	// Started as root (the image), the runtime lays the home out and drops to its own user before
 	// anything else touches the home; the agent's commands then run as another (§7).
-	split, err := privsep.Enter(cfg.Home, logf)
+	split, err := privsep.Enter(cfg.Home, cfg.StateRoot, logf)
 	if err != nil {
 		return nil, err
 	}

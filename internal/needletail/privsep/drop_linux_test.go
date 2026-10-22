@@ -79,7 +79,7 @@ func TestDropAsRoot(t *testing.T) {
 func dropChild() {
 	home := os.Getenv("NT_HOME")
 	fail := func(f string, a ...any) { fmt.Printf("FAIL "+f+"\n", a...); os.Exit(1) }
-	if err := Prepare(home, Default, func(s string) { fmt.Println("log:", s) }); err != nil {
+	if err := Prepare(home, Default, "acme-state", func(s string) { fmt.Println("log:", s) }); err != nil {
 		fail("prepare: %v", err)
 	}
 	if err := Drop(Default); err != nil {

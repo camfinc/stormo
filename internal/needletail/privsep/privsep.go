@@ -37,6 +37,10 @@ var (
 	// Files are the runtime's files at the home's root, with their mode: made empty when
 	// missing (SOUL.md; a missing needletail.yaml fails the boot earlier).
 	Files = map[string]uint32{"needletail.yaml": 0o600, "SOUL.md": 0o644}
+	// Workspace are the workspace's trees the runtime reads and writes for the agent (with the
+	// manifest's state dir, needletail.yaml's state_root): the group may reach every entry in them,
+	// one a command made owner-only included.
+	Workspace = []string{"skills", "scripts"}
 )
 
 // RootMode is the home's own mode: the runtime's, group-writable so the agent's commands can make
@@ -56,11 +60,12 @@ type Split struct {
 // only: the agent's commands then run as root. Never set in the image.
 const OffEnv = "NEEDLETAIL_UID_SPLIT"
 
-// Enter splits the runtime when it starts as root on Linux (the image): Prepare, then Drop, then
-// the umask that keeps what both users make group-writable. Started as anyone else it runs as
+// Enter splits the runtime when it starts as root on Linux (the image): Prepare (stateDir is the
+// manifest's state dir, relative to the home), then Drop, then the umask that keeps what both
+// users make group-writable. Started as anyone else it runs as
 // one user, as before (logged). A failure of a split that should happen is an error: the
 // runtime does not run with the agent's commands able to reach its state.
-func Enter(home string, logf func(string)) (Split, error) {
+func Enter(home, stateDir string, logf func(string)) (Split, error) {
 	switch {
 	case runtime.GOOS != "linux":
 		return Split{Off: "not Linux"}, nil
@@ -74,7 +79,7 @@ func Enter(home string, logf func(string)) (Split, error) {
 		return s, nil
 	}
 	u := Default
-	if err := Prepare(home, u, logf); err != nil {
+	if err := Prepare(home, u, stateDir, logf); err != nil {
 		return Split{}, fmt.Errorf("uid split: preparing the home: %w", err)
 	}
 	if err := Drop(u); err != nil {

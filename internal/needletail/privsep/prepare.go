@@ -14,14 +14,16 @@ import (
 )
 
 // Prepare lays the home out for the split (as root, before Drop): the agent's workspace (every
-// entry not the runtime's) to the exec user, group-writable; the home itself to the runtime,
+// entry not the runtime's) to the exec user, group-writable (in the trees the runtime reads and
+// writes for the agent, Workspace and the manifest's stateDir, every entry reachable by the
+// group, owner-only ones included); the home itself to the runtime,
 // RootMode; the runtime's directories made when missing and, with all they hold, to the runtime
 // (Private 0700/0600, ReadOnly 0750/0640); its root files (Files) to the runtime with their modes.
 // The runtime's entries come last, so an inode linked from the workspace ends up the runtime's.
 // Everything is reached by descriptor and never through a symlink (a symlink is given to its
 // owner as itself). A runtime name that is not a directory (a file, a symlink) is moved aside
 // as <name>.moved-<time> and logged; a root file that is not a regular file fails the boot.
-func Prepare(home string, u Users, logf func(string)) error {
+func Prepare(home string, u Users, stateDir string, logf func(string)) error {
 	root, err := unix.Open(home, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return &os.PathError{Op: "open", Path: home, Err: err}
@@ -39,11 +41,31 @@ func Prepare(home string, u Users, logf func(string)) error {
 	for f := range Files {
 		runtimeTop[f] = true
 	}
+	trees := append([]string{}, Workspace...)
+	if stateDir = strings.Trim(path.Clean(stateDir), "/"); stateDir != "." && stateDir != "" {
+		top, _, _ := strings.Cut(stateDir, "/")
+		switch {
+		case strings.HasPrefix(stateDir, "../") || stateDir == "..":
+			logf(fmt.Sprintf("uid split: the state dir %q is not below the home; its owner-only entries keep their modes", stateDir))
+		case runtimeTop[top]:
+			logf(fmt.Sprintf("uid split: the state dir %q is under the runtime's %s/, out of the commands' reach", stateDir, top))
+		default:
+			trees = append(trees, stateDir)
+		}
+	}
+	mode := func(p string, dir bool, perm uint32) uint32 {
+		for _, t := range trees {
+			if p == t || strings.HasPrefix(p, t+"/") {
+				return reachableMode(dir, perm)
+			}
+		}
+		return workspaceMode(dir, perm)
+	}
 	for _, n := range names {
 		if runtimeTop[n] {
 			continue
 		}
-		if err := fixTree(root, n, n, u.ExecUID, u.RuntimeGID, workspaceMode); err != nil {
+		if err := fixTree(root, n, n, u.ExecUID, u.RuntimeGID, mode); err != nil {
 			return err
 		}
 	}
@@ -80,22 +102,27 @@ func Prepare(home string, u Users, logf func(string)) error {
 // runtime's writes there, and the commands', which share the group; a read-only file stays
 // read-only); no setuid or setgid file. An entry the group and others have no bits on is the
 // owner's alone on purpose (~/.ssh and its keys, which ssh refuses once the group may read them;
-// a directory a command made private) and keeps its mode: the runtime does not write there. What
-// the runtime writes in the workspace (skills/, scripts/, the manifest's state dir, as rehydrate
-// restores them, 0755/0644, or as the runtime made them, 0775/0664) has group bits, so it gets
-// the owner's.
+// a directory a command made private in its work files) and keeps its mode: the runtime does not
+// read or write there. In the trees the runtime does read and write (Workspace, the manifest's
+// state dir) reachableMode applies instead.
 func workspaceMode(dir bool, perm uint32) uint32 {
-	private := perm&0o077 == 0
-	if dir {
-		if private {
+	if perm&0o077 == 0 {
+		if dir {
 			return perm & 0o7777
 		}
+		return perm & 0o777
+	}
+	return reachableMode(dir, perm)
+}
+
+// reachableMode is the group given what the owner may, owner-only entries included (a mktemp
+// file or directory a command moved into skills/: 0600/0700 would shut the runtime out of it
+// for good), and at least read (and enter, for a directory); no setuid or setgid file.
+func reachableMode(dir bool, perm uint32) uint32 {
+	if dir {
 		return perm&0o7777 | 0o070
 	}
 	perm &= 0o777
-	if private {
-		return perm
-	}
 	return perm | perm&0o700>>3 | 0o040
 }
 
@@ -118,6 +145,7 @@ func readOnlyMode(dir bool, perm uint32) uint32 {
 // runtimeDir makes rel (below the home, its parents first) a directory when missing, moving aside
 // what else holds the name, then gives it and all it holds to the runtime with mode.
 func runtimeDir(root int, rel string, u Users, mode func(bool, uint32) uint32, logf func(string)) error {
+	byPath := func(_ string, dir bool, perm uint32) uint32 { return mode(dir, perm) }
 	dir := root
 	segs := strings.Split(rel, "/")
 	for i, seg := range segs {
@@ -158,7 +186,7 @@ func runtimeDir(root int, rel string, u Users, mode func(bool, uint32) uint32, l
 			unix.Close(dir)
 		}
 	}()
-	return fixTree(dir, segs[len(segs)-1], rel, u.RuntimeUID, u.RuntimeGID, mode)
+	return fixTree(dir, segs[len(segs)-1], rel, u.RuntimeUID, u.RuntimeGID, byPath)
 }
 
 // runtimeFile gives a file at the home's root to the runtime with mode; a missing one is made
@@ -182,10 +210,10 @@ func runtimeFile(root int, name string, mode uint32, u Users) error {
 	return unix.Fchmod(fd, mode)
 }
 
-// fixTree gives name (in dir; p is its path, for errors) and everything below it to uid:gid,
-// with mode's bits on directories and regular files. Nothing is followed: a symlink is given to
-// uid:gid as itself, other special files keep their mode.
-func fixTree(dir int, name, p string, uid, gid int, mode func(bool, uint32) uint32) error {
+// fixTree gives name (in dir; p is its path below the home) and everything below it to uid:gid,
+// with mode's bits (for its path) on directories and regular files. Nothing is followed: a
+// symlink is given to uid:gid as itself, other special files keep their mode.
+func fixTree(dir int, name, p string, uid, gid int, mode func(string, bool, uint32) uint32) error {
 	var st unix.Stat_t
 	if err := unix.Fstatat(dir, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		if errors.Is(err, unix.ENOENT) {
@@ -203,7 +231,7 @@ func fixTree(dir int, name, p string, uid, gid int, mode func(bool, uint32) uint
 		if err := unix.Fchown(fd, uid, gid); err != nil {
 			return &os.PathError{Op: "chown", Path: p, Err: err}
 		}
-		if err := unix.Fchmod(fd, mode(true, uint32(st.Mode))); err != nil {
+		if err := unix.Fchmod(fd, mode(p, true, uint32(st.Mode))); err != nil {
 			return &os.PathError{Op: "chmod", Path: p, Err: err}
 		}
 		names, err := readNames(fd)
@@ -229,7 +257,7 @@ func fixTree(dir int, name, p string, uid, gid int, mode func(bool, uint32) uint
 		if err := unix.Fchown(fd, uid, gid); err != nil {
 			return &os.PathError{Op: "chown", Path: p, Err: err}
 		}
-		if err := unix.Fchmod(fd, mode(false, uint32(now.Mode))); err != nil {
+		if err := unix.Fchmod(fd, mode(p, false, uint32(now.Mode))); err != nil {
 			return &os.PathError{Op: "chmod", Path: p, Err: err}
 		}
 		return nil

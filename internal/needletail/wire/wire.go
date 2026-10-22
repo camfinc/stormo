@@ -245,6 +245,10 @@ type Config struct {
 	Slack *SlackConfig `json:"slack,omitempty" yaml:"slack,omitempty"`
 	// Schedules is what the runtime is told about the agent's jobs.
 	Schedules SchedulesConfig `json:"schedules,omitempty" yaml:"schedules,omitempty"`
+	// StateRoot is the manifest's state dir (the instance's names.state_dir, the engine layout's
+	// StateRoot), relative to the home: part of the agent's workspace, which the uid split keeps
+	// reachable by the runtime.
+	StateRoot string `json:"state_root,omitempty" yaml:"state_root,omitempty"`
 }
 
 // SlackConfig is the agent's grants for Slack.

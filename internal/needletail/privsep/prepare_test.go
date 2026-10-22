@@ -56,7 +56,7 @@ func TestPrepare(t *testing.T) {
 	}
 	var logs []string
 	u := Users{RuntimeUID: os.Getuid(), RuntimeGID: os.Getgid(), ExecUID: os.Getuid()}
-	if err := Prepare(home, u, func(s string) { logs = append(logs, s) }); err != nil {
+	if err := Prepare(home, u, "acme-state", func(s string) { logs = append(logs, s) }); err != nil {
 		t.Fatal(err)
 	}
 	for rel, want := range map[string]fs.FileMode{
@@ -101,7 +101,7 @@ func TestPrepare(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, "cron", "jobs.json"), filepath.Join(home, "SOUL.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Prepare(home, u, func(string) {}); err == nil || !strings.Contains(err.Error(), "SOUL.md") {
+	if err := Prepare(home, u, "acme-state", func(string) {}); err == nil || !strings.Contains(err.Error(), "SOUL.md") {
 		t.Errorf("a symlinked SOUL.md: %v", err)
 	}
 	if got := mode(t, filepath.Join(home, "cron", "jobs.json")); got != 0o600 {
@@ -115,8 +115,45 @@ func TestEnterOffWhenNotRoot(t *testing.T) {
 		t.Skip("root: the split would run")
 	}
 	var logs []string
-	s, err := Enter(t.TempDir(), func(l string) { logs = append(logs, l) })
+	s, err := Enter(t.TempDir(), "acme-state", func(l string) { logs = append(logs, l) })
 	if err != nil || s.Exec != nil || s.Off == "" {
 		t.Fatalf("split %+v %v", s, err)
+	}
+}
+
+// What a command made owner-only inside the trees the runtime reads and writes for the agent
+// (skills/, scripts/, the manifest's state dir: a mktemp file or directory moved there) is given
+// the group's access, so the runtime is never locked out of it for good; owner-only entries
+// elsewhere (~/.ssh, ~/.gnupg) keep their modes.
+func TestPrepareWorkspaceTreesStayReachable(t *testing.T) {
+	home := t.TempDir()
+	put(t, filepath.Join(home, "skills", "crm", "priv", "tmp.Xa12"), "x", 0o600)
+	put(t, filepath.Join(home, "scripts", "job.sh"), "x", 0o700)
+	put(t, filepath.Join(home, "acme-state", "crm", "cursor"), "x", 0o600)
+	put(t, filepath.Join(home, ".gnupg", "key"), "x", 0o600)
+	put(t, filepath.Join(home, "work", "private", "notes"), "x", 0o600)
+	for _, d := range []string{"skills/crm/priv", "acme-state/crm", ".gnupg", "work/private"} {
+		if err := os.Chmod(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u := Users{RuntimeUID: os.Getuid(), RuntimeGID: os.Getgid(), ExecUID: os.Getuid()}
+	if err := Prepare(home, u, "acme-state", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]fs.FileMode{
+		"skills/crm/priv":          fs.ModeDir | 0o770,
+		"skills/crm/priv/tmp.Xa12": 0o660,
+		"scripts/job.sh":           0o770,
+		"acme-state/crm":           fs.ModeDir | 0o770,
+		"acme-state/crm/cursor":    0o660,
+		".gnupg":                   fs.ModeDir | 0o700,
+		".gnupg/key":               0o600,
+		"work/private":             fs.ModeDir | 0o700,
+		"work/private/notes":       0o600,
+	} {
+		if got := mode(t, filepath.Join(home, rel)); got != want {
+			t.Errorf("%s: %v, want %v", rel, got, want)
+		}
 	}
 }

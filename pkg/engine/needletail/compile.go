@@ -225,6 +225,7 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
 	rendered.Skills.Generated = generatedSkills(ctx.Knowledge)
+	rendered.StateRoot = n.layout.StateRoot
 	cfg, err := yaml.Marshal(rendered)
 	if err != nil {
 		return nil, err
