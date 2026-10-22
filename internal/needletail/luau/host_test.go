@@ -603,10 +603,69 @@ func TestFSReadOfTheArchiveNeedsMemoryRead(t *testing.T) {
 	if res.Err != nil || !strings.Contains(string(res.Value), `"file"`) {
 		t.Errorf("stat and list = %v %s", res.Err, res.Value)
 	}
+}
+
+// The memory store's files hold every audience's records, so read_file never shows them outside
+// the owner's own run (a oneshot), memory:read or not: a conversation, a job or a schedule's
+// script finds its records with search_memory, in its audience. Any path that reaches the file is
+// the file (a spelling, a hard link); a symlink is never followed.
+func TestFSReadOfTheArchiveOnlyForTheOperator(t *testing.T) {
+	rt, _ := newRuntime(t)
 	rt.Grants = append(rt.Grants, "memory:read")
-	res, _ = exec(t, rt, []string{"fs.read:home", "memory:read"}, `return read_file("memories/RECORDS.md")`)
-	if res.Err != nil || !strings.Contains(string(res.Value), "private note") {
-		t.Errorf("with memory:read = %v %s", res.Err, res.Value)
+	rt.Memory.Where = func(session string) memory.Audience {
+		switch session {
+		case "slack-DANA-dm":
+			return memory.Audience{Scope: "dm:UANA", Conv: session}
+		case "oneshot-1":
+			return memory.Audience{Operator: true}
+		}
+		return memory.Audience{}
+	}
+	if _, err := rt.Memory.Save(memory.SaveOptions{Text: "Bob's private note.", Force: true, Audience: memory.Audience{Scope: "dm:UBOB", Conv: "slack-DBOB-dm"}}); err != nil {
+		t.Fatal(err)
+	}
+	rt.Memory.Flush()
+	write(t, filepath.Join(rt.Home, "state", "needletail", "memory-usage.json"), `{"v":1,"records":{}}`)
+	write(t, filepath.Join(rt.Home, "state", "needletail", "memory.lock"), "")
+	if err := os.Link(filepath.Join(rt.Home, "memories", "RECORDS.md"), filepath.Join(rt.Home, "notes.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(rt.Home, "memories", "RECORDS.md"), filepath.Join(rt.Home, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	caps := []string{"fs.read:home", "memory:read"}
+	run := func(session, src string) *Result {
+		t.Helper()
+		res, _, err := rt.Exec(context.Background(), Exec{Name: "t", Session: session, Source: []byte(src), Header: &Header{Format: 1, Caps: caps}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	paths := []string{"memories/RECORDS.md", "~/memories/RECORDS.md", rt.Home + "/memories/RECORDS.md", "memories/./RECORDS.md",
+		"memories//RECORDS.md", "x/../memories/RECORDS.md", "Memories/records.md", "notes.md",
+		"state/needletail/memory-usage.json", "state/needletail/memory.lock"}
+	for _, session := range []string{"s1", "slack-DANA-dm", "schedule"} {
+		for _, p := range paths {
+			res := run(session, `return read_file("`+p+`")`)
+			if p == "Memories/records.md" && res.Err != nil && strings.Contains(res.Err.Msg, "not_found:") {
+				continue // a case-sensitive disk: no such file
+			}
+			if res.Err == nil || !strings.Contains(res.Err.Msg, "refused:") || !strings.Contains(res.Err.Msg, "search_memory") {
+				t.Errorf("%s read %s: %v %s", session, p, res.Err, res.Value)
+			}
+		}
+		if res := run(session, `return read_file("link.md")`); res.Err == nil || !strings.Contains(res.Err.Msg, "symlink:") {
+			t.Errorf("%s read through a symlink: %v %s", session, res.Err, res.Value)
+		}
+	}
+	if res := run("oneshot-1", `return read_file("memories/RECORDS.md")`); res.Err != nil || !strings.Contains(string(res.Value), "private note") {
+		t.Errorf("the operator's read = %v %s", res.Err, res.Value)
+	}
+	// the hot files are in every prompt: fs.read:home reads them anywhere
+	write(t, filepath.Join(rt.Home, "memories", "MEMORY.md"), "A hot fact.")
+	if res := run("slack-DANA-dm", `return read_file("memories/MEMORY.md")`); res.Err != nil || string(res.Value) != `"A hot fact."` {
+		t.Errorf("MEMORY.md = %v %s", res.Err, res.Value)
 	}
 }
 

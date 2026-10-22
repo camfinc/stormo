@@ -482,8 +482,14 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, ioErr(p, err)
 	}
-	if !p.shared && !c.Caps.Memory("read") && c.memoryFile(p.rel, info) {
-		return nil, c.deny("fs.read", "memory:read")
+	if !p.shared && c.memoryFile(p.rel, info) {
+		if !c.Caps.Memory("read") {
+			return nil, c.deny("fs.read", "memory:read")
+		}
+		if c.rt.Memory == nil || !c.audience(c.rt.Memory).Operator {
+			return nil, errf("refused", "%s is the memory's store, every conversation's records: read_file shows it only in the owner's own run (a oneshot); "+
+				"search_memory finds the records this run may see", display(p))
+		}
 	}
 	if readStatted != nil {
 		readStatted(p.rel)
@@ -504,13 +510,16 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	return string(b), nil
 }
 
-// memoryFile: the file a script opened at rel (in the home) is the memory archive or its
-// counters, or a write's temporary copy of either, which fs.read:home does not cover: the archive
-// is memory:read's (it holds more client data than the hot files, which read_memory and
-// fs.read:home give). Matched by the file itself, so another spelling of the path (case, on a
-// case-insensitive disk) or a hard link is the same file.
+// memoryFile: the file a script opened at rel (in the home) is one of the memory's store files
+// (the archive, its counters, the lock file) or a write's temporary copy of one, which
+// fs.read:home does not cover: the archive holds every audience's records (§4.6, Scopes), more
+// client data than the hot files, which read_memory and fs.read:home give, so only the owner's
+// own run reads it raw (fsRead); everyone else searches it in their audience. Matched by the
+// file itself (the opened descriptor's), so another spelling of the path (case, on a
+// case-insensitive disk; the path is cleaned by place) or a hard link is the same file; place
+// and openFile never follow a symlink.
 func (c *Call) memoryFile(rel string, info os.FileInfo) bool {
-	for _, f := range []string{memory.RecordsFile, memory.UsageFile} {
+	for _, f := range []string{memory.RecordsFile, memory.UsageFile, memory.LockFile} {
 		if strings.EqualFold(rel, f) {
 			return true
 		}
