@@ -585,6 +585,16 @@ func (s *Scheduler) Tick() {
 				due = append(due, dueJob{id, next, i})
 			}
 		}
+		// a job in line that is no longer due (paused, removed, rescheduled) leaves the line;
+		// under the file's lock, as a busy run's finish puts its job in line, so the two never
+		// cross (a job let go after the loop above passed it is not dropped)
+		s.runMu.Lock()
+		for id := range s.waiting {
+			if !s.claimed[id] && !slices.ContainsFunc(due, func(d dueJob) bool { return d.id == id }) {
+				delete(s.waiting, id)
+			}
+		}
+		s.runMu.Unlock()
 		return changed, nil
 	})
 	if err != nil {
@@ -592,14 +602,6 @@ func (s *Scheduler) Tick() {
 		return
 	}
 	sort.SliceStable(due, func(a, b int) bool { return due[a].at.Before(due[b].at) })
-	// a job in line that is no longer due (paused, removed, rescheduled) leaves the line
-	s.runMu.Lock()
-	for id := range s.waiting {
-		if !s.claimed[id] && !slices.ContainsFunc(due, func(d dueJob) bool { return d.id == id }) {
-			delete(s.waiting, id)
-		}
-	}
-	s.runMu.Unlock()
 	for _, d := range due {
 		s.start(d.id, now)
 	}
