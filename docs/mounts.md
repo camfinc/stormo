@@ -31,7 +31,11 @@ snapshot rules) and gets the same three.
 - **Containers.** Every container of an agent (local) runs with `no-new-privileges` and without
   `NET_RAW`, `MKNOD`, `SYS_CHROOT`, `SETFCAP`, `AUDIT_WRITE` and `NET_BIND_SERVICE`. The user is
   left to the image, because engine images may boot as root and drop to their runtime user
-  (Hermes: s6, then `hermes`).
+  (Hermes: s6, then `hermes`; needletail lays the home out, runs as the runtime uid and starts
+  what the agent executes as a second uid in the runtime's group, docs/needletail.md §7). A
+  shared layer is reached by that second uid too: through an EFS access point every operation
+  is the access point's POSIX user (`shared.PosixUID`) whoever makes it, and a local layer must
+  be group-writable for the shared uid's group (2775, as the access points create them).
 
 ## Next steps (not built)
 

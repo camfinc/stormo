@@ -111,13 +111,24 @@ In this order:
    all). Empty stdout, or the `{"wakeAgent": false}` gate, is a silent run with no
    turn. A failing script does not fail the run: the agent gets a "Script Error" block with the
    failure and reports it.
-5. **The prompt**: each of the job's skills loaded as `skill_view` loads it (its SKILL.md, a
+5. **Handlers** (needletail only): the agent's `on_schedule` handlers whose header's `jobs:`
+   names the job (its id or name, or `"*"`), in order (skill dir, then name), each with the job
+   (`id`, `name`, `schedule`, `prompt`, `skills`, `deliver`, `repo`), the script's output and the
+   monitor's run context (docs/needletail.md §5.5). A handler's `reply` is the run's output, with
+   no turn (delivered and recorded as a turn's reply would be; the monitor's change counts as
+   handled); `silent` is a silent run; a `pass` may add notes, which go into the prompt as a
+   "Handler Notes" block, and the next handler runs. A handler that fails is skipped (logged) and
+   the run goes on. They are bounded by `limits.script_timeout`, run while the run still holds
+   no turn slot when the job has a gate (as its scripts do; a busy agent then runs them again on
+   the next tick), and the link is in the handler, not the job: `cron/jobs.json` and agent.yaml
+   do not change, and Hermes, which has no handlers, runs the same job with its prompt.
+6. **The prompt**: each of the job's skills loaded as `skill_view` loads it (its SKILL.md, a
    counted view, and needletail makes it the session's current skill so the terminal's `SKILL_DIR`
    resolves), a notice first for skills that were not found; then a short cron hint (the final
    reply is delivered; reply exactly `[SILENT]` when there is nothing new; `[CRON_FAILURE]` to fail
    the run; do not schedule jobs because the task mentions a schedule); the script's block; the
    job's prompt; the monitor's block under "## Run Context".
-6. **The turn**: in a fresh session of its own (needletail `cron-<id>-<UTC time>`, source `cron`,
+7. **The turn**: in a fresh session of its own (needletail `cron-<id>-<UTC time>`, source `cron`,
    which the core's hooks show as the platform), ended after the turn. Tools: every tool when
    `enabled_toolsets` is empty, else the tools of each toolset named (`terminal`, `file`
    = read_file, write_file, patch, search_files, `skills` = skills_list, skill_view, skill_manage,
@@ -167,7 +178,9 @@ agent.yaml names it, whatever form the agent gave. The interpreter comes from th
 `.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` in the Luau sandbox, below).
 The working directory is the script's own directory (`scripts/` for a script there), the environment the terminal's (secrets scrubbed, the
 passthrough allowlist kept), the bound 1 hour (Hermes' default), and the whole process tree is
-killed at the end. stdout and stderr are trimmed and redacted; a non-zero exit is a failure
+killed at the end. Needletail runs it, like the terminal, as the agent's own user (uid 10001,
+the runtime's group, no capability; docs/needletail.md §7), so a script cannot change
+`cron/jobs.json` or the runtime's other files; Hermes runs it as its runtime user. stdout and stderr are trimmed and redacted; a non-zero exit is a failure
 described as `Script exited with code N`, then its stderr and stdout.
 
 **`.luau` scripts (needletail only).** A `.luau` script runs in the Luau sandbox
@@ -236,8 +249,9 @@ schedule that runs more often than every 5 minutes (an interval under 5 minutes,
 expression with two runs less than 5 minutes apart, measured from its first run on, however far
 away: `* * 15 * *` runs every minute of the 15th and is refused). The `deliver` and
 `failure_deliver` it sets meet the messaging policy (§6). `cron/**` is not written by the file
-tools, so these bounds hold for them; the terminal can still edit `cron/jobs.json` until the
-runtime and the agent's commands run as different users.
+tools, nor, with needletail's uid split (docs/needletail.md §7), by the terminal or a job's
+scripts, which run as another user than the runtime: these bounds hold for everything the agent
+does. (Started without the split, or on Hermes, the terminal can still edit `cron/jobs.json`.)
 
 ## 8. Where needletail differs (M4)
 
@@ -250,6 +264,10 @@ runtime and the agent's commands run as different users.
   keep their meaning (a cron time whose own wall clock matches is kept, §1). An image older than
   this key refuses a `needletail.yaml` that has it (the file's keys are checked), so a timezone
   needs this runtime or later.
+
+- **Handlers** (M6b). The agent's `on_schedule` handlers may answer, silence or annotate a run
+  before its turn (§3, step 5). Hermes has none.
+- **Users.** Scripts and monitors run as the agent's user, apart from the runtime (§5).
 
 - One-time schedules (`in 30m`, a timestamp) are refused: agent.yaml has no form for them, so the
   dream could not propose them.
