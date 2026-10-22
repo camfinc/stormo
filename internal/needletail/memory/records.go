@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"math/big"
 	"regexp"
 	"slices"
@@ -12,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // RecordsFile is the archive, relative to the home: every memory as a record (docs/needletail.md
@@ -61,6 +61,16 @@ type Record struct {
 	Text string
 
 	extra map[string]json.RawMessage // header keys this version does not know, kept
+
+	normText, norm string // Normalize(Text), cached for normText
+}
+
+// key is Normalize(r.Text), computed once per text.
+func (r *Record) key() string {
+	if r.norm == "" || r.normText != r.Text {
+		r.normText, r.norm = r.Text, Normalize(r.Text)
+	}
+	return r.norm
 }
 
 // Target is the hot file the record renders to.
@@ -118,30 +128,84 @@ func stamp(t time.Time) string { return t.UTC().Truncate(time.Second).Format(tim
 
 // ---- codec ----------------------------------------------------------------------------------
 
+// jsonString appends s as a JSON string, escaped as encoding/json does with HTML escaping ("<",
+// ">" and "&" as \u003c…, so "-->" cannot end the header comment; U+2028 and U+2029 too).
+func jsonString(b *bytes.Buffer, s string) {
+	const hex = "0123456789abcdef"
+	b.WriteByte('"')
+	start := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			if c >= 0x20 && c != '"' && c != '\\' && c != '<' && c != '>' && c != '&' {
+				i++
+				continue
+			}
+			b.WriteString(s[start:i])
+			switch c {
+			case '"', '\\':
+				b.WriteByte('\\')
+				b.WriteByte(c)
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			default:
+				b.WriteString(`\u00`)
+				b.WriteByte(hex[c>>4])
+				b.WriteByte(hex[c&0xf])
+			}
+			i++
+			start = i
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && n == 1 || r == 0x2028 || r == 0x2029 {
+			b.WriteString(s[start:i])
+			if r == utf8.RuneError {
+				b.WriteString(`\ufffd`)
+			} else {
+				b.WriteString(`\u202`)
+				b.WriteByte(hex[r&0xf])
+			}
+			i += n
+			start = i
+			continue
+		}
+		i += n
+	}
+	b.WriteString(s[start:])
+	b.WriteByte('"')
+}
+
 // header is a record's header line as JSON, keys in the contract's order.
-func (r *Record) header() string {
-	var b bytes.Buffer
-	str := func(s string) []byte { v, _ := json.Marshal(s); return v } // HTML-escaped: "-->" cannot end the comment
+func (r *Record) header(b *bytes.Buffer) {
 	b.WriteString(`<!-- {"id":`)
-	b.Write(str(r.ID))
+	jsonString(b, r.ID)
 	b.WriteString(`,"kind":`)
-	b.Write(str(r.Kind))
+	jsonString(b, r.Kind)
 	b.WriteString(`,"tags":[`)
 	for i, t := range r.Tags {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.Write(str(t))
+		jsonString(b, t)
 	}
-	fmt.Fprintf(&b, `],"imp":%d,"hot":%d,"src":`, r.Imp, r.Hot)
-	b.Write(str(r.Src))
+	b.WriteString(`],"imp":`)
+	b.WriteString(strconv.Itoa(r.Imp))
+	b.WriteString(`,"hot":`)
+	b.WriteString(strconv.Itoa(r.Hot))
+	b.WriteString(`,"src":`)
+	jsonString(b, r.Src)
 	b.WriteString(`,"created":`)
-	b.Write(str(r.Created))
+	jsonString(b, r.Created)
 	b.WriteString(`,"updated":`)
-	b.Write(str(r.Updated))
+	jsonString(b, r.Updated)
 	if r.Expires != "" {
 		b.WriteString(`,"expires":`)
-		b.Write(str(r.Expires))
+		jsonString(b, r.Expires)
 	}
 	if len(r.PII) > 0 {
 		b.WriteString(`,"pii":[`)
@@ -149,7 +213,7 @@ func (r *Record) header() string {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.Write(str(p))
+			jsonString(b, p)
 		}
 		b.WriteByte(']')
 	}
@@ -160,17 +224,16 @@ func (r *Record) header() string {
 	sort.Strings(keys)
 	for _, k := range keys {
 		b.WriteByte(',')
-		b.Write(str(k))
+		jsonString(b, k)
 		b.WriteByte(':')
 		var c bytes.Buffer
 		if json.Compact(&c, r.extra[k]) == nil {
-			b.Write(bytes.ReplaceAll(c.Bytes(), []byte("-->"), []byte(`-->`)))
+			b.Write(bytes.ReplaceAll(c.Bytes(), []byte("-->"), []byte(`--\u003e`)))
 		} else {
 			b.WriteString("null")
 		}
 	}
 	b.WriteString("} -->")
-	return b.String()
 }
 
 // Records is a parsed RECORDS.md.
@@ -215,25 +278,48 @@ func ParseRecords(raw string, now time.Time) Records {
 	return out
 }
 
+// recordHeader is a header's known keys (the fast path: a header with no other key).
+type recordHeader struct {
+	ID      string   `json:"id"`
+	Kind    string   `json:"kind"`
+	Tags    []string `json:"tags"`
+	Imp     int      `json:"imp"`
+	Hot     int      `json:"hot"`
+	Src     string   `json:"src"`
+	Created string   `json:"created"`
+	Updated string   `json:"updated"`
+	Expires string   `json:"expires"`
+	PII     []string `json:"pii"`
+}
+
 func parseRecord(e string) (*Record, bool) {
 	line, text, _ := strings.Cut(e, "\n")
 	m := headerRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
 	if m == nil {
 		return nil, false
 	}
-	var h map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(m[1]), &h); err != nil {
-		return nil, false
+	var h recordHeader
+	var extra map[string]json.RawMessage
+	dec := json.NewDecoder(strings.NewReader(m[1]))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&h); err != nil {
+		// unknown keys (a newer runtime's): read them apart, to keep them
+		var all map[string]json.RawMessage
+		if json.Unmarshal([]byte(m[1]), &all) != nil {
+			return nil, false
+		}
+		h = recordHeader{}
+		for _, k := range []string{"id", "kind", "tags", "imp", "hot", "src", "created", "updated", "expires", "pii"} {
+			delete(all, k)
+		}
+		if json.Unmarshal([]byte(m[1]), &h) != nil {
+			return nil, false
+		}
+		extra = all
 	}
-	r := &Record{Text: trim(text)}
-	take := func(k string, v any) bool {
-		raw, ok := h[k]
-		delete(h, k)
-		return !ok || json.Unmarshal(raw, v) == nil
-	}
-	ok := take("id", &r.ID) && take("kind", &r.Kind) && take("tags", &r.Tags) && take("imp", &r.Imp) && take("hot", &r.Hot) &&
-		take("src", &r.Src) && take("created", &r.Created) && take("updated", &r.Updated) && take("expires", &r.Expires) && take("pii", &r.PII)
-	if !ok || !ValidID(r.ID) || !slices.Contains(Kinds, r.Kind) || r.Text == "" {
+	r := &Record{ID: h.ID, Kind: h.Kind, Tags: h.Tags, Imp: h.Imp, Hot: h.Hot, Src: h.Src, Created: h.Created, Updated: h.Updated,
+		Expires: h.Expires, PII: h.PII, Text: trim(text)}
+	if !ValidID(r.ID) || !slices.Contains(Kinds, r.Kind) || r.Text == "" {
 		return nil, false
 	}
 	if r.Imp < 1 || r.Imp > 5 {
@@ -243,8 +329,8 @@ func parseRecord(e string) (*Record, bool) {
 	if r.Tags == nil {
 		r.Tags = []string{}
 	}
-	if len(h) > 0 {
-		r.extra = h
+	if len(extra) > 0 {
+		r.extra = extra
 	}
 	return r, true
 }
@@ -252,11 +338,16 @@ func parseRecord(e string) (*Record, bool) {
 // FormatRecords is RECORDS.md's text: the version line, then each record (its header line and
 // text), then the entries that could not be read, joined by the delimiter, with a final newline.
 func FormatRecords(recs []*Record, bad []string) string {
-	var b strings.Builder
+	var b bytes.Buffer
+	size := len(versionLine) + 1
+	for _, r := range recs {
+		size += len(r.Text) + 200
+	}
+	b.Grow(size)
 	b.WriteString(versionLine)
 	for _, r := range recs {
 		b.WriteString(Delimiter)
-		b.WriteString(r.header())
+		r.header(&b)
 		b.WriteByte('\n')
 		b.WriteString(r.Text)
 	}

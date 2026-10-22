@@ -10,19 +10,52 @@ import (
 	"unicode/utf8"
 )
 
-// spaceRun is a run of the trim set's characters, as pkg/learning collapses them (Normalize).
-var spaceRun = regexp.MustCompile(`[\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`)
+// isSpace is the trim set (pkg/learning's unicodeSpace), whose runs Normalize collapses.
+func isSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
+}
 
-// Normalize is pkg/learning.Normalize (a copy, parity-tested): lower case, every run of spaces
-// one space, trimmed. Two entries with the same Normalize are the same memory to the runtime, the
-// merge at boot and the ledger.
+// Normalize is pkg/learning.Normalize (a copy, parity-tested), without its regexp: lower case,
+// every run of spaces one space, trimmed. Two entries with the same Normalize are the same memory
+// to the runtime, the merge at boot and the ledger.
 func Normalize(entry string) string {
-	return strings.Trim(spaceRun.ReplaceAllString(strings.ToLower(entry), " "), " ")
+	s := strings.ToLower(entry)
+	var b strings.Builder
+	b.Grow(len(s))
+	pending := false
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if isSpace(r) && !(r == utf8.RuneError && n == 1) {
+			pending = true
+		} else {
+			if pending && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			pending = false
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 // fold is s lower-cased with diacritics and Latin ligatures folded (cotización → cotizacion,
 // straße → strasse), as FTS5's remove_diacritics 2 matches them.
 func fold(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return strings.ToLower(s)
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range strings.ToLower(s) {
@@ -79,14 +112,29 @@ func tokens(s string) []string {
 
 // words is s folded and split, words of one character dropped, stop words kept.
 func words(s string) []string {
-	out := strings.FieldsFunc(fold(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
-	keep := out[:0]
-	for _, w := range out {
-		if utf8.RuneCountInString(w) >= 2 {
-			keep = append(keep, w)
+	f := fold(s)
+	out := make([]string, 0, len(f)/6+1)
+	start := -1
+	for i, r := range f {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			if w := f[start:i]; len(w) > 1 && utf8.RuneCountInString(w) >= 2 {
+				out = append(out, w)
+			}
+			start = -1
 		}
 	}
-	return keep
+	if start >= 0 {
+		if w := f[start:]; len(w) > 1 && utf8.RuneCountInString(w) >= 2 {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // stop are Spanish and English stop words, dropped from the index and from queries.

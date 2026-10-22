@@ -214,16 +214,20 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		if !keep(r) || q.Match == "all" && h.matched < len(terms) {
 			continue
 		}
-		ok := true
-		for _, p := range phrases {
-			if !strings.Contains(h.doc.folded, " "+p+" ") {
-				ok = false
-				break
+		if len(phrases) > 0 {
+			folded := " " + strings.Join(words(r.Text), " ") + " "
+			ok := true
+			for _, p := range phrases {
+				if !strings.Contains(folded, " "+p+" ") {
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				continue
 			}
 		}
-		if ok {
-			hits = append(hits, h)
-		}
+		hits = append(hits, h)
 	}
 	out.Total = len(hits)
 	for _, rk := range st.rank(hits, now) {
@@ -303,13 +307,7 @@ type ranked struct {
 // rank orders the best candidates BM25 hits by score = 0.65·lex + 0.15·recency + 0.12·importance
 // + 0.08·use, lex being BM25 over the best candidate's.
 func (st *state) rank(hits []*hit, now time.Time) []ranked {
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score > hits[j].score
-		}
-		return hits[i].doc.rec.ID > hits[j].doc.rec.ID
-	})
-	hits = hits[:min(len(hits), candidates)]
+	hits = top(hits, candidates)
 	if len(hits) == 0 {
 		return nil
 	}
@@ -341,4 +339,58 @@ func (st *state) boost(r *Record, lex float64, now time.Time) float64 {
 	imp := float64(r.Imp-1) / 4
 	use := min(1, math.Log2(1+float64(uses))/math.Log2(17))
 	return weightLex*lex + weightRecency*rec + weightImp*imp + weightUse*use
+}
+
+// better orders hits by BM25, then by id (newer first) for a stable order.
+func better(a, b *hit) bool {
+	if a.score != b.score {
+		return a.score > b.score
+	}
+	return a.doc.rec.ID > b.doc.rec.ID
+}
+
+// top is the k best hits in order, selected with a bounded heap (a query's hits can be most of
+// the records; only the best k are ranked).
+func top(hits []*hit, k int) []*hit {
+	if len(hits) <= k {
+		sort.Slice(hits, func(i, j int) bool { return better(hits[i], hits[j]) })
+		return hits
+	}
+	h := make([]*hit, 0, k) // a min-heap by better: h[0] is the worst kept
+	down := func(i int) {
+		for {
+			l, w := 2*i+1, i
+			if l < len(h) && better(h[w], h[l]) {
+				w = l
+			}
+			if r := l + 1; r < len(h) && better(h[w], h[r]) {
+				w = r
+			}
+			if w == i {
+				return
+			}
+			h[i], h[w] = h[w], h[i]
+			i = w
+		}
+	}
+	for _, x := range hits {
+		if len(h) < k {
+			h = append(h, x)
+			for i := len(h) - 1; i > 0; {
+				p := (i - 1) / 2
+				if !better(h[p], h[i]) {
+					break
+				}
+				h[i], h[p] = h[p], h[i]
+				i = p
+			}
+			continue
+		}
+		if better(x, h[0]) {
+			h[0] = x
+			down(0)
+		}
+	}
+	sort.Slice(h, func(i, j int) bool { return better(h[i], h[j]) })
+	return h
 }

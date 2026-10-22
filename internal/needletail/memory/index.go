@@ -24,8 +24,7 @@ type posting struct {
 type doc struct {
 	rec    *Record
 	length float64
-	terms  map[string]float32 // weighted term frequencies
-	folded string             // the text's words, folded, space-joined (phrases)
+	terms  []string // its distinct terms (to remove its postings)
 }
 
 type index struct {
@@ -38,6 +37,7 @@ type index struct {
 	// sorted is the terms in order (prefix queries), rebuilt when stale
 	sorted []string
 	stale  bool
+	tf     map[string]float32 // scratch: a document's weighted term frequencies
 }
 
 func newIndex() *index {
@@ -48,19 +48,26 @@ func (x *index) add(r *Record) {
 	if _, ok := x.byID[r.ID]; ok {
 		x.remove(r.ID)
 	}
-	d := &doc{rec: r, terms: map[string]float32{}}
+	d := &doc{rec: r}
+	if x.tf == nil {
+		x.tf = map[string]float32{}
+	}
+	clear(x.tf)
 	text := tokens(r.Text)
 	for _, t := range text {
-		d.terms[t]++
+		x.tf[t]++
 	}
 	d.length = float64(len(text))
 	for _, tag := range r.Tags {
 		for _, t := range tokens(tag) {
-			d.terms[t] += tagsWeight
+			x.tf[t] += tagsWeight
 			d.length += tagsWeight
 		}
 	}
-	d.folded = " " + strings.Join(words(r.Text), " ") + " "
+	d.terms = make([]string, 0, len(x.tf))
+	for t := range x.tf {
+		d.terms = append(d.terms, t)
+	}
 	var n int32
 	if k := len(x.free); k > 0 {
 		n, x.free = x.free[k-1], x.free[:k-1]
@@ -70,11 +77,11 @@ func (x *index) add(r *Record) {
 		x.docs = append(x.docs, d)
 	}
 	x.byID[r.ID] = n
-	for t, tf := range d.terms {
+	for _, t := range d.terms {
 		if _, ok := x.post[t]; !ok {
 			x.stale = true
 		}
-		x.post[t] = append(x.post[t], posting{n, tf})
+		x.post[t] = append(x.post[t], posting{n, x.tf[t]})
 	}
 	x.total += d.length
 	x.n++
@@ -86,7 +93,7 @@ func (x *index) remove(id string) {
 		return
 	}
 	d := x.docs[n]
-	for t := range d.terms {
+	for _, t := range d.terms {
 		ps := x.post[t]
 		for i, p := range ps {
 			if p.doc == n {
@@ -152,18 +159,20 @@ type hit struct {
 }
 
 // score is every document that holds at least one of terms (query terms, a trailing * a prefix),
-// with its BM25 score. rareDF is the document frequency at or under which a term is rare.
-func (x *index) score(terms []string, rareDF int) map[int32]*hit {
-	out := map[int32]*hit{}
+// with its BM25 score. rareDF is the document frequency at or under which a term is rare. Scores
+// accumulate in dense arrays by document number: no map per query.
+func (x *index) score(terms []string, rareDF int) []*hit {
 	if x.n == 0 {
-		return out
+		return nil
 	}
 	avg := x.total / float64(x.n)
 	if avg == 0 {
 		avg = 1
 	}
-	for _, q := range terms {
-		seen := map[int32]bool{}
+	at := make([]int32, len(x.docs))   // 1 + the document's index in hits
+	last := make([]int32, len(x.docs)) // 1 + the last query term counted for it
+	hits := []hit{}
+	for qi, q := range terms {
 		for _, t := range x.expand(q) {
 			ps := x.post[t]
 			idf := x.idf(t)
@@ -171,20 +180,25 @@ func (x *index) score(terms []string, rareDF int) map[int32]*hit {
 			for _, p := range ps {
 				d := x.docs[p.doc]
 				tf := float64(p.tf)
-				s := idf * tf * (bm25K1 + 1) / (tf + bm25K1*(1-bm25B+bm25B*d.length/avg))
-				h := out[p.doc]
-				if h == nil {
-					h = &hit{doc: d}
-					out[p.doc] = h
+				k := at[p.doc]
+				if k == 0 {
+					hits = append(hits, hit{doc: d})
+					k = int32(len(hits))
+					at[p.doc] = k
 				}
-				h.score += s
-				if !seen[p.doc] {
-					seen[p.doc] = true
+				h := &hits[k-1]
+				h.score += idf * tf * (bm25K1 + 1) / (tf + bm25K1*(1-bm25B+bm25B*d.length/avg))
+				if last[p.doc] != int32(qi+1) {
+					last[p.doc] = int32(qi + 1)
 					h.matched++
 				}
 				h.rare = h.rare || rare
 			}
 		}
+	}
+	out := make([]*hit, len(hits))
+	for i := range hits {
+		out[i] = &hits[i]
 	}
 	return out
 }

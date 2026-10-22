@@ -89,6 +89,7 @@ func TestRecordsParity(t *testing.T) {
 		"  Deals close on Fridays.\n", "TWO\u00a0spaces\u2003and\ttabs\n\nhere", "\ufeffBOM", "Línea Ñandú", "",
 		"Call +1 415 555 0123", "mail ana@example.com", "card 4111 1111 1111 1111", "token sk_abcdefghijklmnop", "Bearer abcdefghijklmnopqrst",
 		"123456789:AAabcdefghijklmnopqrstuvwxyz0123456", "booking ZX-4471 on 2026-10-20", "no pii at all",
+		"bad \xff byte\u2001\u2001end ", "\u0085next line\u200bzero width", "ÀÉÎ STRASSE ǅ",
 	} {
 		if memory.Normalize(s) != learning.Normalize(s) {
 			t.Errorf("Normalize(%q): runtime %q, ledger %q", s, memory.Normalize(s), learning.Normalize(s))

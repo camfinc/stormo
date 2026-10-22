@@ -30,7 +30,7 @@ func reconcile(recs []*Record, files map[string][]string, src string, now time.T
 	byKey := map[string][]*Record{}
 	ids := map[string]bool{}
 	for _, r := range recs {
-		k := r.Target() + "\x00" + Normalize(r.Text)
+		k := r.Target() + "\x00" + r.key()
 		byKey[k] = append(byKey[k], r)
 		ids[r.ID] = true
 	}

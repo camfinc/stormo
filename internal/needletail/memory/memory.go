@@ -440,7 +440,7 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 func (st *state) archived(target, key string) *Record {
 	var best *Record
 	for _, r := range st.recs {
-		if r.Hot == 0 && r.Target() == target && Normalize(r.Text) == key && (best == nil || r.Updated > best.Updated) {
+		if r.Hot == 0 && r.Target() == target && r.key() == key && (best == nil || r.Updated > best.Updated) {
 			best = r
 		}
 	}

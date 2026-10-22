@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -71,8 +73,19 @@ func TestRecordsCodec(t *testing.T) {
 	}
 	// "-->" in a value cannot end the header comment
 	x := &Record{ID: "m0000000000a", Kind: KindFact, Tags: []string{}, Imp: 3, Src: "luau:a-->b", Text: "t"}
-	if h := x.header(); strings.Count(h, "-->") != 1 || !strings.HasSuffix(h, " -->") {
+	var hb bytes.Buffer
+	x.header(&hb)
+	if h := hb.String(); strings.Count(h, "-->") != 1 || !strings.HasSuffix(h, " -->") {
 		t.Errorf("header = %s", h)
+	}
+	// the header's strings are what encoding/json writes
+	for _, v := range []string{"plain", "q\"b\\s", "<a href> & -->", "tab\tnl\nnul\x00\x1f", "ñ 😀 \u2028\u2029", "bad \xff byte"} {
+		var b bytes.Buffer
+		jsonString(&b, v)
+		want, _ := json.Marshal(v)
+		if b.String() != string(want) {
+			t.Errorf("jsonString(%q) = %s, encoding/json %s", v, b.String(), want)
+		}
 	}
 	if v := ParseRecords("<!-- needletail-records v2 -->\n§\nanything", t0); v.Version != 2 {
 		t.Errorf("version = %d", v.Version)

@@ -140,7 +140,7 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	target := targetOf(kind)
 	key := Normalize(c)
 	for _, r := range st.recs {
-		if r.Target() == target && Normalize(r.Text) == key {
+		if r.Target() == target && r.key() == key {
 			r.Updated = stamp(now)
 			return SaveResult{Status: StatusExists, ID: r.ID, Hot: r.Hot}, s.commit(st)
 		}
