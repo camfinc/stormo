@@ -149,3 +149,45 @@ func BenchmarkSave(b *testing.B) {
 		}
 	}
 }
+
+// benchNear is n texts each a corpus record's with its last word left out: a save of one finds
+// that record similar (nothing written), so the benchmark is the dedupe check alone.
+func benchNear(recs []*Record, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		words := strings.Fields(strings.TrimSuffix(recs[(i*37)%len(recs)].Text, "."))
+		out[i] = strings.Join(words[:len(words)-1], " ")
+	}
+	return out
+}
+
+// BenchmarkSaveNonForce is a save without force: the similar-records check over every BM25 hit.
+func BenchmarkSaveNonForce(b *testing.B) {
+	recs := benchCorpus(benchRecords)
+	s := benchStore(b, recs)
+	texts := benchNear(recs, 200)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := s.Save(SaveOptions{Text: texts[i%len(texts)]})
+		if err != nil || res.Status != StatusSimilar {
+			b.Fatal(res.Status, err)
+		}
+	}
+}
+
+// BenchmarkSearchPhrase is a search with "a phrase" of two common words (most records hit a word).
+func BenchmarkSearchPhrase(b *testing.B) {
+	recs := benchCorpus(benchRecords)
+	s := benchStore(b, recs)
+	qs := make([]string, 200)
+	for i := range qs {
+		words := strings.Fields(recs[(i*53)%len(recs)].Text)
+		qs[i] = `"` + words[0] + " " + words[1] + `"`
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if r, err := s.Search(Query{Text: qs[i%len(qs)]}); err != nil || r.Total == 0 {
+			b.Fatal(r.Total, err)
+		}
+	}
+}
