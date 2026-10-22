@@ -38,10 +38,13 @@ type fakeTurns struct {
 	inputs   map[string][]string
 	hold     chan struct{} // when set, turns wait for it
 	started  chan string
-	// during, when set, runs in each turn (a tool call the model would make)
-	during func(session, input string)
+	// during, when set, runs in each turn: the tool calls the model would make (their names go to
+	// the turn's observer)
+	during func(session, input string) []string
 	// reserved and released count the slots handed out and given back
 	reserved, released int
+	// closing makes Reserve answer api.ErrClosing (the API's drain has begun)
+	closing bool
 }
 
 func newTurns() *fakeTurns {
@@ -51,6 +54,9 @@ func newTurns() *fakeTurns {
 func (f *fakeTurns) Reserve(session string, create wire.Session) (Slot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closing {
+		return nil, api.ErrClosing
+	}
 	if f.busy > 0 {
 		f.busy--
 		return nil, api.ErrBusy
@@ -81,7 +87,7 @@ type fakeSlot struct {
 	released bool
 }
 
-func (s *fakeSlot) Turn(ctx context.Context, input string, _ loop.Options) (*loop.Result, error) {
+func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*loop.Result, error) {
 	s.f.started <- s.session
 	s.f.mu.Lock()
 	hold := s.f.hold
@@ -92,7 +98,11 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, _ loop.Options) (*loo
 		<-hold
 	}
 	if during != nil {
-		during(s.session, input)
+		for _, name := range during(s.session, input) {
+			if opts.Observer != nil {
+				opts.Observer.ToolStart(s.session, wire.ToolCall{Name: name})
+			}
+		}
 	}
 	lines := strings.Split(strings.TrimSpace(input), "\n")
 	switch last := lines[len(lines)-1]; last {
@@ -708,13 +718,15 @@ func reactions(fake *slacktest.Server, ts string) (added, removed []string) {
 func TestGroupSilence(t *testing.T) {
 	r := newRig(t, nil)
 	reg := tools.NewRegistry(r.g.Tools()...)
-	r.turns.during = func(session, input string) {
+	r.turns.during = func(session, input string) []string {
 		if strings.HasSuffix(input, "NOREPLY") {
 			out, failed := reg.Call(context.Background(), &tools.Env{Session: session}, "no_reply", `{}`)
 			if failed != strings.Contains(session, "-dm") {
 				t.Errorf("no_reply in %s: %v %s", session, failed, out)
 			}
+			return []string{"no_reply"}
 		}
+		return nil
 	}
 	thread := "1700000110.000100"
 	r.fake.Send("g1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> start", TS: thread})
@@ -729,6 +741,13 @@ func TestGroupSilence(t *testing.T) {
 	}
 	if got := r.turns.got(SessionID(dev, thread)); len(got) < 2 {
 		t.Errorf("the silent messages had no turn: %q", got)
+	}
+	// a group silence is logged, with the tools the turn used
+	if !r.logged("stayed out of " + SessionID(dev, thread) + " (tools: no_reply)") {
+		t.Errorf("the no_reply silence was not logged with its tool")
+	}
+	if got := r.turns.got(SessionID(dev, thread)); len(got) == 3 && !r.logged("stayed out of "+SessionID(dev, thread)+" (tools: none)") {
+		t.Errorf("the [SILENT] reply was not logged")
 	}
 	// a DM: [SILENT] alone posts nothing but is logged; half-silent is answered with the rest;
 	// no_reply is refused (the model answers)
@@ -811,5 +830,55 @@ func TestPanickingTurnReleasesItsSlot(t *testing.T) {
 	r.fake.Send("p2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "again", TS: "1700000130.000200"})
 	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Text != "re: again" {
 		t.Errorf("after the panic: %+v", p)
+	}
+}
+
+// Every message a turn answers that is a DM or a mention gets its own reactions: merged into one
+// turn, each gets 👀 and then ✅; a batch the shutdown leaves unanswered gets ❌ on each.
+func TestReactionsPerMessage(t *testing.T) {
+	r := newRig(t, nil)
+	hold := make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	mention := "<@" + slacktest.BotUser + "> "
+	thread := "1700000140.000100"
+	r.fake.Send("r1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "start", TS: thread})
+	<-r.turns.started
+	r.fake.Send("r2", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "two", TS: "1700000140.000200", ThreadTS: thread})
+	r.fake.Send("r3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "three", TS: "1700000140.000300", ThreadTS: thread})
+	time.Sleep(100 * time.Millisecond)
+	r.turns.mu.Lock()
+	r.turns.hold = nil
+	r.turns.mu.Unlock()
+	close(hold)
+	<-r.turns.started // the merged batch's turn
+	r.fake.WaitPosts(2, 5*time.Second)
+	time.Sleep(100 * time.Millisecond)
+	for _, ts := range []string{"1700000140.000200", "1700000140.000300"} {
+		if added, removed := reactions(r.fake, ts); strings.Join(added, ",") != "eyes,white_check_mark" || strings.Join(removed, ",") != "eyes" {
+			t.Errorf("merged mention %s: added %v removed %v", ts, added, removed)
+		}
+	}
+	// a batch whose turn the shutdown refuses: ❌ on each of its messages
+	hold = make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	thread = "1700000141.000100"
+	r.fake.Send("r4", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "start", TS: thread})
+	<-r.turns.started
+	r.fake.Send("r5", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "five", TS: "1700000141.000200", ThreadTS: thread})
+	r.fake.Send("r6", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: mention + "six", TS: "1700000141.000300", ThreadTS: thread})
+	time.Sleep(100 * time.Millisecond)
+	r.turns.mu.Lock()
+	r.turns.closing = true
+	r.turns.mu.Unlock()
+	close(hold)
+	time.Sleep(200 * time.Millisecond)
+	for _, ts := range []string{"1700000141.000200", "1700000141.000300"} {
+		if added, _ := reactions(r.fake, ts); !slices.Contains(added, "x") {
+			t.Errorf("unanswered mention %s: added %v", ts, added)
+		}
 	}
 }

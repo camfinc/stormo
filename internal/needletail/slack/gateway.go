@@ -653,11 +653,7 @@ func (g *Gateway) work(session string, w *worker) {
 		}
 		jobs = g.dispatch(session, jobs, lines)
 		if input := g.input(jobs, lines); input != "" {
-			direct := false
-			for _, j := range jobs {
-				direct = direct || j.react
-			}
-			g.turn(session, jobs[len(jobs)-1], input, direct)
+			g.turn(session, jobs, input)
 		}
 	}
 }
@@ -784,22 +780,31 @@ func (g *Gateway) input(jobs []job, lines []messaging.ContextLine) string {
 // busyNote is posted when a message waited BusyWait for a turn.
 const busyNote = "I'm busy with other work right now and could not get to this message. Please send it again in a few minutes."
 
-// turn runs one turn for a conversation and posts the reply: 👀 on the message while it runs (a
-// DM or a mention, as Hermes reacts), then ✅ or ❌, and the assistant status line. In a
-// conversation with other people the agent may stay out of it (a [SILENT] reply or no_reply):
-// nothing is posted and no reaction is left. A direct message (direct: a DM or a mention) is
-// always answered: a [SILENT] first or last line is dropped and the rest posted; a reply that
-// is nothing else posts nothing and is logged, its 👀 removed.
-func (g *Gateway) turn(session string, j job, input string, direct bool) {
+// turn runs one turn for a conversation's batch of messages and posts the reply (where the last
+// one asks): 👀 on each message that is a DM or a mention while it runs (as Hermes reacts), then
+// ✅ or ❌ on each, and the assistant status line. In a conversation with other people the agent
+// may stay out of it (a [SILENT] reply or no_reply): nothing is posted and no reaction is left
+// (logged, with the tools the turn used). A batch with a direct message (a DM or a mention) is
+// always answered: a [SILENT] first or last line is dropped and the rest posted; a reply that is
+// nothing else posts nothing and is logged, its 👀 removed.
+func (g *Gateway) turn(session string, jobs []job, input string) {
 	ctx := g.base
-	if j.react {
-		g.react(j.channel, j.ts, "eyes", false)
+	j := jobs[len(jobs)-1]
+	direct := false
+	for _, x := range jobs {
+		direct = direct || x.react
 	}
-	finish := func(ok bool) {
-		if j.react {
-			g.react(j.channel, j.ts, "eyes", true)
-			g.react(j.channel, j.ts, map[bool]string{true: "white_check_mark", false: "x"}[ok], false)
+	react := func(name string, remove bool) {
+		for _, x := range jobs {
+			if x.react {
+				g.react(x.channel, x.ts, name, remove)
+			}
 		}
+	}
+	react("eyes", false)
+	finish := func(ok bool) {
+		react("eyes", true)
+		react(map[bool]string{true: "white_check_mark", false: "x"}[ok], false)
 	}
 	slot, err := g.reserve(session)
 	if err != nil {
@@ -817,7 +822,8 @@ func (g *Gateway) turn(session string, j job, input string, direct bool) {
 	g.mu.Lock()
 	g.running[root] = state
 	g.mu.Unlock()
-	res, err := g.runTurn(slot, root, j, input)
+	used := &toolNames{}
+	res, err := g.runTurn(slot, root, j, input, used)
 	g.mu.Lock()
 	noReply := state.noReply
 	g.mu.Unlock()
@@ -834,21 +840,19 @@ func (g *Gateway) turn(session string, j job, input string, direct bool) {
 	text := res.Text
 	if noReply || sched.Silent(text) {
 		if !direct {
-			return // the agent stays out of a conversation between others
+			// the agent stays out of a conversation between others
+			g.logf("slack: %s: the agent stayed out of %s (tools: %s); nothing posted", session, session, used)
+			return
 		}
 		if text = withoutSilence(text); strings.TrimSpace(text) == "" {
 			g.logf("slack: %s: the agent chose not to answer a direct message; nothing posted", session)
-			if j.react {
-				g.react(j.channel, j.ts, "eyes", true)
-			}
+			react("eyes", true)
 			return
 		}
 	}
 	if strings.TrimSpace(text) != "" {
 		if _, err := g.say(ctx, messaging.KindReply, session, j.channel, j.thread, text); errors.Is(err, messaging.ErrBlocked) {
-			if j.react {
-				g.react(j.channel, j.ts, "eyes", true)
-			}
+			react("eyes", true)
 			return // the agent's own handler kept the reply back (logged)
 		} else if err != nil {
 			g.logf("slack: %s: reply not posted: %v", session, err)
@@ -860,8 +864,9 @@ func (g *Gateway) turn(session string, j job, input string, direct bool) {
 }
 
 // runTurn runs the turn in slot and gives the slot back, with the conversation's running state
-// and its status line, however the turn ends (a panic too: the worker recovers it).
-func (g *Gateway) runTurn(slot Slot, root string, j job, input string) (*loop.Result, error) {
+// and its status line, however the turn ends (a panic too: the worker recovers it). used hears
+// the tools the turn calls.
+func (g *Gateway) runTurn(slot Slot, root string, j job, input string, used *toolNames) (*loop.Result, error) {
 	defer func() {
 		slot.Release()
 		g.mu.Lock()
@@ -870,7 +875,34 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, input string) (*loop.Re
 		g.status(j.channel, orDefault(j.thread, j.ts), "")
 	}()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	return slot.Turn(g.base, input, loop.Options{})
+	return slot.Turn(g.base, input, loop.Options{Observer: used})
+}
+
+// toolNames is a turn's observer that keeps the names of the tools it called, for the log.
+type toolNames struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (t *toolNames) ToolStart(_ string, call wire.ToolCall) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !slices.Contains(t.names, call.Name) {
+		t.names = append(t.names, call.Name)
+	}
+}
+
+func (t *toolNames) ToolDone(string, wire.ToolCall, string, bool, time.Duration) {}
+func (t *toolNames) Text(string, string)                                         {}
+
+// String is the tools called, comma-separated ("none").
+func (t *toolNames) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.names) == 0 {
+		return "none"
+	}
+	return strings.Join(t.names, ", ")
 }
 
 // withoutSilence is a reply with its silence token dropped where sched.Silent finds one: the
