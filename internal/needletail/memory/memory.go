@@ -233,7 +233,8 @@ func (s *Store) change(target string, f func([]string) ([]string, error)) (Usage
 	if now.Limit > 0 && now.Used > now.Limit && now.Used > was.Used {
 		return was, &OverBudget{Usage: now}
 	}
-	return now, fsx.WriteAtomic(p, []byte(Format(after)), 0o644)
+	// 0640: the runtime's, readable by the agent's commands (the uid split, docs/needletail.md §6)
+	return now, fsx.WriteAtomic(p, []byte(Format(after)), 0o640)
 }
 
 // Block is a target's entries as the system prompt shows them ("" when empty).

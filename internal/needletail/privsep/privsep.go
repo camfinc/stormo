@@ -81,6 +81,9 @@ func Enter(home string, logf func(string)) (Split, error) {
 		return Split{}, fmt.Errorf("uid split: dropping to uid %d: %w", u.RuntimeUID, err)
 	}
 	umask(0o002)
+	if bnd, ok := Bounding(); !ok {
+		logf(fmt.Sprintf("uid split: the bounding set could not be narrowed (no CAP_SETPCAP): it is %016x; the agent's commands still start with no capability", bnd))
+	}
 	logf(fmt.Sprintf("uid split: the runtime runs as %d:%d, the agent's commands as %d:%d with no capabilities", u.RuntimeUID, u.RuntimeGID, u.ExecUID, u.RuntimeGID))
 	return Split{Exec: &u}, nil
 }

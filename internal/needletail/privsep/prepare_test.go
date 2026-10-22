@@ -37,6 +37,7 @@ func TestPrepare(t *testing.T) {
 	put(t, filepath.Join(home, "skills", "crm", "SKILL.md"), "x", 0o644)
 	put(t, filepath.Join(home, "skills", "crm", "scripts", "run.sh"), "x", 0o755)
 	put(t, filepath.Join(home, "scripts", "job.py"), "x", 0o644)
+	put(t, filepath.Join(home, "skills", "crm", "ro.txt"), "x", 0o444) // read-only stays read-only
 	put(t, filepath.Join(home, "cron", "jobs.json"), "{}", 0o644)
 	put(t, filepath.Join(home, "sessions", "a.jsonl"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "MEMORY.md"), "x", 0o644)
@@ -58,6 +59,7 @@ func TestPrepare(t *testing.T) {
 		"skills/crm/SKILL.md":       0o664,
 		"skills/crm/scripts/run.sh": 0o775,
 		"scripts/job.py":            0o664,
+		"skills/crm/ro.txt":         0o444,
 		"cron":                      fs.ModeDir | 0o700,
 		"cron/jobs.json":            0o600,
 		"sessions/a.jsonl":          0o600,

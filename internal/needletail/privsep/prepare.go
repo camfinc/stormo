@@ -76,13 +76,15 @@ func Prepare(home string, u Users, logf func(string)) error {
 	return nil
 }
 
-// workspaceMode is what the agent's workspace gets: the group may write it (the runtime's
-// writes there, and the commands', which share the group); no setuid or setgid file.
+// workspaceMode is what the agent's workspace gets: the group may do what the owner may (the
+// runtime's writes there, and the commands', which share the group; a read-only file stays
+// read-only); no setuid or setgid file.
 func workspaceMode(dir bool, perm uint32) uint32 {
 	if dir {
 		return perm&0o7777 | 0o070
 	}
-	return perm&0o777 | 0o060
+	perm &= 0o777
+	return perm | perm&0o700>>3 | 0o040
 }
 
 // privateMode is the runtime's own: its user's alone.

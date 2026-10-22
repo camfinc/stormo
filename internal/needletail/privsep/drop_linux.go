@@ -144,3 +144,18 @@ func lastCap() int {
 	}
 	return 40
 }
+
+// Bounding is the process' bounding set and whether it is Keep (Drop narrows it when it may).
+func Bounding() (uint64, bool) {
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "CapBnd:"); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			return n, err == nil && n == Keep
+		}
+	}
+	return 0, false
+}
