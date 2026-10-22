@@ -1,7 +1,9 @@
-// Package memory is the agent's two hot-memory files (docs/needletail.md §4.6):
-// memories/MEMORY.md (target "memory") and memories/USER.md (target "user"), entries joined by
-// "\n§\n", the same format as Hermes so nap, rehydrate and the dream read both alike. Budgets are
-// counted in UTF-16 units of the whole file.
+// Package memory is the agent's memory (docs/needletail.md §4.6): every memory is a record in
+// memories/RECORDS.md (plain, readable, the runtime's source of truth), searched through an
+// in-memory BM25 index; the records marked hot are rendered to the two hot files the system
+// prompt shows, memories/MEMORY.md (target "memory") and memories/USER.md (target "user"), entries
+// joined by "\n§\n", the same format as Hermes, so nap, rehydrate and the dream read them alike.
+// Budgets are counted in UTF-16 units of the whole hot file.
 package memory
 
 import (
@@ -9,8 +11,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
@@ -27,15 +32,47 @@ const (
 
 var files = map[string]string{TargetMemory: "memories/MEMORY.md", TargetUser: "memories/USER.md"}
 
+var targets = []string{TargetMemory, TargetUser}
+
 // File is a target's path relative to the home.
 func File(target string) (string, bool) { f, ok := files[target]; return f, ok }
 
-// Store reads and writes the two files of one home.
+// DefaultMaxRecords is the most records an agent keeps (MaxRecords 0).
+const DefaultMaxRecords = 20000
+
+// Store is one home's memory. The zero value with Home set works: the records are read on first
+// use and read again whenever one of the three files changed on disk (another process, the merge
+// at boot), reconciled with the hot files (reconcile.go).
 type Store struct {
 	Home   string
 	Limits map[string]int // per target, UTF-16 units; 0 is unlimited
+	// Check refuses text holding a secret value the runtime knows (tools.SecretCheck); nil: none.
+	Check func(string) error
+	// MaxRecords bounds the records (0: DefaultMaxRecords).
+	MaxRecords int
+	Now        func() time.Time
+	Log        func(string)
 
 	mu sync.Mutex
+	st *state
+}
+
+type fprint struct {
+	ok   bool
+	size int64
+	mod  time.Time
+}
+
+// state is the records as last read or written.
+type state struct {
+	version int
+	recs    []*Record // file order
+	byID    map[string]*Record
+	bad     []string
+	files   map[string][]string // the hot files' entries
+	idx     *index
+	prints  [3]fprint
+	use     *usage
 }
 
 // Units is s's length in UTF-16 code units.
@@ -70,26 +107,232 @@ func (s *Store) path(target string) (string, error) {
 	return filepath.Join(s.Home, filepath.FromSlash(f)), nil
 }
 
-// Entries is a target's entries.
-func (s *Store) Entries(target string) ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.entries(target)
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
-func (s *Store) entries(target string) ([]string, error) {
-	p, err := s.path(target)
+func (s *Store) logf(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(fmt.Sprintf(format, args...))
+	}
+}
+
+func (s *Store) tmp() string { return filepath.Join(s.Home, fsx.TmpDir) }
+
+func (s *Store) recordsPath() string { return filepath.Join(s.Home, filepath.FromSlash(RecordsFile)) }
+
+func (s *Store) prints() [3]fprint {
+	var out [3]fprint
+	for i, p := range []string{s.recordsPath(), filepath.Join(s.Home, "memories", "MEMORY.md"), filepath.Join(s.Home, "memories", "USER.md")} {
+		if info, err := os.Stat(p); err == nil {
+			out[i] = fprint{true, info.Size(), info.ModTime()}
+		}
+	}
+	return out
+}
+
+// Open reads the records and reconciles them with the hot files now (boot), instead of at first use.
+func (s *Store) Open() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.load()
+	return err
+}
+
+// load is the current state: read again when a file changed since it was last read or written.
+func (s *Store) load() (*state, error) {
+	prints := s.prints()
+	if s.st != nil && s.st.prints == prints {
+		return s.st, nil
+	}
+	now := s.now()
+	raw, err := os.ReadFile(s.recordsPath())
+	missing := os.IsNotExist(err)
+	if err != nil && !missing {
+		return nil, err
+	}
+	parsed := ParseRecords(string(raw), now)
+	st := &state{version: parsed.Version, recs: parsed.Recs, bad: parsed.Bad, files: map[string][]string{}}
+	if s.st != nil {
+		st.use = s.st.use
+	} else {
+		st.use = loadUsage(s.Home)
+	}
+	for _, t := range targets {
+		p, _ := s.path(t)
+		body, err := os.ReadFile(p)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		st.files[t] = Parse(string(body))
+	}
+	if len(parsed.Bad) > 0 {
+		s.logf("memory: %d entries of %s are not records (kept as they are, after the records): fix or remove them by hand", len(parsed.Bad), RecordsFile)
+	}
+	write := false
+	if st.version == RecordsVersion {
+		src := "boot"
+		if missing {
+			src = "migration"
+		}
+		var rep Reconciled
+		st.recs, rep = reconcile(st.recs, st.files, src, now)
+		if rep.Changed {
+			write = !missing || len(st.recs) > 0
+		}
+		if rep.Created > 0 || rep.Demoted > 0 || rep.Rewritten > 0 {
+			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or an entry a reviewer rejected)",
+				RecordsFile, rep.Created, src, rep.Rewritten, rep.Demoted)
+		}
+	} else {
+		s.logf("memory: %s is format v%d, newer than this runtime's v%d: memory is read-only until it runs a newer image", RecordsFile, st.version, RecordsVersion)
+	}
+	st.byID = make(map[string]*Record, len(st.recs))
+	st.idx = newIndex()
+	for _, r := range st.recs {
+		st.byID[r.ID] = r
+		st.idx.add(r)
+	}
+	s.st = st
+	if write {
+		if err := fsx.WriteAtomicIn(s.recordsPath(), s.tmp(), []byte(FormatRecords(st.recs, st.bad)), 0o640); err != nil {
+			s.logf("memory: could not write %s: %v", RecordsFile, err)
+		}
+	}
+	st.prints = s.prints()
+	return st, nil
+}
+
+// writable is the state for a change: refused when the file's format is newer than this runtime's.
+func (s *Store) writable() (*state, error) {
+	st, err := s.load()
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
-		return []string{}, nil
+	if st.version != RecordsVersion {
+		return nil, fmt.Errorf("%s is format v%d, newer than this runtime reads: memory is read-only", RecordsFile, st.version)
 	}
+	return st, nil
+}
+
+// commit writes RECORDS.md, then the hot files of targets. A write that fails leaves the state to
+// be read again from disk.
+func (s *Store) commit(st *state, targets ...string) error {
+	if err := fsx.WriteAtomicIn(s.recordsPath(), s.tmp(), []byte(FormatRecords(st.recs, st.bad)), 0o640); err != nil {
+		s.st = nil
+		return err
+	}
+	for _, t := range targets {
+		p, err := s.path(t)
+		if err != nil {
+			continue
+		}
+		entries := texts(st.hot(t))
+		// 0640: the runtime's, readable by the agent's commands (the uid split, docs/needletail.md §6)
+		if err := fsx.WriteAtomicIn(p, s.tmp(), []byte(Format(entries)), 0o640); err != nil {
+			s.st = nil
+			return err
+		}
+		st.files[t] = entries
+	}
+	st.prints = s.prints()
+	s.flushUsage(st, false)
+	return nil
+}
+
+func (s *Store) flushUsage(st *state, force bool) {
+	if err := st.use.write(s.Home, s.now(), force); err != nil {
+		s.logf("memory: could not write %s: %v", UsageFile, err)
+	}
+}
+
+// Flush writes the usage counters now (shutdown).
+func (s *Store) Flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st != nil {
+		s.flushUsage(s.st, true)
+	}
+}
+
+// hot is target's hot records in order.
+func (st *state) hot(target string) []*Record {
+	out := []*Record{}
+	for _, r := range st.recs {
+		if r.Hot > 0 && r.Target() == target {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Hot < out[j].Hot })
+	return out
+}
+
+// renumber makes target's hot positions 1..n in their order.
+func (st *state) renumber(target string) {
+	for i, r := range st.hot(target) {
+		r.Hot = i + 1
+	}
+}
+
+func texts(recs []*Record) []string {
+	out := make([]string, len(recs))
+	for i, r := range recs {
+		out[i] = r.Text
+	}
+	return out
+}
+
+func (st *state) create(kind, text, src string, now time.Time) *Record {
+	r := &Record{ID: newID(now, func(id string) bool { return st.byID[id] != nil }), Kind: kind, Tags: []string{}, Imp: 3, Src: src,
+		Created: stamp(now), Updated: stamp(now), Text: text, PII: PII(text)}
+	st.recs = append(st.recs, r)
+	st.byID[r.ID] = r
+	return r
+}
+
+func (st *state) remove(r *Record) {
+	st.recs = slices.DeleteFunc(st.recs, func(x *Record) bool { return x == r })
+	delete(st.byID, r.ID)
+	st.idx.remove(r.ID)
+	st.use.drop(r.ID)
+}
+
+func (s *Store) maxRecords() int {
+	if s.MaxRecords > 0 {
+		return s.MaxRecords
+	}
+	return DefaultMaxRecords
+}
+
+func (s *Store) full(st *state) error {
+	if len(st.recs) >= s.maxRecords() {
+		return fmt.Errorf("memory holds %d records, its most: delete or merge records first", len(st.recs))
+	}
+	return nil
+}
+
+func (s *Store) check(text string) error {
+	if s.Check != nil {
+		return s.Check(text)
+	}
+	return nil
+}
+
+// Entries is a target's entries.
+func (s *Store) Entries(target string) ([]string, error) {
+	if _, err := s.path(target); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.load()
 	if err != nil {
 		return nil, err
 	}
-	return Parse(string(raw)), nil
+	return slices.Clone(st.files[target]), nil
 }
 
 // Usage is a target's file size against its budget.
@@ -120,64 +363,161 @@ var (
 	ErrAmbiguous = errors.New("old_text matches more than one entry: give more of it")
 	ErrEmpty     = errors.New("content is empty")
 	ErrDelimiter = errors.New("content may not contain the entry separator (a line holding only §)")
+	ErrNotFound  = errors.New("no memory has that id (memory_search finds ids)")
 )
 
 func (s *Store) usage(target string, entries []string) Usage {
 	return Usage{Target: target, Entries: len(entries), Used: Units(Format(entries)), Limit: s.Limits[target]}
 }
 
+// fits is the usage after a change from before to after, refused when it passes the budget (a
+// change that shrinks the file is always allowed).
+func (s *Store) fits(target string, before, after []string) (Usage, error) {
+	was, now := s.usage(target, before), s.usage(target, after)
+	if now.Limit > 0 && now.Used > now.Limit && now.Used > was.Used {
+		return was, &OverBudget{Usage: now}
+	}
+	return now, nil
+}
+
 // Current is a target's usage now.
 func (s *Store) Current(target string) (Usage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, err := s.entries(target)
+	e, err := s.Entries(target)
 	if err != nil {
 		return Usage{}, err
 	}
 	return s.usage(target, e), nil
 }
 
-// Add appends an entry.
-func (s *Store) Add(target, content string) (Usage, error) {
-	return s.change(target, func(e []string) ([]string, error) {
-		c, err := clean(content)
-		if err != nil {
-			return nil, err
+// Add appends an entry to a hot file (the memory tool).
+func (s *Store) Add(target, content string) (Usage, error) { return s.AddAs("", target, content) }
+
+// AddAs is Add with the record's source (chat:<session>, …). An entry already in the file is a
+// no-op; one the archive holds (the same normalized text) is pinned rather than copied.
+func (s *Store) AddAs(src, target, content string) (Usage, error) {
+	if _, err := s.path(target); err != nil {
+		return Usage{}, err
+	}
+	c, err := s.hotText(content)
+	if err != nil {
+		return Usage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.writable()
+	if err != nil {
+		return Usage{}, err
+	}
+	list := st.hot(target)
+	before := texts(list)
+	if slices.Contains(before, c) {
+		return s.usage(target, before), nil // already there
+	}
+	r := st.archived(target, Normalize(c))
+	if r == nil {
+		if err := s.full(st); err != nil {
+			return s.usage(target, before), err
 		}
-		for _, x := range e {
-			if x == c {
-				return e, nil // already there
-			}
+	}
+	u, err := s.fits(target, before, append(slices.Clone(before), c))
+	if err != nil {
+		return u, err
+	}
+	now := s.now()
+	if r == nil {
+		kind := KindFact
+		if target == TargetUser {
+			kind = KindUser
 		}
-		return append(e, c), nil
-	})
+		r = st.create(kind, c, src, now)
+	}
+	r.Text, r.PII, r.Updated, r.Hot = c, PII(c), stamp(now), len(before)+1
+	st.idx.add(r)
+	return u, s.commit(st, target)
+}
+
+// archived is the archive record of target with Normalize(text) key, the latest updated.
+func (st *state) archived(target, key string) *Record {
+	var best *Record
+	for _, r := range st.recs {
+		if r.Hot == 0 && r.Target() == target && Normalize(r.Text) == key && (best == nil || r.Updated > best.Updated) {
+			best = r
+		}
+	}
+	return best
+}
+
+// hotText is content cleaned and checked for a hot file.
+func (s *Store) hotText(content string) (string, error) {
+	c, err := clean(content)
+	if err != nil {
+		return "", err
+	}
+	if err := checkText(c, false); err != nil {
+		return "", err
+	}
+	if err := checkHot(c); err != nil {
+		return "", err
+	}
+	if err := s.check(c); err != nil {
+		return "", err
+	}
+	return c, nil
 }
 
 // Replace swaps the one entry containing old for content.
 func (s *Store) Replace(target, old, content string) (Usage, error) {
-	return s.change(target, func(e []string) ([]string, error) {
-		c, err := clean(content)
-		if err != nil {
-			return nil, err
-		}
-		i, err := match(e, old)
-		if err != nil {
-			return nil, err
-		}
-		e[i] = c
-		return e, nil
-	})
+	if _, err := s.path(target); err != nil {
+		return Usage{}, err
+	}
+	c, err := s.hotText(content)
+	if err != nil {
+		return Usage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.writable()
+	if err != nil {
+		return Usage{}, err
+	}
+	list := st.hot(target)
+	before := texts(list)
+	i, err := match(before, old)
+	if err != nil {
+		return s.usage(target, before), err
+	}
+	after := slices.Clone(before)
+	after[i] = c
+	u, err := s.fits(target, before, after)
+	if err != nil {
+		return u, err
+	}
+	r := list[i]
+	r.Text, r.PII, r.Updated = c, PII(c), stamp(s.now())
+	st.idx.add(r)
+	return u, s.commit(st, target)
 }
 
-// Remove deletes the one entry containing old.
+// Remove deletes the one entry containing old (its record goes too).
 func (s *Store) Remove(target, old string) (Usage, error) {
-	return s.change(target, func(e []string) ([]string, error) {
-		i, err := match(e, old)
-		if err != nil {
-			return nil, err
-		}
-		return append(e[:i], e[i+1:]...), nil
-	})
+	if _, err := s.path(target); err != nil {
+		return Usage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.writable()
+	if err != nil {
+		return Usage{}, err
+	}
+	list := st.hot(target)
+	before := texts(list)
+	i, err := match(before, old)
+	if err != nil {
+		return s.usage(target, before), err
+	}
+	st.remove(list[i])
+	st.renumber(target)
+	return s.usage(target, texts(st.hot(target))), s.commit(st, target)
 }
 
 func clean(content string) (string, error) {
@@ -209,32 +549,6 @@ func match(entries []string, old string) (int, error) {
 		return -1, ErrNoMatch
 	}
 	return found, nil
-}
-
-// change applies f and writes the file atomically, unless the result passes the budget (a change
-// that shrinks the file is always allowed).
-func (s *Store) change(target string, f func([]string) ([]string, error)) (Usage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, err := s.path(target)
-	if err != nil {
-		return Usage{}, err
-	}
-	before, err := s.entries(target)
-	if err != nil {
-		return Usage{}, err
-	}
-	was := s.usage(target, before)
-	after, err := f(append([]string(nil), before...))
-	if err != nil {
-		return was, err
-	}
-	now := s.usage(target, after)
-	if now.Limit > 0 && now.Used > now.Limit && now.Used > was.Used {
-		return was, &OverBudget{Usage: now}
-	}
-	// 0640: the runtime's, readable by the agent's commands (the uid split, docs/needletail.md §6)
-	return now, fsx.WriteAtomic(p, []byte(Format(after)), 0o640)
 }
 
 // Block is a target's entries as the system prompt shows them ("" when empty).
