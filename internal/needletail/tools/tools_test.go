@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -508,5 +510,60 @@ func TestProtectedFolds(t *testing.T) {
 		if isProtected(rel) {
 			t.Errorf("%s protected", rel)
 		}
+	}
+}
+
+// The agent's commands trust every repository (safe.directory=*): under the uid split the
+// runtime made many of the directories they work in (a new skill's, write_file's, the home; on
+// ECS all of /shared), and git refuses "dubious ownership" in a repository another user owns.
+// The setting goes through GIT_CONFIG_COUNT, after what the agent's env already sets that way.
+func TestCommandEnvTrustsEveryRepo(t *testing.T) {
+	get := func(env []string, k string) (string, bool) {
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, k+"="); ok {
+				return v, true
+			}
+		}
+		return "", false
+	}
+	for _, c := range []struct {
+		name string
+		in   []string
+		n    int // GIT_CONFIG_COUNT after
+		keep map[string]string
+	}{
+		{"none", nil, 1, nil},
+		{"after the agent's", []string{"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=user.name", "GIT_CONFIG_VALUE_0=Ana", "GIT_CONFIG_KEY_1=core.editor", "GIT_CONFIG_VALUE_1=vi"}, 3,
+			map[string]string{"GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "Ana", "GIT_CONFIG_KEY_1": "core.editor", "GIT_CONFIG_VALUE_1": "vi"}},
+		{"a bogus count", []string{"GIT_CONFIG_COUNT=x", "GIT_CONFIG_KEY_0=user.name", "GIT_CONFIG_VALUE_0=Ana"}, 1, nil},
+	} {
+		env := &Env{Home: "/opt/data", Environ: func() []string { return append([]string{"PATH=/usr/bin"}, c.in...) }}
+		out := CommandEnv(env)
+		counts := 0
+		for _, kv := range out {
+			if strings.HasPrefix(kv, "GIT_CONFIG_COUNT=") {
+				counts++
+			}
+		}
+		n, _ := get(out, "GIT_CONFIG_COUNT")
+		i := strconv.Itoa(c.n - 1)
+		k, _ := get(out, "GIT_CONFIG_KEY_"+i)
+		v, _ := get(out, "GIT_CONFIG_VALUE_"+i)
+		if counts != 1 || n != strconv.Itoa(c.n) || k != "safe.directory" || v != "*" {
+			t.Errorf("%s: count %q (%d set), key %q, value %q: %v", c.name, n, counts, k, v, out)
+		}
+		for key, want := range c.keep {
+			if got, _ := get(out, key); got != want {
+				t.Errorf("%s: %s = %q, want %q", c.name, key, got, want)
+			}
+		}
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	r, env := setup(t)
+	m, _ := call(t, r, env, "terminal", map[string]any{"command": "git config --get-all safe.directory"})
+	if out, _ := m["output"].(string); !strings.Contains(out, "*") {
+		t.Errorf("git does not see safe.directory=*: %v", m)
 	}
 }

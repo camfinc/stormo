@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +173,8 @@ func fromSkill(env *Env, a terminalArgs) (string, error) {
 const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // CommandEnv is the environment a command the runtime starts gets (the terminal's, a schedule's
-// script): the scrubbed process env with HOME set to the agent's home.
+// script): the scrubbed process env with HOME set to the agent's home and git trusting every
+// repository (trustRepos).
 func CommandEnv(env *Env) []string { return terminalEnv(env) }
 
 // Command prepares cmd as one the agent runs (a schedule's script, as the terminal's): its own
@@ -203,7 +205,40 @@ func terminalEnv(env *Env) []string {
 	if path == "" {
 		path = DefaultPath
 	}
-	return append(out, "PATH="+path, "HOME="+env.Home)
+	return append(trustRepos(out), "PATH="+path, "HOME="+env.Home)
+}
+
+// trustRepos adds safe.directory=* to git's config through the environment (GIT_CONFIG_COUNT,
+// GIT_CONFIG_KEY_<n>, GIT_CONFIG_VALUE_<n>), after the entries env already sets that way. Under
+// the uid split the agent's commands work in directories the runtime made (a new skill's, the
+// ones write_file made, the home itself; on ECS all of /shared, which EFS stores as 10000), and
+// git refuses a repository another user owns ("dubious ownership"). A count git could not read
+// (not a number, negative) is replaced with its entries.
+func trustRepos(env []string) []string {
+	n, at := 0, -1
+	for i, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			at = i
+			if c, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && c >= 0 {
+				n = c
+			} else {
+				n = -1
+			}
+		}
+	}
+	out := env[:0:0]
+	for i, kv := range env {
+		switch {
+		case i == at:
+		case strings.HasPrefix(kv, "GIT_CONFIG_COUNT="):
+		case n < 0 && (strings.HasPrefix(kv, "GIT_CONFIG_KEY_") || strings.HasPrefix(kv, "GIT_CONFIG_VALUE_")):
+		default:
+			out = append(out, kv)
+		}
+	}
+	n = max(n, 0)
+	i := strconv.Itoa(n)
+	return append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(n+1), "GIT_CONFIG_KEY_"+i+"=safe.directory", "GIT_CONFIG_VALUE_"+i+"=*")
 }
 
 // absolutePath is a PATH value with its relative entries dropped.
