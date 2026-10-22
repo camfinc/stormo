@@ -34,8 +34,10 @@ WORKDIR /opt/data
 # No USER: the container starts as root and the runtime splits itself (docs/needletail.md §7).
 # It lays the home out, then runs as 10000:10000 (shared.PosixUID, the home's and the shared
 # space's owner) keeping only CAP_SETUID, CAP_SETGID and CAP_KILL, and starts everything the agent
-# executes (the terminal, scheduled scripts and monitors) as 10001:10000 with no capabilities.
-# Started as any other user it runs as that one user, without the split (logged).
+# executes (the terminal, scheduled scripts and monitors) as 10001:10000 with no capabilities,
+# jailed with Landlock to the home and the shared layers (`needletail jail`; off, and logged, on a
+# kernel without Landlock). Started as any other user it runs as that one user, without the split
+# (logged). It writes only to the home and /shared: the container runs on a read-only root.
 EXPOSE 8642
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/needletail", "healthcheck"]
 # The engine's Command is ["serve"]; the bench runs `needletail oneshot …` (the binary drops its

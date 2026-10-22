@@ -1,7 +1,8 @@
 // Package sandbox confines the file tools' paths (docs/needletail.md §4.5, §6): every path must
 // resolve, symlinks evaluated, inside the agent's home or one of its shared-space directories
-// (/shared/group and /shared/<unit>), and inside the same one it names. It does not confine the terminal, whose boundary is the
-// container (§7).
+// (/shared/group and /shared/<unit>), and inside the same one it names. It does not confine the
+// terminal, scripts and monitors: the jail does (package jail, §7), with Landlock, when the kernel
+// has it.
 package sandbox
 
 import (
