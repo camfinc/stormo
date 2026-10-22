@@ -91,7 +91,13 @@ func (rt *Runtime) skillFiles(sub string) [][2]string {
 			out = append(out, [2]string{s.Dir, path.Join("skills", s.Dir, sub, e.Name())})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i][1] < out[j][1] })
+	// by skill dir, then file name: not by the whole path, where "ops/a-b/" comes before "ops/a/"
+	sort.Slice(out, func(i, j int) bool {
+		if out[i][0] != out[j][0] {
+			return out[i][0] < out[j][0]
+		}
+		return path.Base(out[i][1]) < path.Base(out[j][1])
+	})
 	return out
 }
 

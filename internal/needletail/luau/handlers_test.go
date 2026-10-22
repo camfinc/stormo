@@ -301,3 +301,25 @@ end`),
 	}
 	var _ messaging.Handlers = e
 }
+
+// Handlers run by skill dir, then file name, as documented: ops/a's before ops/a-b's, though
+// "skills/ops/a-b/…" sorts before "skills/ops/a/…" as a path ('-' < '/').
+func TestHandlerOrder(t *testing.T) {
+	rt, _ := newRuntime(t)
+	skill(t, rt.Home, "ops/a-b", map[string]string{"handlers/first.luau": handler("first", "on_message", "", `function on_message(ev) return {action = "reply", text = "a-b"} end`)})
+	skill(t, rt.Home, "ops/a", map[string]string{
+		"handlers/zed.luau":  handler("zed", "on_message", "", `function on_message(ev) return {action = "reply", text = "a"} end`),
+		"handlers/able.luau": handler("able", "on_message", "", `function on_message(ev) return nil end`),
+	})
+	var got []string
+	for _, hf := range rt.Handlers(context.Background()) {
+		got = append(got, hf.File)
+	}
+	want := []string{"skills/ops/a/handlers/able.luau", "skills/ops/a/handlers/zed.luau", "skills/ops/a-b/handlers/first.luau"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("order %v, want %v", got, want)
+	}
+	if v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil); v.Text != "a" {
+		t.Errorf("verdict %+v", v)
+	}
+}
