@@ -237,7 +237,8 @@ func TestCompletedRepeatStaysDone(t *testing.T) {
 // is capped; a busy agent's warning clears without a bare log line.
 func TestRunningNamesPathsAndCaps(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, t0String)
-	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`), `"name":"a"`, `"name":"Morning digest"`, 1))
+	// the agent's own job (a repo job's script is the repo's)
+	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`), `"name":"a"`, `"name":"Morning digest","created_at":"2026-10-01T00:00:00Z"`, 1))
 	if err := os.WriteFile(filepath.Join(r.home, "scripts", "big.sh"), []byte("head -c 40000 /dev/zero | tr '\\\\0' x\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

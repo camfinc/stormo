@@ -661,7 +661,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			o = outcome{status: wire.StatusError, err: fmt.Sprintf("the run crashed: %v", p)}
 		}
 		if o.failed() && o.text == "" {
-			o.text = fmt.Sprintf("⚠ Job '%s' failed\n\n%s", name, o.err)
+			o.text = fmt.Sprintf("⚠ Job '%s' failed\n\n%s", name, capPrompt(o.err))
 		}
 	}()
 	if j.Bool("no_agent") {
@@ -674,7 +674,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		case !ok && s.isStopping():
 			return interrupted("")
 		case !ok:
-			return outcome{status: wire.StatusError, err: out, text: fmt.Sprintf("⚠ Job '%s' script failed\n\n%s", name, out), doc: out}
+			// the notice (and last_error) carry at most capPrompt's share: one post, not dozens
+			return outcome{status: wire.StatusError, err: capPrompt(out), text: fmt.Sprintf("⚠ Job '%s' script failed\n\n%s", name, capPrompt(out)), doc: out}
 		case !wakes(out) || out == "":
 			return outcome{status: wire.StatusSilent, doc: out}
 		}
@@ -691,7 +692,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			return interrupted("")
 		}
 		if !ok {
-			return outcome{status: wire.StatusError, err: "monitor: " + out, text: fmt.Sprintf("⚠ Job '%s' monitor failed\n\n%s", name, out)}
+			return outcome{status: wire.StatusError, err: "monitor: " + capPrompt(out), text: fmt.Sprintf("⚠ Job '%s' monitor failed\n\n%s", name, capPrompt(out))}
 		}
 		block, changed, store := s.monitorGate(j, out)
 		if !changed {
@@ -779,8 +780,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 	return outcome{status: wire.StatusOK, text: res.Text, session: session, doc: doc}
 }
 
-// capPrompt cuts a script's output (or its failure) to maxScriptPrompt bytes for the prompt, with
-// a note of its size.
+// capPrompt cuts a script's output (or its failure) to maxScriptPrompt bytes for the prompt or a
+// failure notice, with a note of its size.
 func capPrompt(out string) string {
 	if len(out) <= maxScriptPrompt {
 		return out

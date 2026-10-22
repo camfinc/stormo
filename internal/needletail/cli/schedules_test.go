@@ -111,7 +111,8 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	}
 	repoJob := agent.Schedules[0]
 
-	// 1. First boot; in a turn the agent schedules a job of its own and rewrites the repo job.
+	// 1. First boot; in a turn the agent schedules a job of its own and tries to rewrite the repo
+	// job (refused: what a repo job runs is agent.yaml's).
 	home1 := filepath.Join(tmp, "home1")
 	rehydrate(home1)
 	model.script(
@@ -136,6 +137,9 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	}
 	if mine == "" {
 		t.Fatalf("no agent job in %v", jobsIn(t, home1))
+	}
+	if got := jobsIn(t, home1)[repoJob.ID]["prompt"]; got != repoJob.Prompt {
+		t.Errorf("the agent rewrote the repo job's prompt: %v", got)
 	}
 
 	// 2. It runs once (the scheduler as serve runs it), two hours on.

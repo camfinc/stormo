@@ -241,6 +241,13 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 			s.request(a.JobID) // running: once this run ends
 			kick = true
 		case "update":
+			if s.trusted(j) {
+				if fields := repoFixed(a); len(fields) > 0 {
+					return false, fmt.Errorf("job %s is defined in agent.yaml (the repo's job, delivered as the repo's): its %s cannot be changed here. "+
+						"Make a job of your own with the change (create; the dream proposes your jobs for review) and pause this one, or ask a person to change agent.yaml; "+
+						"its schedule, repeat and targets can be updated, and it can be paused, resumed and run", a.JobID, strings.Join(fields, ", "))
+				}
+			}
 			if err := s.apply(j, a, now, false); err != nil {
 				return false, err
 			}
@@ -316,8 +323,29 @@ func (s *Scheduler) create(a cronArgs, origin json.RawMessage) (any, error) {
 	return map[string]any{"job": view(j), "note": "Created. It runs on its schedule in a fresh session; its final reply is delivered."}, nil
 }
 
+// repoFixed are the fields an update names that a repo job keeps as agent.yaml says: what it runs
+// (prompt, skills, scripts, monitor, no_agent, toolsets) and its name, by which a handler's jobs:
+// names it. Its deliveries are trusted as the repo's, so what it delivers stays the repo's.
+func repoFixed(a cronArgs) []string {
+	var out []string
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{{"prompt", a.Prompt != nil}, {"skills", a.Skills != nil}, {"script", a.Script != nil}, {"monitor", a.Monitor != nil},
+		{"no_agent", a.NoAgent != nil}, {"enabled_toolsets", a.EnabledToolsets != nil}, {"name", a.Name != nil}} {
+		if f.set {
+			out = append(out, f.name)
+		}
+	}
+	return out
+}
+
 // apply sets the fields a create or update names ("" and [] clear on update).
 func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) error {
+	var origin json.RawMessage // the chat the job was made from: what "origin" delivers to
+	if j.Has("origin") {
+		origin = j.raw["origin"]
+	}
 	if a.Schedule != nil {
 		sch, err := ParseSchedule(*a.Schedule)
 		if err != nil {
@@ -352,13 +380,13 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 		if d == "" {
 			d = "origin"
 		}
-		if err := s.checkTargets(d); err != nil {
+		if err := s.checkTargets(d, origin); err != nil {
 			return err
 		}
 		j.Set("deliver", d)
 	}
 	if a.FailureDeliver != nil {
-		if err := s.checkTargets(*a.FailureDeliver); err != nil {
+		if err := s.checkTargets(*a.FailureDeliver, origin); err != nil {
 			return err
 		}
 		j.Set("failure_deliver", nullable(strings.TrimSpace(*a.FailureDeliver)))
@@ -428,10 +456,10 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 }
 
 // checkTargets reads a deliver or failure_deliver value and holds each target to the messaging
-// policy ("origin" is the chat the job is made from, which the policy allows; here it reads as
-// the home channel).
-func (s *Scheduler) checkTargets(lane string) error {
-	targets, err := Targets(lane, nil)
+// policy ("origin" is the job's origin, the chat it was made from, else the home channel, as its
+// deliveries read it).
+func (s *Scheduler) checkTargets(lane string, origin json.RawMessage) error {
+	targets, err := Targets(lane, origin)
 	if err != nil {
 		return err
 	}

@@ -30,9 +30,9 @@ time the new schedule would not give is re-anchored to the schedule's next time 
 than one interval away), while a past one fires once. A cron time whose own wall clock matches the
 expression (stamped in another zone's offset) is kept. A job whose `repeat.times` runs are done
 stays done even though the merge gives it the repo's `enabled` and `state` back. So an
-agent's change to a repo job (a pause, a new prompt) lasts until the next restart, and the
+agent's change to a repo job (a pause, a new schedule) lasts until the next restart, and the
 dream proposes the live jobs, the agent's own and its changes to the repo's, as a schedules
-proposal for review.
+proposal for review. (Needletail never lets the agent change what a repo job runs, §7.)
 
 ## 2. When a job runs
 
@@ -159,7 +159,9 @@ error, and a job overdue by more than 15 minutes.
   are the error.
 - **Failure notices** go to `failure_deliver` when the job has one, else to `deliver`
   (`failure_deliver: local` keeps them out of chat). From the third failure in a row the notice
-  adds a line that the job is worth a review and can be paused.
+  adds a line that the job is worth a review and can be paused. Needletail carries at most 16 KB
+  of a failing script's or monitor's output in the notice (and in `last_error`), with a note of its
+  size, so a failure is one Slack post; a script-only job's successful output is delivered whole.
 - `last_error` is cleared by a success; `last_delivery_error` is set by each run's delivery.
 - `repeat.completed` counts every run; with `repeat.times` set, the run that reaches it completes
   the job (`enabled: false`, `state: completed`, no next run).
@@ -232,7 +234,12 @@ The agent manages jobs with `cronjob_manage` (Hermes' tool, toolset `cronjob`): 
 (`schedule`, `prompt` unless `no_agent`, and optionally `name`, `skills`, `script`, `monitor`,
 `no_agent`, `repeat`, `deliver` (default `origin`), `failure_deliver`, `enabled_toolsets`,
 `paused`), `update` (the same fields; `""` and `[]` clear), `pause` (`reason`), `resume`,
-`remove` and `run` (due now). Schedules: `30m`, `every 2h`, `every hour`, `every monday 9am`,
+`remove` and `run` (due now). A job agent.yaml defines delivers to its targets as the repo's
+(§6), so needletail refuses an `update` of what it runs or how a handler names it (`prompt`,
+`skills`, `script`, `monitor`, `no_agent`, `enabled_toolsets`, `name`), pointing the agent at a
+job of its own (which the dream proposes for review) or a person changing agent.yaml; its
+`schedule`, `repeat`, `deliver` and `failure_deliver` (held to the policy) can change, and it can
+be paused, resumed, removed and run. Schedules: `30m`, `every 2h`, `every hour`, `every monday 9am`,
 `weekdays at 9:30am`, `every day at 14:00`, or a cron expression. A job the agent makes is a job
 like the repo's; across restarts it follows §1.
 
@@ -248,7 +255,8 @@ promoted from the agent's into agent.yaml no longer counts), a prompt of at most
 schedule that runs more often than every 5 minutes (an interval under 5 minutes, or a cron
 expression with two runs less than 5 minutes apart, measured from its first run on, however far
 away: `* * 15 * *` runs every minute of the 15th and is refused). The `deliver` and
-`failure_deliver` it sets meet the messaging policy (§6). `cron/**` is not written by the file
+`failure_deliver` it sets meet the messaging policy (§6), `origin` read as the chat the job was
+made from (else the home channel), as its deliveries read it. `cron/**` is not written by the file
 tools, nor, with needletail's uid split (docs/needletail.md §7), by the terminal or a job's
 scripts, which run as another user than the runtime: these bounds hold for everything the agent
 does. (Started without the split, or on Hermes, the terminal can still edit `cron/jobs.json`.)
