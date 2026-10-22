@@ -33,9 +33,11 @@ const (
 // protected are home paths the file tools never write: the runtime's own files and what the
 // managing tools keep (cron/ is cronjob_manage's: its bounds and the messaging policy for an
 // agent job's targets; .swarm/ holds booted.json, by which skill_manage refuses to delete a repo
-// skill; logs/ holds the Luau audit). The terminal can still reach them until the runtime and the
-// agent's commands run as different users (M6b); the container is the boundary, §7.
-var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs", ".swarm"}
+// skill; logs/ holds the Luau audit; memories/ changes only through the memory tool, with its
+// bounds and scrub; SOUL.md only through review; .needletail-tmp/ is the runtime's temp dir). The
+// file tools run in the runtime, which owns all of them, so this list is what keeps them out;
+// with the uid split the agent's commands cannot write them either (docs/needletail.md §7).
+var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs", ".swarm", "SOUL.md", "memories", fsx.TmpDir}
 
 // skipDirs are never searched: the runtime's files, VCS and dependency trees.
 var skipDirs = map[string]bool{".git": true, "node_modules": true, "__pycache__": true, ".venv": true}

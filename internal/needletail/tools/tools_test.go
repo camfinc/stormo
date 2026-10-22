@@ -109,7 +109,8 @@ func TestFileTools(t *testing.T) {
 	// refused: escapes, protected runtime files (cronjob_manage's and skill_manage's own state
 	// among them, so their limits cannot be skipped through a file tool), directories
 	for _, p := range []string{"../outside.md", "/etc/passwd", "sessions/x.jsonl", "needletail.yaml", "state/needletail/idem.json", "notes",
-		"cron/jobs.json", "state/other/x", "logs/audit/s1.jsonl", "logs/x.log", ".swarm/booted.json", "Cron/jobs.json"} {
+		"cron/jobs.json", "state/other/x", "logs/audit/s1.jsonl", "logs/x.log", ".swarm/booted.json", "Cron/jobs.json",
+		"SOUL.md", "soul.md", "memories/MEMORY.md", "Memories/USER.md", "memories/new.md", ".needletail-tmp/x"} {
 		if m, failed := call(t, r, env, "write_file", map[string]any{"path": p, "content": "x"}); !failed {
 			t.Errorf("%s written: %v", p, m)
 		}
@@ -118,6 +119,17 @@ func TestFileTools(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(env.Home, "cron", "jobs.json"), []byte(`{"jobs": []}`), 0o644)
 	if m, failed := call(t, r, env, "patch", map[string]any{"path": "cron/jobs.json", "old_string": "[]", "new_string": "[{}]"}); !failed {
 		t.Errorf("cron/jobs.json patched: %v", m)
+	}
+	// who the agent is changes through review, its memory only through the memory tool
+	_ = os.WriteFile(filepath.Join(env.Home, "SOUL.md"), []byte("I am Ada."), 0o644)
+	_ = os.WriteFile(filepath.Join(env.Home, "memories", "MEMORY.md"), []byte("likes tea"), 0o644)
+	for p, old := range map[string]string{"SOUL.md": "Ada", "memories/MEMORY.md": "tea"} {
+		if m, failed := call(t, r, env, "patch", map[string]any{"path": p, "old_string": old, "new_string": "x"}); !failed {
+			t.Errorf("%s patched: %v", p, m)
+		}
+	}
+	if m, failed := call(t, r, env, "read_file", map[string]any{"path": "SOUL.md"}); failed {
+		t.Errorf("SOUL.md is readable: %v", m)
 	}
 	// the agent still writes its job scripts with the file tools (cronjob_manage names them)
 	if m, failed := call(t, r, env, "write_file", map[string]any{"path": "scripts/check.sh", "content": "echo ok\n"}); failed {
@@ -496,7 +508,7 @@ func TestSetGroup(t *testing.T) {
 // Protected names compare as Unicode case folds, one path segment at a time: ſ (long s) is s and
 // K (the Kelvin sign) is k, as a case-insensitive filesystem may take them.
 func TestProtectedFolds(t *testing.T) {
-	for _, rel := range []string{"ſtate/needletail/x", "ſessions", "SESSIONS/a.json", ".ſwarm/booted.json", "Cron/jobs.json", "needletail.yaml", "NEEDLETAIL.YAML", "LOGS/audit"} {
+	for _, rel := range []string{"ſtate/needletail/x", "ſessions", "SESSIONS/a.json", ".ſwarm/booted.json", "Cron/jobs.json", "needletail.yaml", "NEEDLETAIL.YAML", "LOGS/audit", "ſoul.md", "MEMORIES/memory.md"} {
 		if !isProtected(rel) {
 			t.Errorf("%s writable", rel)
 		}
@@ -506,7 +518,7 @@ func TestProtectedFolds(t *testing.T) {
 			t.Errorf("%s not a runtime dir", rel)
 		}
 	}
-	for _, rel := range []string{"stated/x", "work/cron", "skills/x", "cronjobs"} {
+	for _, rel := range []string{"stated/x", "work/cron", "skills/x", "cronjobs", "work/SOUL.md", "skills/a/memories/x"} {
 		if isProtected(rel) {
 			t.Errorf("%s protected", rel)
 		}
