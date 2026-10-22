@@ -38,6 +38,12 @@ func TestPrepare(t *testing.T) {
 	put(t, filepath.Join(home, "skills", "crm", "scripts", "run.sh"), "x", 0o755)
 	put(t, filepath.Join(home, "scripts", "job.py"), "x", 0o644)
 	put(t, filepath.Join(home, "skills", "crm", "ro.txt"), "x", 0o444) // read-only stays read-only
+	// owner-only stays owner-only: ssh refuses a key the group may read
+	put(t, filepath.Join(home, ".ssh", "id_ed25519"), "key", 0o600)
+	if err := os.Chmod(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	put(t, filepath.Join(home, "work", "notes.txt"), "x", 0o640)
 	put(t, filepath.Join(home, "cron", "jobs.json"), "{}", 0o644)
 	put(t, filepath.Join(home, "sessions", "a.jsonl"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "MEMORY.md"), "x", 0o644)
@@ -60,6 +66,10 @@ func TestPrepare(t *testing.T) {
 		"skills/crm/scripts/run.sh": 0o775,
 		"scripts/job.py":            0o664,
 		"skills/crm/ro.txt":         0o444,
+		".ssh":                      fs.ModeDir | 0o700,
+		".ssh/id_ed25519":           0o600,
+		"work":                      fs.ModeDir | 0o775,
+		"work/notes.txt":            0o660,
 		"cron":                      fs.ModeDir | 0o700,
 		"cron/jobs.json":            0o600,
 		"sessions/a.jsonl":          0o600,

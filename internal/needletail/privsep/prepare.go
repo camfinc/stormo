@@ -78,12 +78,24 @@ func Prepare(home string, u Users, logf func(string)) error {
 
 // workspaceMode is what the agent's workspace gets: the group may do what the owner may (the
 // runtime's writes there, and the commands', which share the group; a read-only file stays
-// read-only); no setuid or setgid file.
+// read-only); no setuid or setgid file. An entry the group and others have no bits on is the
+// owner's alone on purpose (~/.ssh and its keys, which ssh refuses once the group may read them;
+// a directory a command made private) and keeps its mode: the runtime does not write there. What
+// the runtime writes in the workspace (skills/, scripts/, the manifest's state dir, as rehydrate
+// restores them, 0755/0644, or as the runtime made them, 0775/0664) has group bits, so it gets
+// the owner's.
 func workspaceMode(dir bool, perm uint32) uint32 {
+	private := perm&0o077 == 0
 	if dir {
+		if private {
+			return perm & 0o7777
+		}
 		return perm&0o7777 | 0o070
 	}
 	perm &= 0o777
+	if private {
+		return perm
+	}
 	return perm | perm&0o700>>3 | 0o040
 }
 
