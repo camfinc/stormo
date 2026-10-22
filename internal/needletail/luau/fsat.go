@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,7 +22,7 @@ import (
 const dirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 
 // parent is p's parent directory, open, and p's last component ("" when p is the root itself;
-// then fd is the root). create makes missing directories (0755) on the way. The caller closes fd.
+// then fd is the root). create makes missing directories (fsx.DirPerm) on the way. The caller closes fd.
 func (p place) parent(create bool) (fd int, last string, err error) {
 	fd, err = unix.Open(p.root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -47,7 +48,7 @@ func (p place) parent(create bool) (fd int, last string, err error) {
 func openDir(dir int, name string, create bool) (int, error) {
 	fd, err := unix.Openat(dir, name, dirFlags, 0)
 	if errors.Is(err, unix.ENOENT) && create {
-		if err = unix.Mkdirat(dir, name, 0o755); err == nil || errors.Is(err, unix.EEXIST) {
+		if err = unix.Mkdirat(dir, name, fsx.DirPerm); err == nil || errors.Is(err, unix.EEXIST) {
 			fd, err = unix.Openat(dir, name, dirFlags, 0)
 		}
 	}
@@ -72,7 +73,7 @@ func (p place) openFile(flags int, create bool) (*os.File, error) {
 	if last == "" {
 		return nil, errf("not_file", "%s is not a regular file", display(p))
 	}
-	fd, err := unix.Openat(dir, last, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o644)
+	fd, err := unix.Openat(dir, last, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, fsx.FilePerm)
 	if err != nil {
 		return nil, ioErr(p, err)
 	}

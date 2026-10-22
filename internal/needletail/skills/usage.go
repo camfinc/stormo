@@ -89,7 +89,7 @@ func (l *Library) note(name string, change func(e usageEntry, now string)) error
 	if err != nil {
 		return err
 	}
-	return fsx.WriteAtomicIn(l.usagePath(), l.tmp(), append(body, '\n'), 0o644)
+	return fsx.WriteAtomicBelow(l.Home, UsageFile, l.tmp(), append(body, '\n'), fsx.FilePerm)
 }
 
 func bump(e usageEntry, key string) {

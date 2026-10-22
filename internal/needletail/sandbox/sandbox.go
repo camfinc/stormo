@@ -101,6 +101,31 @@ func (s Sandbox) HomeRel(resolved string) (string, bool) {
 	return filepath.ToSlash(rel), true
 }
 
+// Below is a resolved path as its root (resolved) and the path below it (slash-separated), for
+// writes that reach it by descriptor from the root (fsx.OpenFileBelow).
+func (s Sandbox) Below(resolved string) (root, rel string, ok bool) {
+	for _, r := range append([]string{s.Home}, s.Shared...) {
+		if r == "" {
+			continue
+		}
+		rr, err := evalExisting(filepath.Clean(r))
+		if err != nil || resolved == rr || !within(resolved, rr) {
+			continue
+		}
+		if len(rr) > len(root) {
+			root = rr
+		}
+	}
+	if root == "" {
+		return "", "", false
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", "", false
+	}
+	return root, filepath.ToSlash(rel), true
+}
+
 // Display is how a resolved path is shown to the model: relative to the home when inside it.
 func (s Sandbox) Display(resolved string) string {
 	if rel, ok := s.HomeRel(resolved); ok {

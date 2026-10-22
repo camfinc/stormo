@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/sandbox"
 )
 
 const (
@@ -97,7 +100,14 @@ func writeFile(env *Env, real string, body []byte, mode os.FileMode) error {
 	if info, err := os.Lstat(real); err == nil && !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", display)
 	}
-	f, err := os.OpenFile(real, os.O_WRONLY|os.O_CREATE|oNoFollow|oNonblock, mode)
+	// The file is reached by descriptor from its root (the home or a shared layer), never
+	// through a symlink, its directories made on the way: a directory the agent's commands
+	// swap for a link after the checks cannot send the write to the runtime's own files.
+	root, rel, ok := env.Sandbox.Below(real)
+	if !ok {
+		return fmt.Errorf("%s: %w", display, sandbox.ErrOutside)
+	}
+	f, err := fsx.OpenFileBelow(root, rel, os.O_WRONLY|os.O_CREATE, mode, true)
 	if err != nil {
 		return fmt.Errorf("%s: %w", display, unwrapPath(err))
 	}
@@ -105,9 +115,6 @@ func writeFile(env *Env, real string, body []byte, mode os.FileMode) error {
 	opened, err := f.Stat()
 	if err != nil {
 		return err
-	}
-	if !opened.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", display)
 	}
 	again, err := env.Sandbox.Resolve(real)
 	now, serr := os.Lstat(real)
@@ -296,14 +303,7 @@ func writeFileTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
-				return nil, err
-			}
-			// MkdirAll may have walked through new directories: check the final path again.
-			if again, err := writable(env, real); err != nil || again != real {
-				return nil, fmt.Errorf("%s moved while writing", a.Path)
-			}
-			mode := os.FileMode(0o644)
+			mode := os.FileMode(fsx.FilePerm)
 			if info, err := os.Stat(real); err == nil {
 				mode = info.Mode().Perm()
 			}

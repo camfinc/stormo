@@ -94,8 +94,10 @@ func (l *Library) writable(s Skill) error {
 	return nil
 }
 
-// write writes rel (relative to the home) atomically, its parent directories made 0755 as
-// rehydrate makes them.
+// write writes rel (relative to the home) atomically, its parent directories made on the way:
+// group-writable (fsx.DirPerm, fsx.FilePerm), so the agent's commands, which share the group,
+// can work on them too. The write reaches its directory by descriptor, never through a link
+// (one a command swapped in after the check below included).
 func (l *Library) write(rel string, body []byte) error {
 	p, err := l.real(rel)
 	if err != nil {
@@ -104,14 +106,7 @@ func (l *Library) write(rel string, body []byte) error {
 	if info, err := os.Lstat(p); err == nil && !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", rel)
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	// the parents may have been made just now: none of them is a link
-	if _, err := l.real(rel); err != nil {
-		return err
-	}
-	return fsx.WriteAtomicIn(p, l.tmp(), body, 0o644)
+	return fsx.WriteAtomicBelow(l.Home, rel, l.tmp(), body, fsx.FilePerm)
 }
 
 // Create makes skills/[<category>/]<name>/SKILL.md with content, recorded as the agent's own.
@@ -386,12 +381,13 @@ func (l *Library) RemoveFile(name, file string) (Skill, string, error) {
 	if !info.Mode().IsRegular() {
 		return Skill{}, "", fmt.Errorf("%s is not a regular file", rel)
 	}
-	if err := os.Remove(p); err != nil {
+	full := "skills/" + s.Dir + "/" + rel
+	if err := fsx.RemoveBelow(l.Home, full, false); err != nil {
 		return Skill{}, "", err
 	}
-	top := l.Abs(s)
-	for d := filepath.Dir(p); d != top && strings.HasPrefix(d, top+string(filepath.Separator)); d = filepath.Dir(d) {
-		if os.Remove(d) != nil { // not empty
+	top := "skills/" + s.Dir
+	for d := path.Dir(full); d != top && strings.HasPrefix(d, top+"/"); d = path.Dir(d) {
+		if fsx.RemoveBelow(l.Home, d, true) != nil { // not empty
 			break
 		}
 	}
@@ -418,8 +414,7 @@ func (l *Library) Delete(name string) (Skill, error) {
 	if l.booted(s.Dir) {
 		return Skill{}, fmt.Errorf("%s comes from the agent's repository: deleted here, it would come back at the next restart (rehydrate restores it) and no deletion is proposed for review. Change it with edit or patch, or ask a person to remove it from the repository", s.Dir)
 	}
-	p, err := l.real("skills/" + s.Dir)
-	if err != nil {
+	if _, err := l.real("skills/" + s.Dir); err != nil {
 		return Skill{}, err
 	}
 	// One rename takes the skill out of skills/ (a nap taken meanwhile sees all of it or none);
@@ -431,7 +426,7 @@ func (l *Library) Delete(name string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	if err := os.Rename(p, filepath.Join(gone, "skill")); err != nil {
+	if err := fsx.RenameOut(l.Home, "skills/"+s.Dir, filepath.Join(gone, "skill")); err != nil {
 		_ = os.Remove(gone)
 		return Skill{}, err
 	}
