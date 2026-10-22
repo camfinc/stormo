@@ -118,10 +118,13 @@ type SessionList struct {
 	Data []SessionSummary `json:"data"`
 }
 
-// NewSession is POST /v1/sessions (409 when ID exists).
+// NewSession is POST /v1/sessions (409 when ID exists; 403 for an id the runtime keeps for its
+// own conversations, api.Reserved).
 type NewSession struct {
-	ID     string `json:"id,omitempty"`
-	Title  string `json:"title,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Source is ignored: the API's sessions are always api_server (kept for the adapter, which
+	// sends it).
 	Source string `json:"source,omitempty"`
 }
 

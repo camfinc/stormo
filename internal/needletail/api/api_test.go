@@ -486,3 +486,74 @@ func TestActivityReportsTheJail(t *testing.T) {
 		}
 	}
 }
+
+// The API cannot claim a conversation the runtime makes itself: what it creates is always its own
+// (source api_server, whatever the body says), and it neither creates nor continues a Slack
+// conversation (the gateway's: slack-…, source slack, a compaction's child included) or a
+// oneshot's (oneshot-…, source cli), by any route. The adapter's own ids still work.
+func TestAPICannotClaimARuntimeConversation(t *testing.T) {
+	s, fa, srv := newServer(t, t.TempDir())
+	ctx := context.Background()
+	do := call(srv, key)
+	if code, raw, err := do(ctx, http.MethodPost, "/v1/sessions", map[string]string{"id": "mine-1", "source": "cli"}); err != nil || code != http.StatusCreated {
+		t.Fatalf("create = %d %s %v", code, raw, err)
+	}
+	if h, _ := s.store.Get("mine-1"); h.Source != SourceAPI {
+		t.Errorf("a created session's source = %q", h.Source)
+	}
+	if code, _, _ := do(ctx, http.MethodPost, "/v1/sessions", map[string]string{"id": "mine-2", "source": "slack"}); code != http.StatusCreated {
+		t.Errorf("create with source slack = %d", code)
+	} else if h, _ := s.store.Get("mine-2"); h.Source != SourceAPI {
+		t.Errorf("a created session's source = %q", h.Source)
+	}
+	for _, id := range []string{"slack-D0DMCHAN01-dm", "slack-C0DEV-1700000000.1", "SLACK-D0DMCHAN01-dm", "oneshot-abc"} {
+		if code, raw, _ := do(ctx, http.MethodPost, "/v1/sessions", map[string]string{"id": id}); code != http.StatusForbidden {
+			t.Errorf("create %s = %d %s", id, code, raw)
+		}
+		if _, ok := s.store.Get(id); ok {
+			t.Errorf("%s was created", id)
+		}
+		if code, raw, _ := do(ctx, http.MethodPost, "/v1/runs", wire.RunRequest{Input: "hi", SessionID: id}); code != http.StatusForbidden {
+			t.Errorf("run in %s = %d %s", id, code, raw)
+		}
+		if _, ok := s.store.Get(id); ok {
+			t.Errorf("%s was created by a run", id)
+		}
+	}
+	// the gateway's conversations, a oneshot's, and one a legacy file says is Slack's
+	for _, h := range []wire.Session{{ID: "slack-D0DMCHAN01-dm", Source: "slack"}, {ID: "oneshot-1", Source: "cli"}, {ID: "legacy-1", Source: "slack"}, {ID: "legacy-2", Source: "cli"}} {
+		if _, err := s.store.Create(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, err := s.store.Compact("slack-D0DMCHAN01-dm", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"slack-D0DMCHAN01-dm", child, "oneshot-1", "legacy-1", "legacy-2"} {
+		if code, raw, _ := do(ctx, http.MethodPost, "/v1/sessions/"+id+"/chat", wire.ChatRequest{Message: "what does Ana remember?"}); code != http.StatusForbidden {
+			t.Errorf("chat in %s = %d %s", id, code, raw)
+		}
+		if code, raw, _ := do(ctx, http.MethodPost, "/v1/runs", wire.RunRequest{Input: "hi", SessionID: id}); code != http.StatusForbidden {
+			t.Errorf("run in %s = %d %s", id, code, raw)
+		}
+	}
+	if n := fa.count(); n != 0 {
+		t.Errorf("%d turns ran", n)
+	}
+	// the adapter's conversations and the core's wakes are the API's own
+	conv := adapter.NewRuntime().Conversations(do)
+	if reply, _, err := conv.Send(ctx, "swarm-local", "hello"); err != nil || reply != "echo hello" {
+		t.Errorf("swarm-local = %q %v", reply, err)
+	}
+	if code, raw, _ := do(ctx, http.MethodPost, "/v1/runs", wire.RunRequest{Input: "You have a message.", SessionID: "swarm-bus-1"}); code != http.StatusAccepted {
+		t.Errorf("wake = %d %s", code, raw)
+	}
+	waitFor(t, func() bool { return fa.count() == 2 })
+	for _, id := range []string{"swarm-local", "swarm-bus-1"} {
+		if h, _ := s.store.Get(id); h.Source != SourceAPI {
+			t.Errorf("%s source = %q", id, h.Source)
+		}
+	}
+	s.Shutdown(ctx)
+}

@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -110,6 +111,23 @@ type runtime struct {
 	jail string
 	// dmUsers holds the Slack gateway's KnownDMUser once it runs (the memory's audiences)
 	dmUsers *atomic.Pointer[func(channel string) string]
+	// operators are the owner's own conversations (the memory's audiences): a oneshot's, marked
+	// by this process when it creates it
+	operators *operators
+}
+
+// operators are the conversations (their roots) this process started for the owner: a oneshot's.
+// Kept in memory only, never read from a session's source, which the API or a file could claim.
+type operators struct{ m sync.Map }
+
+func (o *operators) mark(root string) { o.m.Store(root, true) }
+
+func (o *operators) has(root string) bool {
+	if o == nil {
+		return false
+	}
+	_, ok := o.m.Load(root)
+	return ok
 }
 
 // setGuide renders the guide section the turns read.
@@ -159,12 +177,13 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	mem := &memory.Store{Home: cfg.Home, Limits: map[string]int{memory.TargetMemory: cfg.Memory.MemoryCharLimit, memory.TargetUser: cfg.Memory.UserCharLimit},
 		Check: tools.SecretCheck(red.Redact), Log: logf}
 	dmUser := &atomic.Pointer[func(channel string) string]{}
+	ops := &operators{}
 	mem.Where = audiences(store, func(channel string) string {
 		if f := dmUser.Load(); f != nil {
 			return (*f)(channel)
 		}
 		return ""
-	})
+	}, ops)
 	if err := mem.Open(); err != nil {
 		logf(fmt.Sprintf("memory: %v", err))
 	}
@@ -201,7 +220,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger, dmUsers: dmUser,
+	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
@@ -225,12 +244,15 @@ func recaller(c *wire.RecallConfig, mem *memory.Store, store *sessions.Store, lo
 // audiences is the memory's audience of a session's turns (memory.Audience, docs/needletail.md
 // §4.6), from the runtime's own records, never the model's words: the session's root and source.
 // A Slack thread's is its channel's scope, a Slack DM's its person's (the gateway's, dmUser: ""
-// while it does not know them, and then nothing is saved "here"); a oneshot's (source cli, the
-// owner at the command line) is the operator's. Every other turn (the API's runs, which the
-// owner's chat and the core's wakes share; a scheduled job; a schedule's script) has none: the
-// agent-wide records only. A session the store does not know yet (a message's handlers run before
-// its turn creates it) is read from its id when it is a Slack one.
-func audiences(store *sessions.Store, dmUser func(channel string) string) func(session string) memory.Audience {
+// while it does not know them, and then nothing is saved "here"): only the gateway makes them,
+// the API refusing the slack- ids and any conversation of source slack (api.Reserved). A
+// oneshot's (the owner at the command line) is the operator's, known from ops, which this process
+// marks when it creates the oneshot, never from a session's source ("cli" in a file is no one's).
+// Every other turn (the API's runs, which the owner's chat and the core's wakes share; a
+// scheduled job; a schedule's script) has none: the agent-wide records only. A session the store
+// does not know yet (a message's handlers run before its turn creates it) is read from its id
+// when it is a Slack one.
+func audiences(store *sessions.Store, dmUser func(channel string) string, ops *operators) func(session string) memory.Audience {
 	return func(session string) memory.Audience {
 		root, source := session, ""
 		if r, ok := store.Root(session); ok {
@@ -239,11 +261,10 @@ func audiences(store *sessions.Store, dmUser func(channel string) string) func(s
 		} else if strings.HasPrefix(session, "slack-") {
 			source = slack.Source
 		}
-		switch source {
-		case "cli":
+		if ops.has(root) {
 			return memory.Audience{Operator: true}
-		case slack.Source:
-		default:
+		}
+		if source != slack.Source {
 			return memory.Audience{}
 		}
 		channel, thread, ok := slack.Origin(root)
@@ -591,6 +612,7 @@ func oneshot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return oneshotResult(stdout, stderr, *format, nil, err)
 	}
+	rt.operators.mark(h.ID) // the owner's own turn: every scope (§4.6)
 	opts := loop.Options{}
 	if *format == "stream-json" {
 		opts.Observer = streamJSON{json.NewEncoder(stdout)}

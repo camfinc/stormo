@@ -226,8 +226,9 @@ func TestOriginOfSlackSessions(t *testing.T) {
 }
 
 // The memory's audience of a turn comes from the session's root and source: a thread's channel, a
-// DM's person (the gateway's, once known), the owner for a oneshot, none for the API, a job or a
-// script. A compaction's child keeps its conversation's.
+// DM's person (the gateway's, once known), none for the API, a job or a script. The owner's is a
+// oneshot's this process started (marked in memory), never a session file's source: a session
+// that says cli is no one's. A compaction's child keeps its conversation's.
 func TestMemoryAudiences(t *testing.T) {
 	store, err := sessions.Open(t.TempDir(), nil)
 	if err != nil {
@@ -235,7 +236,7 @@ func TestMemoryAudiences(t *testing.T) {
 	}
 	for _, s := range []wire.Session{{ID: "slack-C0DEVCHAN1-1700000002.000100", Source: "slack"}, {ID: "slack-D0DMCHAN01-dm", Source: "slack"},
 		{ID: "slack-D0DMCHAN02-dm", Source: "slack"}, {ID: "api-1", Source: "api_server"}, {ID: "slack-C9-1.2", Source: "api_server"},
-		{ID: "oneshot-1", Source: "cli"}, {ID: "cron-1", Source: "cron"}} {
+		{ID: "oneshot-1", Source: "cli"}, {ID: "oneshot-2", Source: "cli"}, {ID: "api-cli", Source: "cli"}, {ID: "cron-1", Source: "cron"}} {
 		if _, err := store.Create(s); err != nil {
 			t.Fatal(err)
 		}
@@ -244,12 +245,18 @@ func TestMemoryAudiences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ops := &operators{}
+	ops.mark("oneshot-2")
+	opChild, err := store.Compact("oneshot-2", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := audiences(store, func(channel string) string {
 		if channel == "D0DMCHAN01" {
 			return "U0ANA"
 		}
 		return ""
-	})
+	}, ops)
 	for id, want := range map[string]memory.Audience{
 		"slack-C0DEVCHAN1-1700000002.000100": {Scope: "channel:C0DEVCHAN1", Conv: "slack-C0DEVCHAN1-1700000002.000100"},
 		"slack-D0DMCHAN01-dm":                {Scope: "dm:U0ANA", Conv: "slack-D0DMCHAN01-dm"},
@@ -258,7 +265,10 @@ func TestMemoryAudiences(t *testing.T) {
 		"slack-C0NEW-1700000009.1":           {Scope: "channel:C0NEW", Conv: "slack-C0NEW-1700000009.1"}, // a handler's, before the turn
 		"api-1":                              {},
 		"slack-C9-1.2":                       {}, // the API's, whatever its name
-		"oneshot-1":                          {Operator: true},
+		"oneshot-1":                          {}, // a file that says cli: not this process' oneshot
+		"api-cli":                            {},
+		"oneshot-2":                          {Operator: true},
+		opChild:                              {Operator: true},
 		"cron-1":                             {},
 		"schedule":                           {},
 	} {

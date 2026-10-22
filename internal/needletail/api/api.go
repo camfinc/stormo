@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,8 +33,47 @@ type Turns interface {
 	Run(ctx context.Context, session, input string, opts loop.Options) (*loop.Result, error)
 }
 
-// SourceAPI is the source of sessions the API creates (Hermes' name for its API platform).
+// SourceAPI is the source of sessions the API creates (Hermes' name for its API platform). The
+// API creates nothing else: a request's source is ignored.
 const SourceAPI = "api_server"
+
+// The conversations the runtime makes itself, which the API neither creates nor continues
+// (Reserved): a Slack conversation is the gateway's (slack-<channel>-…, source slack) and a
+// oneshot the owner's at the command line (oneshot-…, source cli). The memory reads a turn's
+// audience from them (docs/needletail.md §4.6), so a caller that could make or resume one would
+// claim its channel's records, or every scope.
+var (
+	reservedPrefixes = []string{"slack-", "oneshot-"}
+	reservedSources  = []string{"slack", "cli"}
+)
+
+// ErrReserved refuses an API request for a conversation the runtime makes itself.
+var ErrReserved = errors.New("that conversation is the runtime's own (a Slack conversation, a oneshot): the API does not create or continue it")
+
+// Reserved: id, or the conversation the store has it in, is one the API may not create or
+// continue: its id or its root's has a reserved prefix (case-folded: a case-insensitive disk
+// holds one file for both spellings), or its root's source is a reserved one.
+func Reserved(store *sessions.Store, id string) bool {
+	if reservedID(id) {
+		return true
+	}
+	root, ok := store.Root(id)
+	if !ok {
+		return false
+	}
+	h, _ := store.Get(root)
+	return reservedID(root) || slices.Contains(reservedSources, h.Source)
+}
+
+func reservedID(id string) bool {
+	low := strings.ToLower(id)
+	for _, p := range reservedPrefixes {
+		if strings.HasPrefix(low, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // MinKey is the shortest API key served (the adapter's ValidAPIKey).
 const MinKey = 16
@@ -442,6 +482,10 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, sessions.ErrBadID.Error())
 		return
 	}
+	if Reserved(s.store, session) {
+		writeError(w, http.StatusForbidden, ErrReserved.Error())
+		return
+	}
 	root, err := s.ensure(session, wire.Session{Source: SourceAPI})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -476,10 +520,13 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body is not a session")
 		return
 	}
-	if req.Source == "" {
-		req.Source = SourceAPI
+	if Reserved(s.store, req.ID) {
+		writeError(w, http.StatusForbidden, ErrReserved.Error())
+		return
 	}
-	h, err := s.store.Create(wire.Session{ID: req.ID, Title: req.Title, Source: req.Source})
+	// always the API's own, whatever the body says: the source decides no audience, but a
+	// listing or a hook should not show a Slack or oneshot conversation the API made
+	h, err := s.store.Create(wire.Session{ID: req.ID, Title: req.Title, Source: SourceAPI})
 	switch {
 	case errors.Is(err, sessions.ErrExists):
 		writeError(w, http.StatusConflict, "session exists")
@@ -522,6 +569,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Message) == "" {
 		writeError(w, http.StatusBadRequest, "message is empty")
+		return
+	}
+	if Reserved(s.store, id) {
+		writeError(w, http.StatusForbidden, ErrReserved.Error())
 		return
 	}
 	root, ok := s.store.Root(id)
