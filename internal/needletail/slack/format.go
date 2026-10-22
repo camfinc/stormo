@@ -13,27 +13,43 @@ import (
 const MaxMessage = 39000
 
 var (
-	fenceRe     = regexp.MustCompile("(?s)```[^\\n`]*\\n?(.*?)```")
-	inlineRe    = regexp.MustCompile("`[^`\\n]+`")
-	linkRe      = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\s]+)\)`)
-	slackTokRe  = regexp.MustCompile(`<(?:[@#!][^>\s]*|https?://[^>\s]+|mailto:[^>\s]+)>`)
-	broadcastRe = regexp.MustCompile(`<!(everyone|channel|here)(\|[^>]*)?>`)
-	headingRe   = regexp.MustCompile(`(?m)^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$`)
-	boldItalRe  = regexp.MustCompile(`\*\*\*([^*\n]+?)\*\*\*`)
-	boldRe      = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
-	boldUnderRe = regexp.MustCompile(`__([^_\n]+?)__`)
-	italRe      = regexp.MustCompile(`(^|[^*\w])\*([^*\s][^*\n]*?)\*($|[^*\w])`)
-	strikeRe    = regexp.MustCompile(`~~([^~\n]+?)~~`)
-	tableSepRe  = regexp.MustCompile(`^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$`)
-	quoteRe     = regexp.MustCompile(`(?m)^&gt;`)
+	fenceRe  = regexp.MustCompile("(?s)```[^\\n`]*\\n?(.*?)```")
+	inlineRe = regexp.MustCompile("`[^`\\n]+`")
+	linkRe   = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\s]+)\)`)
+	// Slack's own tokens kept as the model wrote them: a user or channel mention and a link,
+	// each with an optional label that holds no < or >. Special mentions (<!…>) are not among
+	// them: they are escaped unless a broadcast is allowed (broadcastTokRe).
+	slackTokRe     = regexp.MustCompile(`<(?:@[UW][A-Z0-9]+|#[CG][A-Z0-9]+|(?:https?://|mailto:)[^<>|\s]+)(?:\|[^<>]*)?>`)
+	broadcastTokRe = regexp.MustCompile(`<!(?:here|channel|everyone|subteam\^[A-Z0-9]+)(?:\|[^<>]*)?>`)
+	atBroadcastRe  = regexp.MustCompile(`(^|[^\w@.])@(here|channel|everyone)\b`)
+	linkSchemeRe   = regexp.MustCompile(`^(?i:https?://|mailto:)`)
+	headingRe      = regexp.MustCompile(`(?m)^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$`)
+	boldItalRe     = regexp.MustCompile(`\*\*\*([^*\n]+?)\*\*\*`)
+	boldRe         = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
+	boldUnderRe    = regexp.MustCompile(`__([^_\n]+?)__`)
+	italRe         = regexp.MustCompile(`(^|[^*\w])\*([^*\s][^*\n]*?)\*($|[^*\w])`)
+	strikeRe       = regexp.MustCompile(`~~([^~\n]+?)~~`)
+	tableSepRe     = regexp.MustCompile(`^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$`)
+	quoteRe        = regexp.MustCompile(`(?m)^&gt;`)
+	escaper        = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	urlEscaper     = strings.NewReplacer("<", "%3C", ">", "%3E", "|", "%7C")
 )
 
-// Mrkdwn converts the model's Markdown to Slack's mrkdwn, as Hermes' format_message does:
-// tables become aligned code blocks, code is kept verbatim (a fence's language dropped), links
-// become <url|text>, &, < and > are escaped outside Slack's own <@user>, <#channel> and <url>
-// tokens (an @channel the model writes is escaped, never a broadcast), headings and **bold**
-// become *bold*, *italic* becomes _italic_, ~~strike~~ becomes ~strike~; lists pass through.
-func Mrkdwn(md string) string {
+// Mrkdwn is Format with no broadcast: what the agent's replies and deliveries are posted as.
+func Mrkdwn(md string) string { return Format(md, false) }
+
+// Format converts the model's Markdown to Slack's mrkdwn, as Hermes' format_message does:
+// tables become aligned code blocks, code is kept (a fence's language dropped), links become
+// <url|text>, headings and **bold** become *bold*, *italic* becomes _italic_, ~~strike~~ becomes
+// ~strike~; lists pass through. Slack wants &, < and > escaped in all text, so they are, code
+// included, everywhere but in Slack's own user and channel mentions and links the model wrote. A
+// link's URL has its <, > and | percent-encoded and its label escaped; a link whose scheme is
+// not http(s) or mailto stays text. Special mentions (<!channel>, <!here>, <!everyone>, a user
+// group's <!subteam^…>, <!date…>) are escaped, so model text never pings a crowd, unless
+// broadcast is set (send_message's broadcast option, which needs the config's grant): then the
+// broadcasts and user groups are kept, and a plain @here, @channel or @everyone becomes one.
+// <!date…> is escaped always.
+func Format(md string, broadcast bool) string {
 	if md == "" {
 		return ""
 	}
@@ -45,17 +61,26 @@ func Mrkdwn(md string) string {
 	}
 	text = fenceRe.ReplaceAllStringFunc(text, func(m string) string {
 		body := fenceRe.FindStringSubmatch(m)[1]
-		return keep("```\n" + strings.TrimRight(body, "\n") + "\n```")
+		return keep("```\n" + escaper.Replace(strings.TrimRight(body, "\n")) + "\n```")
 	})
-	text = inlineRe.ReplaceAllStringFunc(text, keep)
-	text = broadcastRe.ReplaceAllStringFunc(text, func(m string) string { return "&lt;" + m[1:] })
+	text = inlineRe.ReplaceAllStringFunc(text, func(m string) string {
+		return keep("`" + escaper.Replace(m[1:len(m)-1]) + "`")
+	})
 	text = linkRe.ReplaceAllStringFunc(text, func(m string) string {
 		p := linkRe.FindStringSubmatch(m)
-		return keep("<" + p[2] + "|" + strings.ReplaceAll(p[1], ">", "&gt;") + ">")
+		if !linkSchemeRe.MatchString(p[2]) {
+			return m // not a web or mail link: text, escaped below
+		}
+		label := escaper.Replace(strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">").Replace(p[1]))
+		return keep("<" + urlEscaper.Replace(p[2]) + "|" + label + ">")
 	})
+	if broadcast {
+		text = atBroadcastRe.ReplaceAllString(text, "$1<!$2>")
+		text = broadcastTokRe.ReplaceAllStringFunc(text, keep)
+	}
 	text = slackTokRe.ReplaceAllStringFunc(text, keep)
 	text = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">").Replace(text)
-	text = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	text = escaper.Replace(text)
 	text = quoteRe.ReplaceAllString(text, ">") // a block quote stays one
 	text = headingRe.ReplaceAllString(text, "\x01$1\x01")
 	text = boldItalRe.ReplaceAllString(text, "\x01_${1}_\x01")
@@ -137,7 +162,8 @@ func cells(row string) []string {
 
 // Split cuts text into messages of at most limit characters (Hermes' truncate_message): at the
 // last newline in the window (the last space when that newline is in its first half), never
-// inside inline code; a code block open at a cut is closed and opened again in the next part;
+// inside inline code (before its opening backtick); a code block open at a cut is closed right
+// after its last line and opened again in the next part;
 // parts are numbered " (i/N)".
 func Split(text string, limit int) []string {
 	if utf8.RuneCountInString(text) <= limit {
@@ -163,7 +189,7 @@ func Split(text string, limit int) []string {
 		rest = []rune(strings.TrimLeft(string(rest[cut:]), " "))
 		if strings.Count(prefix+chunk, "```")%2 == 1 {
 			open = true
-			chunk += "\n```"
+			chunk = strings.TrimRight(chunk, "\n") + "\n```"
 		} else {
 			open = false
 		}
@@ -192,7 +218,7 @@ func cutAt(w []rune) int {
 	line := s[strings.LastIndex(s[:pos], "\n")+1 : pos]
 	if strings.Count(line, "`")%2 == 1 && !strings.Contains(line, "```") {
 		if back := strings.LastIndex(s[:pos], "`"); back > 0 {
-			pos = back
+			return utf8.RuneCountInString(s[:back]) // before the span's opening backtick
 		}
 	}
 	return utf8.RuneCountInString(s[:pos+1])
