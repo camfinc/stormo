@@ -105,8 +105,9 @@ func (r Rule) Grant(abi int, dir bool) uint64 {
 const TmpDir = ".tmp"
 
 // System are the rules every jail has besides the home and the shared layers: the system's
-// programs and libraries read and execute (the runtime's binary, alone in /usr/local/bin,
-// execute only: it can be run, not read), the files of /etc a command needs (names, users, DNS,
+// programs and libraries read and execute (Landlock cannot grant execute without read: execve
+// opens the file for reading, so /usr/local/bin, which holds the runtime's binary, is readable
+// too; the binary holds no secret), the files of /etc a command needs (names, users, DNS,
 // TLS roots, git's and python's system files), /proc read only (a rule on /proc/self would bind
 // the launcher's own pid, not its children's; the runtime's entries there stay root's, since it
 // is non-dumpable and another uid) and the harmless devices.
@@ -121,11 +122,11 @@ var System = []Rule{
 	{Path: "/usr/lib64", Access: RX},
 	{Path: "/usr/libexec", Access: RX},
 	{Path: "/usr/share", Access: RX},
+	{Path: "/usr/local/bin", Access: RX},
 	{Path: "/usr/local/sbin", Access: RX},
 	{Path: "/usr/local/lib", Access: RX},
 	{Path: "/usr/local/libexec", Access: RX},
 	{Path: "/usr/local/share", Access: RX},
-	{Path: "/usr/local/bin", Access: Execute},
 	{Path: "/etc/ssl", Access: RO},
 	{Path: "/etc/ca-certificates", Access: RO},
 	{Path: "/etc/passwd", Access: RO},

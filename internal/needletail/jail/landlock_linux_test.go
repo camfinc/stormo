@@ -87,7 +87,7 @@ func TestJailAsRoot(t *testing.T) {
 	t.Cleanup(func() { os.Remove(outside) })
 	self, _ := os.Executable()
 	script := fmt.Sprintf(`cd %[1]q
-try() { if eval "$2" >/dev/null 2>&1; then echo "jail: $1: ok"; else echo "jail: $1: denied"; fi; }
+try() { if (eval "$2") >/dev/null 2>&1; then echo "jail: $1: ok"; else echo "jail: $1: denied"; fi; }
 try "write home" 'echo x > work.txt && mkdir -p a/b && echo y > a/b/f'
 try "move across home dirs" 'mkdir -p c && mv a/b/f c/f'
 try "truncate in home" ': > existing.txt'
@@ -113,7 +113,8 @@ try "read /etc/shadow" 'cat /etc/shadow'
 try "list /" 'ls /'
 try "list /root" 'ls /root'
 try "read the launcher" 'head -c 4 %[6]s'
-try "read /usr/local/bin" 'ls /usr/local/bin'
+try "list /opt" 'ls /opt'
+try "run a program" 'test "$(/bin/echo hi)" = hi'
 `, home, group, unit, other, outside, self)
 	cmd := exec.Command(self, append(Spec{Home: home, Shared: []string{group, unit}}.Args()[1:], "/bin/bash", "bash", "--noprofile", "--norc", "-c", script)...)
 	cmd.Env = []string{launchEnv + "=1", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + home,
@@ -126,7 +127,7 @@ try "read /usr/local/bin" 'ls /usr/local/bin'
 		t.Fatalf("jailed shell: %v", err)
 	}
 	for _, ok := range []string{"write home", "move across home dirs", "truncate in home", "fifo in home", "write group", "write unit",
-		"mktemp in TMPDIR", "python3", "git", "read /etc/passwd", "read /proc/self/status", "process substitution", "devices"} {
+		"mktemp in TMPDIR", "python3", "git", "read /etc/passwd", "read /proc/self/status", "process substitution", "devices", "run a program"} {
 		if abi < 2 && ok == "move across home dirs" {
 			continue // ABI 1 refuses every rename across directories (mv copies instead)
 		}
@@ -135,7 +136,7 @@ try "read /usr/local/bin" 'ls /usr/local/bin'
 		}
 	}
 	for _, no := range []string{"read other layer", "write other layer", "list other layer", "write /tmp", "read /tmp", "write /var/tmp",
-		"write /usr", "read /etc/shells", "read /etc/shadow", "list /", "list /root", "read the launcher", "read /usr/local/bin"} {
+		"write /usr", "read /etc/shells", "read /etc/shadow", "list /", "list /root", "read the launcher", "list /opt"} {
 		if !strings.Contains(string(out), "jail: "+no+": denied") {
 			t.Errorf("%s: want denied", no)
 		}

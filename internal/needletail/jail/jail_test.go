@@ -51,8 +51,8 @@ func TestGrantMasksPerABIAndFileType(t *testing.T) {
 	if g := (Rule{Path: "/dev/null", Access: Dev}).Grant(5, false); g != ReadFile|WriteFile|Truncate|IoctlDev {
 		t.Errorf("ABI 5 /dev/null grant %#x", g)
 	}
-	if g := (Rule{Path: "/usr/local/bin", Access: Execute}).Grant(5, true); g != Execute {
-		t.Errorf("the runtime's binary dir grants %#x, want execute only", g)
+	if g := (Rule{Path: "/usr/bin", Access: RX}).Grant(5, true); g != RX {
+		t.Errorf("/usr/bin grants %#x, want read and execute", g)
 	}
 	if g := (Rule{Path: "/x", Access: RW}).Grant(0, true); g != 0 {
 		t.Errorf("no Landlock grants %#x", g)
@@ -105,8 +105,8 @@ func TestRules(t *testing.T) {
 			}
 		}
 	}
-	if by["/usr/local/bin"].Access != Execute {
-		t.Error("the runtime's binary may be run, not read")
+	if by["/usr/local/bin"].Access != RX {
+		t.Error("execve needs read and execute: /usr/local/bin's programs must be both")
 	}
 }
 
