@@ -362,7 +362,8 @@ var headerRe = regexp.MustCompile(`^<!-- (\{.*\}) -->$`)
 // them). Damage an earlier runtime could leave is mended (Repaired counts it): a bare § line at an
 // entry's edge is dropped, and a header with no text followed by a text with no header (a record
 // whose text began with a bare § line, read back as two entries) is one record again; a record so
-// mended that repeats another's text is a copy a boot made, and dropped.
+// mended that is a boot's (or the migration's) copy of another, the same text and nothing else of
+// its own (bootCopy), is dropped. Records that only share a text are all kept.
 func ParseRecords(raw string, now time.Time) Records {
 	out := Records{Version: RecordsVersion}
 	ids := map[string]bool{}
@@ -422,10 +423,13 @@ func ParseRecords(raw string, now time.Time) Records {
 		out.Recs = append(out.Recs, r)
 	}
 	if len(mended) > 0 {
-		seen := map[string]bool{}
+		// the records a mended one may be a copy of: every record that was not mended, and the
+		// mended ones kept before it
+		kept := map[string][]*Record{}
 		for _, r := range out.Recs {
 			if !mended[r] {
-				seen[r.Target()+"\x00"+r.key()] = true
+				k := r.Target() + "\x00" + r.key()
+				kept[k] = append(kept[k], r)
 			}
 		}
 		out.Recs = slices.DeleteFunc(out.Recs, func(r *Record) bool {
@@ -433,15 +437,44 @@ func ParseRecords(raw string, now time.Time) Records {
 				return false
 			}
 			k := r.Target() + "\x00" + r.key()
-			if seen[k] {
-				out.Repaired++
-				return true
+			for _, o := range kept[k] {
+				if bootCopy(r, o) {
+					out.Repaired++
+					return true
+				}
 			}
-			seen[k] = true
+			kept[k] = append(kept[k], r)
 			return false
 		})
 	}
 	return out
+}
+
+// bootCopy: r, a mended record with o's target and text, is a copy a boot (or the migration)
+// made of o, and nothing more: the reconcile of a damaged hot entry made it (src boot or
+// migration), and it says nothing o does not (the same kind, scope, tags and expiry). Two
+// records with the same text but their own scope (Ana's in her DM, Bob's in his), source or
+// metadata are distinct, and both are kept. With no scope a record's is read from its src
+// (Store.scopeOf), so a boot's copy is not one of an unscoped chat record.
+func bootCopy(r, o *Record) bool {
+	if r.Src != "boot" && r.Src != "migration" {
+		return false
+	}
+	if r.Kind != o.Kind || r.Scope != o.Scope || r.Expires != o.Expires || !sameTags(r.Tags, o.Tags) {
+		return false
+	}
+	return r.Scope != "" || !strings.HasPrefix(o.Src, "chat:")
+}
+
+// sameTags: a and b hold the same tags, in any order.
+func sameTags(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
 // headerOnly: e is a record's header line and nothing else.

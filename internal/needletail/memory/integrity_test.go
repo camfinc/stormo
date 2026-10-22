@@ -109,6 +109,61 @@ func TestDamagedRecordsRepaired(t *testing.T) {
 	}
 }
 
+// The repair drops only a boot's (or the migration's) redundant copy of a mended record: one of
+// the same target, kind, scope, tags and expiry. A record with the same text but its own scope,
+// source or metadata is a distinct record, and both survive: Ana's damaged record beside Bob's
+// intact one, a boot copy with tags of its own, one beside an unscoped chat record (whose scope
+// its src gives).
+func TestRepairKeepsDistinctRecordsSharingText(t *testing.T) {
+	hdr := func(r Record) string {
+		if r.Tags == nil {
+			r.Tags = []string{}
+		}
+		r.Kind, r.Imp, r.Created, r.Updated = KindFact, 3, "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"
+		var b bytes.Buffer
+		r.header(&b)
+		return b.String()
+	}
+	const text = "The client's passport expires in March 2027."
+	damaged := versionLine + Delimiter +
+		hdr(Record{ID: "m000000000b1", Src: "chat:slack-DBOB-dm", Scope: "dm:UBOB"}) + "\n" + text + Delimiter +
+		hdr(Record{ID: "m000000000a1", Src: "chat:slack-DANA-dm", Scope: "dm:UANA"}) + Delimiter + text + Delimiter +
+		hdr(Record{ID: "m000000000c1", Src: "boot", Scope: "dm:UBOB"}) + Delimiter + text + Delimiter + // a copy of Bob's: dropped
+		hdr(Record{ID: "m000000000c2", Src: "boot", Scope: "dm:UBOB", Tags: []string{"travel"}}) + Delimiter + text + Delimiter +
+		hdr(Record{ID: "m000000000c3", Src: "boot", Scope: "dm:UBOB", Expires: "2027-03-31"}) + Delimiter + text + Delimiter +
+		hdr(Record{ID: "m000000000c4", Src: "migration", Scope: "agent"}) + Delimiter + text + Delimiter +
+		hdr(Record{ID: "m000000000d1", Src: "chat:slack-DCAT-dm"}) + "\nCall the hotel at noon." + Delimiter +
+		hdr(Record{ID: "m000000000d2", Src: "boot"}) + Delimiter + "Call the hotel at noon." + Delimiter +
+		hdr(Record{ID: "m000000000e1", Src: "luau:x"}) + "\nThe office opens at nine." + Delimiter +
+		hdr(Record{ID: "m000000000e2", Src: "boot"}) + Delimiter + "The office opens at nine." // a copy: dropped
+	want := []string{"m000000000b1", "m000000000a1", "m000000000c2", "m000000000c3", "m000000000c4", "m000000000d1", "m000000000d2", "m000000000e1"}
+	ids := func(p Records) []string {
+		var out []string
+		for _, r := range p.Recs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	p := ParseRecords(damaged, t0)
+	if got := ids(p); !slices.Equal(got, want) || len(p.Bad) != 0 {
+		t.Fatalf("records %v, want %v (bad %q)", got, want, p.Bad)
+	}
+	home := newHome(t, "", "")
+	_ = os.WriteFile(filepath.Join(home, filepath.FromSlash(RecordsFile)), []byte(damaged), 0o640)
+	if err := newStore(home).Open(); err != nil {
+		t.Fatal(err)
+	}
+	again := ParseRecords(read(t, home, RecordsFile), t0)
+	if got := ids(again); !slices.Equal(got, want) || again.Repaired != 0 {
+		t.Errorf("after the rewrite: %v, repaired %d", got, again.Repaired)
+	}
+	for _, r := range again.Recs {
+		if r.ID == "m000000000a1" && (r.Scope != "dm:UANA" || r.Text != text) {
+			t.Errorf("Ana's record = %+v", r)
+		}
+	}
+}
+
 // A repeated id is renamed once and saved: the next boot reads the same ids.
 func TestRenamedIDsAreSaved(t *testing.T) {
 	home := newHome(t, "", "")
