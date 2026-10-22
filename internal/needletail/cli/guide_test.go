@@ -2,6 +2,7 @@ package cli
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -100,5 +101,27 @@ func TestGuideInSystemPrompt(t *testing.T) {
 	}
 	if _, ok := rt.agent.Tools.Get("luau_reference"); !ok {
 		t.Error("no luau_reference tool")
+	}
+}
+
+// The guide's variable parts are budgeted too: many grants are summarised past a share of the
+// guide (with where to see the rest), and even very long paths never take it over MaxGuide.
+func TestGuideBudgetsItsVariableParts(t *testing.T) {
+	grants := []string{}
+	for i := 0; i < 500; i++ {
+		grants = append(grants, fmt.Sprintf("http:api-%03d.internal.example.com", i))
+	}
+	g := guide{Home: "/opt/data", Shared: []string{"/shared/group", "/shared/sales"}, Luau: true, Grants: grants, LuauTimeout: 30, ScriptTimeout: 900, Slack: true}
+	got := g.render()
+	if len(got) > MaxGuide {
+		t.Fatalf("the guide is %d bytes with 500 grants, over %d", len(got), MaxGuide)
+	}
+	if !strings.Contains(got, "http:api-000.internal.example.com") || !strings.Contains(got, "more (") || !strings.HasSuffix(got, "do not send it yourself.\n\n") {
+		t.Errorf("the guide:\n%s", got)
+	}
+	g.Home = "/" + strings.Repeat("h", 9000)
+	g.Shared = []string{"/" + strings.Repeat("g", 9000), "/" + strings.Repeat("u", 9000)}
+	if got := g.render(); len(got) > MaxGuide {
+		t.Fatalf("the guide is %d bytes with long paths, over %d", len(got), MaxGuide)
 	}
 }

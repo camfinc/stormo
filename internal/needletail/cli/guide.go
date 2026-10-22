@@ -8,9 +8,17 @@ import (
 )
 
 // MaxGuide bounds the system prompt's guide section (bytes): it is in every turn. render holds
-// it: past it, the compact function reference is cut at a line, with a pointer to
-// luau_reference (the full one).
+// it: the parts that vary with the agent are budgeted (paths clipped to maxGuidePath, grants
+// past maxGuideGrants summarised with where to see them), and past it the compact function
+// reference is cut at a line, with a pointer to luau_reference (the full one); were the rest
+// still over, it is cut at a line too.
 const MaxGuide = 7000
+
+// Budgets of the guide's variable parts (bytes).
+const (
+	maxGuidePath   = 160
+	maxGuideGrants = 900
+)
 
 // compactReference is the guide's function reference (a variable for the bound's test).
 var compactReference = luau.CompactReference
@@ -43,7 +51,7 @@ type guide struct {
 func (g guide) render() string {
 	var b, ref strings.Builder
 	b.WriteString("## Your home\n")
-	fmt.Fprintf(&b, "Your home is %s: the terminal's working directory and $HOME.\n", g.Home)
+	fmt.Fprintf(&b, "Your home is %s: the terminal's working directory and $HOME.\n", clipPath(g.Home))
 	b.WriteString("- `SOUL.md`: who you are. Read-only; it changes through review.\n" +
 		"- `skills/<category>/<name>/`: your skills (SKILL.md, scripts, `tools/*.luau`, `handlers/*.luau`). Change them with skill_manage, which checks them; the terminal may work in them too.\n" +
 		"- `scripts/`: the scripts your scheduled jobs run. Write one, then name it in cronjob_manage.\n" +
@@ -51,9 +59,9 @@ func (g guide) render() string {
 		"- `cron/jobs.json`: your scheduled jobs. Change them only with cronjob_manage.\n" +
 		"- `sessions/`, `logs/`, `state/`, `.swarm/`, `needletail.yaml`: the runtime's own. Never edit them.\n")
 	if len(g.Shared) > 0 {
-		fmt.Fprintf(&b, "- `%s`", g.Shared[0])
+		fmt.Fprintf(&b, "- `%s`", clipPath(g.Shared[0]))
 		if len(g.Shared) > 1 {
-			fmt.Fprintf(&b, " (everyone) and `%s` (your unit)", g.Shared[1])
+			fmt.Fprintf(&b, " (everyone) and `%s` (your unit)", clipPath(g.Shared[1]))
 		}
 		b.WriteString(": shared documents. Never use another unit's directory.\n")
 	}
@@ -81,10 +89,7 @@ func (g guide) render() string {
 		}
 		b.WriteString("Handlers run in order (skill dir, then name); one that fails is skipped, but a failing before_send blocks the message. on_schedule names its jobs " +
 			"(`jobs: [<id or name>]`). Event fields and the rest: luau_reference.\n")
-		grants := "none"
-		if len(g.Grants) > 0 {
-			grants = strings.Join(g.Grants, ", ")
-		}
+		grants := grantList(g.Grants)
 		fmt.Fprintf(&b, "A call needs a cap the header's `caps:` declares and you are granted (your grants: %s; http:, message: and "+
 			"fs.*:shared need one from your owner). A run may take %d s for tools and the other handlers (luau_timeout), %d s for "+
 			"on_schedule handlers and .luau job scripts (script_timeout); a header's `timeout:` may only lower it. 48 MiB, 8 MiB read "+
@@ -105,22 +110,60 @@ func (g guide) render() string {
 		}
 		b.WriteString("A scheduled run's final reply is its delivery: do not send it yourself.\n\n")
 	}
-	return b.String() + fitReference(ref.String(), MaxGuide-b.Len()-post.Len()) + post.String()
+	head := fitText(b.String(), MaxGuide-post.Len(), guideCut)
+	return head + fitReference(ref.String(), MaxGuide-len(head)-post.Len()) + post.String()
 }
+
+// clipPath is a path as the guide shows it: at most maxGuidePath bytes, its middle left out.
+func clipPath(p string) string {
+	if len(p) <= maxGuidePath {
+		return p
+	}
+	keep := (maxGuidePath - len("…")) / 2
+	return strings.ToValidUTF8(p[:keep], "") + "…" + strings.ToValidUTF8(p[len(p)-keep:], "")
+}
+
+// grantList is the agent's grants as the guide lists them: as many as fit maxGuideGrants, then
+// how many more and where each tool's and handler's effective caps are shown.
+func grantList(grants []string) string {
+	if len(grants) == 0 {
+		return "none"
+	}
+	var b strings.Builder
+	for i, gr := range grants {
+		sep := ""
+		if i > 0 {
+			sep = ", "
+		}
+		if b.Len()+len(sep)+len(gr) > maxGuideGrants {
+			fmt.Fprintf(&b, " and %d more (skill_view shows each tool's and handler's effective caps; luau_reference the caps)", len(grants)-i)
+			break
+		}
+		b.WriteString(sep + gr)
+	}
+	return b.String()
+}
+
+// guideCut ends a guide cut to fit (never with the agent's settings as they are).
+const guideCut = "…\n\n"
 
 // refCut ends a reference cut to fit the guide.
 const refCut = "…: luau_reference has the rest.\n\n"
 
 // fitReference is ref within room bytes: whole when it fits, else cut after its last whole line
 // that leaves room for refCut.
-func fitReference(ref string, room int) string {
-	if len(ref) <= room {
-		return ref
+func fitReference(ref string, room int) string { return fitText(ref, room, refCut) }
+
+// fitText is s within room bytes: whole when it fits, else cut after its last whole line that
+// leaves room for cut ("" when there is no room for it).
+func fitText(s string, room int, cut string) string {
+	if len(s) <= room {
+		return s
 	}
-	keep := room - len(refCut)
+	keep := room - len(cut)
 	if keep <= 0 {
 		return ""
 	}
-	i := strings.LastIndexByte(ref[:keep], '\n')
-	return ref[:i+1] + refCut
+	i := strings.LastIndexByte(s[:keep], '\n')
+	return s[:i+1] + cut
 }
