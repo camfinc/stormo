@@ -238,6 +238,28 @@ type Config struct {
 	// Timezone is the IANA zone the agent's wall clock is on (schedules' cron expressions, the
 	// system prompt's time); "": the container's $TZ, else UTC.
 	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`
+	// Slack is the agent's own Slack settings (engine/needletail/config.yaml's slack:); the
+	// channel's settings stay in its SLACK_* env.
+	Slack *SlackConfig `json:"slack,omitempty" yaml:"slack,omitempty"`
+	// Schedules is what the runtime is told about the agent's jobs.
+	Schedules SchedulesConfig `json:"schedules,omitempty" yaml:"schedules,omitempty"`
+}
+
+// SlackConfig is the agent's grants for Slack.
+type SlackConfig struct {
+	// Broadcast lets a send_message call that asks for it (broadcast: true) ping a crowd:
+	// @channel, @here, @everyone and user groups. Without it every such token is escaped.
+	Broadcast bool `json:"broadcast,omitempty" yaml:"broadcast,omitempty"`
+}
+
+// SchedulesConfig is what the runtime is told about the agent's scheduled jobs.
+type SchedulesConfig struct {
+	// Turns is how many scheduled runs may hold a turn at once, in their own lane beside the
+	// chat turns (0: the runtime's default, 1).
+	Turns int `json:"turns,omitempty" yaml:"turns,omitempty"`
+	// Repo are the ids of the jobs agent.yaml defines: their delivery is trusted as the repo
+	// wrote it, and they never count toward the jobs the agent may make.
+	Repo []string `json:"repo,omitempty" yaml:"repo,omitempty"`
 }
 
 // SkillsConfig is what the runtime is told about the home's skills. Generated are the skill dirs

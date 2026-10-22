@@ -242,3 +242,35 @@ func TestTimezoneRender(t *testing.T) {
 		t.Error("a bad timezone was accepted")
 	}
 }
+
+// engine/needletail/config.yaml's slack.broadcast and schedules.turns, and the repo's job ids,
+// reach needletail.yaml; none of them is rendered when unset.
+func TestSlackAndSchedulesRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("slack:\n  broadcast: true\nschedules:\n  turns: 2\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+	if c.Slack == nil || !c.Slack.Broadcast || c.Schedules.Turns != 2 {
+		t.Errorf("slack %+v schedules %+v", c.Slack, c.Schedules)
+	}
+	if len(a.Schedules) == 0 || strings.Join(c.Schedules.Repo, ",") != a.Schedules[0].ID {
+		t.Errorf("repo jobs %v, want the manifest's ids", c.Schedules.Repo)
+	}
+	a.Schedules = nil
+	raw, _ := yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{}))
+	if strings.Contains(string(raw), "slack:") || strings.Contains(string(raw), "schedules") {
+		t.Errorf("unset settings rendered:\n%s", raw)
+	}
+	for _, bad := range []string{"schedules:\n  turns: -1\n", "schedules:\n  turns: 5\n", "slack:\n  broadcast: maybe\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

@@ -20,3 +20,6 @@ luau:
     grants:
         - fs.read:home
         - fs.write:home
+schedules:
+    repo:
+        - a1b2c3d4e5f6

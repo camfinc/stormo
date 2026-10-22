@@ -33,7 +33,20 @@ type agentConfig struct {
 		// limits.luau_timeout; the runtime's default when 0). Schedules keep script_timeout.
 		Timeout int `yaml:"timeout"`
 	} `yaml:"luau"`
+	Slack struct {
+		// Broadcast lets send_message ping @channel, @here, @everyone and user groups when a
+		// call asks for it (needletail.yaml slack.broadcast).
+		Broadcast bool `yaml:"broadcast"`
+	} `yaml:"slack"`
+	Schedules struct {
+		// Turns is how many scheduled runs may hold a turn at once (needletail.yaml
+		// schedules.turns; the runtime's 1 when 0).
+		Turns int `yaml:"turns"`
+	} `yaml:"schedules"`
 }
+
+// maxScheduleTurns is the most turns scheduled runs may hold at once.
+const maxScheduleTurns = 4
 
 // maxLuauTimeout is the longest luau.timeout (a tool header's own longest, luau.MaxTimeout).
 const maxLuauTimeout = 600
@@ -66,6 +79,9 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 		if s.Host == "" || s.Header == "" || !envNameRe.MatchString(s.Env) {
 			return nil, fmt.Errorf("%s: http_secrets entries need host, header and an env var name", ConfigFile)
 		}
+	}
+	if c.Schedules.Turns < 0 || c.Schedules.Turns > maxScheduleTurns {
+		return nil, fmt.Errorf("%s: schedules.turns %d must be 1 to %d (0 or unset: the runtime's 1)", ConfigFile, c.Schedules.Turns, maxScheduleTurns)
 	}
 	if c.Luau.Timeout < 0 || c.Luau.Timeout > maxLuauTimeout {
 		return nil, fmt.Errorf("%s: luau.timeout %d must be seconds, 1 to %d (0 or unset: the runtime's 30)", ConfigFile, c.Luau.Timeout, maxLuauTimeout)
@@ -104,6 +120,13 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	}
 	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
 	c.Timezone = ac.Timezone
+	if ac.Slack.Broadcast {
+		c.Slack = &wire.SlackConfig{Broadcast: true}
+	}
+	c.Schedules.Turns = ac.Schedules.Turns
+	for _, s := range a.Schedules {
+		c.Schedules.Repo = append(c.Schedules.Repo, s.ID)
+	}
 	for _, ch := range a.Channels {
 		if ch.Kind == "slack" { // the only gateway in the MVP
 			c.Channels = append(c.Channels, ch.Kind)

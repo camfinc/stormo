@@ -29,6 +29,14 @@ func TestLoadGoldenHome(t *testing.T) {
 	if len(c.Endpoints()) != 1 || len(c.Luau.Grants) != 2 {
 		t.Errorf("endpoints %v grants %v", c.Endpoints(), c.Luau.Grants)
 	}
+	if c.Slack != nil || len(c.Schedules.Repo) != 1 || c.Schedules.Turns != 0 {
+		t.Errorf("slack %+v schedules %+v", c.Slack, c.Schedules)
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, File), []byte("version: 1\nmodel: {primary: {base_url: http://x, model: m}}\nslack: {broadcast: true}\nschedules: {turns: 2, repo: [a, b]}\n"), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || !c.Slack.Broadcast || c.Schedules.Turns != 2 || len(c.Schedules.Repo) != 2 {
+		t.Errorf("slack and schedules: %v %+v", err, c)
+	}
 }
 
 func TestLoadRefuses(t *testing.T) {
