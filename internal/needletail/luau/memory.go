@@ -153,7 +153,7 @@ func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		return nil, err
 	}
 	res, err := mem.Save(memory.SaveOptions{Text: text, Kind: o.Kind, Tags: tags, Importance: o.Importance, Expires: o.Expires, Force: o.Force,
-		Src: "luau:" + c.Tool})
+		Src: "luau:" + c.Tool, ArchiveOnly: true})
 	if err != nil {
 		return nil, memoryErr("save_memory", err)
 	}

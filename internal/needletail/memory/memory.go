@@ -579,6 +579,9 @@ func (s *Store) hotText(content string) (string, error) {
 	if err := checkHot(c); err != nil {
 		return "", err
 	}
+	if err := checkSecret(c); err != nil {
+		return "", err
+	}
 	if err := s.check(c); err != nil {
 		return "", err
 	}

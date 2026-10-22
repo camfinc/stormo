@@ -96,6 +96,11 @@ func (s *Store) Recall(input string, skip func(id string) bool, max, budget int)
 		if c.lex < recallLex || float64(c.h.matched)/float64(len(terms)) < recallCover && !c.h.rare {
 			continue
 		}
+		if checkHot(c.r.Text) != nil {
+			// saved before the check, or by hand: never put in front of a message
+			s.logf("memory: record %s reads as instructions to the model: not recalled (memory_manage update or delete it)", c.r.ID)
+			continue
+		}
 		set := distinct(tokens(c.r.Text))
 		same := false
 		for _, p := range picked {
@@ -128,12 +133,22 @@ func (s *Store) Recall(input string, skip func(id string) bool, max, budget int)
 
 func max1(n int) int { return max(1, n) }
 
+// fenceName is the recalled block's tag name, and spellings a reader takes for it.
+var fenceName = regexp.MustCompile(`(?i)memory[\p{Pd}_]context`)
+
+// fenced is s as a recalled line carries it: no "<" or ">" (so nothing in it closes the block or
+// opens another tag; they read as ‹ and ›) and no spelling of the block's tag name.
+func fenced(s string) string {
+	s = strings.NewReplacer("<", "‹", ">", "›").Replace(s)
+	return fenceName.ReplaceAllString(s, "memory context")
+}
+
 func recallLine(r *Record) string {
 	day, _, _ := strings.Cut(r.Updated, "T")
 	text := strings.Join(strings.Fields(cut(r.Text, recallCut)), " ")
-	line := fmt.Sprintf("- %s · %s · %s: %s", r.ID, r.Kind, day, text)
+	line := fmt.Sprintf("- %s · %s · %s: %s", fenced(r.ID), fenced(r.Kind), fenced(day), fenced(text))
 	if r.Expires != "" {
-		line += " (until " + r.Expires + ")"
+		line += " (until " + fenced(r.Expires) + ")"
 	}
 	if strings.HasPrefix(r.Src, "luau:") {
 		line += " (saved by a tool)"

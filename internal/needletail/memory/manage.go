@@ -26,6 +26,10 @@ type SaveOptions struct {
 	// similar records exist.
 	Hot, Force bool
 	Src        string
+	// ArchiveOnly is a script's save (Luau): its text is checked as a hot one is (a script's text
+	// is the least trusted that reaches recall), and a hot record with the same text is left as it
+	// is (exists, uncounted).
+	ArchiveOnly bool
 }
 
 // Similar is a record a save found too close to its text.
@@ -87,8 +91,9 @@ func checkExpires(d string) (string, error) {
 	return d, nil
 }
 
-// recordText is text cleaned and checked for a record (hot: also for the system prompt).
-func (s *Store) recordText(text string, hot bool) (string, error) {
+// recordText is text cleaned and checked for a record (strict: also for instructions, as a hot
+// text or a script's is).
+func (s *Store) recordText(text string, strict bool) (string, error) {
 	c, err := clean(text)
 	if err != nil {
 		return "", err
@@ -96,10 +101,13 @@ func (s *Store) recordText(text string, hot bool) (string, error) {
 	if err := checkText(c, true); err != nil {
 		return "", err
 	}
-	if hot {
+	if strict {
 		if err := checkHot(c); err != nil {
 			return "", err
 		}
+	}
+	if err := checkSecret(c); err != nil {
+		return "", err
 	}
 	if err := s.check(c); err != nil {
 		return "", err
@@ -110,7 +118,7 @@ func (s *Store) recordText(text string, hot bool) (string, error) {
 // Save makes a record, unless one with the same normalized text exists (exists) or, without
 // Force, similar ones do (similar: nothing saved).
 func (s *Store) Save(o SaveOptions) (SaveResult, error) {
-	c, err := s.recordText(o.Text, o.Hot)
+	c, err := s.recordText(o.Text, o.Hot || o.ArchiveOnly)
 	if err != nil {
 		return SaveResult{}, err
 	}
@@ -120,6 +128,9 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	}
 	tags, err := cleanTags(o.Tags)
 	if err != nil {
+		return SaveResult{}, err
+	}
+	if err := checkSecret(tags...); err != nil {
 		return SaveResult{}, err
 	}
 	imp, err := checkImportance(o.Importance)
@@ -140,8 +151,13 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	key := Normalize(c)
 	for _, r := range st.recs {
 		if r.Target() == target && r.key() == key {
-			r.Updated = stamp(now)
-			return SaveResult{Status: StatusExists, ID: r.ID, Hot: r.Hot}, s.commit(st)
+			// a use, counted apart (no rewrite of RECORDS.md for a timestamp); a script's save of a
+			// hot record's text leaves it as it is
+			if !(o.ArchiveOnly && r.Hot > 0) {
+				st.use.used(r.ID, now)
+				s.flushUsage(st, false)
+			}
+			return SaveResult{Status: StatusExists, ID: r.ID, Hot: r.Hot}, nil
 		}
 	}
 	if !o.Force {
@@ -253,7 +269,7 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 	}
 	n := r.clone()
 	if ch.Text != nil {
-		if n.Text, err = s.recordText(*ch.Text, r.Hot > 0); err != nil {
+		if n.Text, err = s.recordText(*ch.Text, r.Hot > 0 || archiveOnly); err != nil {
 			return View{}, err
 		}
 	}
@@ -264,6 +280,9 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 	}
 	if ch.Tags != nil {
 		if n.Tags, err = cleanTags(*ch.Tags); err != nil {
+			return View{}, err
+		}
+		if err := checkSecret(n.Tags...); err != nil {
 			return View{}, err
 		}
 	}
@@ -355,7 +374,14 @@ func (s *Store) Pin(id string) (View, Usage, error) {
 	if r.Hot > 0 {
 		return st.view(r, now, 0, false), s.usage(t, before), nil
 	}
+	// into every system prompt: checked as a hot save is (an older runtime's record, a hand edit)
 	if err := checkHot(r.Text); err != nil {
+		return View{}, Usage{}, err
+	}
+	if err := checkSecret(append([]string{r.Text}, r.Tags...)...); err != nil {
+		return View{}, Usage{}, err
+	}
+	if err := s.check(r.Text); err != nil {
 		return View{}, Usage{}, err
 	}
 	u, err := s.fits(t, before, append(slices.Clone(before), r.Text))
