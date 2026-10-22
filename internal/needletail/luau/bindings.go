@@ -88,17 +88,19 @@ func Bindings() []Binding {
 		{Name: "memory.read", Global: "read_memory", Returns: "{memory = {…}, user = {…}}: the hot-memory entries",
 			Doc: "Reads the agent's memory (read-only; the memory tool changes it).", Grant: "fs.read:home", Example: `local m = read_memory()`, run: memoryRead},
 		{Name: "memory.search", Global: "search_memory", Params: []Param{{Name: "query", Type: "string", Doc: `words (synonyms and both languages help), "a phrase", word* a prefix; "" lists newest first`},
-			{Name: "opts", Type: "table", Optional: true, Doc: `{ids = {…}, kind = "…", tags = {…}, scope = "all|hot|archive", match = "any|all", since = "YYYY-MM-DD", include_expired = false, limit = 8}`}},
+			{Name: "opts", Type: "table", Optional: true, Doc: `{ids = {…}, kind = "…", tags = {…}, scope = "all|hot|archive", match = "any|all", since = "YYYY-MM-DD", include_expired = false, limit = 8, audience = "here|all"}`}},
 			Returns: "{total, results}: the best records, each {id, kind, tags, hot, imp, created, updated, expires, pii, src, score, text, cut}",
 			Doc: "Searches the memory archive (every record, hot or not) by keyword, as memory_search does: BM25 with recency, importance and use; " +
-				"ids fetch records whole. memory:read is apart from fs.read:home, which only covers read_memory: the archive holds more client data than the prompt.",
+				"ids fetch records whole. It finds what the run's conversation may see (its own records, the agent-wide ones, the hot ones; a schedule's script: the agent-wide and hot ones); " +
+				"audience = \"all\" (every conversation's) only in the owner's own runs. memory:read is apart from fs.read:home, which only covers read_memory: the archive holds more client data than the prompt.",
 			Grant: "memory:read", Example: `local r = search_memory("cotización quote", {tags = {"cruceros"}})`, run: memorySearch},
 		{Name: "memory.save", Global: "save_memory", Params: []Param{{Name: "text", Type: "string", Doc: "the memory, one self-contained note (at most 1000 characters)"},
-			{Name: "opts", Type: "table", Optional: true, Doc: `{kind = "fact|preference|procedure|episode|user", tags = {…}, importance = 1-5, expires = "YYYY-MM-DD", force = false}`}},
+			{Name: "opts", Type: "table", Optional: true, Doc: `{kind = "fact|preference|procedure|episode|user", tags = {…}, importance = 1-5, expires = "YYYY-MM-DD", force = false, scope = "here|agent"}`}},
 			Returns: `{status, id, similar}: status "created", "exists" (id: the same text's) or "similar" (similar: { {id, text, score} }, nothing saved)`,
 			Doc: "Saves a record to the memory archive (never the always-shown memory: hot is refused), marked as saved by this tool. " +
 				"exists: the same text is there (its id); similar: close records, nothing saved (update one, or save with force = true; " +
-				"their texts only with memory:read). Secret values are refused.",
+				"their texts only with memory:read). Secret values are refused. scope \"here\" (the default) is the run's conversation's " +
+				"(a schedule's script has none: agent-wide); \"agent\" is everyone's, refused for personal data or a person's profile.",
 			Grant: "memory:write", Example: `local r = save_memory("Ana prefers balcony cabins.", {kind = "preference", tags = {"cruceros"}})`, Write: true, run: memorySave},
 		{Name: "memory.update", Global: "update_memory", Params: []Param{{Name: "id", Type: "string"},
 			{Name: "fields", Type: "table", Doc: `{text, kind, tags, importance, expires} to change (expires = "" clears it)`}},

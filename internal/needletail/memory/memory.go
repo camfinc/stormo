@@ -54,13 +54,18 @@ type Store struct {
 	Check func(string) error
 	// MaxRecords bounds the records (0: DefaultMaxRecords).
 	MaxRecords int
-	Now        func() time.Time
-	Log        func(string)
+	// Where is a session's audience (scope.go), the runtime's: the Slack gateway's DMs and
+	// threads by the session's root and source. nil: every session has none (agent-wide
+	// records only).
+	Where func(session string) Audience
+	Now   func() time.Time
+	Log   func(string)
 
 	mu         sync.Mutex
 	st         *state
 	lk         *os.File // the home's lock file (lock.go), open once
 	lockWarned bool
+	srcCache   map[string]Audience // Where of the sessions older records name (scopeOf)
 }
 
 // state is the records as last read or written.
@@ -509,12 +514,16 @@ func (s *Store) Current(target string) (Usage, error) {
 	return s.usage(target, e), nil
 }
 
-// Add appends an entry to a hot file (the memory tool).
-func (s *Store) Add(target, content string) (Usage, error) { return s.AddAs("", target, content) }
+// Add appends an entry to a hot file (the memory tool), with no audience.
+func (s *Store) Add(target, content string) (Usage, error) {
+	return s.AddAs(Audience{}, "", target, content)
+}
 
-// AddAs is Add with the record's source (chat:<session>, …). An entry already in the file is a
-// no-op; one the archive holds (the same normalized text) is pinned rather than copied.
-func (s *Store) AddAs(src, target, content string) (Usage, error) {
+// AddAs is Add in a's turn, with the record's source (chat:<session>, …). An entry already in the
+// file is a no-op; one the archive holds that a may see (the same normalized text) is pinned
+// rather than copied. A new record's scope is the conversation's (none known: its src's), or
+// agent-wide without one: hot, it is in every system prompt anyway (Hermes' memory tool).
+func (s *Store) AddAs(a Audience, src, target, content string) (Usage, error) {
 	if _, err := s.path(target); err != nil {
 		return Usage{}, err
 	}
@@ -532,7 +541,7 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 	if slices.Contains(before, c) {
 		return s.usage(target, before), nil // already there
 	}
-	r := st.archived(target, Normalize(c))
+	r := st.archived(target, Normalize(c), func(r *Record) bool { return s.visible(r, a, false) })
 	if r == nil {
 		if err := s.full(st); err != nil {
 			return s.usage(target, before), err
@@ -549,6 +558,7 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 			kind = KindUser
 		}
 		r = st.create(kind, c, src, now)
+		r.Scope, _ = saveScope("", a, kind, len(PII(c)) > 0, true)
 	}
 	r.Text, r.PII, r.Updated, r.Hot = c, PII(c), stamp(now), len(before)+1
 	st.idx.add(r)
@@ -556,11 +566,12 @@ func (s *Store) AddAs(src, target, content string) (Usage, error) {
 	return u, s.commit(st, target)
 }
 
-// archived is the archive record of target with Normalize(text) key, the latest updated.
-func (st *state) archived(target, key string) *Record {
+// archived is the archive record of target with Normalize(text) key that ok takes, the latest
+// updated.
+func (st *state) archived(target, key string, ok func(*Record) bool) *Record {
 	var best *Record
 	for _, r := range st.recs {
-		if r.Hot == 0 && r.Target() == target && r.key() == key && (best == nil || r.Updated > best.Updated) {
+		if r.Hot == 0 && r.Target() == target && r.key() == key && (best == nil || r.Updated > best.Updated) && ok(r) {
 			best = r
 		}
 	}

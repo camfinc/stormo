@@ -536,6 +536,48 @@ func TestMemoryScriptSavesChecked(t *testing.T) {
 	}
 }
 
+// A script works in its run's audience, the runtime's (the session it runs in): what it saves in
+// one person's DM is not found from another's, nor by a schedule's script, and every scope is
+// refused.
+func TestMemoryScriptScoped(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rt.Grants = append(rt.Grants, "memory:read", "memory:write")
+	rt.Memory.Where = func(session string) memory.Audience {
+		switch session {
+		case "slack-DANA-dm":
+			return memory.Audience{Scope: "dm:UANA", Conv: session}
+		case "slack-DBOB-dm":
+			return memory.Audience{Scope: "dm:UBOB", Conv: session}
+		}
+		return memory.Audience{}
+	}
+	run := func(session, src string) string {
+		t.Helper()
+		res, _, err := rt.Exec(context.Background(), Exec{Name: "t", Session: session, Source: []byte(src), Header: &Header{Format: 1, Caps: []string{"memory:read", "memory:write"}}})
+		if err != nil || res.Err != nil {
+			t.Fatalf("%v %v", err, res.Err)
+		}
+		return string(res.Value)
+	}
+	if v := run("slack-DANA-dm", `return save_memory("The client's passport expires in March 2027.").scope`); v != `"dm:UANA"` {
+		t.Errorf("save = %s", v)
+	}
+	if v := run("slack-DANA-dm", `return search_memory("passport expires").total`); v != "1" {
+		t.Errorf("Ana's search = %s", v)
+	}
+	for _, session := range []string{"slack-DBOB-dm", "schedule"} {
+		if v := run(session, `return search_memory("passport expires").total`); v != "0" {
+			t.Errorf("%s found Ana's record: %s", session, v)
+		}
+		if v := run(session, `local ok, e = pcall(search_memory, "passport", {audience = "all"}) return ok or e`); !strings.Contains(v, "owner") {
+			t.Errorf("%s searched every scope: %s", session, v)
+		}
+	}
+	if v := run("schedule", `local ok, e = pcall(save_memory, "Call Ana at +1 415 555 0123.") return ok or e`); !strings.Contains(v, "personal data") {
+		t.Errorf("a schedule's script saved personal data agent-wide: %s", v)
+	}
+}
+
 type fakeMessenger struct {
 	mu       sync.Mutex
 	sent     []messaging.Request

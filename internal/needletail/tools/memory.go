@@ -26,6 +26,10 @@ func memoryOf(env *Env) (*memory.Store, error) {
 	return env.Memory, nil
 }
 
+// audience is the call's turn's audience: the runtime's, from its session (never the model's
+// arguments).
+func audience(env *Env, mem *memory.Store) memory.Audience { return mem.AudienceOf(env.Session) }
+
 // memorySource is a record's src for a call in session.
 func memorySource(env *Env) string {
 	if env == nil || env.Session == "" {
@@ -69,7 +73,7 @@ func memoryTool() Tool {
 			var u memory.Usage
 			switch a.Action {
 			case "add":
-				u, err = mem.AddAs(memorySource(env), a.Target, a.Content)
+				u, err = mem.AddAs(audience(env, mem), memorySource(env), a.Target, a.Content)
 			case "replace":
 				u, err = mem.Replace(a.Target, a.OldText, a.Content)
 			case "remove":
@@ -98,7 +102,8 @@ func memorySearchTool() Tool {
 		Description: "Search your memory archive (every memory you saved, hot or not) by keyword. Put synonyms and both " +
 			"Spanish and English words in query (\"cotización quote precio price\"); \"a phrase\" must appear as written, " +
 			"word* is a prefix. Empty query: newest first, with the filters. ids fetches records whole. " +
-			"Results: id, kind, tags, hot (its place in the always-shown memory, 0 = archive), imp, dates, pii, text (long ones cut).",
+			"You find what this conversation may see: its own records (saved in this DM, or in this channel), the agent-wide ones and the always-shown memory. " +
+			"Results: id, kind, tags, hot (its place in the always-shown memory, 0 = archive), imp, dates, pii, scope, text (long ones cut).",
 		Schema: schema(`{"type":"object","properties":{
 "query":{"type":"string","description":"Words to look for; include synonyms and both Spanish and English. \"…\" for a phrase, word* for a prefix. Empty: newest first."},
 "ids":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"Fetch these records in full."},
@@ -108,7 +113,8 @@ func memorySearchTool() Tool {
 "match":{"type":"string","enum":["any","all"],"description":"any (default) or all of the words."},
 "since":{"type":"string","description":"RFC 3339 or YYYY-MM-DD: updated after."},
 "include_expired":{"type":"boolean","description":"Also records past their expiry date."},
-"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Default 8."}}}`),
+"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Default 8."},
+"audience":{"type":"string","enum":["here","all"],"description":"here (default): this conversation's records and the agent-wide ones. all: every conversation's, only in the owner's own runs (refused in conversations and jobs)."}}}`),
 		Run: func(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
 			var a struct {
 				Query          string   `json:"query"`
@@ -120,6 +126,7 @@ func memorySearchTool() Tool {
 				Since          string   `json:"since"`
 				IncludeExpired bool     `json:"include_expired"`
 				Limit          int      `json:"limit"`
+				Audience       string   `json:"audience"`
 			}
 			if err := decode(raw, &a); err != nil {
 				return nil, err
@@ -131,10 +138,25 @@ func memorySearchTool() Tool {
 			if len(a.IDs) > memory.MaxLimit {
 				return nil, fmt.Errorf("at most %d ids", memory.MaxLimit)
 			}
+			all, err := allScopes(a.Audience)
+			if err != nil {
+				return nil, err
+			}
 			return mem.Search(memory.Query{Text: a.Query, IDs: a.IDs, Kind: a.Kind, Tags: a.Tags, Scope: a.Scope, Match: a.Match,
-				Since: a.Since, IncludeExpired: a.IncludeExpired, Limit: a.Limit})
+				Since: a.Since, IncludeExpired: a.IncludeExpired, Limit: a.Limit, Audience: audience(env, mem), All: all})
 		},
 	}
+}
+
+// allScopes reads a search's audience: "here" (the default) or "all".
+func allScopes(a string) (bool, error) {
+	switch strings.TrimSpace(a) {
+	case "", "here":
+		return false, nil
+	case "all":
+		return true, nil
+	}
+	return false, fmt.Errorf(`audience %q: "here" or "all"`, a)
 }
 
 func memoryManageTool() Tool {
@@ -143,8 +165,10 @@ func memoryManageTool() Tool {
 		Description: "Change your memory archive by id. save: a new record (text; kind fact, preference, procedure, episode or user " +
 			"(about a person); tags; importance 1-5; expires YYYY-MM-DD for time-bound facts; hot: true puts it in the always-shown " +
 			"memory, budget permitting). save answers exists (the same text is there) or similar (close records, nothing saved: update " +
-			"one of them, or save again with force: true). update (id and the fields to change; expires \"\" clears it), delete (id), " +
-			"pin (id: into the always-shown memory) and unpin (id: back to the archive). Never save secrets or credentials.",
+			"one of them, or save again with force: true). A record is this conversation's (scope \"here\", the default: this DM's person, " +
+			"or this channel) or everyone's (scope \"agent\": recalled in every conversation, so no personal data and nothing about a person). " +
+			"update (id and the fields to change; expires \"\" clears it), delete (id), " +
+			"pin (id: into the always-shown memory, which every conversation sees) and unpin (id: back to the archive). Never save secrets or credentials.",
 		Schema: schema(`{"type":"object","properties":{
 "action":{"type":"string","enum":["save","update","delete","pin","unpin"]},
 "id":{"type":"string","description":"update, delete, pin, unpin: the record's id (memory_search finds it)."},
@@ -154,7 +178,8 @@ func memoryManageTool() Tool {
 "importance":{"type":"integer","minimum":1,"maximum":5},
 "expires":{"type":"string","description":"YYYY-MM-DD; \"\" clears (update)."},
 "hot":{"type":"boolean","description":"save: straight into the always-shown memory (budget permitting)."},
-"force":{"type":"boolean","description":"save: even though similar records exist."}},
+"force":{"type":"boolean","description":"save: even though similar records exist."},
+"scope":{"type":"string","enum":["here","agent"],"description":"save: here (default: this conversation's) or agent (everyone's; no personal data)."}},
 "required":["action"]}`),
 		Run: runMemoryManage,
 	}
@@ -171,6 +196,7 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		Expires    *string   `json:"expires"`
 		Hot        bool      `json:"hot"`
 		Force      bool      `json:"force"`
+		Scope      string    `json:"scope"`
 	}
 	if err := decode(raw, &a); err != nil {
 		return nil, err
@@ -189,6 +215,7 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 	if err := noSecrets(env, texts...); err != nil {
 		return nil, err
 	}
+	aud := audience(env, mem)
 	id := strings.TrimSpace(a.ID)
 	needID := func() error {
 		if id == "" {
@@ -201,7 +228,7 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		if a.Text == nil {
 			return nil, errors.New("save needs text")
 		}
-		o := memory.SaveOptions{Text: *a.Text, Hot: a.Hot, Force: a.Force, Src: memorySource(env)}
+		o := memory.SaveOptions{Text: *a.Text, Hot: a.Hot, Force: a.Force, Src: memorySource(env), Audience: aud, Scope: a.Scope}
 		if a.Kind != nil {
 			o.Kind = *a.Kind
 		}
@@ -222,6 +249,9 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		switch res.Status {
 		case memory.StatusCreated:
 			out["id"] = res.ID
+			if res.Scope != "" {
+				out["scope"] = res.Scope
+			}
 			if res.Hot > 0 {
 				out["hot"], out["usage"] = res.Hot, res.Usage
 			}
@@ -243,7 +273,7 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		if err := needID(); err != nil {
 			return nil, err
 		}
-		v, err := mem.Update(id, memory.Change{Text: a.Text, Kind: a.Kind, Tags: a.Tags, Importance: a.Importance, Expires: a.Expires}, false)
+		v, err := mem.Update(aud, id, memory.Change{Text: a.Text, Kind: a.Kind, Tags: a.Tags, Importance: a.Importance, Expires: a.Expires}, false)
 		if err != nil {
 			return nil, err
 		}
@@ -252,7 +282,7 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		if err := needID(); err != nil {
 			return nil, err
 		}
-		if err := mem.Delete(id, false); err != nil {
+		if err := mem.Delete(aud, id, false); err != nil {
 			return nil, err
 		}
 		return map[string]any{"success": true, "deleted": id}, nil
@@ -264,13 +294,13 @@ func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, err
 		if a.Action == "unpin" {
 			pin = mem.Unpin
 		}
-		v, u, err := pin(id)
+		v, u, err := pin(aud, id)
 		if err != nil {
 			return nil, err
 		}
 		out := map[string]any{"success": true, "id": v.ID, "hot": v.Hot, "target": u.Target, "usage": u.String()}
 		if a.Action == "pin" && len(v.PII) > 0 {
-			out["note"] = "it holds personal data: the review flags it and it stays this agent's alone"
+			out["note"] = "it holds personal data: the review flags it and it stays this agent's alone; hot, every conversation sees it"
 		}
 		return out, nil
 	}

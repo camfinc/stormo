@@ -108,6 +108,8 @@ type runtime struct {
 	guideText atomic.Pointer[string]
 	// jail is how the agent's commands are confined, as the activity reports it (jailFor)
 	jail string
+	// dmUsers holds the Slack gateway's KnownDMUser once it runs (the memory's audiences)
+	dmUsers *atomic.Pointer[func(channel string) string]
 }
 
 // setGuide renders the guide section the turns read.
@@ -156,6 +158,13 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// the first turn. Secret values are refused in it, as in skills.
 	mem := &memory.Store{Home: cfg.Home, Limits: map[string]int{memory.TargetMemory: cfg.Memory.MemoryCharLimit, memory.TargetUser: cfg.Memory.UserCharLimit},
 		Check: tools.SecretCheck(red.Redact), Log: logf}
+	dmUser := &atomic.Pointer[func(channel string) string]{}
+	mem.Where = audiences(store, func(channel string) string {
+		if f := dmUser.Load(); f != nil {
+			return (*f)(channel)
+		}
+		return ""
+	})
 	if err := mem.Open(); err != nil {
 		logf(fmt.Sprintf("memory: %v", err))
 	}
@@ -192,7 +201,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger,
+	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger, dmUsers: dmUser,
 		jail: js.state,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
@@ -211,6 +220,45 @@ func recaller(c *wire.RecallConfig, mem *memory.Store, store *sessions.Store, lo
 		rc.Jobs, rc.Max, rc.Budget = c.Jobs, c.Max, c.Budget
 	}
 	return rc
+}
+
+// audiences is the memory's audience of a session's turns (memory.Audience, docs/needletail.md
+// §4.6), from the runtime's own records, never the model's words: the session's root and source.
+// A Slack thread's is its channel's scope, a Slack DM's its person's (the gateway's, dmUser: ""
+// while it does not know them, and then nothing is saved "here"); a oneshot's (source cli, the
+// owner at the command line) is the operator's. Every other turn (the API's runs, which the
+// owner's chat and the core's wakes share; a scheduled job; a schedule's script) has none: the
+// agent-wide records only. A session the store does not know yet (a message's handlers run before
+// its turn creates it) is read from its id when it is a Slack one.
+func audiences(store *sessions.Store, dmUser func(channel string) string) func(session string) memory.Audience {
+	return func(session string) memory.Audience {
+		root, source := session, ""
+		if r, ok := store.Root(session); ok {
+			h, _ := store.Get(r)
+			root, source = r, h.Source
+		} else if strings.HasPrefix(session, "slack-") {
+			source = slack.Source
+		}
+		switch source {
+		case "cli":
+			return memory.Audience{Operator: true}
+		case slack.Source:
+		default:
+			return memory.Audience{}
+		}
+		channel, thread, ok := slack.Origin(root)
+		if !ok {
+			return memory.Audience{}
+		}
+		if thread != "" {
+			return memory.Audience{Scope: memory.ChannelScope(channel), Conv: root}
+		}
+		a := memory.Audience{Conv: root}
+		if p := dmUser(channel); p != "" {
+			a.Scope = memory.DMScope(p)
+		}
+		return a
+	}
 }
 
 // luauGroup is the registry group of the Luau tools (found again every turn).
@@ -409,6 +457,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	if rt.luau != nil {
 		rt.luau.Messenger = gw // Luau's send_message, under the same policy
 	}
+	known := gw.KnownDMUser
+	rt.dmUsers.Store(&known) // the memory's DM audiences
 	gw.Start()
 	return gw
 }

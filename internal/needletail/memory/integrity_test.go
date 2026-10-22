@@ -204,9 +204,9 @@ func TestCrashedRemovalArchives(t *testing.T) {
 		case "remove":
 			_, err = s.Remove(TargetMemory, "B.")
 		case "delete":
-			err = s.Delete(id, false)
+			err = s.Delete(Audience{}, id, false)
 		case "unpin":
-			_, _, err = s.Unpin(id)
+			_, _, err = s.Unpin(Audience{}, id)
 		}
 		if err == nil {
 			t.Fatalf("%s: the second write did not fail", op)
@@ -287,7 +287,7 @@ func TestTombstonesBounded(t *testing.T) {
 	s := &Store{Home: home, Now: func() time.Time { return now }}
 	for i := 0; i < 2; i++ {
 		r, _ := s.Save(SaveOptions{Text: fmt.Sprintf("Record number %d.", i), Force: true})
-		if err := s.Delete(r.ID, false); err != nil {
+		if err := s.Delete(Audience{}, r.ID, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestTombstonesBounded(t *testing.T) {
 	}
 	now = now.Add(TombstoneAge + time.Hour)
 	r, _ := s.Save(SaveOptions{Text: "One more.", Force: true})
-	_ = s.Delete(r.ID, false)
+	_ = s.Delete(Audience{}, r.ID, false)
 	if p := ParseRecords(read(t, home, RecordsFile), t0); len(p.Tombs) != 1 {
 		t.Errorf("%d tombstones after they aged", len(p.Tombs))
 	}

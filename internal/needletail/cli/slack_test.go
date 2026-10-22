@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
@@ -220,6 +221,49 @@ func TestOriginOfSlackSessions(t *testing.T) {
 	} {
 		if got := string(o(id)); got != want {
 			t.Errorf("%s: %s, want %s", id, got, want)
+		}
+	}
+}
+
+// The memory's audience of a turn comes from the session's root and source: a thread's channel, a
+// DM's person (the gateway's, once known), the owner for a oneshot, none for the API, a job or a
+// script. A compaction's child keeps its conversation's.
+func TestMemoryAudiences(t *testing.T) {
+	store, err := sessions.Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []wire.Session{{ID: "slack-C0DEVCHAN1-1700000002.000100", Source: "slack"}, {ID: "slack-D0DMCHAN01-dm", Source: "slack"},
+		{ID: "slack-D0DMCHAN02-dm", Source: "slack"}, {ID: "api-1", Source: "api_server"}, {ID: "slack-C9-1.2", Source: "api_server"},
+		{ID: "oneshot-1", Source: "cli"}, {ID: "cron-1", Source: "cron"}} {
+		if _, err := store.Create(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, err := store.Compact("slack-D0DMCHAN01-dm", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := audiences(store, func(channel string) string {
+		if channel == "D0DMCHAN01" {
+			return "U0ANA"
+		}
+		return ""
+	})
+	for id, want := range map[string]memory.Audience{
+		"slack-C0DEVCHAN1-1700000002.000100": {Scope: "channel:C0DEVCHAN1", Conv: "slack-C0DEVCHAN1-1700000002.000100"},
+		"slack-D0DMCHAN01-dm":                {Scope: "dm:U0ANA", Conv: "slack-D0DMCHAN01-dm"},
+		child:                                {Scope: "dm:U0ANA", Conv: "slack-D0DMCHAN01-dm"},
+		"slack-D0DMCHAN02-dm":                {Conv: "slack-D0DMCHAN02-dm"},
+		"slack-C0NEW-1700000009.1":           {Scope: "channel:C0NEW", Conv: "slack-C0NEW-1700000009.1"}, // a handler's, before the turn
+		"api-1":                              {},
+		"slack-C9-1.2":                       {}, // the API's, whatever its name
+		"oneshot-1":                          {Operator: true},
+		"cron-1":                             {},
+		"schedule":                           {},
+	} {
+		if got := a(id); got != want {
+			t.Errorf("%s: %+v, want %+v", id, got, want)
 		}
 	}
 }

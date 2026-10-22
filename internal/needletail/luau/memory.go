@@ -39,6 +39,10 @@ func object(raw json.RawMessage, v any, what string) error {
 	return nil
 }
 
+// audience is the run's audience: the runtime's, from the session it runs in (a tool's turn, a
+// message's conversation; a schedule's script has none: the agent-wide records only).
+func (c *Call) audience(mem *memory.Store) memory.Audience { return mem.AudienceOf(c.Session) }
+
 func (c *Call) memory(binding, op string) (*memory.Store, error) {
 	if !c.Caps.Memory(op) {
 		return nil, c.deny(binding, "memory:"+op)
@@ -54,7 +58,7 @@ func memoryErr(binding string, err error) error {
 	switch {
 	case errors.Is(err, memory.ErrNotFound):
 		return errf("not_found", "%s: %v", binding, err)
-	case errors.Is(err, memory.ErrHotRecord):
+	case errors.Is(err, memory.ErrHotRecord), errors.Is(err, memory.ErrAllScopes), errors.Is(err, memory.ErrAgentWide), errors.Is(err, memory.ErrNoAudience):
 		return errf("refused", "%s: %v", binding, err)
 	}
 	return errf("bad_args", "%s: %v", binding, err)
@@ -90,6 +94,7 @@ func memorySearch(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		Since          string          `json:"since"`
 		IncludeExpired bool            `json:"include_expired"`
 		Limit          int             `json:"limit"`
+		Audience       string          `json:"audience"`
 	}
 	if err := object(a.Opts, &o, "search_memory's opts"); err != nil {
 		return nil, err
@@ -109,8 +114,16 @@ func memorySearch(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if len(ids) > memory.MaxLimit {
 		return nil, errf("bad_args", "search_memory: at most %d ids", memory.MaxLimit)
 	}
+	all := false
+	switch strings.TrimSpace(o.Audience) {
+	case "", "here":
+	case "all":
+		all = true
+	default:
+		return nil, errf("bad_args", `search_memory: opts.audience is "here" or "all"`)
+	}
 	res, err := mem.Search(memory.Query{Text: q, IDs: ids, Kind: o.Kind, Tags: tags, Scope: o.Scope, Match: o.Match, Since: o.Since,
-		IncludeExpired: o.IncludeExpired, Limit: o.Limit})
+		IncludeExpired: o.IncludeExpired, Limit: o.Limit, Audience: c.audience(mem), All: all})
 	if err != nil {
 		return nil, memoryErr("search_memory", err)
 	}
@@ -138,6 +151,7 @@ func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		Expires    string          `json:"expires"`
 		Force      bool            `json:"force"`
 		Hot        bool            `json:"hot"`
+		Scope      string          `json:"scope"`
 	}
 	if err := object(a.Opts, &o, "save_memory's opts"); err != nil {
 		return nil, err
@@ -153,7 +167,7 @@ func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		return nil, err
 	}
 	res, err := mem.Save(memory.SaveOptions{Text: text, Kind: o.Kind, Tags: tags, Importance: o.Importance, Expires: o.Expires, Force: o.Force,
-		Src: "luau:" + c.Tool, ArchiveOnly: true})
+		Src: "luau:" + c.Tool, ArchiveOnly: true, Audience: c.audience(mem), Scope: o.Scope})
 	if err != nil {
 		return nil, memoryErr("save_memory", err)
 	}
@@ -230,7 +244,7 @@ func memoryUpdate(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err := c.noSecret("update_memory", texts...); err != nil {
 		return nil, err
 	}
-	v, err := mem.Update(id, ch, true)
+	v, err := mem.Update(c.audience(mem), id, ch, true)
 	if err != nil {
 		return nil, memoryErr("update_memory", err)
 	}
@@ -250,7 +264,7 @@ func memoryDelete(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if id == "" {
 		return nil, errf("bad_args", "delete_memory needs an id")
 	}
-	if err := mem.Delete(id, true); err != nil {
+	if err := mem.Delete(c.audience(mem), id, true); err != nil {
 		return nil, memoryErr("delete_memory", err)
 	}
 	return map[string]any{"deleted": id}, nil

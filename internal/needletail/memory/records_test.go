@@ -283,34 +283,39 @@ func TestSaveDedupeAndManage(t *testing.T) {
 	if err != nil || h.Hot != 1 || read(t, home, "memories/MEMORY.md") != "Quotes need a manager's OK." {
 		t.Fatalf("hot save = %+v %v", h, err)
 	}
-	if _, _, err := s.Pin(a.ID); err == nil || !strings.Contains(err.Error(), "unpin or shorten") {
+	if _, _, err := s.Pin(Audience{}, a.ID); err == nil || !strings.Contains(err.Error(), "unpin or shorten") {
 		t.Errorf("pin over budget: %v", err)
 	}
 	s.Limits[TargetMemory] = 2200
-	v, u, err := s.Pin(a.ID)
+	v, u, err := s.Pin(Audience{}, a.ID)
 	if err != nil || v.Hot != 2 || u.Entries != 2 || !strings.HasSuffix(read(t, home, "memories/MEMORY.md"), "\n§\nAna prefers balcony cabins on Mediterranean cruises.") {
 		t.Fatalf("pin = %+v %+v %v", v, u, err)
 	}
 	// a kind change to user moves it to USER.md
 	user := KindUser
-	if v, err := s.Update(a.ID, Change{Kind: &user}, false); err != nil || v.Hot != 1 || read(t, home, "memories/USER.md") != "Ana prefers balcony cabins on Mediterranean cruises." || read(t, home, "memories/MEMORY.md") != "Quotes need a manager's OK." {
+	if v, err := s.Update(Audience{}, a.ID, Change{Kind: &user}, false); err != nil || v.Hot != 1 || read(t, home, "memories/USER.md") != "Ana prefers balcony cabins on Mediterranean cruises." || read(t, home, "memories/MEMORY.md") != "Quotes need a manager's OK." {
 		t.Errorf("kind move = %+v %v", v, err)
 	}
 	// scripts may not touch hot records
 	text := "changed"
-	if _, err := s.Update(a.ID, Change{Text: &text}, true); !errors.Is(err, ErrHotRecord) {
+	if _, err := s.Update(Audience{}, a.ID, Change{Text: &text}, true); !errors.Is(err, ErrHotRecord) {
 		t.Errorf("archive-only update of a hot record: %v", err)
 	}
-	if err := s.Delete(a.ID, true); !errors.Is(err, ErrHotRecord) {
+	if err := s.Delete(Audience{}, a.ID, true); !errors.Is(err, ErrHotRecord) {
 		t.Errorf("archive-only delete of a hot record: %v", err)
 	}
-	if _, _, err := s.Unpin(a.ID); err != nil || read(t, home, "memories/USER.md") != "" {
+	// a person's profile goes back to the archive as nobody's but the owner's (no conversation)
+	if _, _, err := s.Unpin(Audience{}, a.ID); err != nil || read(t, home, "memories/USER.md") != "" {
 		t.Errorf("unpin: %v", err)
 	}
-	if err := s.Delete(a.ID, true); err != nil {
+	if err := s.Delete(Audience{}, a.ID, true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("an unpinned profile is still agent-wide: %v", err)
+	}
+	owner := Audience{Operator: true}
+	if err := s.Delete(owner, a.ID, true); err != nil {
 		t.Error(err)
 	}
-	if err := s.Delete(a.ID, false); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(owner, a.ID, false); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleted twice: %v", err)
 	}
 	// the memory tool's add of an archived text pins that record instead of copying it
@@ -430,7 +435,7 @@ func TestRanking(t *testing.T) {
 func TestRecall(t *testing.T) {
 	home := newHome(t, "Hot entry about cruise cabins.", "")
 	s := newStore(home)
-	if b, _ := s.Recall("Which cabin does Ana want on the cruise?", nil, 0, 0); b != "" {
+	if b, _ := s.Recall(Audience{}, "Which cabin does Ana want on the cruise?", nil, 0, 0); b != "" {
 		t.Errorf("an archive with no records recalled: %q", b)
 	}
 	ids := map[string]string{}
@@ -449,16 +454,16 @@ func TestRecall(t *testing.T) {
 		ids[o.Text] = r.ID
 	}
 	for _, in := range []string{"ok", "Gracias!", "  sí. ", "thanks", "cabin"} {
-		if b, _ := s.Recall(in, nil, 0, 0); b != "" {
+		if b, _ := s.Recall(Audience{}, in, nil, 0, 0); b != "" {
 			t.Errorf("%q recalled %q", in, b)
 		}
 	}
-	b, got := s.Recall("Which balcony cabin does Ana want on the cruise?", nil, 0, 0)
+	b, got := s.Recall(Audience{}, "Which balcony cabin does Ana want on the cruise?", nil, 0, 0)
 	// "cruise" alone (one of five words, in two records) is not enough: the deposits record stays out
 	if !strings.HasPrefix(b, RecallHeader) || !strings.HasSuffix(b, RecallFooter) || len(got) != 1 {
 		t.Fatalf("recall = %q %v", b, got)
 	}
-	if dep, _ := s.Recall("How much is the cruise deposit at booking?", nil, 0, 0); !strings.Contains(dep, "20% at booking. (saved by a tool)") {
+	if dep, _ := s.Recall(Audience{}, "How much is the cruise deposit at booking?", nil, 0, 0); !strings.Contains(dep, "20% at booking. (saved by a tool)") {
 		t.Errorf("a record a tool saved is labelled:\n%s", dep)
 	}
 	if got[0] != ids["Ana prefers balcony cabins on Mediterranean cruises."] && got[0] != ids["Ana prefers balcony cabins on cruises in the Mediterranean."] {
@@ -471,13 +476,13 @@ func TestRecall(t *testing.T) {
 		t.Errorf("a near-same record was not packed out:\n%s", b)
 	}
 	// skip (already recalled in the conversation), max and budget
-	if b2, got2 := s.Recall("Which balcony cabin does Ana want on the cruise?", func(id string) bool { return slices.Contains(got, id) }, 0, 0); slices.ContainsFunc(got2, func(id string) bool { return slices.Contains(got, id) }) {
+	if b2, got2 := s.Recall(Audience{}, "Which balcony cabin does Ana want on the cruise?", func(id string) bool { return slices.Contains(got, id) }, 0, 0); slices.ContainsFunc(got2, func(id string) bool { return slices.Contains(got, id) }) {
 		t.Errorf("skipped ids recalled again: %v\n%s", got2, b2)
 	}
-	if _, one := s.Recall("Which balcony cabin does Ana want on the cruise deposit?", nil, 1, 0); len(one) != 1 {
+	if _, one := s.Recall(Audience{}, "Which balcony cabin does Ana want on the cruise deposit?", nil, 1, 0); len(one) != 1 {
 		t.Errorf("max 1 = %v", one)
 	}
-	if b, _ := s.Recall("Which balcony cabin does Ana want on the cruise?", nil, 0, 20); b != "" {
+	if b, _ := s.Recall(Audience{}, "Which balcony cabin does Ana want on the cruise?", nil, 0, 20); b != "" {
 		t.Errorf("budget 20 = %q", b)
 	}
 	s.Flush()
@@ -517,7 +522,7 @@ func TestConcurrentWrites(t *testing.T) {
 					_, _ = s.Save(SaveOptions{Text: text, Force: true})
 				}
 				_, _ = s.Search(Query{Text: fmt.Sprintf("topic%d%d", i, j)})
-				_, _ = s.Recall(fmt.Sprintf("anything about topic%d%d notes", i, j), nil, 0, 0)
+				_, _ = s.Recall(Audience{}, fmt.Sprintf("anything about topic%d%d notes", i, j), nil, 0, 0)
 			}
 		}(i)
 	}

@@ -26,6 +26,10 @@ type SaveOptions struct {
 	// similar records exist.
 	Hot, Force bool
 	Src        string
+	// Audience is the turn's (the runtime's); Scope is "here" (its conversation, the default) or
+	// "agent" (everyone): see saveScope.
+	Audience Audience
+	Scope    string
 	// ArchiveOnly is a script's save (Luau): its text is checked as a hot one is (a script's text
 	// is the least trusted that reaches recall), and a hot record with the same text is left as it
 	// is (exists, uncounted).
@@ -48,6 +52,7 @@ type SaveResult struct {
 	Similar []Similar `json:"similar,omitempty"`
 	Usage   string    `json:"usage,omitempty"`
 	PII     []string  `json:"pii,omitempty"`
+	Scope   string    `json:"scope,omitempty"`
 }
 
 // Save statuses.
@@ -141,6 +146,10 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	if err != nil {
 		return SaveResult{}, err
 	}
+	scope, err := saveScope(o.Scope, o.Audience, kind, len(PII(c)) > 0, o.Hot)
+	if err != nil {
+		return SaveResult{}, err
+	}
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
@@ -149,19 +158,20 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	now := s.now()
 	target := targetOf(kind)
 	key := Normalize(c)
+	seen := func(r *Record) bool { return s.visible(r, o.Audience, false) }
 	for _, r := range st.recs {
-		if r.Target() == target && r.key() == key {
+		if r.Target() == target && r.key() == key && seen(r) {
 			// a use, counted apart (no rewrite of RECORDS.md for a timestamp); a script's save of a
 			// hot record's text leaves it as it is
 			if !(o.ArchiveOnly && r.Hot > 0) {
 				st.use.used(r.ID, now)
 				s.flushUsage(st, false)
 			}
-			return SaveResult{Status: StatusExists, ID: r.ID, Hot: r.Hot}, nil
+			return SaveResult{Status: StatusExists, ID: r.ID, Hot: r.Hot, Scope: r.Scope}, nil
 		}
 	}
 	if !o.Force {
-		if sim := st.similar(c, 5); len(sim) > 0 {
+		if sim := st.similar(c, 5, seen); len(sim) > 0 {
 			return SaveResult{Status: StatusSimilar, Similar: sim}, nil
 		}
 	}
@@ -181,18 +191,18 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	}
 	r := st.create(kind, c, o.Src, now)
 	st.unbury(target, c)
-	r.Tags, r.Imp, r.Expires = tags, imp, exp
+	r.Tags, r.Imp, r.Expires, r.Scope = tags, imp, exp, scope
 	if o.Hot {
 		r.Hot = len(st.hot(target)) + 1
 	}
 	st.idx.add(r)
-	res.ID, res.Hot, res.PII = r.ID, r.Hot, r.PII
+	res.ID, res.Hot, res.PII, res.Scope = r.ID, r.Hot, r.PII, r.Scope
 	return res, s.commit(st, hot...)
 }
 
-// similar is the records (at most n) whose tokens contain text's, or are contained in them, at
-// similarAt or more.
-func (st *state) similar(text string, n int) []Similar {
+// similar is the records ok takes (at most n) whose tokens contain text's, or are contained in
+// them, at similarAt or more.
+func (st *state) similar(text string, n int, ok func(*Record) bool) []Similar {
 	q := distinct(tokens(text))
 	if len(q) == 0 {
 		return nil
@@ -208,6 +218,9 @@ func (st *state) similar(text string, n int) []Similar {
 	}
 	cands := []cand{}
 	for _, h := range hits {
+		if !ok(h.doc.rec) {
+			continue
+		}
 		d := distinct(tokens(h.doc.rec.Text))
 		inter := 0
 		for t := range q {
@@ -251,18 +264,28 @@ type Change struct {
 // ErrHotRecord refuses a script's change to a hot record (those are the model's).
 var ErrHotRecord = errors.New("the record is hot (in the system prompt): only the model changes it (memory_manage)")
 
-// Update changes a record. A hot record is checked against its budget and re-rendered; a kind
-// change between user and the others moves it between USER.md and MEMORY.md. archiveOnly refuses
-// hot records (Luau).
-func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
+// byID is the record id names that a may see (ErrNotFound for one it may not: its existence is
+// not a's to learn either). The owner's own runs reach any record by id.
+func (s *Store) byID(st *state, a Audience, id string) (*Record, error) {
+	r := st.byID[id]
+	if r == nil || !s.visible(r, a, a.Operator) {
+		return nil, ErrNotFound
+	}
+	return r, nil
+}
+
+// Update changes a record a may see. A hot record is checked against its budget and re-rendered;
+// a kind change between user and the others moves it between USER.md and MEMORY.md. archiveOnly
+// refuses hot records (Luau).
+func (s *Store) Update(a Audience, id string, ch Change, archiveOnly bool) (View, error) {
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, err
 	}
-	r := st.byID[id]
-	if r == nil {
-		return View{}, ErrNotFound
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return View{}, err
 	}
 	if archiveOnly && r.Hot > 0 {
 		return View{}, ErrHotRecord
@@ -318,6 +341,9 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 	}
 	now := s.now()
 	n.PII, n.Updated = PII(n.Text), stamp(now)
+	if r.Hot == 0 && n.Scope == ScopeAgent && !agentWide(a, n.Kind, len(n.PII) > 0) {
+		return View{}, ErrAgentWide
+	}
 	wasTarget, wasKey := r.Target(), r.key()
 	*r = *n
 	st.bury(wasTarget, wasKey, now)
@@ -330,16 +356,17 @@ func (s *Store) Update(id string, ch Change, archiveOnly bool) (View, error) {
 	return st.view(r, now, 0, false), s.commit(st, changed...)
 }
 
-// Delete removes a record (from its hot file too). archiveOnly refuses hot records (Luau).
-func (s *Store) Delete(id string, archiveOnly bool) error {
+// Delete removes a record a may see (from its hot file too). archiveOnly refuses hot records
+// (Luau).
+func (s *Store) Delete(a Audience, id string, archiveOnly bool) error {
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return err
 	}
-	r := st.byID[id]
-	if r == nil {
-		return ErrNotFound
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return err
 	}
 	if archiveOnly && r.Hot > 0 {
 		return ErrHotRecord
@@ -356,17 +383,17 @@ func (s *Store) Delete(id string, archiveOnly bool) error {
 	return s.commit(st, changed...)
 }
 
-// Pin moves an archive record to the end of its hot file (refused over budget); Unpin moves a hot
-// one back to the archive.
-func (s *Store) Pin(id string) (View, Usage, error) {
+// Pin moves an archive record a may see to the end of its hot file (refused over budget), where
+// every conversation sees it; Unpin moves a hot one back to the archive (its scope's again).
+func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, Usage{}, err
 	}
-	r := st.byID[id]
-	if r == nil {
-		return View{}, Usage{}, ErrNotFound
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return View{}, Usage{}, err
 	}
 	now := s.now()
 	t := r.Target()
@@ -394,15 +421,15 @@ func (s *Store) Pin(id string) (View, Usage, error) {
 }
 
 // Unpin moves a hot record back to the archive.
-func (s *Store) Unpin(id string) (View, Usage, error) {
+func (s *Store) Unpin(a Audience, id string) (View, Usage, error) {
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
 		return View{}, Usage{}, err
 	}
-	r := st.byID[id]
-	if r == nil {
-		return View{}, Usage{}, ErrNotFound
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return View{}, Usage{}, err
 	}
 	now := s.now()
 	t := r.Target()
@@ -410,6 +437,9 @@ func (s *Store) Unpin(id string) (View, Usage, error) {
 		return st.view(r, now, 0, false), s.usage(t, texts(st.hot(t))), nil
 	}
 	r.Hot = 0
+	if r.Scope == ScopeAgent && !agentWide(a, r.Kind, r.personal()) {
+		r.Scope = "" // back in the archive, personal text is not everyone's: its src's rule decides
+	}
 	st.renumber(t)
 	u := s.usage(t, texts(st.hot(t)))
 	return st.view(r, now, 0, false), u, s.commit(st, t)

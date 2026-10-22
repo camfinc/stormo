@@ -59,12 +59,18 @@ type Record struct {
 	// recalled on its own.
 	Expires string
 	// PII is the kinds of personal data the generic rules find in Text.
-	PII  []string
-	Text string
+	PII []string
+	// Scope is who may be shown the record (scope.go): dm:<person> (saved in that person's DM),
+	// channel:<channel> (saved in a channel's thread), or agent (everyone). "": saved before
+	// scopes existed, read from Src (Store.scopeOf).
+	Scope string
+	Text  string
 
 	extra map[string]json.RawMessage // header keys this version does not know, kept
 
-	normText, norm string // Normalize(Text), cached for normText
+	normText, norm  string // Normalize(Text), cached for normText
+	piiText         string // the text piiAny was computed for (personal)
+	piiDone, piiAny bool
 }
 
 // key is Normalize(r.Text), computed once per text.
@@ -218,6 +224,10 @@ func (r *Record) header(b *bytes.Buffer) {
 			jsonString(b, p)
 		}
 		b.WriteByte(']')
+	}
+	if r.Scope != "" {
+		b.WriteString(`,"scope":`)
+		jsonString(b, r.Scope)
 	}
 	keys := make([]string, 0, len(r.extra))
 	for k := range r.extra {
@@ -482,6 +492,7 @@ type recordHeader struct {
 	Updated string   `json:"updated"`
 	Expires string   `json:"expires"`
 	PII     []string `json:"pii"`
+	Scope   string   `json:"scope"`
 }
 
 func parseRecord(e string) (*Record, bool) {
@@ -501,7 +512,7 @@ func parseRecord(e string) (*Record, bool) {
 			return nil, false
 		}
 		h = recordHeader{}
-		for _, k := range []string{"id", "kind", "tags", "imp", "hot", "src", "created", "updated", "expires", "pii"} {
+		for _, k := range []string{"id", "kind", "tags", "imp", "hot", "src", "created", "updated", "expires", "pii", "scope"} {
 			delete(all, k)
 		}
 		if json.Unmarshal([]byte(m[1]), &h) != nil {
@@ -510,7 +521,7 @@ func parseRecord(e string) (*Record, bool) {
 		extra = all
 	}
 	r := &Record{ID: h.ID, Kind: h.Kind, Tags: h.Tags, Imp: h.Imp, Hot: h.Hot, Src: h.Src, Created: h.Created, Updated: h.Updated,
-		Expires: h.Expires, PII: h.PII, Text: trim(text)}
+		Expires: h.Expires, PII: h.PII, Scope: h.Scope, Text: trim(text)}
 	if !ValidID(r.ID) || !slices.Contains(Kinds, r.Kind) || r.Text == "" {
 		return nil, false
 	}

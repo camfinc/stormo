@@ -39,10 +39,10 @@ const RecallHeader = "<memory-context>\n[Recalled from your memory archive becau
 // RecallFooter closes it.
 const RecallFooter = "</memory-context>"
 
-// Recall is the block of archive records related to input ("" when none passes the gate), and
-// their ids. skip leaves out records (already recalled in the conversation). Each recalled record
-// counts a recall, not a use.
-func (s *Store) Recall(input string, skip func(id string) bool, max, budget int) (string, []string) {
+// Recall is the block of archive records related to input that a may see ("" when none passes
+// the gate), and their ids. skip leaves out records (already recalled in the conversation). Each
+// recalled record counts a recall, not a use.
+func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max, budget int) (string, []string) {
 	if max <= 0 {
 		max = DefaultRecallMax
 	}
@@ -80,7 +80,7 @@ func (s *Store) Recall(input string, skip func(id string) bool, max, budget int)
 	hits := []*hit{}
 	for _, h := range st.idx.score(terms, max1(st.idx.n/100)) {
 		r := h.doc.rec
-		if r.Hot > 0 || r.Expired(now) || skip != nil && skip(r.ID) {
+		if r.Hot > 0 || r.Expired(now) || skip != nil && skip(r.ID) || !s.visible(r, a, false) {
 			continue
 		}
 		hits = append(hits, h)
@@ -202,7 +202,7 @@ func (rc *Recaller) Block(session, input string, job bool) string {
 		given[id] = true
 	}
 	rc.mu.Unlock()
-	block, ids := rc.Store.Recall(input, func(id string) bool { return given[id] }, rc.Max, rc.Budget)
+	block, ids := rc.Store.Recall(rc.Store.AudienceOf(session), input, func(id string) bool { return given[id] }, rc.Max, rc.Budget)
 	if len(ids) == 0 {
 		return ""
 	}

@@ -261,6 +261,54 @@ func TestMemoryTools(t *testing.T) {
 	}
 }
 
+// The memory tools work in the turn's audience, which the runtime gives (env.Session's): a
+// record saved in one person's DM is not found from another's, the model cannot ask for every
+// scope, nor name a scope other than here or agent.
+func TestMemoryToolsScoped(t *testing.T) {
+	r, env := setup(t)
+	env.Memory.Where = func(session string) memory.Audience {
+		switch session {
+		case "slack-DANA-dm":
+			return memory.Audience{Scope: "dm:UANA", Conv: session}
+		case "slack-DBOB-dm":
+			return memory.Audience{Scope: "dm:UBOB", Conv: session}
+		}
+		return memory.Audience{}
+	}
+	env.Session = "slack-DANA-dm"
+	m, failed := call(t, r, env, "memory_manage", map[string]any{"action": "save", "text": "The client's passport expires in March 2027."})
+	id, _ := m["id"].(string)
+	if failed || m["scope"] != "dm:UANA" {
+		t.Fatalf("save = %v", m)
+	}
+	if m, _ := call(t, r, env, "memory_search", map[string]any{"query": "passport expires"}); m["total"] != float64(1) {
+		t.Errorf("Ana's search = %v", m)
+	}
+	env.Session = "slack-DBOB-dm"
+	if m, _ := call(t, r, env, "memory_search", map[string]any{"query": "passport expires"}); m["total"] != float64(0) {
+		t.Errorf("Bob found Ana's record: %v", m)
+	}
+	if m, _ := call(t, r, env, "memory_search", map[string]any{"ids": []string{id}}); m["total"] != float64(0) {
+		t.Errorf("Bob fetched Ana's record: %v", m)
+	}
+	if m, failed := call(t, r, env, "memory_search", map[string]any{"query": "passport", "audience": "all"}); !failed || !strings.Contains(fmt.Sprint(m["error"]), "owner") {
+		t.Errorf("every scope from a DM = %v", m)
+	}
+	for _, args := range []map[string]any{
+		{"action": "save", "text": "A note for Ana.", "scope": "dm:UANA"},
+		{"action": "save", "text": "Bob's email is bob@example.com.", "scope": "agent"},
+		{"action": "delete", "id": id},
+		{"action": "pin", "id": id},
+	} {
+		if m, failed := call(t, r, env, "memory_manage", args); !failed {
+			t.Errorf("%v = %v", args, m)
+		}
+	}
+	if m, failed := call(t, r, env, "memory_manage", map[string]any{"action": "save", "text": "Invoices go out on the first Monday.", "scope": "agent"}); failed || m["scope"] != "agent" {
+		t.Errorf("agent-wide save = %v", m)
+	}
+}
+
 // A secret whose value JSON escapes (quotes, &, <, >, backslash, control characters) is masked
 // before the result is encoded, so no escaped form of it reaches the model or a session file.
 func TestRedactBeforeEncoding(t *testing.T) {

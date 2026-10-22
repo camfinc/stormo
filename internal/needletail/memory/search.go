@@ -41,6 +41,7 @@ type View struct {
 	Expires string   `json:"expires,omitempty"`
 	Expired bool     `json:"expired,omitempty"`
 	PII     []string `json:"pii,omitempty"`
+	Scope   string   `json:"scope,omitempty"`
 	Src     string   `json:"src,omitempty"`
 	Score   float64  `json:"score,omitempty"`
 	Text    string   `json:"text"`
@@ -49,7 +50,7 @@ type View struct {
 
 func (st *state) view(r *Record, now time.Time, score float64, short bool) View {
 	v := View{ID: r.ID, Kind: r.Kind, Tags: append([]string{}, r.Tags...), Hot: r.Hot, Imp: r.Imp, Created: r.Created, Updated: r.Updated,
-		Expires: r.Expires, Expired: r.Expired(now), PII: r.PII, Src: r.Src, Score: round(score), Text: r.Text}
+		Expires: r.Expires, Expired: r.Expired(now), PII: r.PII, Scope: r.Scope, Src: r.Src, Score: round(score), Text: r.Text}
 	if short {
 		v.Text = cut(r.Text, searchCut)
 		v.Cut = v.Text != r.Text
@@ -92,6 +93,10 @@ type Query struct {
 	// Match: any (default) or all of the words.
 	Match string
 	Limit int
+	// Audience is the turn's (the runtime's): only the records it may see are found or fetched.
+	// All finds every scope's: the owner's own runs only (Audience.Operator; ErrAllScopes).
+	Audience Audience
+	All      bool
 }
 
 // SearchResult is a search's answer: Total matches, the best Limit of them.
@@ -159,6 +164,9 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		limit = DefaultLimit
 	}
 	limit = min(limit, MaxLimit)
+	if q.All && !q.Audience.Operator {
+		return SearchResult{}, ErrAllScopes
+	}
 	defer s.lock()()
 	st, err := s.load()
 	if err != nil {
@@ -169,7 +177,7 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 	if len(q.IDs) > 0 {
 		for _, id := range q.IDs {
 			r := st.byID[strings.TrimSpace(id)]
-			if r == nil {
+			if r == nil || !s.visible(r, q.Audience, q.All || q.Audience.Operator) {
 				out.Missing = append(out.Missing, id)
 				continue
 			}
@@ -180,10 +188,11 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		s.flushUsage(st, false)
 		return out, nil
 	}
-	keep, err := filter(q, now)
+	match, err := filter(q, now)
 	if err != nil {
 		return SearchResult{}, err
 	}
+	keep := func(r *Record) bool { return match(r) && s.visible(r, q.Audience, q.All) }
 	terms, phrases := parseQuery(q.Text)
 	if strings.TrimSpace(q.Text) == "" {
 		recs := []*Record{}

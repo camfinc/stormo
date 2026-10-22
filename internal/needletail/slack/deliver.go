@@ -118,6 +118,15 @@ func (g *Gateway) dmUser(channel string) (string, error) {
 	return u, nil
 }
 
+// KnownDMUser is the person of a DM channel as the gateway knows it now (the author it saw write
+// there, or a lookup it made), without asking Slack: "" when it does not know. The memory's
+// audience of a DM turn (the gateway learns the person from the message before the turn runs).
+func (g *Gateway) KnownDMUser(channel string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.dmUsers[channel]
+}
+
 func (g *Gateway) rememberDM(channel, user string) {
 	if user == "" {
 		return

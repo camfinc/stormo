@@ -135,7 +135,7 @@ func BenchmarkRecall(b *testing.B) {
 	qs := benchQueries(true)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Recall("Tell me about "+qs[i%len(qs)], nil, 0, 0)
+		s.Recall(Audience{}, "Tell me about "+qs[i%len(qs)], nil, 0, 0)
 	}
 }
 
