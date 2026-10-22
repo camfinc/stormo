@@ -93,7 +93,7 @@ func TestActivity(t *testing.T) {
 		var v any
 		_ = json.Unmarshal([]byte(`{"active_turns":2,"busy":true,"source":"slack","running_jobs":["Stale deals <b>"],
 			"last_job_at":"2026-10-12T08:59:00Z","last_active":"2026-10-12T08:58:30.5Z",
-			"platforms":{"slack":{"state":"connected","needs_attention":false},"Bad Name":{"state":"x"}}}`), &v)
+			"platforms":{"slack":{"state":"connected","needs_attention":false},"Bad Name":{"state":"x"}},"jail":"landlock ABI 6"}`), &v)
 		return v, nil
 	}
 	a, state, err := NewRuntime().Activity(context.Background(), get, nil, now)
@@ -102,12 +102,21 @@ func TestActivity(t *testing.T) {
 	}
 	want := &engine.Activity{ActiveAgents: 2, GatewayBusy: true, Source: "slack", RunningJobs: []string{"Stale deals b"},
 		LastJobAt: "2026-10-12T08:59:00.000Z", LastActive: "2026-10-12T08:58:30.500Z",
-		Platforms: map[string]engine.Platform{"slack": {State: "connected"}}, PolledAt: "2026-10-12T09:00:00.000Z"}
+		Platforms: map[string]engine.Platform{"slack": {State: "connected"}}, PolledAt: "2026-10-12T09:00:00.000Z", Jail: "landlock ABI 6"}
 	if !reflect.DeepEqual(a, want) {
 		t.Errorf("activity = %+v", a)
 	}
 	if len(paths) != 1 || paths[0] != "/v1/activity" {
 		t.Errorf("paths = %v", paths)
+	}
+	// the jail report is one short printable line, or nothing
+	for body, want := range map[string]string{`{"jail":"off: the kernel has no Landlock (before 5.13)"}`: "off: the kernel has no Landlock (before 5.13)",
+		`{"jail":"off\n<script>"}`: "", `{"jail":"` + strings.Repeat("x", 201) + `"}`: "", `{}`: ""} {
+		var v any
+		_ = json.Unmarshal([]byte(body), &v)
+		if a := ActivityFrom(v, now); a == nil || a.Jail != want {
+			t.Errorf("%s: jail %+v, want %q", body, a, want)
+		}
 	}
 	if ActivityFrom(nil, now) != nil {
 		t.Error("nil body")

@@ -52,6 +52,9 @@ type Activity struct {
 	LastActive string              `json:"lastActive,omitempty"`
 	Platforms  map[string]Platform `json:"platforms"`
 	PolledAt   string              `json:"polledAt"`
+	// Jail is how the engine confines the commands the agent executes, when it reports it (a
+	// short line, such as "landlock ABI 6" or "off: <why>"); empty when it does not.
+	Jail string `json:"jail,omitempty"`
 }
 
 // HookKind is what a hook delivery reports, in Stormo's terms.

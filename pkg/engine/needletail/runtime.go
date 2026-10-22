@@ -29,6 +29,8 @@ var (
 	sourceRe = regexp.MustCompile(`^[a-z_-]{1,24}$`)
 	jobName  = regexp.MustCompile(`[^\p{L}\p{N} ._:/()-]`)
 	sigRe    = regexp.MustCompile(`^sha256=([0-9a-f]{64})$`)
+	// jailRe is a jail report the core passes on: one short printable line
+	jailRe = regexp.MustCompile(`^[ -~]{1,200}$`)
 )
 
 func isoMillis(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
@@ -88,6 +90,9 @@ func ActivityFrom(v any, now time.Time) *engine.Activity {
 	}
 	if t, err := time.Parse(time.RFC3339Nano, w.LastJobAt); err == nil {
 		a.LastJobAt = isoMillis(t)
+	}
+	if jailRe.MatchString(w.Jail) {
+		a.Jail = w.Jail
 	}
 	return a
 }
