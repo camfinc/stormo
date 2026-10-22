@@ -40,6 +40,8 @@ type fakeTurns struct {
 	started  chan string
 	// during, when set, runs in each turn (a tool call the model would make)
 	during func(session, input string)
+	// reserved and released count the slots handed out and given back
+	reserved, released int
 }
 
 func newTurns() *fakeTurns {
@@ -56,6 +58,7 @@ func (f *fakeTurns) Reserve(session string, create wire.Session) (Slot, error) {
 	if _, ok := f.sessions[session]; !ok {
 		f.sessions[session] = create
 	}
+	f.reserved++
 	return &fakeSlot{f: f, session: session}, nil
 }
 
@@ -73,8 +76,9 @@ func (f *fakeTurns) got(session string) []string {
 }
 
 type fakeSlot struct {
-	f       *fakeTurns
-	session string
+	f        *fakeTurns
+	session  string
+	released bool
 }
 
 func (s *fakeSlot) Turn(ctx context.Context, input string, _ loop.Options) (*loop.Result, error) {
@@ -96,11 +100,27 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, _ loop.Options) (*loo
 		return &loop.Result{Text: "[SILENT]", Session: s.session}, nil
 	case "HALFSILENT":
 		return &loop.Result{Text: "[SILENT]\nOn second thought: yes.", Session: s.session}, nil
+	case "PANIC":
+		panic("the turn blew up")
 	}
 	return &loop.Result{Text: "re: " + lines[len(lines)-1], Session: s.session}, nil
 }
 
-func (s *fakeSlot) Release() {}
+func (s *fakeSlot) Release() {
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	if !s.released {
+		s.f.released++
+	}
+	s.released = true
+}
+
+// slots is how many slots were reserved and how many given back.
+func (f *fakeTurns) slots() (reserved, released int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reserved, f.released
+}
 
 type rig struct {
 	t     *testing.T
@@ -735,5 +755,61 @@ func TestGroupSilence(t *testing.T) {
 	// the guidance the system prompt carries
 	if g := r.g.Guidance(); !strings.Contains(g, "[SILENT]") || !strings.Contains(g, "no_reply") {
 		t.Errorf("guidance %q", g)
+	}
+}
+
+// MaxQueued bounds the messages waiting for a turn and the ones whose turn runs, in every
+// conversation together: a conversation's worker holds its batch until the turn returns, so
+// mentions spread over many threads cannot each start a worker past the cap. The event over it is
+// not acked (Slack sends it again).
+func TestQueueCapCountsRunningBatches(t *testing.T) {
+	r := newRig(t, func(o *Options) { o.MaxQueued = 2 })
+	hold := make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	for i, ch := range []string{"D0DMCHAN11", "D0DMCHAN12"} {
+		r.fake.Send(fmt.Sprintf("c%d", i), slacktest.Event{Channel: ch, ChannelType: "im", User: alice, Text: "hello", TS: fmt.Sprintf("1700000120.00010%d", i)})
+		<-r.turns.started
+	}
+	r.fake.Send("c2", slacktest.Event{Channel: "D0DMCHAN13", ChannelType: "im", User: alice, Text: "hello", TS: "1700000120.000102"})
+	time.Sleep(150 * time.Millisecond)
+	if a := r.fake.Acks(); slices.Contains(a, "c2") || !slices.Contains(a, "c1") {
+		t.Errorf("acks %v: c2 is over MaxQueued (two turns running) and must not be acked", a)
+	}
+	close(hold)
+	r.fake.WaitPosts(2, 5*time.Second)
+	r.fake.Send("c2", slacktest.Event{Channel: "D0DMCHAN13", ChannelType: "im", User: alice, Text: "hello", TS: "1700000120.000102"}) // Slack's retry
+	r.fake.WaitPosts(3, 5*time.Second)
+	if !slices.Contains(r.fake.Acks(), "c2") {
+		t.Errorf("the retry was not acked: %v", r.fake.Acks())
+	}
+	r.g.mu.Lock()
+	queued := r.g.queued
+	r.g.mu.Unlock()
+	if queued != 0 {
+		t.Errorf("queued %d after every turn ended", queued)
+	}
+}
+
+// A turn that panics gives its slot back (and its conversation's running state), and the
+// conversation is answered again afterwards.
+func TestPanickingTurnReleasesItsSlot(t *testing.T) {
+	r := newRig(t, nil)
+	r.fake.Send("p1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "PANIC", TS: "1700000130.000100"})
+	<-r.turns.started
+	time.Sleep(100 * time.Millisecond)
+	if reserved, released := r.turns.slots(); reserved != 1 || released != 1 {
+		t.Errorf("slots reserved %d, released %d", reserved, released)
+	}
+	r.g.mu.Lock()
+	running, queued := len(r.g.running), r.g.queued
+	r.g.mu.Unlock()
+	if running != 0 || queued != 0 {
+		t.Errorf("after the panic: %d turns still marked running, queued %d", running, queued)
+	}
+	r.fake.Send("p2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "again", TS: "1700000130.000200"})
+	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Text != "re: again" {
+		t.Errorf("after the panic: %+v", p)
 	}
 }

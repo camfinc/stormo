@@ -119,7 +119,7 @@ type Gateway struct {
 	workers  map[string]*worker
 	users    map[string]string // user id → display name
 	warned   map[string]bool
-	queued   int    // messages waiting in the workers (MaxQueued)
+	queued   int    // messages in the workers, waiting or in the turn running (MaxQueued)
 	seen     *tsSet // events handled (channel:ts), against Slack's retries and message+app_mention
 	threads  *tsSet // threads the agent posted in or was mentioned in (channel:thread_ts)
 	ready    chan struct{}
@@ -143,7 +143,12 @@ type job struct {
 	notes               []string // what the agent's handlers passed on to the model about it
 }
 
-type worker struct{ pending []job }
+// worker is a conversation's queue: the messages waiting for its next turn, and how many the
+// turn running now carries (they count toward MaxQueued until it returns).
+type worker struct {
+	pending  []job
+	inflight int
+}
 
 // turnState is a running turn as no_reply sees it: whether the agent was addressed directly (a DM
 // or a mention: always answered), and whether it asked to stay silent.
@@ -268,7 +273,7 @@ func (g *Gateway) BeginShutdown() {
 		dropped = append(dropped, w.pending...)
 		w.pending = nil
 	}
-	g.queued = 0
+	g.queued -= len(dropped) // the batches whose turns run still count until they return
 	g.mu.Unlock()
 	if len(dropped) == 0 {
 		return
@@ -589,8 +594,8 @@ func threadContext(lines []messaging.ContextLine) string {
 
 // enqueue queues the message in its conversation's worker: one turn at a time per
 // conversation, and messages that arrive while a turn runs are merged into the next one (Hermes
-// queues follow-ups). False when the gateway is closing or the queue is full (MaxPending for the
-// conversation, MaxQueued in all).
+// queues follow-ups). False when the gateway is closing or the queue is full (MaxPending waiting
+// in the conversation, MaxQueued in all: waiting, or carried by a turn that has not returned).
 func (g *Gateway) enqueue(session string, j job) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -618,13 +623,15 @@ func (g *Gateway) work(session string, w *worker) {
 		if p := recover(); p != nil {
 			g.logf("slack: %s: the turn crashed: %v", session, p)
 			g.mu.Lock()
-			g.queued -= len(w.pending)
+			g.queued -= len(w.pending) + w.inflight
 			delete(g.workers, session)
 			g.mu.Unlock()
 		}
 	}()
 	for {
 		g.mu.Lock()
+		g.queued -= w.inflight // the last batch's turn returned
+		w.inflight = 0
 		if len(w.pending) == 0 || g.closing {
 			delete(g.workers, session)
 			g.mu.Unlock()
@@ -632,7 +639,7 @@ func (g *Gateway) work(session string, w *worker) {
 		}
 		jobs := w.pending
 		w.pending = nil
-		g.queued -= len(jobs)
+		w.inflight = len(jobs)
 		g.mu.Unlock()
 		var lines []messaging.ContextLine
 		if first := jobs[0]; first.reply && !g.o.Exists(session) {
@@ -810,14 +817,10 @@ func (g *Gateway) turn(session string, j job, input string, direct bool) {
 	g.mu.Lock()
 	g.running[root] = state
 	g.mu.Unlock()
-	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	res, err := slot.Turn(ctx, input, loop.Options{})
-	slot.Release()
+	res, err := g.runTurn(slot, root, j, input)
 	g.mu.Lock()
-	delete(g.running, root)
 	noReply := state.noReply
 	g.mu.Unlock()
-	g.status(j.channel, orDefault(j.thread, j.ts), "")
 	if err != nil {
 		g.logf("slack: %s: turn failed: %v", session, err)
 		detail := oneLine(g.o.Redact(err.Error()))
@@ -854,6 +857,20 @@ func (g *Gateway) turn(session string, j job, input string, direct bool) {
 		}
 	}
 	finish(true)
+}
+
+// runTurn runs the turn in slot and gives the slot back, with the conversation's running state
+// and its status line, however the turn ends (a panic too: the worker recovers it).
+func (g *Gateway) runTurn(slot Slot, root string, j job, input string) (*loop.Result, error) {
+	defer func() {
+		slot.Release()
+		g.mu.Lock()
+		delete(g.running, root)
+		g.mu.Unlock()
+		g.status(j.channel, orDefault(j.thread, j.ts), "")
+	}()
+	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
+	return slot.Turn(g.base, input, loop.Options{})
 }
 
 // withoutSilence is a reply with its silence token dropped where sched.Silent finds one: the
