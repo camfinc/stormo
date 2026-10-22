@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/loop"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
 	"github.com/camfinc/stormo/internal/needletail/tools"
@@ -369,13 +371,14 @@ func TestBusy(t *testing.T) {
 }
 
 // The scheduler's deliveries: the home channel, an origin thread, a DM; [SILENT] never; a target
-// Slack refuses is an error the scheduler records.
+// Slack refuses is an error the scheduler records. A job the agent made (not trusted) delivers
+// only where the messaging policy lets it; a repo job's targets are the repo's.
 func TestDeliver(t *testing.T) {
 	r := newRig(t, nil)
 	ctx := context.Background()
 	for _, d := range []sched.Delivery{
-		{JobID: "j1", Target: sched.Target{Platform: "slack"}, Text: "**Digest**: 3 items, token sekret-value"},
-		{JobID: "j2", Target: sched.Target{Platform: "slack", Channel: dev, Thread: "1700000060.000100"}, Text: "In the thread."},
+		{JobID: "j1", Target: sched.Target{Platform: "slack"}, Text: "**Digest**: 3 items, token sekret-value", Trusted: true},
+		{JobID: "j2", Target: sched.Target{Platform: "slack", Channel: dev, Thread: "1700000060.000100"}, Text: "In the thread.", Trusted: true},
 		{JobID: "j3", Target: sched.Target{Platform: "slack", Channel: alice}, Text: "Your DM."},
 		{JobID: "j4", Target: sched.Target{Platform: "slack"}, Text: "[SILENT]"},
 	} {
@@ -388,57 +391,108 @@ func TestDeliver(t *testing.T) {
 		p[1].Channel != dev || p[1].Thread != "1700000060.000100" || p[2].Channel != "D00ALLOWED1" {
 		t.Errorf("posts %+v", p)
 	}
+	for _, d := range []sched.Delivery{
+		{JobID: "a1", Target: sched.Target{Platform: "slack", Channel: dev, Thread: "1700000061.999999"}, Text: "not my thread"},
+		{JobID: "a2", Target: sched.Target{Platform: "slack", Channel: "C0SECRET01"}, Text: "not my channel"},
+		{JobID: "a3", Target: sched.Target{Platform: "slack", Channel: mallet}, Text: "not an allowed user"},
+		{JobID: "a4", Target: sched.Target{Platform: "slack"}, Text: "<!channel> look"},
+	} {
+		err := r.g.Deliver(ctx, d)
+		if d.JobID == "a4" {
+			if err != nil || strings.Contains(r.fake.Posts()[3].Text, "<!channel>") {
+				t.Errorf("a4: %v %+v", err, r.fake.Posts())
+			}
+			continue
+		}
+		if !errors.Is(err, messaging.ErrRefused) {
+			t.Errorf("%s: %v", d.JobID, err)
+		}
+	}
 	if err := r.g.Deliver(ctx, sched.Delivery{Target: sched.Target{Platform: "telegram"}, Text: "x"}); err == nil {
 		t.Error("telegram delivered")
 	}
-	r.fake.Fail["chat.postMessage"] = "channel_not_found"
-	if err := r.g.Deliver(ctx, sched.Delivery{Target: sched.Target{Platform: "slack", Channel: "C0GONE0001"}, Text: "x"}); err == nil || !strings.Contains(err.Error(), "channel_not_found") {
+	r.fake.SetFail("chat.postMessage", "channel_not_found")
+	if err := r.g.Deliver(ctx, sched.Delivery{Target: sched.Target{Platform: "slack", Channel: "C0GONE0001"}, Text: "x", Trusted: true}); err == nil || !strings.Contains(err.Error(), "channel_not_found") {
 		t.Errorf("refused delivery: %v", err)
 	}
 	// a reply in the delivered message's thread wakes the agent there
-	delete(r.fake.Fail, "chat.postMessage")
+	r.fake.SetFail("chat.postMessage", "")
 	r.fake.Send("h1", slacktest.Event{Channel: home, ChannelType: "channel", User: alice, Text: "why only 3?", TS: "1700000061.000100", ThreadTS: p[0].TS})
-	if q := r.fake.WaitPosts(4, 5*time.Second); q[3].Thread != p[0].TS {
-		t.Errorf("reply under a delivery %+v", q[3])
+	if q := r.fake.WaitPosts(5, 5*time.Second); q[4].Thread != p[0].TS {
+		t.Errorf("reply under a delivery %+v", q[4])
 	}
 }
 
-// send_message: the home channel, a channel the agent talked in (a thread there), an allowed
-// user's DM; anything else refused.
-func TestSendMessageTool(t *testing.T) {
+// cronjob_manage's check of an agent job's targets is the same policy.
+func TestCheckTarget(t *testing.T) {
 	r := newRig(t, nil)
-	reg := tools.NewRegistry(r.g.SendTool())
-	call := func(args map[string]any) (map[string]any, bool) {
-		b, _ := json.Marshal(args)
-		out, failed := reg.Call(context.Background(), &tools.Env{Session: "api-1"}, "send_message", string(b))
-		v := map[string]any{}
-		_ = json.Unmarshal([]byte(out), &v)
-		if failed {
-			v["raw"] = out
-		}
-		return v, failed
-	}
-	if v, failed := call(map[string]any{"target": "slack", "message": "Hello home"}); failed || v["chat_id"] != home || v["note"] == nil {
-		t.Errorf("home: %v", v)
-	}
-	if v, failed := call(map[string]any{"target": "slack:" + dev + ":1700000070.000100", "message": "In thread"}); failed || v["chat_id"] != dev {
-		t.Errorf("thread: %v", v)
-	}
-	if v, failed := call(map[string]any{"target": "slack:" + alice, "message": "Hi Alice"}); failed || v["chat_id"] != "D00ALLOWED1" {
-		t.Errorf("dm: %v", v)
-	}
-	for _, bad := range []string{"slack:C0SECRET01", "slack:" + mallet, "slack:#general", "telegram:1"} {
-		if v, failed := call(map[string]any{"target": bad, "message": "x"}); !failed {
-			t.Errorf("%s accepted: %v", bad, v)
+	for tg, ok := range map[sched.Target]bool{
+		{Platform: "slack"}:                        true,
+		{Platform: "slack", Channel: dev}:          true,
+		{Platform: "slack", Channel: alice}:        true,
+		{Platform: "slack", Channel: mallet}:       false,
+		{Platform: "slack", Channel: "C0SECRET01"}: false,
+		{Platform: "telegram", Channel: "1"}:       false,
+	} {
+		if err := r.g.CheckTarget(tg); (err == nil) != ok {
+			t.Errorf("%v: %v", tg, err)
 		}
 	}
-	v, _ := call(map[string]any{"action": "list"})
-	if b, _ := json.Marshal(v); !strings.Contains(string(b), "slack:"+dev) || !strings.Contains(string(b), "home channel") {
-		t.Errorf("list %s", b)
-	}
-	p := r.fake.Posts()
-	if len(p) != 3 || p[1].Thread != "1700000070.000100" {
-		t.Errorf("posts %+v", p)
+}
+
+// send_message: the home channel, a channel the agent talked in, a thread it is in, an allowed
+// user's DM; anything else refused. A broadcast only with broadcast: true and the grant;
+// otherwise every special mention is escaped.
+func TestSendMessageTool(t *testing.T) {
+	for _, granted := range []bool{false, true} {
+		r := newRig(t, func(o *Options) { o.Broadcast = granted })
+		r.turns.mu.Lock()
+		r.turns.sessions[SessionID(dev, "1700000070.000100")] = wire.Session{Source: "slack"}
+		r.turns.mu.Unlock()
+		reg := tools.NewRegistry(r.g.SendTool())
+		call := func(args map[string]any) (map[string]any, bool) {
+			b, _ := json.Marshal(args)
+			out, failed := reg.Call(context.Background(), &tools.Env{Session: "api-1"}, "send_message", string(b))
+			v := map[string]any{}
+			_ = json.Unmarshal([]byte(out), &v)
+			if failed {
+				v["raw"] = out
+			}
+			return v, failed
+		}
+		if v, failed := call(map[string]any{"target": "slack", "message": "Hello home @here"}); failed || v["chat_id"] != home || v["note"] == nil {
+			t.Errorf("home: %v", v)
+		}
+		if v, failed := call(map[string]any{"target": "slack:" + dev + ":1700000070.000100", "message": "In thread"}); failed || v["chat_id"] != dev {
+			t.Errorf("thread: %v", v)
+		}
+		if v, failed := call(map[string]any{"target": "slack:" + dev, "message": "In channel"}); failed || v["chat_id"] != dev {
+			t.Errorf("channel: %v", v)
+		}
+		if v, failed := call(map[string]any{"target": "slack:" + alice, "message": "Hi Alice"}); failed || v["chat_id"] != "D00ALLOWED1" {
+			t.Errorf("dm: %v", v)
+		}
+		for _, bad := range []string{"slack:C0SECRET01", "slack:" + dev + ":1700000071.000100", "slack:" + mallet, "slack:#general", "telegram:1"} {
+			if v, failed := call(map[string]any{"target": bad, "message": "x"}); !failed {
+				t.Errorf("%s accepted: %v", bad, v)
+			}
+		}
+		v, failed := call(map[string]any{"target": "slack", "message": "<!channel> standup <!subteam^S0TEAM0001|@ops>", "broadcast": true})
+		if failed == granted {
+			t.Errorf("broadcast (granted %v): %v", granted, v)
+		}
+		v, _ = call(map[string]any{"action": "list"})
+		if b, _ := json.Marshal(v); !strings.Contains(string(b), "slack:"+dev) || !strings.Contains(string(b), "home channel") {
+			t.Errorf("list %s", b)
+		}
+		p := r.fake.Posts()
+		if p[0].Text != "Hello home @here" || p[1].Thread != "1700000070.000100" {
+			t.Errorf("posts %+v", p)
+		}
+		last := p[len(p)-1].Text
+		if granted && last != "<!channel> standup <!subteam^S0TEAM0001|@ops>" || !granted && len(p) != 4 {
+			t.Errorf("granted %v: posts %+v", granted, p)
+		}
 	}
 }
 

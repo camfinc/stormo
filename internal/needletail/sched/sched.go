@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -84,6 +85,9 @@ type Options struct {
 	Log           func(string)
 	ScriptTimeout time.Duration
 	Tick          time.Duration
+	// RepoJobs are the ids of the jobs agent.yaml defines (needletail.yaml schedules.repo):
+	// their deliveries are trusted, and they never count toward the agent's own jobs.
+	RepoJobs []string
 }
 
 // Scheduler runs one home's jobs. Safe for concurrent use.
@@ -102,6 +106,9 @@ type Scheduler struct {
 	cancelRuns            context.CancelFunc
 	kick                  chan struct{}
 	gates                 chan struct{} // the scripts running before (or as) a job: MaxGates
+	// checkTarget is the messaging policy for a deliver or failure_deliver target the tool
+	// sets (the gateway's; nil: any)
+	checkTarget func(Target) error
 }
 
 // New builds a scheduler; Start runs it.
@@ -396,6 +403,16 @@ func (s *Scheduler) SetTurns(t Turns) { s.o.Turns = t }
 
 // SetDeliverer gives the scheduler its deliverer (the Slack gateway's); before Start.
 func (s *Scheduler) SetDeliverer(d Deliverer) { s.o.Deliver = d }
+
+// SetTargetCheck gives cronjob_manage the messaging policy its deliver and failure_deliver
+// targets must meet (the Slack gateway's); before Start.
+func (s *Scheduler) SetTargetCheck(check func(Target) error) { s.checkTarget = check }
+
+// trusted is a job agent.yaml defines: listed in RepoJobs, or never stamped created_at (the
+// render never sets it; cronjob_manage always does). Its delivery targets are the repo's.
+func (s *Scheduler) trusted(j *Job) bool {
+	return !agentMade(j) || slices.Contains(s.o.RepoJobs, j.ID())
+}
 
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
 func (s *Scheduler) Start(ctx context.Context) {
@@ -987,7 +1004,7 @@ func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
 		errs = append(errs, err.Error())
 	}
 	for _, t := range targets {
-		d := Delivery{JobID: j.ID(), JobName: j.Name(), Target: t, Text: o.text, Failure: o.failed(), Session: o.session}
+		d := Delivery{JobID: j.ID(), JobName: j.Name(), Target: t, Text: o.text, Failure: o.failed(), Session: o.session, Trusted: s.trusted(j)}
 		if err := s.o.Deliver.Deliver(ctx, d); err != nil {
 			errs = append(errs, t.String()+": "+err.Error())
 		}

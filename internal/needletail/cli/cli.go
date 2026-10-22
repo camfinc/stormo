@@ -143,7 +143,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
 	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
-		End: store.End, Location: cfg.Location, Log: logf}
+		End: store.End, Location: cfg.Location, Log: logf, RepoJobs: cfg.Schedules.Repo}
 	if lr != nil {
 		opts.Luau = lr.RunScript
 	}
@@ -308,6 +308,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		AllowAll:     strings.EqualFold(os.Getenv("SLACK_ALLOW_ALL_USERS"), "true"),
 		AllowBots:    os.Getenv("SLACK_ALLOW_BOTS"),
 		HomeChannel:  os.Getenv("SLACK_HOME_CHANNEL"),
+		Broadcast:    rt.cfg.Slack != nil && rt.cfg.Slack.Broadcast,
 		Redact:       rt.red.Redact,
 		Log:          func(s string) { rt.logger.Println(s) },
 	})
@@ -318,6 +319,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	rt.agent.Tools.Add(gw.Tools()...)
 	rt.agent.Sections = append(rt.agent.Sections, gw.Guidance)
 	rt.sched.SetDeliverer(gw)
+	rt.sched.SetTargetCheck(gw.CheckTarget)
 	gw.Start()
 	return gw
 }

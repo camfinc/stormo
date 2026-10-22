@@ -99,7 +99,9 @@ const (
 )
 
 // agentMade is a job the agent made at runtime: the tool stamps created_at, the repo's render
-// leaves it null (and the merge keeps run state, so a repo job never gains one).
+// leaves it null (the merge keeps run state, so a repo job never gains one; one the agent made
+// and a reviewer promoted into agent.yaml keeps its own, which is why trusted also reads
+// RepoJobs).
 func agentMade(j *Job) bool { return j.Str("created_at") != "" }
 
 // checkPrompt refuses a prompt over MaxPromptBytes or one the scan blocks.
@@ -298,7 +300,7 @@ func (s *Scheduler) create(a cronArgs, origin json.RawMessage) (any, error) {
 	err := s.mutate(func(f *File) (bool, error) {
 		n := 0
 		for _, x := range f.Jobs {
-			if agentMade(x) {
+			if !s.trusted(x) { // the agent's own: not the repo's, even one promoted from its own
 				n++
 			}
 		}
@@ -350,13 +352,13 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 		if d == "" {
 			d = "origin"
 		}
-		if _, err := Targets(d, nil); err != nil {
+		if err := s.checkTargets(d); err != nil {
 			return err
 		}
 		j.Set("deliver", d)
 	}
 	if a.FailureDeliver != nil {
-		if _, err := Targets(*a.FailureDeliver, nil); err != nil {
+		if err := s.checkTargets(*a.FailureDeliver); err != nil {
 			return err
 		}
 		j.Set("failure_deliver", nullable(strings.TrimSpace(*a.FailureDeliver)))
@@ -421,6 +423,25 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 	}
 	if j.Enabled() {
 		s.settleNext(j, now)
+	}
+	return nil
+}
+
+// checkTargets reads a deliver or failure_deliver value and holds each target to the messaging
+// policy ("origin" is the chat the job is made from, which the policy allows; here it reads as
+// the home channel).
+func (s *Scheduler) checkTargets(lane string) error {
+	targets, err := Targets(lane, nil)
+	if err != nil {
+		return err
+	}
+	if s.checkTarget == nil {
+		return nil
+	}
+	for _, t := range targets {
+		if err := s.checkTarget(t); err != nil {
+			return fmt.Errorf("deliver %s: %w", t, err)
+		}
 	}
 	return nil
 }

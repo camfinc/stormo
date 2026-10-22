@@ -73,6 +73,7 @@ func TestServeSlack(t *testing.T) {
 		{"homejob0001", "Post the morning digest.", "slack", ""},
 		{"originjob01", "Follow up in the thread.", "origin", `{"platform":"slack","chat_id":"C0DEVCHAN1","thread_id":"1700000100.000100"}`},
 		{"silentjob01", "Nothing new: SILENTJOB", "slack", ""},
+		{"agentjob001", "Post it where I may not.", "slack:C0SECRET01", ""},
 	} {
 		job := sched.NewJob()
 		for k, v := range map[string]any{"id": j.id, "name": j.id, "prompt": j.prompt, "skills": []string{}, "no_agent": false,
@@ -82,6 +83,9 @@ func TestServeSlack(t *testing.T) {
 		}
 		if j.origin != "" {
 			job.Set("origin", json.RawMessage(j.origin))
+		}
+		if j.id == "agentjob001" { // made by the agent: the messaging policy holds its targets
+			job.Set("created_at", "2026-10-01T00:00:00Z")
 		}
 		f.Jobs = append(f.Jobs, job)
 	}
@@ -166,6 +170,9 @@ func TestServeSlack(t *testing.T) {
 		if jobs[id]["last_status"] != "ok" || jobs[id]["last_delivery_error"] != nil {
 			t.Errorf("%s: %v / %v", id, jobs[id]["last_status"], jobs[id]["last_delivery_error"])
 		}
+	}
+	if jobs["agentjob001"]["last_status"] != "delivery_failed" || !strings.Contains(fmt.Sprint(jobs["agentjob001"]["last_delivery_error"]), "may message") {
+		t.Errorf("an agent job's delivery outside the policy: %v / %v", jobs["agentjob001"]["last_status"], jobs["agentjob001"]["last_delivery_error"])
 	}
 	if jobs["silentjob01"]["last_status"] != "silent" {
 		t.Errorf("silent job: %v", jobs["silentjob01"]["last_status"])

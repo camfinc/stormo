@@ -84,8 +84,12 @@ type Options struct {
 	AllowBots    string
 	// HomeChannel is where schedules deliver (SLACK_HOME_CHANNEL).
 	HomeChannel string
-	Redact      func(string) string
-	Log         func(string)
+	// Broadcast is the agent's grant to ping a crowd (needletail.yaml slack.broadcast): only a
+	// send_message that asks for it (broadcast: true) keeps @channel, @here, @everyone and user
+	// groups; everywhere else they are escaped.
+	Broadcast bool
+	Redact    func(string) string
+	Log       func(string)
 	// BusyWait is how long a message waits for a turn slot before a busy note (default 10 min);
 	// RetryEvery how often it asks (default 2 s).
 	BusyWait, RetryEvery time.Duration
@@ -814,11 +818,17 @@ func (g *Gateway) status(channel, thread, text string) {
 }
 
 // post sends text (the model's Markdown) to a channel or thread: redacted, converted to mrkdwn
-// and split into numbered parts when long. It returns the first part's ts; the thread (or the
-// message, which starts one) is remembered as one the agent is in.
+// (every special mention escaped) and split into numbered parts when long. It returns the first
+// part's ts; the thread (or the message, which starts one) is remembered as one the agent is in.
 func (g *Gateway) post(ctx context.Context, channel, thread, text string) (string, error) {
+	return g.postAs(ctx, channel, thread, text, false)
+}
+
+// postAs is post, keeping broadcasts and user groups when broadcast is set (a send_message the
+// policy granted one).
+func (g *Gateway) postAs(ctx context.Context, channel, thread, text string, broadcast bool) (string, error) {
 	first := ""
-	for _, part := range Split(Mrkdwn(g.o.Redact(text)), MaxMessage) {
+	for _, part := range Split(Format(g.o.Redact(text), broadcast), MaxMessage) {
 		ts, err := g.o.Web.PostMessage(ctx, channel, thread, part)
 		if err != nil {
 			return first, err

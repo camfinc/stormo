@@ -36,6 +36,10 @@ type Delivery struct {
 	Failure bool
 	// Session is the run's session ("" for a script-only job).
 	Session string
+	// Trusted: the job is the repo's (agent.yaml defines it), so its targets are the repo's
+	// and the deliverer takes them as they are. Any other job's targets (a job the agent made)
+	// go through the messaging policy.
+	Trusted bool
 }
 
 // Deliverer sends a delivery (the Slack gateway's, from M5).
