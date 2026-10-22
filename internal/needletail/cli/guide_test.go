@@ -17,7 +17,7 @@ var updateGolden = flag.Bool("update", false, "rewrite testdata goldens")
 // messaging rules) and pinned here; it stays within MaxGuide, since it is in every turn.
 func TestGuideGolden(t *testing.T) {
 	full := guide{Home: "/opt/data", Shared: []string{"/shared/group", "/shared/sales"}, Split: true, Luau: true,
-		Grants: []string{"fs.read:home", "fs.write:home", "core:msg_*", "http:api.example.com", "message:slack"}, LuauTimeout: 30,
+		Grants: []string{"fs.read:home", "fs.write:home", "core:msg_*", "http:api.example.com", "message:slack"}, LuauTimeout: 30, ScriptTimeout: 900,
 		Slack: true, Broadcast: false}
 	got := full.render()
 	golden := filepath.Join("testdata", "guide.golden")
@@ -58,6 +58,30 @@ func TestGuideGolden(t *testing.T) {
 		}
 	}
 	t.Logf("guide: %d bytes in full, %d without Luau and Slack", len(got), len(min))
+	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's
+	if !strings.Contains(got, "30 s for tools and the other handlers (luau_timeout)") || !strings.Contains(got, "900 s for on_schedule handlers and .luau job scripts (script_timeout)") {
+		t.Error("the guide does not tell luau_timeout from script_timeout")
+	}
+}
+
+// MaxGuide holds in render, not only in this test: a reference that grew past it is cut at a
+// line, with a pointer to luau_reference, and the messaging rules after it stay whole.
+func TestGuideStaysWithinMaxGuide(t *testing.T) {
+	was := compactReference
+	t.Cleanup(func() { compactReference = was })
+	compactReference = func() string { return strings.Repeat("- `nt.fn(x)`: a function with a long description.\n", 600) }
+	g := guide{Home: "/opt/data", Luau: true, LuauTimeout: 30, ScriptTimeout: 30, Slack: true}
+	got := g.render()
+	if len(got) > MaxGuide {
+		t.Fatalf("the guide is %d bytes, over %d", len(got), MaxGuide)
+	}
+	if !strings.Contains(got, "luau_reference has the rest") || !strings.Contains(got, "## Messages\n") ||
+		!strings.HasSuffix(got, "A scheduled run's final reply is its delivery: do not send it yourself.\n\n") {
+		t.Errorf("the guide:\n%s", got)
+	}
+	if i := strings.Index(got, "…: luau_reference has the rest"); i < 1 || got[i-1] != '\n' {
+		t.Error("the reference was not cut at a line")
+	}
 }
 
 // boot puts the guide in the system prompt, after the skills and before the current time, and

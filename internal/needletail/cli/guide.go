@@ -7,8 +7,13 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/luau"
 )
 
-// MaxGuide bounds the system prompt's guide section (bytes): it is in every turn.
+// MaxGuide bounds the system prompt's guide section (bytes): it is in every turn. render holds
+// it: past it, the compact function reference is cut at a line, with a pointer to
+// luau_reference (the full one).
 const MaxGuide = 7000
+
+// compactReference is the guide's function reference (a variable for the bound's test).
+var compactReference = luau.CompactReference
 
 // guide is what the system prompt's guide section is made from (docs/needletail.md §4.4): it is
 // generated from the runtime's own settings and the Luau registry, not written by hand, so it
@@ -20,19 +25,23 @@ type guide struct {
 	// Split: the agent's commands run as their own user, so the runtime's files are out of
 	// their reach (§7); otherwise they are protected only by the tools.
 	Split bool
-	// Luau: the Luau engine runs; Grants are the agent's grants, LuauTimeout a run's bound (s).
-	Luau        bool
-	Grants      []string
-	LuauTimeout int
+	// Luau: the Luau engine runs; Grants are the agent's grants, LuauTimeout a tool's (and an
+	// on_message, on_mention or before_send handler's) bound (s), ScriptTimeout an on_schedule
+	// handler's and a .luau job script's.
+	Luau          bool
+	Grants        []string
+	LuauTimeout   int
+	ScriptTimeout int
 	// Slack: the gateway runs (send_message, no_reply); Broadcast the agent's grant.
 	Slack     bool
 	Broadcast bool
 }
 
 // render is the guide section: where things are and which call changes what, how to write Luau
-// tools and handlers (with the compact function reference), and how messages work.
+// tools and handlers (with the compact function reference), and how messages work; at most
+// MaxGuide bytes (the reference is what gives way).
 func (g guide) render() string {
-	var b strings.Builder
+	var b, ref strings.Builder
 	b.WriteString("## Your home\n")
 	fmt.Fprintf(&b, "Your home is %s: the terminal's working directory and $HOME.\n", g.Home)
 	b.WriteString("- `SOUL.md`: who you are. Read-only; it changes through review.\n" +
@@ -77,12 +86,15 @@ func (g guide) render() string {
 			grants = strings.Join(g.Grants, ", ")
 		}
 		fmt.Fprintf(&b, "A call needs a cap the header's `caps:` declares and you are granted (your grants: %s; http:, message: and "+
-			"fs.*:shared need one from your owner). Each run: %d s (a header's `timeout:` may only lower it), 48 MiB, 8 MiB read and "+
-			"4 MiB written. Functions:\n", grants, g.LuauTimeout)
-		b.WriteString(luau.CompactReference())
-		b.WriteString("\n")
+			"fs.*:shared need one from your owner). A run may take %d s for tools and the other handlers (luau_timeout), %d s for "+
+			"on_schedule handlers and .luau job scripts (script_timeout); a header's `timeout:` may only lower it. 48 MiB, 8 MiB read "+
+			"and 4 MiB written. Functions:\n", grants, g.LuauTimeout, g.ScriptTimeout)
+		ref.WriteString(compactReference())
+		ref.WriteString("\n")
 	}
+	var post strings.Builder
 	if g.Slack {
+		b := &post
 		b.WriteString("## Messages\n" +
 			"Your reply in a conversation is posted there. send_message posts elsewhere: `slack` (the home channel), a channel or " +
 			"thread you are in, or the DM of a person allowed to talk to you (action list shows them); nothing else. ")
@@ -93,5 +105,22 @@ func (g guide) render() string {
 		}
 		b.WriteString("A scheduled run's final reply is its delivery: do not send it yourself.\n\n")
 	}
-	return b.String()
+	return b.String() + fitReference(ref.String(), MaxGuide-b.Len()-post.Len()) + post.String()
+}
+
+// refCut ends a reference cut to fit the guide.
+const refCut = "…: luau_reference has the rest.\n\n"
+
+// fitReference is ref within room bytes: whole when it fits, else cut after its last whole line
+// that leaves room for refCut.
+func fitReference(ref string, room int) string {
+	if len(ref) <= room {
+		return ref
+	}
+	keep := room - len(refCut)
+	if keep <= 0 {
+		return ""
+	}
+	i := strings.LastIndexByte(ref[:keep], '\n')
+	return ref[:i+1] + refCut
 }

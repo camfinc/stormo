@@ -42,7 +42,7 @@ end
 - `on_schedule`: answers pass (optional context: notes in the run's prompt), reply {text} (the run's output, no turn), silent (a silent run).
 - `before_send`: answers allow, rewrite {text} (the text only; never the target, never a broadcast), block {reason?}.
 Handlers run in order (skill dir, then name); one that fails is skipped, but a failing before_send blocks the message. on_schedule names its jobs (`jobs: [<id or name>]`). Event fields and the rest: luau_reference.
-A call needs a cap the header's `caps:` declares and you are granted (your grants: fs.read:home, fs.write:home, core:msg_*, http:api.example.com, message:slack; http:, message: and fs.*:shared need one from your owner). Each run: 30 s (a header's `timeout:` may only lower it), 48 MiB, 8 MiB read and 4 MiB written. Functions:
+A call needs a cap the header's `caps:` declares and you are granted (your grants: fs.read:home, fs.write:home, core:msg_*, http:api.example.com, message:slack; http:, message: and fs.*:shared need one from your owner). A run may take 30 s for tools and the other handlers (luau_timeout), 900 s for on_schedule handlers and .luau job scripts (script_timeout); a header's `timeout:` may only lower it. 48 MiB, 8 MiB read and 4 MiB written. Functions:
 - `read_file(path)` → string; needs fs.read:home | fs.read:shared
 - `write_file(path, content)` → nil; needs fs.write:home[/glob] | fs.write:shared
 - `append_file(path, content)` → nil; needs fs.write:home[/glob] | fs.write:shared
