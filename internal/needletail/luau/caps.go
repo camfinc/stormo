@@ -5,11 +5,13 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
-// Cap is one capability (wire.Capability): Kind fs.read, fs.write, http or core, and its Arg
-// (home, shared, home/<glob>, a host or *.suffix, a tool or prefix*).
+// Cap is one capability (wire.Capability): Kind fs.read, fs.write, http, core or message, and
+// its Arg (home, shared, home/<glob>, a host or *.suffix, a tool or prefix*, a send_message
+// target or <prefix>:*).
 type Cap struct{ Kind, Arg string }
 
 func (c Cap) String() string { return c.Kind + ":" + c.Arg }
@@ -18,7 +20,7 @@ func (c Cap) String() string { return c.Kind + ":" + c.Arg }
 func ParseCap(s string) (Cap, error) {
 	s = strings.TrimSpace(s)
 	if !wire.Capability.MatchString(s) {
-		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>)", s)
+		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>, message:<target>)", s)
 	}
 	kind, arg, _ := strings.Cut(s, ":")
 	return Cap{Kind: kind, Arg: arg}, nil
@@ -111,6 +113,11 @@ func hostMatch(pattern, host string) bool {
 	return pattern == host
 }
 
+// Message: sending to target (messaging.Target.String's form: slack, slack:<channel>, …).
+func (c Caps) Message(target string) bool {
+	return c.allow("message", func(a string) bool { return messaging.GrantMatches(a, target) })
+}
+
 // Core: calling the core's tool.
 func (c Caps) Core(tool string) bool {
 	return c.allow("core", func(a string) bool { return toolMatch(a, tool) })
@@ -180,6 +187,8 @@ func covers(a, b Cap) bool {
 			return hostMatch(a.Arg, strings.TrimPrefix(b.Arg, "*."))
 		}
 		return false
+	case "message":
+		return messaging.GrantMatches(a.Arg, b.Arg)
 	case "core":
 		if a.Arg == b.Arg {
 			return true

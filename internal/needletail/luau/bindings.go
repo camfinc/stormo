@@ -88,7 +88,12 @@ func Bindings() []Binding {
 		{Name: "memory.read", Global: "read_memory", Returns: "{memory = {…}, user = {…}}: the hot-memory entries",
 			Doc: "Reads the agent's memory (read-only; the memory tool changes it).", Grant: "fs.read:home", Example: `local m = read_memory()`, run: memoryRead},
 		{Name: "message.send", Global: "send_message", Params: []Param{{Name: "target", Type: "string", Doc: "where to (send_message's targets)"}, {Name: "text", Type: "string"}},
-			Returns: "table", Doc: "Sends a message through the runtime's messaging policy. Not available yet.", Grant: "message:<target>",
+			Returns: "{platform, chat_id, message_id, home}",
+			Doc: "Sends a message (Markdown) through the runtime's messaging policy, as the send_message tool does: the home channel ('slack'), " +
+				"a channel or thread the agent is in ('slack:<channel>[:<thread_ts>]'), an allowed user's DM ('slack:<user>'). Never broadcasts: " +
+				"@channel, @here, @everyone and user groups are escaped. A target the policy refuses fails with `refused`. Grants: message:slack is the home " +
+				"channel, message:slack:<channel>:* a channel and its threads, message:slack:* any target the policy allows.",
+			Grant:   "message:<target>",
 			Example: `send_message("slack", "done")`, Write: true, run: messageSend},
 		{Name: "json.encode", Global: "json_encode", Params: []Param{{Name: "value", Type: "any"}}, Returns: "string",
 			Doc: "JSON text of a value: {} for an empty table, an array for keys 1..n, nt.json.null for null.", Example: `local s = json_encode({a = 1})`, Local: true},

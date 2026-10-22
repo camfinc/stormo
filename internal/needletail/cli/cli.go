@@ -320,6 +320,9 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	rt.agent.Sections = append(rt.agent.Sections, gw.Guidance)
 	rt.sched.SetDeliverer(gw)
 	rt.sched.SetTargetCheck(gw.CheckTarget)
+	if rt.luau != nil {
+		rt.luau.Messenger = gw // Luau's send_message, under the same policy
+	}
 	gw.Start()
 	return gw
 }

@@ -11,7 +11,9 @@ import "regexp"
 //
 //	fs.read:home  fs.read:shared  fs.write:home[/<glob>]  fs.write:shared
 //	http:<host>   http:*.<suffix>  core:<tool>  core:<prefix>*
-var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?)$`)
+//	message:<target>  message:<target prefix>:*  message:*   (send_message's targets: slack,
+//	                  slack:<channel>, slack:<channel>:<thread_ts>, slack:<user>)
+var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?|message:(\*|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?))$`)
 
 // Contract versions.
 const (

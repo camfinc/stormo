@@ -154,12 +154,15 @@ func TestGrantsRender(t *testing.T) {
 	if c := renderConfig(a, conn, manifest.Local, noGW, ac); c.Model.Primary != (wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}) || c.Core == nil {
 		t.Errorf("no gateway: %+v", c)
 	}
-	// A bad grant is refused.
-	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  grants: [exec:bash]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readAgentConfig(dir); err == nil {
-		t.Error("exec:bash granted")
+	// A bad grant is refused; message grants name send_message targets.
+	for g, ok := range map[string]bool{"exec:bash": false, "message:slack": true, "message:slack:*": true, "message:slack:C0DEVCHAN1:*": true,
+		"message:slack:C0DEVCHAN1:1700000002.000100": true, "message:*": true, "message:slack:#general": false, "message:": false} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  grants: [\""+g+"\"]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readAgentConfig(dir); (err == nil) != ok {
+			t.Errorf("grant %s: %v", g, err)
+		}
 	}
 }
 

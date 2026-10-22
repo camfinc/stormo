@@ -22,6 +22,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
@@ -58,6 +59,9 @@ type Runtime struct {
 	Core     CoreCaller
 	CoreURLs []string
 	Memory   *memory.Store
+	// Messenger sends send_message's messages under the runtime's messaging policy (the Slack
+	// gateway; nil: none runs, and send_message is unavailable).
+	Messenger messaging.Messenger
 	// Redact masks secret values in every answer a script gets, its logs and results (the
 	// http_secrets values are masked besides, in any JSON spelling: redact.go).
 	Redact func(string) string
@@ -803,8 +807,36 @@ func timeNow(_ context.Context, c *Call, _ json.RawMessage) (any, error) {
 	return float64(c.rt.now().UnixMicro()) / 1e6, nil
 }
 
-// messageSend is the registry's messaging entry; M6b implements it through the runtime's one
-// messaging policy.
-func messageSend(context.Context, *Call, json.RawMessage) (any, error) {
-	return nil, errf("unavailable", "send_message is not available yet")
+// messageSend sends a message through the runtime's one messaging policy (the gateway's, as the
+// send_message tool does), within the tool's message:<target> caps. It never broadcasts: every
+// @channel, @here, @everyone or user group in the text is escaped.
+func messageSend(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
+	var a struct {
+		Target any `json:"target"`
+		Text   any `json:"text"`
+	}
+	_ = json.Unmarshal(in, &a)
+	target, _ := a.Target.(string)
+	text, _ := a.Text.(string)
+	if strings.TrimSpace(text) == "" {
+		return nil, errf("bad_args", "send_message needs a target and a text")
+	}
+	t, err := messaging.Parse(target)
+	if err != nil {
+		return nil, errf("bad_args", "send_message: %v", err)
+	}
+	if !c.Caps.Message(t.String()) {
+		return nil, c.deny("message.send", "message:"+t.String())
+	}
+	if c.rt.Messenger == nil {
+		return nil, errf("unavailable", "send_message: no messaging gateway runs here (Slack is off)")
+	}
+	sent, err := c.rt.Messenger.Send(ctx, messaging.Request{Target: t.String(), Text: text})
+	switch {
+	case errors.Is(err, messaging.ErrRefused):
+		return nil, errf("refused", "send_message: %v", err)
+	case err != nil:
+		return nil, errf("message", "send_message: %v", err)
+	}
+	return sent, nil
 }

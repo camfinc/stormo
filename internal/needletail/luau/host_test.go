@@ -20,6 +20,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
@@ -447,7 +448,58 @@ func TestMemoryAndLog(t *testing.T) {
 		t.Fatalf("logs %q", logs)
 	}
 	fails(t, rt, nil, `return read_memory()`, "denied")
-	fails(t, rt, nil, `return send_message("slack", "hi")`, "unavailable")
+	fails(t, rt, nil, `return send_message("slack", "hi")`, "denied")
+}
+
+type fakeMessenger struct {
+	mu   sync.Mutex
+	sent []messaging.Request
+}
+
+func (f *fakeMessenger) Send(_ context.Context, r messaging.Request) (messaging.Sent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if strings.Contains(r.Target, "C0SECRET01") {
+		return messaging.Sent{}, fmt.Errorf("%w: C0SECRET01 is not a channel you have a conversation in", messaging.ErrRefused)
+	}
+	f.sent = append(f.sent, r)
+	return messaging.Sent{Platform: "slack", Channel: "C0HOME0001", TS: "1800000000.000001", Home: true}, nil
+}
+
+// send_message goes through the runtime's messaging policy (the gateway) within message:<target>
+// grants, never broadcasting; off when no gateway runs.
+func TestMessageSend(t *testing.T) {
+	rt, _ := newRuntime(t)
+	declared := []string{"message:slack:*"}
+	fails(t, rt, declared, `return send_message("slack", "hi")`, "denied") // not granted
+	rt.Grants = append(rt.Grants, "message:slack")
+	fails(t, rt, declared, `return send_message("slack", "hi")`, "unavailable") // no gateway
+	m := &fakeMessenger{}
+	rt.Messenger = m
+	res, _ := exec(t, rt, declared, `return send_message("home", "the run is done <!channel>")`)
+	wantValue(t, res, `{"chat_id": "C0HOME0001", "home": true, "message_id": "1800000000.000001", "platform": "slack"}`)
+	fails(t, rt, declared, `return send_message("slack:C0DEVCHAN1", "hi")`, "denied") // the grant names the home channel only
+	fails(t, rt, declared, `return send_message("slack:#general", "hi")`, "bad_args")
+	fails(t, rt, declared, `return nt.message.send("slack", "")`, "bad_args")
+	rt.Grants = append(rt.Grants, "message:slack:*")
+	fails(t, rt, declared, `return send_message("slack:C0SECRET01", "hi")`, "refused") // the policy's answer
+	exec(t, rt, declared, `return send_message("slack:C0DEVCHAN1:1700000002.000100", "in the thread")`)
+	if len(m.sent) != 2 || m.sent[0].Target != "slack" || m.sent[0].Broadcast || m.sent[1].Target != "slack:C0DEVCHAN1:1700000002.000100" {
+		t.Fatalf("sent %+v", m.sent)
+	}
+	res, _, err := rt.Exec(context.Background(), Exec{Name: "t", Source: []byte(`local ok, e = pcall(send_message, "slack", "x") return string.match(e, "dry_run") or e`),
+		Header: &Header{Format: 1, Caps: declared}, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantValue(t, res, `"dry_run"`)
+	if len(m.sent) != 2 {
+		t.Fatal("a dry run sent a message")
+	}
+	caps, _ := NewCaps([]string{"message:slack:*", "message:slack:C0DEVCHAN1"}, []string{"message:slack", "message:slack:C0DEVCHAN1:*"})
+	if got := strings.Join(caps.Effective(), " "); got != "message:slack message:slack:C0DEVCHAN1:* message:slack:C0DEVCHAN1" {
+		t.Fatalf("effective %q", got)
+	}
 }
 
 func TestAudit(t *testing.T) {
