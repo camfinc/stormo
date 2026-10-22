@@ -23,6 +23,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/config"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/luau"
@@ -69,6 +70,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "jail":
+		// not in the usage: how the runtime starts the agent's commands (jail.Launcher)
+		return jail.Main(args[1:], stderr)
 	case "serve":
 		return serve(ctx, args[1:], stderr)
 	case "oneshot":
@@ -102,6 +106,8 @@ type runtime struct {
 	// the Slack gateway runs
 	guide     guide
 	guideText atomic.Pointer[string]
+	// jail is how the agent's commands are confined, as the activity reports it (jailFor)
+	jail string
 }
 
 // setGuide renders the guide section the turns read.
@@ -124,6 +130,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	_ = os.Setenv("HOME", cfg.Home)
 	logger := log.New(red.Writer(stderr), "", log.LstdFlags|log.LUTC)
 	logf := func(s string) { logger.Println(s) }
+	self := executable()
 	// Started as root (the image), the runtime lays the home out and drops to its own user before
 	// anything else touches the home; the agent's commands then run as another (§7).
 	split, err := privsep.Enter(cfg.Home, cfg.StateRoot, logf)
@@ -159,7 +166,12 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	if split.Exec != nil {
 		env.Agent = &tools.User{UID: uint32(split.Exec.ExecUID), GID: uint32(split.Exec.RuntimeGID)}
+		// /tmp is outside the jail and, with a read-only root filesystem, not writable
+		env.TmpDir = filepath.Join(cfg.Home, jail.TmpDir)
 	}
+	// The jail (§7): the agent's commands confined to the home and the shared layers.
+	js := jailFor(split.Exec != nil, jailSpec(cfg), jail.ABI, self, os.Getenv, logf)
+	env.Jail = js.launcher
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
@@ -173,7 +185,8 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger,
-		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
+		jail: js.state,
+		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout}}
 	rt.setGuide()
 	// the guide comes first among the sections, before a channel's guidance
@@ -423,7 +436,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	defer link.close(3 * time.Second)
 	var gw *slack.Gateway
 	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
-		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns,
+		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, Jail: rt.jail,
 		Platforms: func() map[string]wire.Platform {
 			if gw == nil {
 				return nil

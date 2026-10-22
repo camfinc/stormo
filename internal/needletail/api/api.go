@@ -69,6 +69,7 @@ type Server struct {
 	now      func() time.Time
 	jobs     func() ([]string, time.Time)
 	platform func() map[string]wire.Platform
+	jail     string
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -108,6 +109,8 @@ type Options struct {
 	Jobs func() (running []string, lastStart time.Time)
 	// Platforms is the messaging gateways' states (the activity's platforms; nil: none).
 	Platforms func() map[string]wire.Platform
+	// Jail is the activity's jail: how the agent's commands are confined.
+	Jail string
 }
 
 // New builds the server.
@@ -117,7 +120,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -386,7 +389,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	a := wire.Activity{ActiveTurns: s.active, Busy: s.active > 0, Source: s.lastSource, RunningJobs: []string{}, Platforms: map[string]wire.Platform{}}
+	a := wire.Activity{ActiveTurns: s.active, Busy: s.active > 0, Source: s.lastSource, RunningJobs: []string{}, Platforms: map[string]wire.Platform{}, Jail: s.jail}
 	if !s.lastActive.IsZero() {
 		a.LastActive = s.lastActive.UTC().Format(time.RFC3339Nano)
 	}

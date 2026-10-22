@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/skills"
@@ -577,5 +578,41 @@ func TestCommandEnvTrustsEveryRepo(t *testing.T) {
 	m, _ := call(t, r, env, "terminal", map[string]any{"command": "git config --get-all safe.directory"})
 	if out, _ := m["output"].(string); !strings.Contains(out, "*") {
 		t.Errorf("git does not see safe.directory=*: %v", m)
+	}
+}
+
+// With the split's TmpDir, a command's TMPDIR, TMP and TEMP are in the home whatever the process
+// env says; with a Jail, the command starts through its launcher (here a stand-in that records
+// its arguments and execs the command), which gets the home and the shared layers.
+func TestTerminalTmpDirAndJail(t *testing.T) {
+	r, env := setup(t)
+	base := env.Environ
+	env.Environ = func() []string { return append(base(), "TMPDIR=/tmp", "TMP=/tmp", "TEMP=/tmp") }
+	env.TmpDir = filepath.Join(env.Home, ".tmp")
+	out, failed := call(t, r, env, "terminal", map[string]any{"command": `echo "$TMPDIR|$TMP|$TEMP"; env | grep -c '^TMPDIR='`})
+	want := env.TmpDir + "|" + env.TmpDir + "|" + env.TmpDir + "\n1\n"
+	if failed || out["output"] != want {
+		t.Fatalf("tmp env: %v %v, want %q", out, failed, want)
+	}
+	record := filepath.Join(t.TempDir(), "args")
+	launcher := filepath.Join(t.TempDir(), "launcher")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\nwhile [ \"$1\" != -- ]; do shift; done\nshift\np=$1\nshift\nshift\nexec \"$p\" \"$@\"\n"
+	if err := os.WriteFile(launcher, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env.Jail = &jail.Launcher{Self: launcher, Spec: jail.Spec{Home: env.Home, Shared: env.Sandbox.Shared}}
+	out, failed = call(t, r, env, "terminal", map[string]any{"command": "echo jailed; pwd"})
+	if o, _ := out["output"].(string); failed || !strings.HasPrefix(o, "jailed\n") {
+		t.Fatalf("through the launcher: %v %v", out, failed)
+	}
+	b, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(string(b)), "\n")
+	wantArgs := []string{"jail", "--home", env.Home, "--shared", env.Sandbox.Shared[0], "--"}
+	if len(got) < len(wantArgs)+3 || !slices.Equal(got[:len(wantArgs)], wantArgs) || !strings.HasSuffix(got[len(wantArgs)], "/bash") ||
+		got[len(wantArgs)+1] != "bash" || got[len(got)-1] != "echo jailed; pwd" {
+		t.Errorf("launcher args %q", got)
 	}
 }

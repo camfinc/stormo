@@ -157,3 +157,44 @@ func TestPrepareWorkspaceTreesStayReachable(t *testing.T) {
 		}
 	}
 }
+
+// The commands' temporary directory (TMPDIR): made when missing, the runtime's and group-writable
+// (setgid), what a command left there kept as the workspace's; a symlink holding the name (to
+// /tmp, say) moved aside, so TMPDIR never leads out of the home.
+func TestPrepareTempDir(t *testing.T) {
+	u := Users{RuntimeUID: os.Getuid(), RuntimeGID: os.Getgid(), ExecUID: os.Getuid()}
+	home := t.TempDir()
+	if err := Prepare(home, u, "acme-state", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, filepath.Join(home, Temp)); got != fs.ModeDir|fs.ModeSetgid|0o770 {
+		t.Errorf("made %s: %v", Temp, got)
+	}
+	put(t, filepath.Join(home, Temp, "tmp.abc"), "x", 0o600)
+	if err := Prepare(home, u, "acme-state", func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, filepath.Join(home, Temp, "tmp.abc")); got != 0o600 {
+		t.Errorf("a command's temp file: %v", got)
+	}
+	outside := t.TempDir()
+	if err := os.RemoveAll(filepath.Join(home, Temp)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, Temp)); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	if err := Prepare(home, u, "acme-state", func(s string) { logs = append(logs, s) }); err != nil {
+		t.Fatal(err)
+	}
+	if got := mode(t, filepath.Join(home, Temp)); got != fs.ModeDir|fs.ModeSetgid|0o770 {
+		t.Errorf("%s after a symlink: %v", Temp, got)
+	}
+	if moved, _ := filepath.Glob(filepath.Join(home, Temp+".moved-*")); len(moved) != 1 || len(logs) != 1 {
+		t.Errorf("moved %v logs %v", moved, logs)
+	}
+	if got := mode(t, outside); got != fs.ModeDir|0o700 && got != fs.ModeDir|0o755 {
+		t.Errorf("the link's target changed: %v", got)
+	}
+}

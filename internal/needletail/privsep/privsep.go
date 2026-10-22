@@ -13,6 +13,7 @@ import (
 	"runtime"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
@@ -41,7 +42,15 @@ var (
 	// manifest's state dir, needletail.yaml's state_root): the group may reach every entry in them,
 	// one a command made owner-only included.
 	Workspace = []string{"skills", "scripts"}
+	// Temp is the commands' temporary directory (TMPDIR, jail.TmpDir): the runtime's, so a
+	// command can neither remove nor replace it (a symlink to /tmp, say; the home is sticky), and
+	// group-writable (TempMode) for the commands; what they make in it is theirs, as in the rest
+	// of the workspace.
+	Temp = jail.TmpDir
 )
+
+// TempMode is Temp's own mode: the runtime's group may make entries there (setgid: they keep it).
+const TempMode = 0o2770
 
 // RootMode is the home's own mode: the runtime's, group-writable so the agent's commands can make
 // files and directories there, sticky so they can never remove or rename the runtime's entries

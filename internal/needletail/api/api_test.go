@@ -456,3 +456,33 @@ func TestJobLane(t *testing.T) {
 		t.Errorf("a third job: %v", err)
 	}
 }
+
+// The activity reports the jail the runtime gives the agent's commands, and the adapter passes
+// it to the core.
+func TestActivityReportsTheJail(t *testing.T) {
+	state := t.TempDir()
+	store, err := sessions.Open(filepath.Join(state, "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, jail := range []string{"landlock ABI 10", "off: the kernel has no Landlock (before 5.13)", ""} {
+		s, err := New(Options{Key: key, Store: store, Agent: &fakeAgent{store: store}, StateDir: filepath.Join(state, "state"), Jail: jail})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(s.Handler())
+		_, raw, err := call(srv, key)(context.Background(), http.MethodGet, "/v1/activity", nil)
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v any
+		_ = json.Unmarshal(raw, &v)
+		if a := adapter.ActivityFrom(v, time.Now()); a == nil || a.Jail != jail {
+			t.Errorf("jail %q: activity %s", jail, raw)
+		}
+		if jail == "" && strings.Contains(string(raw), `"jail"`) {
+			t.Errorf("an empty jail is reported: %s", raw)
+		}
+	}
+}

@@ -69,6 +69,9 @@ func Prepare(home string, u Users, stateDir string, logf func(string)) error {
 			return err
 		}
 	}
+	if err := tempDir(root, u, logf); err != nil {
+		return err
+	}
 	if err := unix.Fchown(root, u.RuntimeUID, u.RuntimeGID); err != nil {
 		return &os.PathError{Op: "chown", Path: home, Err: err}
 	}
@@ -187,6 +190,43 @@ func runtimeDir(root int, rel string, u Users, mode func(bool, uint32) uint32, l
 		}
 	}()
 	return fixTree(dir, segs[len(segs)-1], rel, u.RuntimeUID, u.RuntimeGID, byPath)
+}
+
+// tempDir makes Temp a directory when missing, moving aside what else holds the name, and gives
+// the directory itself (what it holds is the workspace's, laid out before) to the runtime with
+// TempMode.
+func tempDir(root int, u Users, logf func(string)) error {
+	var st unix.Stat_t
+	err := unix.Fstatat(root, Temp, &st, unix.AT_SYMLINK_NOFOLLOW)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		if err := unix.Mkdirat(root, Temp, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return &os.PathError{Op: "mkdir", Path: Temp, Err: err}
+		}
+	case err != nil:
+		return &os.PathError{Op: "stat", Path: Temp, Err: err}
+	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
+		aside := fmt.Sprintf("%s.moved-%d", Temp, time.Now().Unix())
+		if err := unix.Renameat(root, Temp, root, aside); err != nil {
+			return &os.PathError{Op: "rename", Path: Temp, Err: err}
+		}
+		logf(fmt.Sprintf("uid split: %s was not a directory; moved aside to %s", Temp, aside))
+		if err := unix.Mkdirat(root, Temp, 0o700); err != nil {
+			return &os.PathError{Op: "mkdir", Path: Temp, Err: err}
+		}
+	}
+	fd, err := unix.Openat(root, Temp, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: Temp, Err: err}
+	}
+	defer unix.Close(fd)
+	if err := unix.Fchown(fd, u.RuntimeUID, u.RuntimeGID); err != nil {
+		return &os.PathError{Op: "chown", Path: Temp, Err: err}
+	}
+	if err := unix.Fchmod(fd, TempMode); err != nil {
+		return &os.PathError{Op: "chmod", Path: Temp, Err: err}
+	}
+	return nil
 }
 
 // runtimeFile gives a file at the home's root to the runtime with mode; a missing one is made

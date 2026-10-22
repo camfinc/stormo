@@ -4,4 +4,4 @@ package tools
 
 import "os/exec"
 
-func command(*exec.Cmd, *User) {}
+func start(*exec.Cmd, *User) {}

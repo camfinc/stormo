@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/skills"
@@ -48,6 +49,12 @@ type Env struct {
 	// Agent, when set, is the user the agent's commands run as (the terminal, a schedule's
 	// scripts): the uid split (docs/needletail.md §7). nil: the runtime's own.
 	Agent *User
+	// Jail, when set, starts the agent's commands confined to its home and shared layers
+	// (Landlock, docs/needletail.md §7). nil: they reach what the container and their user may.
+	Jail *jail.Launcher
+	// TmpDir, when set, is the agent's commands' temporary directory (TMPDIR, TMP and TEMP), in
+	// the home: /tmp is outside the jail, and not writable with a read-only root filesystem.
+	TmpDir string
 }
 
 // User is a uid and gid a command runs as.

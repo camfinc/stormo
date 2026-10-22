@@ -105,7 +105,7 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 		out.overlap = 2 * env.LongestSecret()
 	}
 	cmd.Stdout, cmd.Stderr = out, out
-	command(cmd, env.Agent)
+	command(cmd, env)
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
 	res := terminalResult{Output: out.String(env.Redact)}
@@ -178,12 +178,22 @@ const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 func CommandEnv(env *Env) []string { return terminalEnv(env) }
 
 // Command prepares cmd as one the agent runs (a schedule's script, as the terminal's): its own
-// process group, killed whole when cmd is cancelled, and env's Agent user (the uid split).
-func Command(cmd *exec.Cmd, env *Env) { command(cmd, env.Agent) }
+// process group, killed whole when cmd is cancelled, env's Agent user (the uid split) and env's
+// Jail. cmd's path, arguments and environment are set before.
+func Command(cmd *exec.Cmd, env *Env) { command(cmd, env) }
+
+// command is Command; on unix it also jails cmd (env.Jail).
+func command(cmd *exec.Cmd, env *Env) {
+	start(cmd, env.Agent)
+	if env.Jail != nil {
+		env.Jail.Wrap(cmd)
+	}
+}
 
 // terminalEnv is the scrubbed process env with HOME set to the agent's home and an explicit PATH:
 // the env's absolute entries, else DefaultPath. A relative entry ("", ".", "bin") would run what
-// is in the command's directory, the home, by a bare command name.
+// is in the command's directory, the home, by a bare command name. With env.TmpDir, TMPDIR, TMP
+// and TEMP are it.
 func terminalEnv(env *Env) []string {
 	var base []string
 	if env.Environ != nil {
@@ -198,6 +208,7 @@ func terminalEnv(env *Env) []string {
 		case strings.HasPrefix(kv, "HOME="):
 		case strings.HasPrefix(kv, "PATH="):
 			path = absolutePath(strings.TrimPrefix(kv, "PATH="))
+		case env.TmpDir != "" && (strings.HasPrefix(kv, "TMPDIR=") || strings.HasPrefix(kv, "TMP=") || strings.HasPrefix(kv, "TEMP=")):
 		default:
 			out = append(out, kv)
 		}
@@ -205,7 +216,11 @@ func terminalEnv(env *Env) []string {
 	if path == "" {
 		path = DefaultPath
 	}
-	return append(trustRepos(out), "PATH="+path, "HOME="+env.Home)
+	out = append(trustRepos(out), "PATH="+path, "HOME="+env.Home)
+	if env.TmpDir != "" {
+		out = append(out, "TMPDIR="+env.TmpDir, "TMP="+env.TmpDir, "TEMP="+env.TmpDir)
+	}
+	return out
 }
 
 // trustRepos adds safe.directory=* to git's config through the environment (GIT_CONFIG_COUNT,

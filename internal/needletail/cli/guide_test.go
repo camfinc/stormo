@@ -17,7 +17,7 @@ var updateGolden = flag.Bool("update", false, "rewrite testdata goldens")
 // The guide section is generated (the home's layout, the Luau registry, the agent's grants, the
 // messaging rules) and pinned here; it stays within MaxGuide, since it is in every turn.
 func TestGuideGolden(t *testing.T) {
-	full := guide{Home: "/opt/data", Shared: []string{"/shared/group", "/shared/sales"}, Split: true, Luau: true,
+	full := guide{Home: "/opt/data", Shared: []string{"/shared/group", "/shared/sales"}, Split: true, Jailed: true, TmpDir: "/opt/data/.tmp", Luau: true,
 		Grants: []string{"fs.read:home", "fs.write:home", "core:msg_*", "http:api.example.com", "message:slack"}, LuauTimeout: 30, ScriptTimeout: 900,
 		Slack: true, Broadcast: false}
 	got := full.render()
@@ -53,12 +53,17 @@ func TestGuideGolden(t *testing.T) {
 	}
 	// what this runtime does not run is not described
 	min := guide{Home: "/opt/data"}.render()
-	for _, absent := range []string{"Luau", "send_message", "own user"} {
+	for _, absent := range []string{"Luau", "send_message", "own user", "confined", "TMPDIR"} {
 		if strings.Contains(min, absent) {
 			t.Errorf("a guide without Luau, Slack or the uid split mentions %q:\n%s", absent, min)
 		}
 	}
 	t.Logf("guide: %d bytes in full, %d without Luau and Slack", len(got), len(min))
+	for _, want := range []string{"confined to your home and the shared directories", "/tmp and other units' directories", "$TMPDIR (`/opt/data/.tmp`, in your home)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the jailed guide lacks %q", want)
+		}
+	}
 	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's
 	if !strings.Contains(got, "30 s for tools and the other handlers (luau_timeout)") || !strings.Contains(got, "900 s for on_schedule handlers and .luau job scripts (script_timeout)") {
 		t.Error("the guide does not tell luau_timeout from script_timeout")

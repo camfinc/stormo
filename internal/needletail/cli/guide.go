@@ -33,6 +33,10 @@ type guide struct {
 	// Split: the agent's commands run as their own user, so the runtime's files are out of
 	// their reach (§7); otherwise they are protected only by the tools.
 	Split bool
+	// Jailed: the agent's commands are confined to the home and the shared layers (Landlock,
+	// §7). TmpDir is their TMPDIR, in the home ("" with the split off).
+	Jailed bool
+	TmpDir string
 	// Luau: the Luau engine runs; Grants are the agent's grants, LuauTimeout a tool's (and an
 	// on_message, on_mention or before_send handler's) bound (s), ScriptTimeout an on_schedule
 	// handler's and a .luau job script's.
@@ -69,6 +73,13 @@ func (g guide) render() string {
 		b.WriteString("Your terminal commands and job scripts run as their own user: memories/, cron/, sessions/, logs/, state/, .swarm/ " +
 			"and needletail.yaml are out of their reach (memories/ read-only). Use the tools named above for them. Run a script with its " +
 			"interpreter (`bash x.sh`, `python3 x.py`): a file the runtime wrote for you cannot be chmod-ed by your commands.\n")
+	}
+	if g.Jailed {
+		b.WriteString("They are confined to your home and the shared directories above: they run the system's programs (bash, python3, git, …) " +
+			"but cannot read or write anything else in the container, /tmp and other units' directories included.\n")
+	}
+	if g.TmpDir != "" {
+		fmt.Fprintf(&b, "Temporary files go to $TMPDIR (`%s`, in your home), never /tmp.\n", clipPath(g.TmpDir))
 	}
 	b.WriteString("\n")
 	if g.Luau {

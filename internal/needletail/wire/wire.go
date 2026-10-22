@@ -69,6 +69,9 @@ type Activity struct {
 	LastJobAt   string              `json:"last_job_at,omitempty"`
 	LastActive  string              `json:"last_active,omitempty"`
 	Platforms   map[string]Platform `json:"platforms"`
+	// Jail is how the agent's commands are confined: "landlock ABI <n>", or "off: <why>" (a
+	// kernel without Landlock, the uid split off). Absent from runtimes before the jail.
+	Jail string `json:"jail,omitempty"`
 }
 
 // RunRequest is POST /v1/runs (with an Idempotency-Key header); the API answers 202 with RunAccepted.
