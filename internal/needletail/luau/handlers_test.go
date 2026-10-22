@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -321,5 +324,89 @@ func TestHandlerOrder(t *testing.T) {
 	}
 	if v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil); v.Text != "a" {
 		t.Errorf("verdict %+v", v)
+	}
+}
+
+// A handler file that cannot be loaded at all blocks before_send when its header names
+// before_send, read leniently (a bad cap, timeout, unknown key or unknown event beside it), or
+// when no events can be read from it (no header, over MaxSource, not a regular file: a symlink,
+// a FIFO, a directory): the text it was there to change would otherwise go out as it was. A file
+// whose header names only message events stays open for before_send and for its own events.
+func TestBeforeSendFailsClosedOnLoad(t *testing.T) {
+	allow := `function before_send(ev) return "allow" end`
+	for name, setup := range map[string]func(dir string){
+		"badcaps": func(dir string) {
+			write(t, filepath.Join(dir, "badcaps.luau"), handler("badcaps", "before_send", "caps: [nope]\n", allow))
+		},
+		"badtimeout": func(dir string) {
+			write(t, filepath.Join(dir, "badtimeout.luau"), handler("badtimeout", "before_send", "timeout: 99h\n", allow))
+		},
+		"unknownkey": func(dir string) {
+			write(t, filepath.Join(dir, "unknownkey.luau"), handler("unknownkey", "before_send", "colour: red\n", allow))
+		},
+		"unknownevent": func(dir string) {
+			write(t, filepath.Join(dir, "unknownevent.luau"), handler("unknownevent", "on_typing, before_send", "", allow))
+		},
+		"noheader": func(dir string) { write(t, filepath.Join(dir, "noheader.luau"), allow+"\n") },
+		"oversized": func(dir string) {
+			write(t, filepath.Join(dir, "oversized.luau"), handler("oversized", "before_send", "", allow+"\n"+strings.Repeat("-- padding\n", MaxSource/10)))
+		},
+		"symlink": func(dir string) {
+			target := filepath.Join(t.TempDir(), "real.luau")
+			write(t, target, handler("symlink", "before_send", "", allow))
+			if err := os.Symlink(target, filepath.Join(dir, "symlink.luau")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"fifo": func(dir string) {
+			if err := syscall.Mkfifo(filepath.Join(dir, "fifo.luau"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"dir": func(dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, "dir.luau"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt, _ := newRuntime(t)
+			var logs []string
+			var mu sync.Mutex
+			rt.Log = func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() }
+			skill(t, rt.Home, "a/guard", nil)
+			dir := filepath.Join(rt.Home, "skills", "a", "guard", "handlers")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			setup(dir)
+			done := make(chan Verdict, 1)
+			go func() {
+				done <- rt.Dispatch(context.Background(), BeforeSend, "s", map[string]any{"text": "card 4111 1111 1111 1111", "kind": "send"}, nil)
+			}()
+			select {
+			case v := <-done:
+				if v.Action != "block" || v.By != "guard__"+name || !strings.Contains(v.Reason, "failed") || !v.Failed {
+					t.Fatalf("verdict %+v", v)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("before_send blocked on the file")
+			}
+			mu.Lock()
+			joined := strings.Join(logs, "\n")
+			mu.Unlock()
+			if !strings.Contains(joined, "handler guard__"+name+" (before_send) failed: the message is blocked") {
+				t.Errorf("log:\n%s", joined)
+			}
+		})
+	}
+	// a broken handler of message events only: before_send and its own events go on
+	rt, _ := newRuntime(t)
+	skill(t, rt.Home, "a/guard", map[string]string{"handlers/hello.luau": handler("hello", "on_message", "caps: [nope]\n", `function on_message(ev) return "silent" end`)})
+	if v := rt.Dispatch(context.Background(), BeforeSend, "s", map[string]any{"text": "hi"}, nil); v.Action != "allow" {
+		t.Errorf("before_send verdict %+v", v)
+	}
+	if v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil); v.Action != "pass" {
+		t.Errorf("on_message verdict %+v", v)
 	}
 }

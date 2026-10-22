@@ -257,6 +257,8 @@ const (
 // Verdict is what an event's handlers decided: Action pass, reply or silent (a message, a
 // schedule), allow, rewrite or block (before a send); Text a reply's or the rewritten text;
 // Context the passes' notes for the model; By the handler that decided; Ran how many ran.
+// Failed: a block no handler chose, a before_send handler that failed or could not be loaded
+// (it fails closed); the runtime's own notices go out despite it.
 type Verdict struct {
 	Action  string
 	Text    string
@@ -264,6 +266,7 @@ type Verdict struct {
 	Reason  string
 	By      string
 	Ran     int
+	Failed  bool
 }
 
 // Handlers are the agent's event handlers as a gateway calls them.

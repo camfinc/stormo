@@ -166,7 +166,7 @@ var checked = struct {
 // Symlinks are skipped; a tool whose registered name another one (or a built-in) has is invalid.
 func (rt *Runtime) Discover(ctx context.Context, reserved func(name string) bool) []ToolFile {
 	var out []ToolFile
-	for _, f := range rt.skillFiles(ToolDir) {
+	for _, f := range rt.skillFiles(ToolDir, false) {
 		tf := ToolFile{Skill: f[0], File: f[1]}
 		tf.Err = rt.loadTool(ctx, &tf)
 		out = append(out, tf)

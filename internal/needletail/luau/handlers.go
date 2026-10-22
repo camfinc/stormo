@@ -1,6 +1,7 @@
 package luau
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
@@ -73,11 +76,11 @@ func (rt *Runtime) CheckHandler(ctx context.Context, rel string, body []byte) er
 	return nil
 }
 
-// skillFiles is every .luau file (regular, not a symlink) in a directory sub of the home's skills,
-// as (skill dir, home path), sorted by skill dir, then file name. The directory is listed by
-// descriptor (fsx.ReadDirBelow: no symlink below the home is followed), and each file is read
-// the same way (readSkillFile).
-func (rt *Runtime) skillFiles(sub string) [][2]string {
+// skillFiles is every .luau file (regular, not a symlink; with all, any entry named .luau, which
+// then fails to load) in a directory sub of the home's skills, as (skill dir, home path), sorted
+// by skill dir, then file name. The directory is listed by descriptor (fsx.ReadDirBelow: no
+// symlink below the home is followed), and each file is read the same way (readSkillFile).
+func (rt *Runtime) skillFiles(sub string, all bool) [][2]string {
 	var out [][2]string
 	for _, s := range skills.Index(rt.Home) {
 		ents, err := fsx.ReadDirBelow(rt.Home, path.Join("skills", s.Dir, sub))
@@ -85,7 +88,7 @@ func (rt *Runtime) skillFiles(sub string) [][2]string {
 			continue
 		}
 		for _, e := range ents {
-			if !strings.HasSuffix(e.Name(), ".luau") || !e.Type().IsRegular() {
+			if !strings.HasSuffix(e.Name(), ".luau") || !all && !e.Type().IsRegular() {
 				continue
 			}
 			out = append(out, [2]string{s.Dir, path.Join("skills", s.Dir, sub, e.Name())})
@@ -124,17 +127,19 @@ type HandlerFile struct {
 	Header *Header
 	Source []byte
 	Err    error
-	// Events are the events the file's header names, when it parses (also for a handler that
-	// fails to load otherwise): a before_send handler that cannot run blocks the message.
+	// Events are the events the file's header names, read leniently (liftEvents) when the file
+	// fails to load: a before_send handler that cannot run blocks the message. None (a file
+	// that cannot be read, or whose header names no events) is taken as every event.
 	Events []string
 }
 
-// Handlers is every handler of the home's skills, valid or not, in the order they run: by skill
-// dir, then file name. They are read again at every event, so a handler written in one
-// conversation runs at the next event.
+// Handlers is every handler of the home's skills, valid or not (any entry named .luau in a
+// skill's handlers/: a symlink, a FIFO or a directory is one that cannot be loaded), in the order
+// they run: by skill dir, then file name. They are read again at every event, so a handler
+// written in one conversation runs at the next event.
 func (rt *Runtime) Handlers(ctx context.Context) []HandlerFile {
 	var out []HandlerFile
-	for _, f := range rt.skillFiles(HandlerDir) {
+	for _, f := range rt.skillFiles(HandlerDir, true) {
 		hf := HandlerFile{Skill: f[0], File: f[1]}
 		hf.Err = rt.loadHandler(ctx, &hf)
 		out = append(out, hf)
@@ -147,9 +152,7 @@ func (rt *Runtime) loadHandler(ctx context.Context, hf *HandlerFile) error {
 	if err != nil {
 		return err
 	}
-	if h, err := ParseHeaderOf(body, KindHandler); err == nil {
-		hf.Events = h.Events
-	}
+	hf.Events = liftEvents(body)
 	if err := rt.CheckHandler(ctx, HandlerDir+"/"+path.Base(hf.File), body); err != nil {
 		return err
 	}
@@ -160,6 +163,62 @@ func (rt *Runtime) loadHandler(ctx context.Context, hf *HandlerFile) error {
 	}
 	hf.Name, hf.Header, hf.Source = name, h, body
 	return nil
+}
+
+// eventsLine is a header's events line in flow form, for a header YAML cannot read.
+var eventsLine = regexp.MustCompile(`(?m)^events\s*:\s*\[([^\]\n]*)\]`)
+
+// liftEvents is the events a handler file's header names, read as leniently as it can be: the
+// header as a handler's, else its block as any YAML (unknown keys, bad caps or timeout, an
+// unknown event beside known ones), else an `events: [...]` line. nil when none can be read.
+func liftEvents(body []byte) []string {
+	if h, err := ParseHeaderOf(body, KindHandler); err == nil {
+		return h.Events
+	}
+	block := headerBlock(body)
+	var raw struct {
+		Events any `yaml:"events"`
+	}
+	var names []string
+	if yaml.Unmarshal(block, &raw) == nil {
+		switch v := raw.Events.(type) {
+		case []any:
+			for _, e := range v {
+				names = append(names, fmt.Sprint(e))
+			}
+		case string:
+			names = strings.Split(v, ",")
+		}
+	} else if m := eventsLine.FindSubmatch(block); m != nil {
+		names = strings.Split(string(m[1]), ",")
+	}
+	var out []string
+	for _, n := range names {
+		if n = strings.Trim(strings.TrimSpace(n), `"'`); n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// headerBlock is the lines between a header's opening line and its closing one (or the end of
+// the file), at most maxHeader bytes; nil when the file does not open with a header.
+func headerBlock(body []byte) []byte {
+	body = bytes.TrimPrefix(body, []byte("\ufeff"))
+	first, rest, _ := bytes.Cut(body, []byte("\n"))
+	if strings.TrimRight(string(first), " \t\r") != headerOpen {
+		return nil
+	}
+	var block []byte
+	for len(rest) > 0 && len(block) <= maxHeader {
+		line, more, _ := bytes.Cut(rest, []byte("\n"))
+		if strings.TrimRight(string(line), " \t\r") == headerClose {
+			break
+		}
+		block = append(append(block, line...), '\n')
+		rest = more
+	}
+	return block
 }
 
 // HandlerStatus is a skill's handlers as skill_view shows them.
@@ -296,8 +355,9 @@ type Verdict = messaging.Verdict
 // rewrite changes it and goes on, a block stops the message. A message's or a schedule's handler
 // that fails, passes its bound or answers something that is not one of the event's actions is
 // skipped: logged, hooked as failed, and the event goes on as if it had passed. before_send fails
-// closed instead: such a handler, or one whose file declares before_send but cannot be loaded,
-// blocks the message (logged; hooked as failed when it ran), since the text it was there to
+// closed instead: such a handler, or one whose file declares before_send (read leniently) or
+// names no events it could be read for (unreadable, over MaxSource, not a regular file, no
+// header) but cannot be loaded, blocks the message (logged; hooked as failed when it ran), since the text it was there to
 // change would otherwise go out as it was. serves, when set, picks the handlers that apply
 // (on_schedule: the job's).
 func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[string]any, serves func(*Header) bool) Verdict {
@@ -308,7 +368,7 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 	ctx = messaging.WithHandler(ctx, event)
 	closed := event == BeforeSend
 	for _, hf := range rt.Handlers(ctx) {
-		if hf.Err != nil && closed && slices.Contains(hf.Events, event) {
+		if hf.Err != nil && closed && (len(hf.Events) == 0 || slices.Contains(hf.Events, event)) {
 			return rt.failClosed(v, hf, event, "it cannot be loaded: "+hf.Err.Error())
 		}
 		if hf.Err != nil || !hf.Header.Handles(event) || serves != nil && !serves(hf.Header) {
@@ -360,7 +420,7 @@ func (rt *Runtime) failClosed(v Verdict, hf HandlerFile, event, why string) Verd
 		}
 	}
 	rt.logf("handler %s (%s) failed: the message is blocked (before_send fails closed): %s", name, event, why)
-	v.Action, v.Text, v.By = "block", "", name
+	v.Action, v.Text, v.By, v.Failed = "block", "", name, true
 	v.Reason = "the handler failed, so the message is blocked: " + clip(why, 300)
 	return v
 }
