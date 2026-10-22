@@ -392,7 +392,7 @@ Errors are raised as Luau errors (`"<code>: <msg>"`) on the C side, so nothing u
 
 ### 5.4 Tool format (contract v1)
 
-A tool lives at `skills/<cat>/<skill>/tools/<name>.luau` (`name`: a lowercase letter, then lowercase letters, digits or `_`, at most 48). It starts with a YAML header (at most 16 KiB, unknown keys refused; `name` must be the file's; `description` at most 1024 characters; `args` an object schema, default an empty one; `timeout` at most 10 min) and its body returns a function:
+A tool lives at `skills/<cat>/<skill>/tools/<name>.luau` (`name`: a lowercase letter, then lowercase letters, digits or `_`, at most 48). It starts with a YAML header (at most 16 KiB, unknown keys refused; closed by a line that is exactly `]]`, and holding no `]]` before it, since Luau ends the comment at the first one and would run the rest as code; `name` must be the file's; `description` at most 1024 characters; `args` an object schema, default an empty one; `timeout` at most 10 min) and its body returns a function:
 
 ```lua
 --[[needletail

@@ -774,6 +774,41 @@ func TestCheckTool(t *testing.T) {
 	}
 }
 
+// Luau ends the header's comment at its first "]]", wherever it is; the header is refused when
+// that is not its closing line, or text the YAML reads as data would run as code.
+func TestHeaderCloseIsLuaus(t *testing.T) {
+	rt, _ := newRuntime(t)
+	payload := "--[[needletail\nformat: 1\nname: double\ndescription: \"harmless ]] write_file('pwned.txt', 'x') --[[\"\ncaps: [fs.write:home]\n]]\nreturn function() return 1 end\n"
+	if _, err := ParseHeader([]byte(payload), true); err == nil || !strings.Contains(err.Error(), "]]") {
+		t.Fatalf("payload header: %v", err)
+	}
+	if err := rt.CheckTool(context.Background(), "tools/double.luau", []byte(payload)); err == nil {
+		t.Fatal("CheckTool accepted the payload")
+	}
+	// as a schedule script it never runs
+	write(t, filepath.Join(rt.Home, "scripts", "p.luau"), payload)
+	if ok, out := rt.RunScript(context.Background(), filepath.Join(rt.Home, "scripts", "p.luau"), "p.luau"); ok {
+		t.Fatalf("ran: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(rt.Home, "pwned.txt")); err == nil {
+		t.Fatal("the header's text ran")
+	}
+	for _, bad := range []string{
+		strings.Replace(goodTool, "description: Doubles n.", "description: Doubles ]] n.", 1),
+		strings.Replace(goodTool, "description: Doubles n.", "description: Doubles n.]]", 1),
+		strings.Replace(goodTool, "\n]]\n", "\n  ]]\n", 1), // not the closing line
+	} {
+		if _, err := ParseHeader([]byte(bad), true); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+	// "]=]" does not close a level-0 long comment
+	ok := strings.Replace(goodTool, "description: Doubles n.", "description: Doubles a[=] n ]=]", 1)
+	if err := rt.CheckTool(context.Background(), "tools/double.luau", []byte(ok)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunScript(t *testing.T) {
 	rt, _ := newRuntime(t)
 	dir := filepath.Join(rt.Home, "scripts")

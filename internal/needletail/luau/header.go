@@ -85,6 +85,13 @@ func ParseHeader(src []byte, tool bool) (*Header, error) {
 	if !found {
 		return nil, fmt.Errorf("the header is not closed by a %q line", headerClose)
 	}
+	// The header is a level-0 long comment ("--[["), which Luau ends at its first "]]" wherever it
+	// stands: one before the closing line would end it there, and the rest would run as code
+	// while this parser reads it as YAML. ("]=]" and longer closers end only a comment opened at
+	// their level, which the header's opening line never is.)
+	if bytes.Contains(body, []byte(headerClose)) {
+		return nil, fmt.Errorf("the header may not contain %q before its closing line (Luau ends the comment at the first one)", headerClose)
+	}
 	if !utf8.Valid(body) {
 		return nil, errors.New("the header is not UTF-8")
 	}
