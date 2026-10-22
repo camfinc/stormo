@@ -69,6 +69,10 @@ type Layout struct {
 	StateRoot string `json:"stateRoot"`
 	// uid/gid the engine runs as; rehydrate (root) hands the home to it so the agent can write.
 	RuntimeUID, RuntimeGID int
+	// ReadOnlyRoot runs the engine's container with a read-only root filesystem (compose
+	// read_only, ECS readonlyRootFilesystem): only its mounts (the home, the shared layers) are
+	// writable. For an engine that writes nowhere else; off by default.
+	ReadOnlyRoot bool `json:"readOnlyRoot,omitempty"`
 }
 
 // Classify returns the first rule matching path (relative to the home), or nil.

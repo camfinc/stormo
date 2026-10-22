@@ -40,6 +40,9 @@ func New(inst *instance.Instance) *Needletail {
 		SkillsDir:  "skills",
 		StateRoot:  sd,
 		RuntimeUID: shared.PosixUID, RuntimeGID: shared.PosixUID,
+		// The runtime writes only to the home and /shared, and its commands' TMPDIR is in the
+		// home: the container needs no writable root and no tmpfs (docs/needletail.md §7).
+		ReadOnlyRoot: true,
 		Rules: []engine.SnapshotRule{
 			// learning: what the agent taught itself (Luau tools live inside skills)
 			{Class: engine.Learning, Glob: "memories/{MEMORY,USER}.md"},
