@@ -26,6 +26,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/luau"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
@@ -146,6 +147,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		End: store.End, Location: cfg.Location, Log: logf, RepoJobs: cfg.Schedules.Repo}
 	if lr != nil {
 		opts.Luau = lr.RunScript
+		opts.OnSchedule = luau.Events{RT: lr}.OnSchedule // the agent's on_schedule handlers (§5.5)
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
@@ -178,6 +180,9 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 	if cfg.Core != nil {
 		lr.CoreURLs = append(lr.CoreURLs, cfg.Core.MCPURL, cfg.Core.IngestURL)
 	}
+	// handler runs are hooked like tool calls, to whatever observes the turns (the core's hooks
+	// connect after boot)
+	lr.Observer = func() luau.HookObserver { return agent.Observer }
 	reserved := func(name string) bool { return agent.Tools.Taken(luauGroup, name) }
 	lib.CheckLuau = func(rel string, body []byte) error { return lr.CheckFile(context.Background(), rel, body) }
 	lib.LuauTools = func(dir string) []skills.ToolStatus {
@@ -313,6 +318,10 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		}
 	}
 	store := rt.store
+	var handlers messaging.Handlers // the agent's on_message, on_mention and before_send (§5.5)
+	if rt.luau != nil {
+		handlers = luau.Events{RT: rt.luau}
+	}
 	gw, err := slack.New(slack.Options{
 		Web:          &slack.Web{BaseURL: os.Getenv(SlackAPIEnv), BotToken: bot, AppToken: app},
 		Turns:        slackTurns{srv},
@@ -326,6 +335,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		Broadcast:    rt.cfg.Slack != nil && rt.cfg.Slack.Broadcast,
 		Redact:       rt.red.Redact,
 		Log:          func(s string) { rt.logger.Println(s) },
+		Handlers:     handlers,
 	})
 	if err != nil {
 		rt.logger.Printf("slack: %v: the gateway is off", err)

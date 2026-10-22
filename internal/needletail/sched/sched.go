@@ -30,6 +30,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/loop"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
@@ -89,6 +90,11 @@ type Options struct {
 	// RepoJobs are the ids of the jobs agent.yaml defines (needletail.yaml schedules.repo):
 	// their deliveries are trusted, and they never count toward the agent's own jobs.
 	RepoJobs []string
+	// OnSchedule runs the agent's on_schedule handlers for an agent job's run, after its monitor
+	// and pre-run script and before its turn (docs/needletail.md §5.5): those whose jobs name the
+	// job (id, name or "*"). A reply is the run's output with no turn, silent a silent run, a
+	// pass's notes go into the prompt. nil: none.
+	OnSchedule func(ctx context.Context, id, name string, ev map[string]any) messaging.Verdict
 }
 
 // Scheduler runs one home's jobs. Safe for concurrent use.
@@ -693,9 +699,10 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		}
 		runContext, commit = block, store
 	}
-	scriptBlock := ""
+	scriptBlock, scriptOut := "", ""
 	if sc := strings.TrimSpace(j.Str("script")); sc != "" {
 		ok, out := s.runScript(ctx, sc)
+		scriptOut = out
 		switch {
 		case !ok && s.isStopping():
 			return interrupted("")
@@ -707,6 +714,24 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			scriptBlock = fence("Script Output", "The following data was collected by the job's script before this run. Use it as context.", capPrompt(out))
 		default:
 			scriptBlock = fence("Script Error", "The job's script failed. Report this.", capPrompt(out))
+		}
+	}
+	if s.o.OnSchedule != nil {
+		ev := map[string]any{"job": map[string]any{"id": id, "name": j.Str("name"), "schedule": scheduleDisplay(j), "prompt": prompt,
+			"skills": j.Skills(), "deliver": j.Str("deliver"), "repo": s.trusted(j)}, "script_output": scriptOut, "run_context": runContext,
+			"time": s.at(s.o.Now())}
+		v := s.o.OnSchedule(ctx, id, j.Str("name"), ev)
+		switch {
+		case s.isStopping() && v.Action != "pass":
+			return interrupted("")
+		case v.Action == "reply":
+			commit() // the monitor's change was handled
+			return outcome{status: wire.StatusOK, text: v.Text, doc: v.Text + "\n\n(answered by the handler " + v.By + ", no turn)"}
+		case v.Action == "silent":
+			commit()
+			return outcome{status: wire.StatusSilent, doc: "the handler " + v.By + " kept the run silent"}
+		case len(v.Context) > 0:
+			scriptBlock += fence("Handler Notes", "Your on_schedule handlers noted this for the run.", strings.Join(v.Context, "\n\n"))
 		}
 	}
 	release()
@@ -1092,4 +1117,18 @@ func newID() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// scheduleDisplay is how a job's schedule reads (its display, else its expression or interval).
+func scheduleDisplay(j *Job) string {
+	sc := j.Schedule()
+	switch {
+	case sc.Display != "":
+		return sc.Display
+	case sc.Expr != "":
+		return sc.Expr
+	case sc.Minutes > 0:
+		return fmt.Sprintf("every %dm", sc.Minutes)
+	}
+	return j.Str("schedule_display")
 }
