@@ -50,6 +50,7 @@ internal/needletail/
   wire/                       JSON types shared by the adapter and the binary (one source of truth)
   config/  llm/  loop/  tools/  skills/  memory/  sessions/  sched/
   slack/  mcp/  hooks/  api/  sandbox/  secrets/
+  messaging/                  the one policy for messages the agent sends on its own (§4.9)
   slack/slacktest/            a fake Slack (Web API and Socket Mode on the loopback) for tests
   luau/                       wazero host (engine.go), the binding registry (bindings.go), caps,
                               the tool header, the nt bindings (host.go, http.go), tools and scripts
@@ -508,7 +509,7 @@ Each is frozen at the first nap of a needletail agent and covered by golden test
 - the `cron/jobs.json` shape (shared with Hermes)
 - session JSONL v1
 - hook body v1 and its signature header
-- the Luau tool header v1 and the capability grammar
+- the Luau tool header v1 and the capability grammar (with `message:<target>`, added after the M5 review)
 - the `host_call` ABI
 - the snapshot rule list
 

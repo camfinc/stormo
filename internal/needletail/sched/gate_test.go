@@ -103,6 +103,9 @@ func TestBusyGateWaitsForTheTick(t *testing.T) {
 	reg := tools.NewRegistry(r.s.Tool(nil))
 	r.s.Tick()
 	time.Sleep(100 * time.Millisecond)
+	if running, _ := r.s.Running(); len(running) != 1 {
+		t.Fatalf("the gate is not running when the run is asked for: %v", running)
+	}
 	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"run","job_id":"new"}`); failed {
 		t.Fatal(out)
 	}
