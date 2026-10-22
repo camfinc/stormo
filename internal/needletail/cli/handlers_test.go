@@ -131,18 +131,22 @@ end
 	if p := posts[2]; p.Text != "Reply to: Hello there [reply]" {
 		t.Errorf("the model's reply %+v", p)
 	}
-	// a before_send handler that fails blocks the reply: nothing goes out unchanged
+	// a before_send handler that fails blocks the reply: nothing goes out unchanged (the next
+	// message is sent once the block is logged, so the two are never merged into one turn)
 	fake.Send("e3", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "Say LONG", TS: "1700000200.000300"})
+	blocked := false
+	for deadline := time.Now().Add(15 * time.Second); !blocked && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		mu.Lock()
+		blocked = strings.Contains(stderr.String(), "handler frontdesk__sign (before_send) failed: the message is blocked")
+		mu.Unlock()
+	}
+	if !blocked {
+		t.Error("the failed before_send was not logged")
+	}
 	fake.Send("e4", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "And now?", TS: "1700000200.000400"})
 	posts = fake.WaitPosts(4, 15*time.Second)
 	if p := posts[3]; p.Text != "Reply to: And now? [reply]" {
 		t.Errorf("after the blocked reply %+v", posts[3:])
-	}
-	mu.Lock()
-	blocked := strings.Contains(stderr.String(), "handler frontdesk__sign (before_send) failed: the message is blocked")
-	mu.Unlock()
-	if !blocked {
-		t.Error("the failed before_send was not logged")
 	}
 	entries, _ := os.ReadDir(filepath.Join(h, "sessions"))
 	for _, e := range entries {
