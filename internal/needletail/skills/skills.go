@@ -17,6 +17,8 @@ import (
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 )
 
 // Skill is one SKILL.md's front matter.
@@ -71,11 +73,11 @@ func Index(home string) []Skill {
 		if err != nil || info.Size() > maxSkillFile {
 			return nil
 		}
-		head, err := readFront(p)
+		rel, _ := filepath.Rel(home, p)
+		head, err := readFront(home, filepath.ToSlash(rel))
 		if err != nil {
 			return nil
 		}
-		rel, _ := filepath.Rel(home, p)
 		s := front(head)
 		s.Path = filepath.ToSlash(rel)
 		s.Dir = strings.TrimSuffix(strings.TrimPrefix(s.Path, "skills/"), "/SKILL.md")
@@ -90,9 +92,11 @@ func Index(home string) []Skill {
 }
 
 // readFront reads a SKILL.md up to the end of its front matter (the first "\n---" after the
-// opening "---"), at most maxSkillFile bytes: all front() looks at, without the body.
-func readFront(p string) ([]byte, error) {
-	f, err := os.Open(p)
+// opening "---"), at most maxSkillFile bytes: all front() looks at, without the body. It is read
+// by descriptor (rel below home, never through a symlink, a regular file only, non-blocking): a
+// FIFO a command swaps in would otherwise block every turn's index.
+func readFront(home, rel string) ([]byte, error) {
+	f, err := fsx.OpenFileBelow(home, rel, os.O_RDONLY, 0, false)
 	if err != nil {
 		return nil, err
 	}

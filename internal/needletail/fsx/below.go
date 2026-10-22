@@ -3,9 +3,11 @@ package fsx
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -20,6 +22,22 @@ import (
 
 // ErrLink is a symlink met below the root.
 var ErrLink = errors.New("a symlink is in the way (the runtime never writes through one)")
+
+// ErrNotRegular is a file that is not a regular one where one is opened (a FIFO, a device, a
+// directory); ErrTooBig a file over what ReadFileBelow reads.
+var (
+	ErrNotRegular = errors.New("not a regular file")
+	ErrTooBig     = errors.New("over the size limit")
+)
+
+// fileError is rel's error, matching sentinel (errors.Is), with msg as its text.
+type fileError struct {
+	msg      string
+	sentinel error
+}
+
+func (e *fileError) Error() string        { return e.msg }
+func (e *fileError) Is(target error) bool { return target == e.sentinel }
 
 const dirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 
@@ -150,7 +168,7 @@ func OpenFileBelow(root, rel string, flags int, perm os.FileMode, create bool) (
 	f := os.NewFile(uintptr(fd), filepath.Join(root, rel))
 	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
 		f.Close()
-		return nil, fmt.Errorf("%s is not a regular file", rel)
+		return nil, &fileError{rel + " is not a regular file", ErrNotRegular}
 	}
 	return f, nil
 }
@@ -185,4 +203,38 @@ func RenameOut(root, rel, dst string) error {
 		return &os.PathError{Op: "rename", Path: rel, Err: err}
 	}
 	return nil
+}
+
+// ReadFileBelow reads rel below root, a regular file of at most max bytes, by descriptor: every
+// directory below root and the file itself opened with O_NOFOLLOW, the file non-blocking and
+// checked a regular file on what was opened (OpenFileBelow), and at most max+1 bytes read. A
+// FIFO or a device the agent's commands swap in after a check (a symlink to /dev/zero) can then
+// neither block the read nor feed it without end.
+func ReadFileBelow(root, rel string, max int64) ([]byte, error) {
+	f, err := OpenFileBelow(root, rel, unix.O_RDONLY, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, &os.PathError{Op: "read", Path: rel, Err: err}
+	}
+	if int64(len(b)) > max {
+		return nil, &fileError{fmt.Sprintf("%s is over %d bytes", rel, max), ErrTooBig}
+	}
+	return b, nil
+}
+
+// ReadDirBelow lists the directory rel below root (reached as OpenDirBelow does), sorted by name.
+func ReadDirBelow(root, rel string) ([]os.DirEntry, error) {
+	fd, err := OpenDirBelow(root, rel, false)
+	if err != nil {
+		return nil, err
+	}
+	d := os.NewFile(uintptr(fd), filepath.Join(root, rel))
+	defer d.Close()
+	ents, err := d.ReadDir(-1)
+	slices.SortFunc(ents, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	return ents, err
 }

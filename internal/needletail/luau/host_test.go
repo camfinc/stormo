@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -942,8 +943,9 @@ func TestHeaderCloseIsLuaus(t *testing.T) {
 	}
 	// as a schedule script it never runs
 	write(t, filepath.Join(rt.Home, "scripts", "p.luau"), payload)
-	if ok, out := rt.RunScript(context.Background(), filepath.Join(rt.Home, "scripts", "p.luau"), "p.luau"); ok {
-		t.Fatalf("ran: %s", out)
+	real, _ := filepath.EvalSymlinks(filepath.Join(rt.Home, "scripts", "p.luau"))
+	if ok, out := rt.RunScript(context.Background(), real, "p.luau"); ok || !strings.Contains(out, "]]") {
+		t.Fatalf("ran: %v %s", ok, out)
 	}
 	if _, err := os.Stat(filepath.Join(rt.Home, "pwned.txt")); err == nil {
 		t.Fatal("the header's text ran")
@@ -1018,7 +1020,8 @@ func TestToolTimeout(t *testing.T) {
 	}
 	// a schedule's script keeps script_timeout
 	write(t, filepath.Join(rt.Home, "scripts", "s.luau"), "--[[needletail\nformat: 1\n]]\nreturn 1\n")
-	if ok, out := rt.RunScript(context.Background(), filepath.Join(rt.Home, "scripts", "s.luau"), "s.luau"); !ok || rec.last() != 900*time.Second {
+	real, _ := filepath.EvalSymlinks(filepath.Join(rt.Home, "scripts", "s.luau")) // as the scheduler resolves it
+	if ok, out := rt.RunScript(context.Background(), real, "s.luau"); !ok || rec.last() != 900*time.Second {
 		t.Errorf("script: %v %s, bound %s", ok, out, rec.last())
 	}
 }
@@ -1092,9 +1095,36 @@ func TestRunScript(t *testing.T) {
 		"nohdr.luau": {false, "must start with"},
 		"slow.luau":  {false, "timeout"},
 	} {
-		ok, out := rt.RunScript(context.Background(), filepath.Join(dir, name), name)
+		real, err := filepath.EvalSymlinks(filepath.Join(dir, name)) // as the scheduler resolves it
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok, out := rt.RunScript(context.Background(), real, name)
 		if ok != want.ok || !strings.Contains(out, strings.Replace(want.out, "runtime: ok", "runtime: ", 1)) {
 			t.Errorf("%s: %v %q, want %v %q", name, ok, out, want.ok, want.out)
+		}
+	}
+	// read by descriptor: a FIFO or a symlink (to a device) swapped in after the scheduler
+	// resolved the path is refused at once, never read
+	real, _ := filepath.EvalSymlinks(dir)
+	if err := syscall.Mkfifo(filepath.Join(real, "fifo.luau"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev/zero", filepath.Join(real, "zero.luau")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"fifo.luau", "zero.luau"} {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if ok, out := rt.RunScript(context.Background(), filepath.Join(real, name), name); ok || !strings.Contains(out, "not a regular file") {
+				t.Errorf("%s: %v %q", name, ok, out)
+			}
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the read blocked", name)
 		}
 	}
 }

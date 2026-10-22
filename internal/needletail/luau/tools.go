@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
@@ -167,7 +168,7 @@ func (rt *Runtime) Discover(ctx context.Context, reserved func(name string) bool
 	var out []ToolFile
 	for _, f := range rt.skillFiles(ToolDir) {
 		tf := ToolFile{Skill: f[0], File: f[1]}
-		tf.Err = rt.loadTool(ctx, &tf, f[2])
+		tf.Err = rt.loadTool(ctx, &tf)
 		out = append(out, tf)
 	}
 	seen := map[string]string{}
@@ -188,15 +189,8 @@ func (rt *Runtime) Discover(ctx context.Context, reserved func(name string) bool
 	return out
 }
 
-func (rt *Runtime) loadTool(ctx context.Context, tf *ToolFile, real string) error {
-	info, err := os.Lstat(real)
-	if err != nil || !info.Mode().IsRegular() {
-		return errors.New("not a regular file")
-	}
-	if info.Size() > MaxSource {
-		return fmt.Errorf("over %d bytes", MaxSource)
-	}
-	body, err := os.ReadFile(real)
+func (rt *Runtime) loadTool(ctx context.Context, tf *ToolFile) error {
+	body, err := rt.readSkillFile(tf.File)
 	if err != nil {
 		return err
 	}
@@ -454,15 +448,16 @@ func SampleEvent(event string) map[string]any {
 // timeout (or the header's, when lower). The output is what it printed, then what it returned (a
 // string as it is, anything else as JSON); a failure is the error and the output.
 func (rt *Runtime) RunScript(ctx context.Context, real, name string) (bool, string) {
-	info, err := os.Lstat(real)
-	if err != nil || !info.Mode().IsRegular() {
-		return false, fmt.Sprintf("script %s is not a regular file", name)
-	}
-	if info.Size() > MaxSource {
+	// real is resolved (no symlink in it): read by descriptor from the filesystem's root, every
+	// component with O_NOFOLLOW, so nothing a command swaps in since (a FIFO, a link to a device
+	// or to a file outside scripts/) is read
+	body, err := fsx.ReadFileBelow("/", strings.TrimPrefix(filepath.Clean(real), "/"), MaxSource)
+	switch {
+	case errors.Is(err, fsx.ErrTooBig):
 		return false, fmt.Sprintf("script %s is over %d bytes", name, MaxSource)
-	}
-	body, err := os.ReadFile(real)
-	if err != nil {
+	case errors.Is(err, fsx.ErrNotRegular), errors.Is(err, fsx.ErrLink):
+		return false, fmt.Sprintf("script %s is not a regular file", name)
+	case err != nil:
 		return false, fmt.Sprintf("script %s: %v", name, errors.Unwrap(err))
 	}
 	h, err := ParseHeader(body, false)

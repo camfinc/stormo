@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -15,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
@@ -75,15 +74,13 @@ func (rt *Runtime) CheckHandler(ctx context.Context, rel string, body []byte) er
 }
 
 // skillFiles is every .luau file (regular, not a symlink) in a directory sub of the home's skills,
-// as (skill dir, home path, real path), sorted by home path: by skill dir, then file name.
-func (rt *Runtime) skillFiles(sub string) [][3]string {
-	var out [][3]string
+// as (skill dir, home path), sorted by skill dir, then file name. The directory is listed by
+// descriptor (fsx.ReadDirBelow: no symlink below the home is followed), and each file is read
+// the same way (readSkillFile).
+func (rt *Runtime) skillFiles(sub string) [][2]string {
+	var out [][2]string
 	for _, s := range skills.Index(rt.Home) {
-		dir := filepath.Join(rt.Home, "skills", filepath.FromSlash(s.Dir), sub)
-		if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
-			continue
-		}
-		ents, err := os.ReadDir(dir)
+		ents, err := fsx.ReadDirBelow(rt.Home, path.Join("skills", s.Dir, sub))
 		if err != nil {
 			continue
 		}
@@ -91,11 +88,24 @@ func (rt *Runtime) skillFiles(sub string) [][3]string {
 			if !strings.HasSuffix(e.Name(), ".luau") || !e.Type().IsRegular() {
 				continue
 			}
-			out = append(out, [3]string{s.Dir, path.Join("skills", s.Dir, sub, e.Name()), filepath.Join(dir, e.Name())})
+			out = append(out, [2]string{s.Dir, path.Join("skills", s.Dir, sub, e.Name())})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][1] < out[j][1] })
 	return out
+}
+
+// readSkillFile reads a skill's .luau file (rel: its home path) by descriptor, at most MaxSource
+// bytes: a FIFO, a device or a symlink a command swaps in is refused without blocking.
+func (rt *Runtime) readSkillFile(rel string) ([]byte, error) {
+	body, err := fsx.ReadFileBelow(rt.Home, rel, MaxSource)
+	switch {
+	case errors.Is(err, fsx.ErrTooBig):
+		return nil, fmt.Errorf("over %d bytes", MaxSource)
+	case errors.Is(err, fsx.ErrNotRegular), errors.Is(err, fsx.ErrLink):
+		return nil, errors.New("not a regular file")
+	}
+	return body, err
 }
 
 // HandlerFile is one handler of a skill: valid (Err nil) or not.
@@ -120,21 +130,14 @@ func (rt *Runtime) Handlers(ctx context.Context) []HandlerFile {
 	var out []HandlerFile
 	for _, f := range rt.skillFiles(HandlerDir) {
 		hf := HandlerFile{Skill: f[0], File: f[1]}
-		hf.Err = rt.loadHandler(ctx, &hf, f[2])
+		hf.Err = rt.loadHandler(ctx, &hf)
 		out = append(out, hf)
 	}
 	return out
 }
 
-func (rt *Runtime) loadHandler(ctx context.Context, hf *HandlerFile, real string) error {
-	info, err := os.Lstat(real)
-	if err != nil || !info.Mode().IsRegular() {
-		return errors.New("not a regular file")
-	}
-	if info.Size() > MaxSource {
-		return fmt.Errorf("over %d bytes", MaxSource)
-	}
-	body, err := os.ReadFile(real)
+func (rt *Runtime) loadHandler(ctx context.Context, hf *HandlerFile) error {
+	body, err := rt.readSkillFile(hf.File)
 	if err != nil {
 		return err
 	}

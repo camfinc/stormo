@@ -228,17 +228,19 @@ func (l *Library) real(rel string) (string, error) {
 	return cur, nil
 }
 
-// readRegular reads a regular file of at most limit bytes (a larger one is cut to limit and
-// reported as such).
-func readRegular(p string, limit int) ([]byte, bool, error) {
-	info, err := os.Lstat(p)
-	if err != nil {
-		return nil, false, err
+// readRegular reads p (a path in the home, from real) a regular file of at most limit bytes (a
+// larger one is cut to limit and reported as such), by descriptor from the home: never through a
+// symlink, non-blocking, checked a regular file on what was opened, so a FIFO or a link a
+// command swaps in after real's check is refused at once.
+func (l *Library) readRegular(p string, limit int) ([]byte, bool, error) {
+	rel, err := filepath.Rel(l.Home, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, false, fmt.Errorf("%s is not in the home", p)
 	}
-	if !info.Mode().IsRegular() {
+	f, err := fsx.OpenFileBelow(l.Home, filepath.ToSlash(rel), os.O_RDONLY, 0, false)
+	if errors.Is(err, fsx.ErrNotRegular) {
 		return nil, false, fmt.Errorf("%s is not a regular file", filepath.Base(p))
 	}
-	f, err := os.Open(p)
 	if err != nil {
 		return nil, false, err
 	}
@@ -302,7 +304,7 @@ func (l *Library) View(session, name, file string) (*View, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, cut, err := readRegular(p, viewBytes)
+	body, cut, err := l.readRegular(p, viewBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%s has no file %s", s.Dir, rel)
 	}

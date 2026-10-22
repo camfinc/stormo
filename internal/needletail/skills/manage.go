@@ -82,7 +82,7 @@ func (l *Library) current(s Skill) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, _, err := readRegular(p, MaxFile)
+	body, _, err := l.readRegular(p, MaxFile)
 	return body, err
 }
 
@@ -267,7 +267,7 @@ func (l *Library) Patch(name, file, old, repl string, all bool) (Skill, string, 
 	if err != nil {
 		return Skill{}, "", 0, err
 	}
-	body, cut, err := readRegular(p, MaxFile)
+	body, cut, err := l.readRegular(p, MaxFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Skill{}, "", 0, fmt.Errorf("%s has no file %s", s.Dir, rel)
 	}
