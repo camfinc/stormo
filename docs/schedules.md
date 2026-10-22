@@ -67,10 +67,15 @@ proposal for review. (Needletail never lets the agent change what a repo job run
   whichever comes first. A job's scripts (monitor, pre-run script, a script-only job) run
   first, holding no turn slot, under their own cap of two at a time (a third waits for one): an
   unchanged monitor, an empty script output or a wake gate ends the run with no turn and no slot.
-  When the gate says the agent runs and no slot is free, the job is due again on the next tick
-  (not sooner: its scripts would run again at once), nothing recorded and the monitor's new
-  output not stored (so the next tick sees the change again; a pre-run script then runs again
-  too); a `run` asked meanwhile is that same due run.
+  When the gate says the agent runs and no slot is free, the job stays due, nothing recorded and
+  the monitor's new output not stored until the turn holds its slot; it keeps its gate's result
+  (the monitor's block, the script's output, the handlers' notes) and takes a slot on a later tick
+  without running its scripts or handlers again, until its schedule's next time after it found
+  the lane busy, when the result is dropped and the gate runs again on fresh data; a `run` asked
+  meanwhile is that same due run. Due jobs start the longest due first, and a job that found the
+  lane busy keeps its place in line: a job due after it (with no script, or whose gate ends
+  first) does not take the lane before it. A `run` asked while a run ends is taken in the same
+  step that lets the job go: one more run, never lost and never two.
 - `enabled: false` (`state: paused`) and `state: completed` jobs do not run.
 - A job whose next time cannot be computed (a schedule the engine does not run, such as
   needletail's `@hourly`, `mon#1`, `L` or a one-time `once` kind; an interval over 366 days; an
@@ -119,8 +124,8 @@ In this order:
    handled); `silent` is a silent run; a `pass` may add notes, which go into the prompt as a
    "Handler Notes" block, and the next handler runs. A handler that fails is skipped (logged) and
    the run goes on. They are bounded by `limits.script_timeout`, run while the run still holds
-   no turn slot when the job has a gate (as its scripts do; a busy agent then runs them again on
-   the next tick), and the link is in the handler, not the job: `cron/jobs.json` and agent.yaml
+   no turn slot when the job has a gate (as its scripts do; a job that then waits for a slot keeps
+   their decision with its gate's result, §2), and the link is in the handler, not the job: `cron/jobs.json` and agent.yaml
    do not change, and Hermes, which has no handlers, runs the same job with its prompt.
 6. **The prompt**: each of the job's skills loaded as `skill_view` loads it (its SKILL.md, a
    counted view, and needletail makes it the session's current skill so the terminal's `SKILL_DIR`

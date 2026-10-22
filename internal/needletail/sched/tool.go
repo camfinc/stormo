@@ -264,6 +264,9 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 		default:
 		}
 	}
+	if action == "update" || action == "remove" || action == "pause" {
+		s.unwait(a.JobID) // a gate's result kept for the old definition is not this job's
+	}
 	if action == "remove" {
 		return map[string]any{"removed": a.JobID}, nil
 	}

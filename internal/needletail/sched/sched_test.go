@@ -106,6 +106,8 @@ type fakeTurns struct {
 	block bool
 	// reserved counts Reserve calls that got a slot; held is the slots not yet released.
 	reserved, held int
+	// lane, when set, is how many slots may be held at once (the jobs' lane; more is busy).
+	lane int
 }
 
 type turnCall struct {
@@ -121,7 +123,7 @@ func jobOf(session string) string {
 func (f *fakeTurns) Reserve(session string, create wire.Session) (Slot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.busy {
+	if f.busy || f.lane > 0 && f.held >= f.lane {
 		return nil, errors.New("the agent is running as many turns as it can")
 	}
 	if create.Source != SourceCron || create.Title == "" {

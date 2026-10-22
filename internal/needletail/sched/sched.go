@@ -101,12 +101,13 @@ type Options struct {
 type Scheduler struct {
 	o                     Options
 	path, state, tmp, out string
-	mu                    sync.Mutex        // cron/jobs.json
-	runMu                 sync.Mutex        // running, requested, stopping, lastStart, warned
-	running               map[string]string // id → name
-	claimed               map[string]bool   // jobs a start has taken, running or about to (single-flight)
-	requested             map[string]bool   // `run` asked while the job was running
-	stopping              bool              // the ticks ended: a run cut short now is interrupted
+	mu                    sync.Mutex         // cron/jobs.json
+	runMu                 sync.Mutex         // running, claimed, requested, waiting, stopping, lastStart, warned
+	running               map[string]string  // id → name
+	claimed               map[string]bool    // jobs a start has taken, running or about to (single-flight)
+	requested             map[string]bool    // `run` asked while the job was running
+	waiting               map[string]*waiter // due jobs that found the jobs' lane busy, in line for it
+	stopping              bool               // the ticks ended: a run cut short now is interrupted
 	lastStart             time.Time
 	warned                map[string]string
 	wg                    sync.WaitGroup
@@ -143,7 +144,7 @@ func New(o Options) *Scheduler {
 		o.Env.Home = o.Home
 	}
 	s := &Scheduler{o: o, path: filepath.Join(o.Home, "cron", "jobs.json"), state: filepath.Join(o.Home, "state", "needletail"),
-		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, claimed: map[string]bool{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1), gates: make(chan struct{}, MaxGates)}
+		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, claimed: map[string]bool{}, requested: map[string]bool{}, waiting: map[string]*waiter{}, warned: map[string]string{}, kick: make(chan struct{}, 1), gates: make(chan struct{}, MaxGates)}
 	s.out = filepath.Join(s.state, "jobs")
 	s.runCtx, s.cancelRuns = context.WithCancel(context.Background())
 	return s
@@ -235,6 +236,83 @@ func (s *Scheduler) takeRequest(id string) bool {
 	r := s.requested[id]
 	delete(s.requested, id)
 	return r
+}
+
+// settleRun lets a run's job go (no longer running nor claimed) and takes the runs asked for
+// while it ran, in one step: a `run` (which asks under the file's lock) either comes before it
+// and is taken here, or after it and finds the job not running, so it makes the job due itself.
+// finish calls it under the file's lock, in the change that records the run.
+func (s *Scheduler) settleRun(id string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	r := s.requested[id]
+	delete(s.requested, id)
+	delete(s.running, id)
+	delete(s.claimed, id)
+	return r
+}
+
+// waiter is a due job in line for the jobs' lane: it found the lane busy (or an older job in
+// line). due is its place (its due time when it first found it busy); a gated job keeps its
+// gate's result, so its scripts do not run again while it waits, until its schedule's next time
+// after it found the lane busy (until), when the data may be stale and the gate runs again.
+type waiter struct {
+	due, until time.Time
+	gate       *gateResult
+}
+
+// gateResult is what a gated job's gate left for its turn: the monitor's block, the script's (and
+// the handlers' notes), and commit, which stores the monitor's output once the turn's slot is
+// held.
+type gateResult struct {
+	runContext, scriptBlock string
+	commit                  func()
+}
+
+// wait puts a job in line for the lane (keeping its place when it is already in line).
+func (s *Scheduler) wait(id string, due, until time.Time, gate *gateResult) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if w := s.waiting[id]; w != nil && w.due.Before(due) {
+		due = w.due
+	}
+	s.waiting[id] = &waiter{due: due, until: until, gate: gate}
+}
+
+// unwait takes a job out of the line (it got a slot, or changed, or is no longer due).
+func (s *Scheduler) unwait(id string) {
+	s.runMu.Lock()
+	delete(s.waiting, id)
+	s.runMu.Unlock()
+}
+
+// ahead is whether another job waits in line before a job due at due: the lane is theirs first.
+func (s *Scheduler) ahead(id string, due time.Time) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	for other, w := range s.waiting {
+		if other != id && (w.due.Before(due) || w.due.Equal(due) && other < id) {
+			return true
+		}
+	}
+	return false
+}
+
+// cachedGate is the gate result a waiting job kept, while it is still fresh (before until). An
+// expired one leaves the line with its result: the job's gate runs again (holding no place while
+// it runs) and it comes back in line at its due time if the lane is still busy.
+func (s *Scheduler) cachedGate(id string, now time.Time) *gateResult {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	w := s.waiting[id]
+	if w == nil || w.gate == nil {
+		return nil
+	}
+	if !now.Before(w.until) {
+		delete(s.waiting, id)
+		return nil
+	}
+	return w.gate
 }
 
 func (s *Scheduler) setStopping() {
@@ -482,13 +560,19 @@ func (s *Scheduler) Shutdown(ctx context.Context) {
 // Wait waits for the runs started so far (tests).
 func (s *Scheduler) Wait() { s.wg.Wait() }
 
-// Tick starts every due job.
+// Tick starts every due job, the longest due first (jobs.json's order between equals), so a job
+// the busy lane left due goes before the ones that came due after it.
 func (s *Scheduler) Tick() {
 	now := s.o.Now()
-	due := []string{}
+	type dueJob struct {
+		id  string
+		at  time.Time
+		pos int
+	}
+	due := []dueJob{}
 	err := s.mutate(func(f *File) (bool, error) {
 		changed := false
-		for _, j := range f.Jobs {
+		for i, j := range f.Jobs {
 			id := j.ID()
 			if id == "" || !j.Enabled() || s.isRunning(id) {
 				continue
@@ -498,7 +582,7 @@ func (s *Scheduler) Tick() {
 				continue
 			}
 			if next, ok := parseStamp(j.Str("next_run_at")); ok && !now.Before(next) {
-				due = append(due, id)
+				due = append(due, dueJob{id, next, i})
 			}
 		}
 		return changed, nil
@@ -507,8 +591,17 @@ func (s *Scheduler) Tick() {
 		s.logf("cron/jobs.json: %v", err)
 		return
 	}
-	for _, id := range due {
-		s.start(id, now)
+	sort.SliceStable(due, func(a, b int) bool { return due[a].at.Before(due[b].at) })
+	// a job in line that is no longer due (paused, removed, rescheduled) leaves the line
+	s.runMu.Lock()
+	for id := range s.waiting {
+		if !s.claimed[id] && !slices.ContainsFunc(due, func(d dueJob) bool { return d.id == id }) {
+			delete(s.waiting, id)
+		}
+	}
+	s.runMu.Unlock()
+	for _, d := range due {
+		s.start(d.id, now)
 	}
 }
 
@@ -545,14 +638,30 @@ func (s *Scheduler) start(id string, now time.Time) {
 		s.warnOnce("turns:"+id, fmt.Sprintf("job %s: no agent to run it", id))
 		return
 	}
+	// a gated job that waits in line with its gate's result takes its slot here, as a job with no
+	// gate does: its scripts already ran
+	cached := (*gateResult)(nil)
+	if agent && gated {
+		if cached = s.cachedGate(id, now); cached != nil {
+			gated = false
+		}
+	}
 	var slot Slot
 	if agent && !gated {
+		due := dueAt(job, now)
+		if s.ahead(id, due) {
+			return // an older job waits for the lane: it goes first, this one stays due
+		}
 		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: job.Name()})
 		if err != nil {
 			s.warnOnce("busy:"+id, fmt.Sprintf("job %s is due but not started: %v; next tick tries again", id, err))
+			if cached == nil { // a job with a kept gate result is in line already
+				s.wait(id, due, time.Time{}, nil)
+			}
 			return
 		}
 		s.warnOnce("busy:"+id, "")
+		s.unwait(id)
 		slot = r
 	}
 	started := false
@@ -566,6 +675,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 		}
 		started = true
 		j.Set("running", true)
+		s.takeRequest(id) // a run asked for since the claim is this one
 		return true, nil
 	})
 	if !started {
@@ -578,16 +688,10 @@ func (s *Scheduler) start(id string, now time.Time) {
 	s.running[id] = job.Name()
 	s.lastStart = now
 	s.runMu.Unlock()
-	claimed = false // the run goroutine lets it go
+	claimed = false // the run's finish lets it go (settleRun)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer func() {
-			s.runMu.Lock()
-			delete(s.running, id)
-			delete(s.claimed, id)
-			s.runMu.Unlock()
-		}()
 		// A job with a script (a monitor, a pre-run script, a script-only job) runs it under
 		// the gates' own cap, holding no turn slot: a script may take an hour, and the agent's
 		// turn slots are for turns. Its turn slot is taken once the gate says the agent runs
@@ -603,14 +707,14 @@ func (s *Scheduler) start(id string, now time.Time) {
 				return
 			}
 		}
-		o := s.execute(s.runCtx, job, &slot, session, release)
+		o := s.execute(s.runCtx, job, &slot, session, release, cached)
 		release()
 		if slot != nil {
 			slot.Release()
 		}
 		s.finish(s.runCtx, job, o)
 		if o.status == statusBusy {
-			return // no turn was free: the next tick tries again (a kick would rerun its scripts at once)
+			return // no turn was free: it waits in line with its gate's result for the next tick
 		}
 		// a slot is free again: a job the busy agent left due starts now, not a tick later
 		select {
@@ -627,7 +731,8 @@ type outcome struct {
 	text    string // what is delivered (the reply, the script's output, or the failure notice)
 	pause   string // the job cannot run: pause it with this reason
 	session string
-	doc     string // the run's record
+	doc     string      // the run's record
+	gate    *gateResult // statusBusy: the gate's result, kept while the job waits for the lane
 }
 
 func (o outcome) failed() bool { return o.status == wire.StatusError }
@@ -644,6 +749,24 @@ func hasGate(j *Job) bool {
 	return strings.TrimSpace(j.Str("script")) != "" || !j.Bool("no_agent") && strings.TrimSpace(j.Str("monitor_script")) != ""
 }
 
+// dueAt is a job's due time (its next_run_at; now when it has none).
+func dueAt(j *Job, now time.Time) time.Time {
+	if t, ok := parseStamp(j.Str("next_run_at")); ok {
+		return t
+	}
+	return now
+}
+
+// nextAfter is the job's schedule's next time after now (now when it has none): how long a
+// waiting job's gate result stays fresh.
+func (s *Scheduler) nextAfter(j *Job, now time.Time) time.Time {
+	n, err := s.nextRun(j, now)
+	if err != nil {
+		return now
+	}
+	return n
+}
+
 // interrupted is the outcome of a run the shutdown cut short.
 func interrupted(session string) outcome {
 	return outcome{status: statusInterrupted, err: "interrupted: the runtime stopped during the run", session: session}
@@ -651,10 +774,11 @@ func interrupted(session string) outcome {
 
 // execute runs one job: its script alone (no_agent), or its monitor, script and turn. A gated job
 // (hasGate) comes with no slot: once its gate says the agent runs, it releases the gates' cap
-// and takes a turn slot into *slot (the caller releases it); none free is statusBusy, and the
-// monitor's new output is stored only once the slot is held, so the next tick sees the change
-// again.
-func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session string, release func()) (o outcome) {
+// and takes a turn slot into *slot (the caller releases it); none free (or an older job waiting
+// for one) is statusBusy with the gate's result, which the job keeps while it waits, and the
+// monitor's new output is stored only once the slot is held. cached is such a kept result: the
+// job comes with its slot, and its gate does not run again.
+func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session string, release func(), cached *gateResult) (o outcome) {
 	name, id := j.Name(), j.ID()
 	defer func() {
 		if p := recover(); p != nil {
@@ -684,6 +808,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 	prompt := j.Str("prompt")
 	if strings.TrimSpace(prompt) == "" && len(j.Skills()) == 0 && strings.TrimSpace(j.Str("script")) == "" {
 		return outcome{status: wire.StatusError, err: "the job has no prompt, skills or script", pause: "the job has no prompt, skills or script"}
+	}
+	if cached != nil {
+		return s.turn(ctx, j, slot, session, prompt, cached)
 	}
 	runContext, commit := "", func() {}
 	if mon := strings.TrimSpace(j.Str("monitor_script")); mon != "" {
@@ -736,15 +863,34 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		}
 	}
 	release()
+	gate := &gateResult{runContext: runContext, scriptBlock: scriptBlock, commit: commit}
 	if *slot == nil {
+		if s.ahead(id, dueAt(j, s.o.Now())) {
+			// an older job waits for the lane: it goes first (the kick lets it try now, the lane
+			// may be free), and this one waits behind it with its gate's result
+			select {
+			case s.kick <- struct{}{}:
+			default:
+			}
+			return outcome{status: statusBusy, err: "an older job waits for the jobs' turn", gate: gate}
+		}
 		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: name})
 		if err != nil {
-			return outcome{status: statusBusy, err: err.Error()}
+			return outcome{status: statusBusy, err: err.Error(), gate: gate}
 		}
 		*slot = r
 	}
+	return s.turn(ctx, j, slot, session, prompt, gate)
+}
+
+// turn runs an agent job's turn in *slot, once its gate (if any) has run: the monitor's output is
+// stored first (commit), then the prompt is built with the gate's blocks.
+func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, prompt string, gate *gateResult) outcome {
+	id := j.ID()
+	s.unwait(id)
 	s.warnOnce("busy:"+id, "")
-	commit()
+	gate.commit()
+	runContext, scriptBlock := gate.runContext, gate.scriptBlock
 	if j.Str("model") != "" || j.Str("provider") != "" {
 		s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, j.Str("model"), j.Str("provider")))
 	}
@@ -917,12 +1063,19 @@ func (s *Scheduler) monitorGate(j *Job, out string) (string, bool, func()) {
 // (re-anchored on the end of the run; none once repeat.times runs are done).
 func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	id, now := j.ID(), s.o.Now()
+	settled := false
+	settle := func() bool { settled = true; return s.settleRun(id) }
+	defer func() {
+		if !settled { // the file could not be read: the job is let go all the same
+			s.settleRun(id)
+		}
+	}()
 	if o.status == statusBusy {
 		// the gate ran but no turn was free: due again as it was, nothing recorded (a run asked
-		// for meanwhile is that same due run)
-		s.takeRequest(id)
-		s.warnOnce("busy:"+id, fmt.Sprintf("job %s: its gate wants a turn but none is free (%s); next tick runs it again", id, o.err))
+		// for meanwhile is that same due run), in line for the lane with its gate's result
+		s.warnOnce("busy:"+id, fmt.Sprintf("job %s: its gate wants a turn but none is free (%s); it waits for one with its gate's result", id, o.err))
 		if err := s.mutate(func(f *File) (bool, error) {
+			settle()
 			if live := f.Find(id); live != nil {
 				live.Set("running", false)
 				due := j.Str("next_run_at")
@@ -930,6 +1083,9 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 					due = s.at(now)
 				}
 				live.Set("next_run_at", due)
+				if o.gate != nil {
+					s.wait(id, dueAt(j, now), s.nextAfter(j, now), o.gate)
+				}
 				return true, nil
 			}
 			return false, nil
@@ -939,9 +1095,9 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 		return
 	}
 	if o.status == statusInterrupted {
-		s.takeRequest(id)
 		s.record(j, o, now)
 		if err := s.mutate(func(f *File) (bool, error) {
+			settle()
 			if live := f.Find(id); live != nil {
 				live.Set("running", false)
 				live.Set("next_run_at", s.at(now)) // due again at the next start
@@ -954,7 +1110,6 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 		s.logf("job %s: interrupted by the shutdown; due again at the next start", id)
 		return
 	}
-	requested := s.takeRequest(id)
 	streak := j.Int("failure_streak")
 	if o.failed() {
 		streak++
@@ -971,6 +1126,7 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	}
 	s.record(j, o, now)
 	err := s.mutate(func(f *File) (bool, error) {
+		requested := settle() // with the record, so a `run` asked meanwhile is neither lost nor run twice
 		live := f.Find(id)
 		if live == nil {
 			return false, nil // removed while it ran
