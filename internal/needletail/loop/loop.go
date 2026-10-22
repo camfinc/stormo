@@ -96,6 +96,10 @@ type Agent struct {
 	// Sections are further system prompt sections, each read every turn and placed before the
 	// current time (the Slack gateway's guidance).
 	Sections []func() string
+	// Recall, when set, is the memory recalled for a turn's input (memory.Recaller.Block): put in
+	// front of the turn's user message in every request of the turn, never in the system prompt
+	// (which would change every turn and defeat the prompt cache) nor in the session file.
+	Recall func(session, input string, job bool) string
 }
 
 // Options shape one turn.
@@ -103,6 +107,8 @@ type Options struct {
 	// Tools limits the tools offered (empty: all).
 	Tools    []string
 	Observer Observer
+	// Job: a scheduled run (memory recall is off for those unless memory.recall.jobs).
+	Job bool
 }
 
 // Result is a finished turn.
@@ -193,6 +199,10 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 
 	turn := a.LLM.NewTurn()
 	system := a.SystemPrompt()
+	recalled := ""
+	if a.Recall != nil {
+		recalled = a.Recall(tip, input, opts.Job)
+	}
 	if a.Refresh != nil {
 		a.Refresh(ctx)
 	}
@@ -215,7 +225,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 		final := step >= a.Cfg.Limits.Turns
 		window := a.window(ctx, turn)
-		estimate := max(estimateTokens(system, history, specs), lastTotal+sinceTotal/charsPerTok)
+		estimate := max(estimateTokens(system, history, specs)+len(recalled)/charsPerTok, lastTotal+sinceTotal/charsPerTok)
 		if float64(estimate) > compactAt*float64(window) {
 			newTip, newHistory, err := a.compact(ctx, turn, res.Session, history, window, int(keepRecent*float64(window)))
 			if err != nil {
@@ -225,7 +235,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 				lastTotal, sinceTotal = 0, 0
 			}
 		}
-		req := llm.Request{Messages: toLLM(system, history)}
+		req := llm.Request{Messages: withRecall(toLLM(system, history), recalled)}
 		if final {
 			req.Messages = append(req.Messages, llm.Message{Role: "system", Content: "You have reached this turn's tool-call limit. Answer now with what you have; do not call tools."})
 		} else {
@@ -394,6 +404,21 @@ func toLLM(system string, history []wire.Message) []llm.Message {
 	}
 	flush()
 	return out
+}
+
+// withRecall puts the recalled memory block in front of the request's last user message (the
+// turn's input; a copy, so the session keeps what was written).
+func withRecall(msgs []llm.Message, recalled string) []llm.Message {
+	if recalled == "" {
+		return msgs
+	}
+	for i := len(msgs) - 1; i > 0; i-- {
+		if msgs[i].Role == "user" {
+			msgs[i].Content = recalled + "\n\n" + msgs[i].Content
+			break
+		}
+	}
+	return msgs
 }
 
 // estimateTokens is a character count over four: rough, and only used against a threshold.

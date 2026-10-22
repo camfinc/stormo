@@ -179,6 +179,8 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	js := jailFor(split.Exec != nil, jailSpec(cfg), jail.ABI, self, os.Getenv, logf)
 	env.Jail = js.launcher
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
+	recall := recaller(cfg.Memory.Recall, mem, store, logf)
+	agent.Recall = recall.Block
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
@@ -198,6 +200,17 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// the guide comes first among the sections, before a channel's guidance
 	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)
 	return rt, nil
+}
+
+// recaller is the per-turn recall (§4.6) as needletail.yaml's memory.recall sets it: on for user
+// turns and off for scheduled runs unless it says otherwise.
+func recaller(c *wire.RecallConfig, mem *memory.Store, store *sessions.Store, logf func(string)) *memory.Recaller {
+	rc := &memory.Recaller{Store: mem, Root: store.Root, Auto: true, Log: logf}
+	if c != nil {
+		rc.Auto = c.Auto == nil || *c.Auto
+		rc.Jobs, rc.Max, rc.Budget = c.Jobs, c.Max, c.Budget
+	}
+	return rc
 }
 
 // luauGroup is the registry group of the Luau tools (found again every turn).

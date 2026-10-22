@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
 	adapter "github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -322,5 +323,26 @@ func TestTerminalEnvClean(t *testing.T) {
 	env := strings.Join(rt.agent.Env.Environ(), "\n")
 	if strings.Contains(env, cloudKey) || strings.Contains(env, apiKey) || !strings.Contains(env, "CRM_API_TOKEN="+crmToken) || !strings.Contains(env, "SWARM_CORE_KEY=") {
 		t.Errorf("terminal env:\n%s", env)
+	}
+}
+
+// needletail.yaml's memory.recall sets the per-turn recall; unset, it is on for user turns and
+// off for scheduled runs.
+func TestRecallerConfig(t *testing.T) {
+	off, on := false, true
+	for _, c := range []struct {
+		cfg        *wire.RecallConfig
+		auto, jobs bool
+		max        int
+	}{
+		{nil, true, false, 0},
+		{&wire.RecallConfig{Auto: &off}, false, false, 0},
+		{&wire.RecallConfig{Auto: &on, Jobs: true, Max: 3, Budget: 800}, true, true, 3},
+		{&wire.RecallConfig{Jobs: true}, true, true, 0},
+	} {
+		rc := recaller(c.cfg, nil, nil, nil)
+		if rc.Auto != c.auto || rc.Jobs != c.jobs || rc.Max != c.max {
+			t.Errorf("%+v: %+v", c.cfg, rc)
+		}
 	}
 }

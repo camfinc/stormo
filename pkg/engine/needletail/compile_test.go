@@ -136,6 +136,29 @@ func TestGrantsRender(t *testing.T) {
 	if len(c.Luau.HTTPSecrets) != 1 || c.Luau.HTTPSecrets[0].Env != "CRM_API_TOKEN" {
 		t.Errorf("http_secrets = %+v", c.Luau.HTTPSecrets)
 	}
+	// memory.recall reaches needletail.yaml as written; unset, it is omitted (the runtime's
+	// defaults), so the golden home has none
+	if r := c.Memory.Recall; r == nil || r.Auto == nil || !*r.Auto || !r.Jobs || r.Max != 3 || r.Budget != 800 {
+		t.Errorf("memory.recall = %+v", r)
+	}
+	if strings.Contains(string(raw), "recall:") != true {
+		t.Errorf("needletail.yaml:\n%s", raw)
+	}
+	if golden, _ := os.ReadFile(filepath.Join("testdata", "home", "needletail.yaml")); strings.Contains(string(golden), "recall") {
+		t.Error("an unset memory.recall was rendered")
+	}
+	for body, ok := range map[string]bool{"memory:\n  recall: {auto: false}\n": true, "memory:\n  recall: {max: 11}\n": false,
+		"memory:\n  recall: {budget: 100}\n": false, "memory:\n  recall: {budget: 4000, max: 10}\n": true, "memory:\n  recall: {other: 1}\n": false} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readAgentConfig(dir); (err == nil) != ok {
+			t.Errorf("%q: %v", body, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// On the core: its gateway first (the instance's own core), the agent's connection as the
 	// fallback; hooks and MCP through the sidecar's relay.
 	if c.Model.Primary.BaseURL != core.BaseURL || len(c.Model.Fallbacks) != 1 || c.Model.Fallbacks[0].KeyEnv != conn.Key || c.Core == nil ||

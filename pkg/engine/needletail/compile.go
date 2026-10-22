@@ -43,7 +43,19 @@ type agentConfig struct {
 		// schedules.turns; the runtime's 1 when 0).
 		Turns int `yaml:"turns"`
 	} `yaml:"schedules"`
+	Memory struct {
+		// Recall is the per-turn recall from the memory archive (needletail.yaml memory.recall;
+		// omitted when unset: on for user turns, off for scheduled runs).
+		Recall *wire.RecallConfig `yaml:"recall"`
+	} `yaml:"memory"`
 }
+
+// Bounds of memory.recall.
+const (
+	maxRecallRecords = 10
+	minRecallBudget  = 200
+	maxRecallBudget  = 4000
+)
 
 // maxScheduleTurns is the most turns scheduled runs may hold at once.
 const maxScheduleTurns = 4
@@ -83,6 +95,14 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	if c.Schedules.Turns < 0 || c.Schedules.Turns > maxScheduleTurns {
 		return nil, fmt.Errorf("%s: schedules.turns %d must be 1 to %d (0 or unset: the runtime's 1)", ConfigFile, c.Schedules.Turns, maxScheduleTurns)
 	}
+	if r := c.Memory.Recall; r != nil {
+		if r.Max < 0 || r.Max > maxRecallRecords {
+			return nil, fmt.Errorf("%s: memory.recall.max %d must be 1 to %d records (0 or unset: the runtime's 5)", ConfigFile, r.Max, maxRecallRecords)
+		}
+		if r.Budget != 0 && (r.Budget < minRecallBudget || r.Budget > maxRecallBudget) {
+			return nil, fmt.Errorf("%s: memory.recall.budget %d must be %d to %d UTF-16 units (0 or unset: the runtime's 1200)", ConfigFile, r.Budget, minRecallBudget, maxRecallBudget)
+		}
+	}
 	if c.Luau.Timeout < 0 || c.Luau.Timeout > maxLuauTimeout {
 		return nil, fmt.Errorf("%s: luau.timeout %d must be seconds, 1 to %d (0 or unset: the runtime's 30)", ConfigFile, c.Luau.Timeout, maxLuauTimeout)
 	}
@@ -102,7 +122,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
 	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
 		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout},
-		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit}}
+		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit, Recall: ac.Memory.Recall}}
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}
 	if onCore(a, target) && !core.NoGateway {

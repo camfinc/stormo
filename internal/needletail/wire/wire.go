@@ -309,10 +309,28 @@ type CoreConfig struct {
 	KeyEnv    string `json:"key_env" yaml:"key_env"`
 }
 
-// MemoryConfig is the hot-memory budgets, in UTF-16 units of each file.
+// MemoryConfig is the hot-memory budgets, in UTF-16 units of each file, and the per-turn recall
+// from the memory archive.
 type MemoryConfig struct {
 	MemoryCharLimit int `json:"memory_char_limit" yaml:"memory_char_limit"`
 	UserCharLimit   int `json:"user_char_limit" yaml:"user_char_limit"`
+	// Recall is engine/needletail/config.yaml's memory.recall; omitted when unset (the runtime's
+	// defaults: on for user turns, off for scheduled runs, 5 records, 1,200 units).
+	Recall *RecallConfig `json:"recall,omitempty" yaml:"recall,omitempty"`
+}
+
+// RecallConfig is the automatic recall: before a turn, the archive records most related to the
+// message are put in front of it in that turn's requests (never the system prompt, never the
+// session file).
+type RecallConfig struct {
+	// Auto: recall for user turns (nil: on). false turns it off; the tools still work.
+	Auto *bool `json:"auto,omitempty" yaml:"auto,omitempty"`
+	// Jobs: recall for scheduled runs too (their prompts are fixed; off by default).
+	Jobs bool `json:"jobs,omitempty" yaml:"jobs,omitempty"`
+	// Max records (1 to 10) and Budget in UTF-16 units of the recalled lines (200 to 4000) a turn
+	// gets; 0: the runtime's 5 and 1200.
+	Max    int `json:"max,omitempty" yaml:"max,omitempty"`
+	Budget int `json:"budget,omitempty" yaml:"budget,omitempty"`
 }
 
 // LuauConfig is what Luau tools may be granted (docs/needletail.md §5.4): a tool's effective

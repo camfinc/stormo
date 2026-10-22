@@ -6,3 +6,5 @@ luau:
       env: CRM_API_TOKEN
       header: Authorization
       template: "Bearer {value}"
+memory:
+  recall: {auto: true, jobs: true, max: 3, budget: 800}

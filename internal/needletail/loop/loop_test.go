@@ -593,3 +593,66 @@ func TestRefreshAndObservedCalls(t *testing.T) {
 		t.Fatalf("observed\n%s\nwant\n%s", strings.Join(ev.log, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// Recalled memory goes in front of the turn's user message in every request of the turn, and
+// nowhere else: not in the system prompt (the cache), not in the session file (transcripts stay
+// what people wrote). A scheduled run says so to the recall.
+func TestRecallInRequestsOnly(t *testing.T) {
+	st := &stub{pick: func(req map[string]any) string {
+		if lastRow(req)["role"] == "user" {
+			return callTool("call_r1", "terminal", `{"command":"echo hi"}`)
+		}
+		return say("Done.")
+	}}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	a := newAgent(t, srv)
+	if _, err := a.Store.Create(wire.Session{ID: "s1", Source: "api_server"}); err != nil {
+		t.Fatal(err)
+	}
+	const block = "<memory-context>\n- m0000000000a · fact · 2026-10-20: Ana wants EUR.\n</memory-context>"
+	var calls []string
+	a.Recall = func(session, input string, job bool) string {
+		calls = append(calls, fmt.Sprintf("%s|%s|%v", session, input, job))
+		if job {
+			return ""
+		}
+		return block
+	}
+	if _, err := a.Run(context.Background(), "s1", "Quote Ana's cruise.", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.requests) != 2 || !slices.Equal(calls, []string{"s1|Quote Ana's cruise.|false"}) {
+		t.Fatalf("%d requests, recall calls %v", len(st.requests), calls)
+	}
+	for i, req := range st.requests {
+		msgs := req["messages"].([]any)
+		if sys := msgs[0].(map[string]any)["content"].(string); strings.Contains(sys, "memory-context") {
+			t.Errorf("request %d: recall in the system prompt", i)
+		}
+		users := 0
+		for _, m := range msgs {
+			if row := m.(map[string]any); row["role"] == "user" {
+				users++
+				if row["content"] != block+"\n\nQuote Ana's cruise." {
+					t.Errorf("request %d: user row %q", i, row["content"])
+				}
+			}
+		}
+		if users != 1 {
+			t.Errorf("request %d: %d user rows", i, users)
+		}
+	}
+	raw, _ := os.ReadFile(filepath.Join(a.Cfg.Home, "sessions", "s1.jsonl"))
+	if strings.Contains(string(raw), "memory-context") || !strings.Contains(string(raw), "Quote Ana's cruise.") {
+		t.Errorf("session file:\n%s", raw)
+	}
+	// a scheduled run
+	st.requests = nil
+	if _, err := a.Run(context.Background(), "s1", "Daily digest.", Options{Job: true}); err != nil {
+		t.Fatal(err)
+	}
+	if calls[1] != "s1|Daily digest.|true" || strings.Contains(fmt.Sprint(st.requests), "memory-context") {
+		t.Errorf("job: calls %v", calls)
+	}
+}

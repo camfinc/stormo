@@ -37,6 +37,13 @@ func TestLoadGoldenHome(t *testing.T) {
 	if c, err := Load(dir, env(nil)); err != nil || !c.Slack.Broadcast || c.Schedules.Turns != 2 || len(c.Schedules.Repo) != 2 {
 		t.Errorf("slack and schedules: %v %+v", err, c)
 	}
+	if c.Memory.Recall != nil {
+		t.Errorf("the golden home sets memory.recall: %+v", c.Memory.Recall)
+	}
+	_ = os.WriteFile(filepath.Join(dir, File), []byte("version: 1\nmodel: {primary: {base_url: http://x, model: m}}\nmemory: {memory_char_limit: 100, user_char_limit: 50, recall: {auto: false, jobs: true, max: 2, budget: 600}}\n"), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || c.Memory.Recall == nil || *c.Memory.Recall.Auto || !c.Memory.Recall.Jobs || c.Memory.Recall.Max != 2 || c.Memory.Recall.Budget != 600 {
+		t.Errorf("memory.recall: %v %+v", err, c)
+	}
 }
 
 func TestLoadRefuses(t *testing.T) {

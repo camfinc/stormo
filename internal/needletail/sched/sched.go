@@ -934,7 +934,7 @@ func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, promp
 		s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, j.Str("model"), j.Str("provider")))
 	}
 	input := s.buildPrompt(j, session, prompt, scriptBlock, runContext)
-	res, err := (*slot).Turn(ctx, input, loop.Options{Tools: s.toolsFor(j)})
+	res, err := (*slot).Turn(ctx, input, loop.Options{Tools: s.toolsFor(j), Job: true})
 	if res != nil {
 		session = res.Session
 		if s.o.End != nil {
