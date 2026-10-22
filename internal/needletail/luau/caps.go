@@ -99,11 +99,12 @@ func (c Caps) HTTP(host string) bool {
 // HTTPExact: host named exactly (no wildcard) by both lists; what lets a request reach an internal
 // address that is otherwise refused.
 func (c Caps) HTTPExact(host string) bool {
-	return c.allow("http", func(a string) bool { return a == host })
+	host = normHost(host)
+	return c.allow("http", func(a string) bool { return normHost(a) == host })
 }
 
 func hostMatch(pattern, host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host = normHost(host)
 	if suffix, ok := strings.CutPrefix(pattern, "*."); ok {
 		return strings.HasSuffix(host, "."+suffix)
 	}

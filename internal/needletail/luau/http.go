@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -87,7 +88,7 @@ func httpRequest(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	origin := u.Hostname()
+	origin := normHost(u.Hostname())
 	client := c.rt.httpClient()
 	for hop := 0; ; hop++ {
 		req, err := http.NewRequestWithContext(ctx, a.Method, u.String(), nil)
@@ -103,7 +104,7 @@ func httpRequest(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 			if lk == "host" || lk == "content-length" || lk == "transfer-encoding" || lk == "connection" {
 				continue
 			}
-			if u.Hostname() != origin && contains(sensitive, lk) {
+			if normHost(u.Hostname()) != origin && contains(sensitive, lk) {
 				continue
 			}
 			req.Header.Set(k, v)
@@ -174,7 +175,46 @@ func unwrapURL(err error) error {
 	return err
 }
 
-// checkURL refuses anything but HTTPS to a host the tool may reach.
+// normHost is a host as every check compares it: lower case, no trailing dot, an IP literal in its
+// canonical form.
+func normHost(h string) string {
+	h = strings.ToLower(strings.TrimSuffix(h, "."))
+	if ip, err := netip.ParseAddr(h); err == nil {
+		return ip.String()
+	}
+	return h
+}
+
+// parsePort is a port as a number: decimal digits only, 1 to 65535 (0443 is 443).
+func parsePort(s string) (int, bool) {
+	if s == "" || len(s) > 8 || strings.Trim(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil && n >= 1 && n <= 65535
+}
+
+// hostPort is u's normalized host and its port as a number (the scheme's default when it has none).
+func hostPort(u *url.URL) (string, int, bool) {
+	host := normHost(u.Hostname())
+	if host == "" {
+		return "", 0, false
+	}
+	if p := u.Port(); p != "" {
+		n, ok := parsePort(p)
+		return host, n, ok
+	}
+	switch u.Scheme {
+	case "https", "wss":
+		return host, 443, true
+	case "http", "ws":
+		return host, 80, true
+	}
+	return "", 0, false
+}
+
+// checkURL refuses anything but HTTPS to a host the tool may reach. The URL it returns has its
+// host and port in the form every later check compares (the dialer sees the port as a number).
 func (c *Call) checkURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -186,31 +226,35 @@ func (c *Call) checkURL(raw string) (*url.URL, error) {
 	if u.User != nil {
 		return nil, errf("bad_args", "http.request: credentials in the URL are not allowed")
 	}
-	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	host, port, ok := hostPort(u)
+	if !ok {
+		return nil, errf("bad_args", "http.request: %q has no valid host and port (1-65535)", raw)
+	}
+	if u.Port() != "" {
+		u.Host = net.JoinHostPort(host, strconv.Itoa(port))
+	} else if strings.Contains(host, ":") {
+		u.Host = "[" + host + "]"
+	} else {
+		u.Host = host
+	}
 	if !c.Caps.HTTP(host) {
 		return nil, c.deny("http.request", "http:"+host)
 	}
-	if c.rt.isCore(host, u.Port()) {
+	if c.rt.isCore(host, port) {
 		return nil, errf("denied", "http.request: the swarm core is reached with nt.core, not http")
 	}
 	return u, nil
 }
 
-// isCore: host:port is one of the core's (or its relay's) addresses.
-func (rt *Runtime) isCore(host, port string) bool {
-	if port == "" {
-		port = "443"
-	}
+// isCore: host:port (normalized) is one of the core's (or its relay's) addresses.
+func (rt *Runtime) isCore(host string, port int) bool {
+	host = normHost(host)
 	for _, s := range rt.CoreURLs {
 		cu, err := url.Parse(s)
 		if err != nil || cu.Host == "" {
 			continue
 		}
-		cp := cu.Port()
-		if cp == "" {
-			cp = map[string]string{"http": "80", "https": "443"}[cu.Scheme]
-		}
-		if strings.EqualFold(strings.TrimSuffix(cu.Hostname(), "."), host) && cp == port {
+		if ch, cp, ok := hostPort(cu); ok && ch == host && cp == port {
 			return true
 		}
 	}
@@ -218,20 +262,17 @@ func (rt *Runtime) isCore(host, port string) bool {
 }
 
 // coreAddr: ip:port is where the core listens.
-func (rt *Runtime) coreAddr(ctx context.Context, ip netip.Addr, port string) bool {
+func (rt *Runtime) coreAddr(ctx context.Context, ip netip.Addr, port int) bool {
 	for _, s := range rt.CoreURLs {
 		cu, err := url.Parse(s)
 		if err != nil || cu.Host == "" {
 			continue
 		}
-		cp := cu.Port()
-		if cp == "" {
-			cp = map[string]string{"http": "80", "https": "443"}[cu.Scheme]
-		}
-		if cp != port {
+		ch, cp, ok := hostPort(cu)
+		if !ok || cp != port {
 			continue
 		}
-		addrs, _ := rt.lookup(ctx, cu.Hostname())
+		addrs, _ := rt.lookup(ctx, ch)
 		for _, a := range addrs {
 			if a.Unmap() == ip.Unmap() {
 				return true
@@ -253,9 +294,9 @@ func (rt *Runtime) lookup(ctx context.Context, host string) ([]netip.Addr, error
 
 // inject adds the http_secrets headers for the request's host; nothing else ever sees them.
 func (rt *Runtime) inject(req *http.Request) {
-	host := strings.ToLower(req.URL.Hostname())
+	host := normHost(req.URL.Hostname())
 	for _, s := range rt.HTTPSecrets {
-		if !hostMatch(strings.ToLower(s.Host), host) || rt.Secret == nil {
+		if !hostMatch(normHost(s.Host), host) || rt.Secret == nil {
 			continue
 		}
 		v := rt.Secret(s.Env)
@@ -284,9 +325,13 @@ func (rt *Runtime) httpClient() *http.Client {
 		MaxIdleConns:          1,
 		DisableKeepAlives:     true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
+			host, portText, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err
+			}
+			port, ok := parsePort(portText)
+			if !ok {
+				return nil, errf("bad_args", "http.request: %q is not a port", portText)
 			}
 			c, _ := ctx.Value(callKey{}).(*Call)
 			addrs, err := rt.lookup(ctx, host)
@@ -308,7 +353,7 @@ func (rt *Runtime) httpClient() *http.Client {
 					return nil, errf("denied", "http.request: %s is the swarm core; use nt.core", host)
 				}
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), strconv.Itoa(port)))
 		},
 	}
 	if rt.rootCAs != nil {

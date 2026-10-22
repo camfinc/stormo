@@ -548,6 +548,30 @@ func TestHTTPInternalAddresses(t *testing.T) {
 	}
 }
 
+// A port is a number: 0443 is 443, so a leading zero does not slip past the core's block.
+func TestHTTPPortsAreNumbers(t *testing.T) {
+	rt, _ := newRuntime(t)
+	hits := 0
+	_, base := tlsServer(t, rt, func(w http.ResponseWriter, r *http.Request) { hits++ })
+	u, _ := url.Parse(base)
+	rt.Grants = append(rt.Grants, "http:127.0.0.1", "http:core.example.com", "http:api.example.com")
+	rt.CoreURLs = []string{"http://127.0.0.1:" + u.Port() + "/mcp", "https://Core.Example.com./ingest"}
+	caps := []string{"http:127.0.0.1", "http:core.example.com", "http:api.example.com"}
+	for _, raw := range []string{"https://127.0.0.1:0" + u.Port() + "/", "https://127.0.0.1:00" + u.Port() + "/",
+		"https://core.example.com:0443/", "https://core.example.com:443/", "https://CORE.example.com./"} {
+		fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, raw), "denied")
+	}
+	for _, raw := range []string{"https://api.example.com:99999/", "https://api.example.com:0/", "https://api.example.com:65536/"} {
+		fails(t, rt, caps, fmt.Sprintf(`return http_request{url = %q}`, raw), "bad_args")
+	}
+	if hits != 0 {
+		t.Fatalf("the core was reached %d times", hits)
+	}
+	if !rt.isCore("core.example.com", 443) || rt.isCore("core.example.com", 8443) {
+		t.Fatal("isCore")
+	}
+}
+
 // ---- tools, luau_test, schedule scripts ------------------------------------------------------
 
 const goodTool = `--[[needletail
