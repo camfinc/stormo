@@ -72,6 +72,9 @@ type Runtime struct {
 	LuauTimeout   time.Duration
 	ScriptTimeout time.Duration
 	Now           func() time.Time
+	// Observer, when set, gives the observer of handler runs (the core's hooks, which connect
+	// after boot): each run is a tool_start and tool_done named luau:<skill>__<name>#<event>.
+	Observer func() HookObserver
 
 	// tests only: extra roots for nt.http's TLS, and a resolver standing in for DNS
 	rootCAs *tls.Config
@@ -827,6 +830,10 @@ func messageSend(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 	}
 	if !c.Caps.Message(t.String()) {
 		return nil, c.deny("message.send", "message:"+t.String())
+	}
+	if messaging.HandlerEvent(ctx) == BeforeSend {
+		// a before_send handler decides on a message; sending one of its own would start another
+		return nil, errf("refused", "send_message is not available in a before_send handler: allow, rewrite or block the message")
 	}
 	if c.rt.Messenger == nil {
 		return nil, errf("unavailable", "send_message: no messaging gateway runs here (Slack is off)")

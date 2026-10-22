@@ -170,7 +170,12 @@ func TestLuauCheckCommand(t *testing.T) {
 	_ = os.WriteFile(good, []byte(fareTool), 0o644)
 	_ = os.WriteFile(bad, []byte(strings.Replace(fareTool, "name: fare_quote", "name: broken", 1)+"return {"), 0o644)
 	_ = os.WriteFile(script, []byte("--[[needletail\nformat: 1\n]]\nreturn 1\n"), 0o644)
-	for file, want := range map[string]int{good: 0, bad: 1, script: 0, filepath.Join(dir, "missing.luau"): 1} {
+	hdir := filepath.Join(filepath.Dir(dir), "handlers")
+	_ = os.MkdirAll(hdir, 0o755)
+	handler, toolAsHandler := filepath.Join(hdir, "greet.luau"), filepath.Join(hdir, "fare_quote.luau")
+	_ = os.WriteFile(handler, []byte("--[[needletail\nformat: 1\nname: greet\ndescription: Greets.\nevents: [on_message]\n]]\nfunction on_message(ev) return nil end\n"), 0o644)
+	_ = os.WriteFile(toolAsHandler, []byte(fareTool), 0o644) // a tool's header (args, no events) in handlers/
+	for file, want := range map[string]int{good: 0, bad: 1, script: 0, filepath.Join(dir, "missing.luau"): 1, handler: 0, toolAsHandler: 1} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(context.Background(), []string{"luau", "check", file}, &stdout, &stderr); code != want {
 			t.Errorf("%s: exit %d, want %d: %s%s", filepath.Base(file), code, want, stdout.String(), stderr.String())

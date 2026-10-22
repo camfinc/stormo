@@ -452,13 +452,15 @@ func TestMemoryAndLog(t *testing.T) {
 }
 
 type fakeMessenger struct {
-	mu   sync.Mutex
-	sent []messaging.Request
+	mu       sync.Mutex
+	sent     []messaging.Request
+	ctxEvent string // the handler event the last send came from
 }
 
-func (f *fakeMessenger) Send(_ context.Context, r messaging.Request) (messaging.Sent, error) {
+func (f *fakeMessenger) Send(ctx context.Context, r messaging.Request) (messaging.Sent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ctxEvent = messaging.HandlerEvent(ctx)
 	if strings.Contains(r.Target, "C0SECRET01") {
 		return messaging.Sent{}, fmt.Errorf("%w: C0SECRET01 is not a channel you have a conversation in", messaging.ErrRefused)
 	}

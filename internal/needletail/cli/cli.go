@@ -45,7 +45,7 @@ const usage = `usage: needletail <command>
   oneshot -q <prompt> [--format stream-json|text]
                                           one turn in a new session, then exit (the bench)
   healthcheck                             exit 0 when the local API answers /health
-  luau check <file>                       validate a .luau tool's header (or a script's) and compile it
+  luau check <file>                       validate a .luau tool's, handler's or script's header and compile it
   luau reference                          print the Luau functions tools may call (markdown)
   version                                 print the version
 `
@@ -179,8 +179,10 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 		lr.CoreURLs = append(lr.CoreURLs, cfg.Core.MCPURL, cfg.Core.IngestURL)
 	}
 	reserved := func(name string) bool { return agent.Tools.Taken(luauGroup, name) }
-	lib.CheckLuau = func(rel string, body []byte) error { return lr.CheckTool(context.Background(), rel, body) }
-	lib.LuauTools = func(dir string) []skills.ToolStatus { return lr.Status(context.Background(), dir, reserved) }
+	lib.CheckLuau = func(rel string, body []byte) error { return lr.CheckFile(context.Background(), rel, body) }
+	lib.LuauTools = func(dir string) []skills.ToolStatus {
+		return append(lr.Status(context.Background(), dir, reserved), lr.HandlerStatus(context.Background(), dir)...)
+	}
 	agent.Refresh = func(ctx context.Context) { agent.Tools.SetGroup(luauGroup, lr.Tools(ctx, reserved)) }
 	agent.Tools.Add(lr.TestTool(reserved))
 	return lr
@@ -208,24 +210,37 @@ func luauCommand(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return 1
 	}
 	lr := &luau.Runtime{Runner: eng}
-	// A tool (…/tools/<name>.luau) needs a tool's header; any other file a script's.
+	// A tool (…/tools/<name>.luau) needs a tool's header, a handler (…/handlers/<name>.luau) a
+	// handler's; any other file a script's.
 	slash := filepath.ToSlash(file)
 	tool := strings.Contains("/"+slash, "/tools/") && strings.HasSuffix(slash, ".luau")
+	handler := strings.Contains("/"+slash, "/"+luau.HandlerDir+"/") && strings.HasSuffix(slash, ".luau")
 	var h *luau.Header
-	if tool {
+	switch {
+	case handler:
+		err = lr.CheckHandler(ctx, luau.HandlerDir+"/"+filepath.Base(file), body)
+		if err == nil {
+			h, err = luau.ParseHeaderOf(body, luau.KindHandler)
+		}
+	case tool:
 		err = lr.CheckTool(ctx, "tools/"+filepath.Base(file), body)
 		if err == nil {
 			h, err = luau.ParseHeader(body, true)
 		}
-	} else if h, err = luau.ParseHeader(body, false); err == nil {
-		err = eng.Check(ctx, body)
+	default:
+		if h, err = luau.ParseHeader(body, false); err == nil {
+			err = eng.Check(ctx, body)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", file, err)
 		return 1
 	}
 	what := "script"
-	if tool {
+	switch {
+	case handler:
+		what = "handler " + h.Name + " for " + strings.Join(h.Events, ", ")
+	case tool:
 		what = "tool " + h.Name
 	}
 	fmt.Fprintf(stdout, "%s: ok (%s; caps: %s)\n", file, what, strings.Join(h.Caps, ", "))

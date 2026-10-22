@@ -40,7 +40,10 @@ var NameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,47}$`)
 //	]]
 //	return function(args) … end
 //
-// A tool needs name and description; a schedule script only format (and the caps it uses).
+// A tool needs name and description; a schedule script only format (and the caps it uses); an
+// event handler (skills/<skill>/handlers/<name>.luau) name, description and the events it
+// handles (with on_schedule, the jobs it serves), and no args (an event's shape is the
+// runtime's).
 type Header struct {
 	Format      int
 	Name        string
@@ -49,6 +52,10 @@ type Header struct {
 	Args    json.RawMessage
 	Caps    []string
 	Timeout time.Duration
+	// Events are the events a handler handles (on_message, on_mention, on_schedule,
+	// before_send); Jobs the jobs (ids or names, "*" for every job) its on_schedule serves.
+	Events []string
+	Jobs   []string
 }
 
 type rawHeader struct {
@@ -58,10 +65,31 @@ type rawHeader struct {
 	Args        map[string]any `yaml:"args"`
 	Caps        []string       `yaml:"caps"`
 	Timeout     string         `yaml:"timeout"`
+	Events      []string       `yaml:"events"`
+	Jobs        []string       `yaml:"jobs"`
 }
 
-// ParseHeader reads src's header; tool requires a tool's fields.
+// Kind is what a .luau file is: its header's rules follow it.
+type Kind int
+
+// Kinds of .luau files.
+const (
+	KindScript  Kind = iota // a schedule's script (scripts/…): format and caps
+	KindTool                // skills/<skill>/tools/<name>.luau: name, description, args
+	KindHandler             // skills/<skill>/handlers/<name>.luau: name, description, events
+)
+
+// ParseHeader reads src's header; tool requires a tool's fields (else a script's).
 func ParseHeader(src []byte, tool bool) (*Header, error) {
+	if tool {
+		return ParseHeaderOf(src, KindTool)
+	}
+	return ParseHeaderOf(src, KindScript)
+}
+
+// ParseHeaderOf reads src's header as kind's.
+func ParseHeaderOf(src []byte, kind Kind) (*Header, error) {
+	tool := kind == KindTool || kind == KindHandler
 	src = bytes.TrimPrefix(src, []byte("\ufeff"))
 	first, rest, _ := bytes.Cut(src, []byte("\n"))
 	if strings.TrimRight(string(first), " \t\r") != headerOpen {
@@ -105,6 +133,9 @@ func ParseHeader(src []byte, tool bool) (*Header, error) {
 	if h.Format != HeaderFormat {
 		return nil, fmt.Errorf("header: format must be %d", HeaderFormat)
 	}
+	if err := h.events(raw, kind); err != nil {
+		return nil, err
+	}
 	if tool || h.Name != "" {
 		if !NameRe.MatchString(h.Name) {
 			return nil, fmt.Errorf("header: name %q must match %s", h.Name, NameRe)
@@ -134,6 +165,9 @@ func ParseHeader(src []byte, tool bool) (*Header, error) {
 		}
 		h.Timeout = d
 	}
+	if kind == KindHandler && raw.Args != nil {
+		return nil, errors.New("header: a handler takes no args: it is called with its event (docs/needletail.md §5.5)")
+	}
 	args := raw.Args
 	if args == nil {
 		args = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -147,4 +181,82 @@ func ParseHeader(src []byte, tool bool) (*Header, error) {
 	}
 	h.Args = b
 	return h, nil
+}
+
+// Events a handler may handle.
+const (
+	OnMessage  = "on_message"
+	OnMention  = "on_mention"
+	OnSchedule = "on_schedule"
+	BeforeSend = "before_send"
+)
+
+// EventNames is every event, in the order the reference lists them.
+var EventNames = []string{OnMessage, OnMention, OnSchedule, BeforeSend}
+
+// maxJobs bounds a handler's jobs list.
+const maxJobs = 64
+
+// events checks a handler's events and jobs (and that no other kind has them).
+func (h *Header) events(raw rawHeader, kind Kind) error {
+	if kind != KindHandler {
+		if len(raw.Events) > 0 || len(raw.Jobs) > 0 {
+			return errors.New("header: events and jobs belong to a handler (skills/<skill>/handlers/<name>.luau)")
+		}
+		return nil
+	}
+	if len(raw.Events) == 0 {
+		return fmt.Errorf("header: a handler names the events it handles: events: [%s]", strings.Join(EventNames, ", "))
+	}
+	seen := map[string]bool{}
+	for _, e := range raw.Events {
+		e = strings.TrimSpace(e)
+		known := false
+		for _, k := range EventNames {
+			known = known || e == k
+		}
+		if !known {
+			return fmt.Errorf("header: events: %q is not an event (%s)", e, strings.Join(EventNames, ", "))
+		}
+		if !seen[e] {
+			seen[e] = true
+			h.Events = append(h.Events, e)
+		}
+	}
+	switch {
+	case seen[OnSchedule] && len(raw.Jobs) == 0:
+		return errors.New("header: on_schedule needs jobs: the ids or names of the jobs it serves (or [\"*\"] for every job)")
+	case !seen[OnSchedule] && len(raw.Jobs) > 0:
+		return errors.New("header: jobs only goes with on_schedule")
+	case len(raw.Jobs) > maxJobs:
+		return fmt.Errorf("header: jobs lists more than %d jobs", maxJobs)
+	}
+	for _, j := range raw.Jobs {
+		j = strings.TrimSpace(j)
+		if j == "" || len(j) > 200 || strings.ContainsFunc(j, func(r rune) bool { return r < ' ' }) {
+			return fmt.Errorf("header: jobs: %q is not a job id or name", j)
+		}
+		h.Jobs = append(h.Jobs, j)
+	}
+	return nil
+}
+
+// Handles is whether the handler handles event.
+func (h *Header) Handles(event string) bool {
+	for _, e := range h.Events {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+// Serves is whether a handler's on_schedule serves the job (by id or name, or "*").
+func (h *Header) Serves(id, name string) bool {
+	for _, j := range h.Jobs {
+		if j == "*" || j == id || name != "" && j == name {
+			return true
+		}
+	}
+	return false
 }

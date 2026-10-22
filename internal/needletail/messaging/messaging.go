@@ -172,3 +172,97 @@ func GrantMatches(pattern, target string) bool {
 	}
 	return false
 }
+
+// Event handlers (docs/needletail.md §5.5): the agent's Luau handlers see what it is sent
+// (on_message, on_mention) and what it sends (before_send) through Handlers, which the gateway
+// calls; the policy above still decides every target, after a handler.
+
+// Inbound is a message the agent is sent, as on_message and on_mention handlers see it. Only a
+// message the gateway answers reaches a handler: its author passed allowed_users (Verified is
+// always true) and it is not a duplicate. The thread's earlier messages, when the turn would carry
+// them, are in ThreadContext, each flagged Unverified when its author is not in allowed_users.
+type Inbound struct {
+	Platform  string `json:"platform"`
+	Session   string `json:"session"`
+	Channel   string `json:"channel"`
+	ThreadTS  string `json:"thread_ts"`
+	TS        string `json:"ts"`
+	DM        bool   `json:"dm"`
+	Mentioned bool   `json:"mentioned"`
+	Reply     bool   `json:"reply"`
+	User      string `json:"user"`
+	UserName  string `json:"user_name"`
+	Bot       bool   `json:"bot"`
+	Verified  bool   `json:"verified"`
+	// Text has the agent's own mention removed and other mentions as @Name.
+	Text          string        `json:"text"`
+	ThreadContext []ContextLine `json:"thread_context,omitempty"`
+}
+
+// ContextLine is one earlier message of a thread.
+type ContextLine struct {
+	User       string `json:"user,omitempty"`
+	Name       string `json:"name"`
+	Text       string `json:"text"`
+	Assistant  bool   `json:"assistant,omitempty"`
+	Parent     bool   `json:"parent,omitempty"`
+	Unverified bool   `json:"unverified,omitempty"`
+}
+
+// Outgoing is a message the agent is about to send, as before_send handlers see it. Kind is
+// reply (a turn's answer in its conversation), handler_reply (an on_message handler's), send
+// (send_message, the tool or Luau's), delivery (a scheduled job's output) or notice (the
+// runtime's own: a busy or error note).
+type Outgoing struct {
+	Platform  string `json:"platform"`
+	Target    string `json:"target"`
+	Channel   string `json:"channel"`
+	ThreadTS  string `json:"thread_ts,omitempty"`
+	Kind      string `json:"kind"`
+	Session   string `json:"session,omitempty"`
+	Text      string `json:"text"`
+	Broadcast bool   `json:"broadcast"`
+}
+
+// Kinds of outgoing messages.
+const (
+	KindReply        = "reply"
+	KindHandlerReply = "handler_reply"
+	KindSend         = "send"
+	KindDelivery     = "delivery"
+	KindNotice       = "notice"
+)
+
+// Verdict is what an event's handlers decided: Action pass, reply or silent (a message, a
+// schedule), allow, rewrite or block (before a send); Text a reply's or the rewritten text;
+// Context the passes' notes for the model; By the handler that decided; Ran how many ran.
+type Verdict struct {
+	Action  string
+	Text    string
+	Context []string
+	Reason  string
+	By      string
+	Ran     int
+}
+
+// Handlers are the agent's event handlers as a gateway calls them.
+type Handlers interface {
+	Inbound(ctx context.Context, event string, in Inbound) Verdict
+	BeforeSend(ctx context.Context, out Outgoing) Verdict
+}
+
+// ErrBlocked is a message a before_send handler blocked.
+var ErrBlocked = errors.New("blocked by a before_send handler")
+
+type handlerKey struct{}
+
+// WithHandler marks ctx as a handler's run for event: what it sends is told apart.
+func WithHandler(ctx context.Context, event string) context.Context {
+	return context.WithValue(ctx, handlerKey{}, event)
+}
+
+// HandlerEvent is the event of the handler run ctx belongs to ("" outside one).
+func HandlerEvent(ctx context.Context) string {
+	s, _ := ctx.Value(handlerKey{}).(string)
+	return s
+}

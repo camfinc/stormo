@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -167,25 +165,11 @@ var checked = struct {
 // Symlinks are skipped; a tool whose registered name another one (or a built-in) has is invalid.
 func (rt *Runtime) Discover(ctx context.Context, reserved func(name string) bool) []ToolFile {
 	var out []ToolFile
-	for _, s := range skills.Index(rt.Home) {
-		dir := filepath.Join(rt.Home, "skills", filepath.FromSlash(s.Dir), ToolDir)
-		if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
-			continue
-		}
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range ents {
-			if !strings.HasSuffix(e.Name(), ".luau") || !e.Type().IsRegular() {
-				continue
-			}
-			tf := ToolFile{Skill: s.Dir, File: path.Join("skills", s.Dir, ToolDir, e.Name())}
-			tf.Err = rt.loadTool(ctx, &tf, filepath.Join(dir, e.Name()))
-			out = append(out, tf)
-		}
+	for _, f := range rt.skillFiles(ToolDir) {
+		tf := ToolFile{Skill: f[0], File: f[1]}
+		tf.Err = rt.loadTool(ctx, &tf, f[2])
+		out = append(out, tf)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
 	seen := map[string]string{}
 	for i := range out {
 		tf := &out[i]
@@ -320,55 +304,149 @@ func clip(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// TestTool is luau_test: a dry run of a tool, by registered name or file, with writes, http and
-// core calls refused, so the agent can iterate on a tool before it uses it.
+// TestTool is luau_test: a dry run of a tool, by registered name or file, or of an event handler
+// with a sample event, with writes, http, core calls and sends refused, so the agent can iterate
+// on either before it is used.
 func (rt *Runtime) TestTool(reserved func(string) bool) tools.Tool {
 	return tools.Tool{
 		Name: "luau_test",
-		Description: "Dry-run a Luau tool (skills/<skill>/tools/<name>.luau) with test arguments: it runs with its effective capabilities, " +
-			"but writes, http and core calls are refused (code dry_run; a /shared listing or stat reads the mount instead of the core). Shows the result or error, logs, output, refused calls and the caps. " +
-			"Use it after writing a tool with skill_manage, before calling it.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"tool":{"type":"string","description":"the tool's registered name (<skill>__<name>) or its file, skills/<skill>/tools/<name>.luau"},"args":{"type":"object","description":"the arguments to call it with"}},"required":["tool"]}`),
+		Description: "Dry-run a Luau tool (skills/<skill>/tools/<name>.luau) with test arguments, or an event handler " +
+			"(skills/<skill>/handlers/<name>.luau) with a sample event: it runs with its effective capabilities, " +
+			"but writes, http, core calls and sends are refused (code dry_run; a /shared listing or stat reads the mount instead of the core). " +
+			"Shows the result or error, logs, output, refused calls and the caps; for a handler, the decision the runtime would act on. " +
+			"Use it after writing a tool or a handler with skill_manage, before relying on it.",
+		Schema: json.RawMessage(`{"type":"object","properties":{` +
+			`"tool":{"type":"string","description":"a tool's registered name (<skill>__<name>) or file (skills/<skill>/tools/<name>.luau), or a handler's file (skills/<skill>/handlers/<name>.luau) or name (<skill>__<name>)"},` +
+			`"event":{"type":"string","enum":["on_message","on_mention","on_schedule","before_send"],"description":"for a handler: the event to send it (default: the first it handles)"},` +
+			`"args":{"type":"object","description":"a tool's arguments; for a handler, the event's fields (a sample event fills what you leave out)"}},"required":["tool"]}`),
 		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
 			var a struct {
-				Tool string          `json:"tool"`
-				Args json.RawMessage `json:"args"`
+				Tool  string          `json:"tool"`
+				Event string          `json:"event"`
+				Args  json.RawMessage `json:"args"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil || strings.TrimSpace(a.Tool) == "" {
 				return nil, errors.New("luau_test needs tool (a name or a file) and args")
 			}
-			var found *ToolFile
 			want := strings.TrimPrefix(strings.TrimSpace(a.Tool), "./")
-			all := rt.Discover(ctx, reserved)
-			for i, tf := range all {
-				if tf.Name == want || tf.File == want || tf.File == "skills/"+want || strings.TrimPrefix(tf.File, "skills/") == want {
-					found = &all[i]
-					break
+			match := func(name, file string) bool {
+				return name == want || file == want || file == "skills/"+want || strings.TrimPrefix(file, "skills/") == want
+			}
+			isHandler := strings.Contains("/"+want, "/"+HandlerDir+"/") || a.Event != ""
+			if !isHandler {
+				var found *ToolFile
+				all := rt.Discover(ctx, reserved)
+				for i, tf := range all {
+					if match(tf.Name, tf.File) {
+						found = &all[i]
+						break
+					}
+				}
+				if found != nil {
+					return rt.testTool(ctx, env, found, a.Args)
 				}
 			}
-			if found == nil {
-				return nil, fmt.Errorf("no Luau tool %q (a registered name <skill>__<name> or skills/<skill>/tools/<name>.luau)", a.Tool)
+			for _, hf := range rt.Handlers(ctx) {
+				if match(hf.Name, hf.File) {
+					return rt.testHandler(ctx, env, hf, a.Event, a.Args)
+				}
 			}
-			if found.Err != nil {
-				return map[string]any{"tool": found.File, "valid": false, "error": found.Err.Error()}, nil
-			}
-			started := time.Now()
-			res, call, err := rt.Exec(ctx, Exec{Name: found.Name, Session: env.Session, Source: found.Source, Header: found.Header, Args: a.Args, DryRun: true})
-			if err != nil {
-				return nil, err
-			}
-			out, _ := toolResult(res, call, true)
-			m := out.(map[string]any)
-			caps, _ := NewCaps(found.Header.Caps, rt.Grants)
-			m["tool"], m["valid"], m["caps"], m["effective_caps"] = found.Name, true, found.Header.Caps, caps.Effective()
-			m["ok"] = res.Err == nil
-			if d := call.Denied(); len(d) > 0 {
-				m["denied"] = d
-			}
-			m["took_ms"] = time.Since(started).Milliseconds()
-			return m, nil
+			return nil, fmt.Errorf("no Luau tool or handler %q (a registered name <skill>__<name>, skills/<skill>/tools/<name>.luau or skills/<skill>/handlers/<name>.luau)", a.Tool)
 		},
 	}
+}
+
+func (rt *Runtime) testTool(ctx context.Context, env *tools.Env, found *ToolFile, args json.RawMessage) (any, error) {
+	if found.Err != nil {
+		return map[string]any{"tool": found.File, "valid": false, "error": found.Err.Error()}, nil
+	}
+	started := time.Now()
+	res, call, err := rt.Exec(ctx, Exec{Name: found.Name, Session: env.Session, Source: found.Source, Header: found.Header, Args: args, DryRun: true})
+	if err != nil {
+		return nil, err
+	}
+	out, _ := toolResult(res, call, true)
+	m := out.(map[string]any)
+	caps, _ := NewCaps(found.Header.Caps, rt.Grants)
+	m["tool"], m["valid"], m["caps"], m["effective_caps"] = found.Name, true, found.Header.Caps, caps.Effective()
+	m["ok"] = res.Err == nil
+	if d := call.Denied(); len(d) > 0 {
+		m["denied"] = d
+	}
+	m["took_ms"] = time.Since(started).Milliseconds()
+	return m, nil
+}
+
+// testHandler dry-runs a handler for event (its first by default) with args laid over the
+// event's sample, and says what the runtime would do with its answer.
+func (rt *Runtime) testHandler(ctx context.Context, env *tools.Env, hf HandlerFile, event string, args json.RawMessage) (any, error) {
+	if hf.Err != nil {
+		return map[string]any{"handler": hf.File, "valid": false, "error": hf.Err.Error()}, nil
+	}
+	if event == "" {
+		event = hf.Header.Events[0]
+	}
+	if !hf.Header.Handles(event) {
+		return nil, fmt.Errorf("%s does not handle %s (its events: %s)", hf.File, event, strings.Join(hf.Header.Events, ", "))
+	}
+	ev := SampleEvent(event)
+	if len(args) > 0 && string(args) != "null" {
+		var over map[string]any
+		if err := json.Unmarshal(args, &over); err != nil {
+			return nil, fmt.Errorf("args must be an object (the event's fields): %v", err)
+		}
+		for k, v := range over {
+			ev[k] = v
+		}
+	}
+	ev["event"] = event
+	in, _ := json.Marshal(ev)
+	started := time.Now()
+	res, call, err := rt.Exec(ctx, Exec{Name: hf.Name, Session: env.Session, Source: hf.Source, Header: hf.Header, Args: in,
+		Entry: event, DryRun: true, Script: event == OnSchedule})
+	if err != nil {
+		return nil, err
+	}
+	out, _ := toolResult(res, call, true)
+	m := out.(map[string]any)
+	caps, _ := NewCaps(hf.Header.Caps, rt.Grants)
+	m["handler"], m["valid"], m["event"], m["caps"], m["effective_caps"] = hf.Name, true, event, hf.Header.Caps, caps.Effective()
+	m["sent_event"] = json.RawMessage(in)
+	m["ok"] = res.Err == nil
+	if res.Err == nil {
+		d, derr := ParseDecision(event, res.Value)
+		if derr != nil {
+			m["ok"], m["error"] = false, "the answer is not a decision: "+derr.Error()+" (the runtime would skip this handler)"
+		} else {
+			m["decision"] = d
+		}
+	} else {
+		m["note"] = "the runtime would skip this handler (logged) and go on as if it passed"
+	}
+	if d := call.Denied(); len(d) > 0 {
+		m["denied"] = d
+	}
+	m["took_ms"] = time.Since(started).Milliseconds()
+	return m, nil
+}
+
+// SampleEvent is a made-up event of each kind, for luau_test and the reference.
+func SampleEvent(event string) map[string]any {
+	switch event {
+	case OnMessage, OnMention:
+		return map[string]any{"platform": "slack", "session": "slack-C0123456789-1700000000.000100", "channel": "C0123456789",
+			"thread_ts": "1700000000.000100", "ts": "1700000000.000200", "dm": false, "mentioned": event == OnMention, "reply": true,
+			"user": "U0123456789", "user_name": "Ana", "bot": false, "verified": true, "text": "what is the status of the report?"}
+	case OnSchedule:
+		return map[string]any{"job": map[string]any{"id": "a1b2c3d4e5f6", "name": "daily report", "schedule": "every day at 09:00",
+			"prompt": "Write the daily report.", "skills": []any{}, "deliver": "origin", "repo": false},
+			"script_output": "", "run_context": "", "time": "2026-01-01T09:00:00Z"}
+	case BeforeSend:
+		return map[string]any{"platform": "slack", "target": "slack:C0123456789:1700000000.000100", "channel": "C0123456789",
+			"thread_ts": "1700000000.000100", "kind": "reply", "session": "slack-C0123456789-1700000000.000100",
+			"text": "The report is ready.", "broadcast": false}
+	}
+	return map[string]any{}
 }
 
 // RunScript runs a schedule's .luau script (a job's script or monitor): its header is required

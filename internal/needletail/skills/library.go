@@ -261,7 +261,11 @@ type ToolStatus struct {
 	Name      string   `json:"name,omitempty"`
 	Caps      []string `json:"caps,omitempty"`
 	Effective []string `json:"effective_caps,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	// Events and Jobs are a handler's (handlers/<name>.luau): what it handles, and the jobs its
+	// on_schedule serves.
+	Events []string `json:"events,omitempty"`
+	Jobs   []string `json:"jobs,omitempty"`
+	Error  string   `json:"error,omitempty"`
 }
 
 // View shows the skill name names: its SKILL.md and file list, or one of its files (file, relative

@@ -47,6 +47,11 @@
    "glob": "skills/[!.]*/**"
   },
   {
+   "path": "skills/crm/lookup/handlers/on_message.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
    "path": "skills/crm",
    "class": null,
    "glob": null
