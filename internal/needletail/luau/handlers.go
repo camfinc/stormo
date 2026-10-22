@@ -16,6 +16,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
+	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
@@ -382,4 +383,52 @@ func asMap(v any) map[string]any {
 	m := map[string]any{}
 	_ = json.Unmarshal(b, &m)
 	return m
+}
+
+// EventDoc is one event as the reference and the system prompt describe it.
+type EventDoc struct {
+	Event, When, Fields, Actions string
+}
+
+// EventDocs are the events, in EventNames' order.
+var EventDocs = []EventDoc{
+	{OnMessage, "a Slack message the agent answers (a DM, or a reply in a thread it is in), before a turn is taken for it; only messages from allowed_users reach it",
+		"text, user, user_name, bot, verified, channel, thread_ts, ts, dm, mentioned, reply, session, thread_context[] {name, text, assistant, parent, unverified}",
+		"pass (optional context: a note for the model, under the message), reply {text} (posted in the conversation, no turn), silent (nothing posted)"},
+	{OnMention, "the same, for a message that mentions the agent (instead of on_message)", "as on_message", "as on_message"},
+	{OnSchedule, "a scheduled job's run, after its monitor and pre-run script, before its turn; only for the jobs the header's jobs: names (id, name or \"*\")",
+		"job {id, name, schedule, prompt, skills, deliver, repo}, script_output, run_context, time",
+		"pass (optional context: notes in the run's prompt), reply {text} (the run's output, no turn), silent (a silent run)"},
+	{BeforeSend, "every message the agent posts (kind: reply, handler_reply, send, delivery, notice); the messaging policy still decides after it",
+		"text, target, channel, thread_ts, kind, session, broadcast",
+		"allow, rewrite {text} (the text only; never the target, never a broadcast), block {reason?}"},
+}
+
+// HandlerReference is the event handlers' part of the reference (markdown).
+func HandlerReference() string {
+	var b strings.Builder
+	b.WriteString("## Event handlers\n\nA handler is `skills/<skill>/handlers/<name>.luau`: the tool header with `events: [...]` (and, with " +
+		"on_schedule, `jobs: [...]`) instead of `args`, then a function per event, named after it (a global, or a field of the table " +
+		"the chunk returns), called with the event and returning a decision: nil (the default), the action as a string, or " +
+		"`{action = …, text = …, context = …, reason = …}`. Handlers of an event run in order (skill dir, then name) with their " +
+		"effective caps and the Luau bound; a message's or a schedule's stop at the first reply or silent, before_send's pass the " +
+		"text on through each rewrite and stop at a block. A handler that fails, times out or answers no valid action is skipped " +
+		"(logged) and the event goes on as if it had passed. send_message works in a handler (within its caps; the message meets " +
+		"before_send), except in before_send. luau_test dry-runs a handler with a sample event.\n\n")
+	for _, d := range EventDocs {
+		fmt.Fprintf(&b, "### %s\n\nWhen: %s.\n\n- event: %s\n- answers: %s\n\n", d.Event, d.When, d.Fields, d.Actions)
+	}
+	return b.String()
+}
+
+// ReferenceTool is luau_reference: the full reference of the functions Luau tools and handlers
+// get, and of the events (the system prompt carries the compact form).
+func ReferenceTool() tools.Tool {
+	return tools.Tool{Name: "luau_reference",
+		Description: "The full reference for writing Luau tools and event handlers: every function (arguments, result, grant, an example) " +
+			"and every event (its fields and the answers it takes).",
+		Schema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Run: func(context.Context, *tools.Env, json.RawMessage) (any, error) {
+			return map[string]any{"reference": Reference()}, nil
+		}}
 }

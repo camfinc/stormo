@@ -159,6 +159,38 @@ func Reference() string {
 	}
 	sb.WriteString("Also: `nt.args` (the call's arguments), `nt.json.null`, the standard `string`, `table`, `math`, `utf8`, `bit32`, `buffer` " +
 		"libraries, `os.time`, `os.clock`, `collectgarbage(\"count\")` and `print` (captured). There is no file, process, env or secret access " +
-		"besides these functions.\n")
+		"besides these functions.\n\n")
+	sb.WriteString(HandlerReference())
+	return sb.String()
+}
+
+// CompactReference is one line per function, for the system prompt: its global call (nt.<name>
+// when it has none), what it returns and the grant it needs. Reference has the rest.
+func CompactReference() string {
+	var sb strings.Builder
+	for _, b := range Bindings() {
+		args := make([]string, len(b.Params))
+		for i, p := range b.Params {
+			args[i] = p.Name
+			if p.Optional {
+				args[i] += "?"
+			}
+		}
+		name := b.Global
+		if name == "" {
+			name = "nt." + b.Name
+		}
+		call := name + "(" + strings.Join(args, ", ") + ")"
+		if b.Spread {
+			call = name + "{method, url, headers, body, timeout_ms}"
+		}
+		ret, _, _ := strings.Cut(b.Returns, " (")
+		ret, _, _ = strings.Cut(ret, ": ")
+		fmt.Fprintf(&sb, "- `%s` → %s", call, strings.TrimSpace(ret))
+		if b.Grant != "" {
+			fmt.Fprintf(&sb, "; needs %s", b.Grant)
+		}
+		sb.WriteString("\n")
+	}
 	return sb.String()
 }

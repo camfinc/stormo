@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/api"
@@ -96,6 +97,16 @@ type runtime struct {
 	sched  *sched.Scheduler
 	luau   *luau.Runtime // nil when the Luau engine could not start
 	logger *log.Logger
+	// guide is the system prompt's guide section (guide.go), rendered at boot and again once
+	// the Slack gateway runs
+	guide     guide
+	guideText atomic.Pointer[string]
+}
+
+// setGuide renders the guide section the turns read.
+func (rt *runtime) setGuide() {
+	text := rt.guide.render()
+	rt.guideText.Store(&text)
 }
 
 // boot loads the config, takes the secrets out of the env (§4.2) and builds the agent.
@@ -151,7 +162,12 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	return &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger}, nil
+	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger,
+		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout}}
+	rt.setGuide()
+	// the guide comes first among the sections, before a channel's guidance
+	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)
+	return rt, nil
 }
 
 // luauGroup is the registry group of the Luau tools (found again every turn).
@@ -189,7 +205,7 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 		return append(lr.Status(context.Background(), dir, reserved), lr.HandlerStatus(context.Background(), dir)...)
 	}
 	agent.Refresh = func(ctx context.Context) { agent.Tools.SetGroup(luauGroup, lr.Tools(ctx, reserved)) }
-	agent.Tools.Add(lr.TestTool(reserved))
+	agent.Tools.Add(lr.TestTool(reserved), luau.ReferenceTool())
 	return lr
 }
 
@@ -343,6 +359,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	}
 	rt.agent.Tools.Add(gw.Tools()...)
 	rt.agent.Sections = append(rt.agent.Sections, gw.Guidance)
+	rt.guide.Slack, rt.guide.Broadcast = true, rt.cfg.Slack != nil && rt.cfg.Slack.Broadcast
+	rt.setGuide()
 	rt.sched.SetDeliverer(gw)
 	rt.sched.SetTargetCheck(gw.CheckTarget)
 	if rt.luau != nil {
