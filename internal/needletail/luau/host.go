@@ -579,10 +579,28 @@ func fsList(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.shared && c.rt.Core != nil {
+	if routed, err := c.viaCore(p, "fs.list"); err != nil || routed {
+		if err != nil {
+			return nil, err
+		}
 		return c.core(ctx, "fs_ls", map[string]any{"path": p.agent})
 	}
 	return p.list(ctx, maxList)
+}
+
+// viaCore: a shared read the core answers (fs_ls, fs_info). A dry run never calls the core: it
+// reads the mount when this container has it, else the call is refused.
+func (c *Call) viaCore(p place, name string) (bool, error) {
+	if !p.shared || c.rt.Core == nil {
+		return false, nil
+	}
+	if !c.DryRun {
+		return true, nil
+	}
+	if info, err := os.Stat(p.root); err != nil || !info.IsDir() {
+		return false, errf("dry_run", "%s of %s goes through the core, which a dry run (luau_test) does not call, and the shared space is not mounted here", name, p.agent)
+	}
+	return false, nil
 }
 
 func fsStat(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
@@ -590,7 +608,10 @@ func fsStat(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.shared && c.rt.Core != nil {
+	if routed, err := c.viaCore(p, "fs.stat"); err != nil || routed {
+		if err != nil {
+			return nil, err
+		}
 		return c.core(ctx, "fs_info", map[string]any{"path": p.agent})
 	}
 	st, err := p.lstat()

@@ -487,6 +487,37 @@ func TestDryRun(t *testing.T) {
 	}
 }
 
+// A dry run never reaches the core: shared list and stat read the mount instead, or are refused.
+func TestDryRunSharedReadsTheMount(t *testing.T) {
+	rt, core := newRuntime(t)
+	rt.Grants = append(rt.Grants, "fs.read:shared")
+	write(t, filepath.Join(rt.SharedDir, "group", "plan.md"), "the plan")
+	dry := func(src string) *Result {
+		t.Helper()
+		res, _, err := rt.Exec(context.Background(), Exec{Name: "t", Source: []byte(src), Header: &Header{Format: 1, Caps: []string{"fs.read:shared"}}, DryRun: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	res := dry(`local l = list_files("/shared/group") return {l[1].name, stat_file("/shared/group/plan.md").size, read_file("/shared/group/plan.md")}`)
+	wantValue(t, res, `["plan.md", 8, "the plan"]`)
+	if got := core.got(); len(got) != 0 {
+		t.Fatalf("a dry run called the core: %q", got)
+	}
+	// no mount here: refused, still without the core
+	if err := os.RemoveAll(filepath.Join(rt.SharedDir, "sales")); err != nil {
+		t.Fatal(err)
+	}
+	res = dry(`local a, e1 = pcall(list_files, "/shared/sales") local b, e2 = pcall(stat_file, "/shared/sales/x") return {e1, e2}`)
+	if res.Err != nil || strings.Count(string(res.Value), "dry_run") != 2 {
+		t.Fatalf("no mount: %v %s", res.Err, res.Value)
+	}
+	if got := core.got(); len(got) != 0 {
+		t.Fatalf("a dry run called the core: %q", got)
+	}
+}
+
 func TestCoreCall(t *testing.T) {
 	rt, core := newRuntime(t)
 	core.reply = func(name string, args map[string]any) (*mcp.Result, error) {

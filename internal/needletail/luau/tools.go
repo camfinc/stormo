@@ -309,7 +309,7 @@ func (rt *Runtime) TestTool(reserved func(string) bool) tools.Tool {
 	return tools.Tool{
 		Name: "luau_test",
 		Description: "Dry-run a Luau tool (skills/<skill>/tools/<name>.luau) with test arguments: it runs with its effective capabilities, " +
-			"but writes, http and core calls are refused (code dry_run). Shows the result or error, logs, output, refused calls and the caps. " +
+			"but writes, http and core calls are refused (code dry_run; a /shared listing or stat reads the mount instead of the core). Shows the result or error, logs, output, refused calls and the caps. " +
 			"Use it after writing a tool with skill_manage, before calling it.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"tool":{"type":"string","description":"the tool's registered name (<skill>__<name>) or its file, skills/<skill>/tools/<name>.luau"},"args":{"type":"object","description":"the arguments to call it with"}},"required":["tool"]}`),
 		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
