@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/pkg/build"
 	adapter "github.com/camfinc/stormo/pkg/engine/needletail"
@@ -118,6 +119,8 @@ type learningWorld struct {
 	oneshot   func(home, prompt string) []string
 	nap       func(home, instance string, at time.Time) *loop.Nap
 	dream     func() (*loop.DreamReport, []string)
+	// rebuild is `stormo build` again (after a review changed the ledger)
+	rebuild func()
 }
 
 func newLearningWorld(t *testing.T) *learningWorld {
@@ -207,8 +210,14 @@ func newLearningWorld(t *testing.T) *learningWorld {
 		}
 		return r, spy.reads
 	}
+	rebuild := func() {
+		t.Helper()
+		if _, err := build.Agent(inst, "atlas", build.Options{Out: base, Target: manifest.AWS}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return &learningWorld{model: model, root: root, tmp: tmp, learnings: filepath.Join(root, "agents", "atlas", "learnings"),
-		rehydrate: rehydrate, oneshot: oneshot, nap: nap, dream: dream}
+		rehydrate: rehydrate, oneshot: oneshot, nap: nap, dream: dream, rebuild: rebuild}
 }
 
 // M3's done-when (docs/needletail.md §9): a nap, rehydrate and dream cycle on a needletail home
@@ -241,6 +250,7 @@ func TestNapRehydrateDream(t *testing.T) {
 	// 2. The agent works: it writes a skill of its own (with a script), loads it, runs the script
 	// from it, improves a repo skill, and keeps two memories. A generated skill is refused.
 	fare := "---\nname: fare-lookup\ndescription: Look up a fare by route before quoting.\n---\n# Fare lookup\n\nRun `bash ${SKILL_DIR}/scripts/fare.sh <ORIGIN-DEST>` and quote the result in EUR.\n"
+	const archived = "The Lisbon client's booking reference is ZX-4471; reach Marta at marta@example.com."
 	model.script(
 		toolStep("c1", "skill_manage", map[string]any{"action": "create", "name": "fare-lookup", "category": "crm", "content": fare}),
 		toolStep("c2", "skill_manage", map[string]any{"action": "write_file", "name": "fare-lookup", "file_path": "scripts/fare.sh", "file_content": "echo \"fare $1: 420 EUR (from $SKILL_DIR)\"\n"}),
@@ -251,11 +261,17 @@ func TestNapRehydrateDream(t *testing.T) {
 		toolStep("c6", "skill_manage", map[string]any{"action": "patch", "name": "acme-knowledge", "old_string": "---", "new_string": "--- "}),
 		toolStep("c7", "memory", map[string]any{"action": "add", "target": "memory", "content": "Fares come from the fare-lookup skill; Dana confirms them by phone at +1 415 555 0123."}),
 		toolStep("c8", "memory", map[string]any{"action": "add", "target": "user", "content": "The owner wants fares quoted in EUR."}),
+		// an archived record with client data: never hot, so never the dream's
+		toolStep("c9", "memory_manage", map[string]any{"action": "save", "text": archived, "kind": "episode", "tags": []string{"lisbon"}}),
 		textStep("Done."),
 	)
 	tools := oneshot(home1, "Quote the LIS-JFK fare and remember how.")
-	if want := []string{"skill_manage", "skill_manage", "skill_view", "terminal", "skill_manage", "skill_manage", "memory", "memory"}; !slices.Equal(tools, want) {
+	if want := []string{"skill_manage", "skill_manage", "skill_view", "terminal", "skill_manage", "skill_manage", "memory", "memory", "memory_manage"}; !slices.Equal(tools, want) {
 		t.Errorf("tools = %v", tools)
+	}
+	records1, err := os.ReadFile(filepath.Join(home1, "memories", "RECORDS.md"))
+	if err != nil || !strings.Contains(string(records1), archived) || !strings.Contains(string(records1), `"pii":["email"]`) {
+		t.Fatalf("RECORDS.md = %s %v", records1, err)
 	}
 	results := strings.Join(model.seen, "\n")
 	if !strings.Contains(results, `fare LIS-JFK: 420 EUR (from `+filepath.Join(home1, "skills", "crm", "fare-lookup")) {
@@ -276,7 +292,8 @@ func TestNapRehydrateDream(t *testing.T) {
 		classes[f.Path] = string(f.Class)
 	}
 	for p, want := range map[string]string{"skills/crm/fare-lookup/SKILL.md": "learning", "skills/crm/fare-lookup/scripts/fare.sh": "learning",
-		"skills/.usage.json": "learning", "memories/MEMORY.md": "learning", "memories/USER.md": "learning", "needletail.yaml": "learning"} {
+		"skills/.usage.json": "learning", "memories/MEMORY.md": "learning", "memories/USER.md": "learning", "needletail.yaml": "learning",
+		"memories/RECORDS.md": "raw"} {
 		if classes[p] != want {
 			t.Errorf("nap: %s is %q, want %s", p, classes[p], want)
 		}
@@ -343,6 +360,15 @@ func TestNapRehydrateDream(t *testing.T) {
 	if strings.Contains(mem.Text, "555 0123") || !slices.Contains(mem.PII, "phone") || !slices.Contains(mem.Naps, n1.ID) || !slices.Contains(mem.Instances, "nt-1") {
 		t.Errorf("memory sighting = %+v", mem)
 	}
+	// the archive never reaches the ledger: only the two hot entries are sightings
+	for _, e := range ledger {
+		if strings.Contains(e.Text, "ZX-4471") || strings.Contains(e.Text, "Lisbon client") || strings.Contains(e.Text, "marta@") {
+			t.Errorf("an archived record reached the ledger: %+v", e)
+		}
+	}
+	if raw, _ := os.ReadFile(filepath.Join(learnings, "ledger.jsonl")); strings.Contains(string(raw), "ZX-4471") {
+		t.Error("the ledger file holds an archived record")
+	}
 	var usage map[string]map[string]any
 	readJSON(t, filepath.Join(learnings, "skill-usage.json"), &usage)
 	if e := usage["fare-lookup"]; e["created_by"] != "agent" || e["view_count"] != float64(1) || e["use_count"] != float64(2) || e["patch_count"] != float64(1) {
@@ -365,16 +391,33 @@ func TestNapRehydrateDream(t *testing.T) {
 	if body, _ := os.ReadFile(filepath.Join(home2, "memories", "MEMORY.md")); !strings.Contains(string(body), "fare-lookup skill") {
 		t.Errorf("MEMORY.md = %q", body)
 	}
+	// the archive comes back verbatim (Raw), so the next boot reconciles it with nothing to change
+	if records2, _ := os.ReadFile(filepath.Join(home2, "memories", "RECORDS.md")); string(records2) != string(records1) {
+		t.Errorf("RECORDS.md after rehydrate:\n%s\nbefore the nap:\n%s", records2, records1)
+	}
 	model.script(
 		toolStep("d1", "skill_view", map[string]any{"name": "crm/fare-lookup"}),
 		toolStep("d2", "terminal", map[string]any{"command": "bash skills/crm/fare-lookup/scripts/fare.sh OPO-LHR"}),
+		toolStep("d3", "memory_search", map[string]any{"query": "Lisbon booking reference reserva", "tags": []string{"lisbon"}}),
 		textStep("Done."),
 	)
-	if tools := oneshot(home2, "And OPO-LHR?"); !slices.Equal(tools, []string{"skill_view", "terminal"}) {
+	if tools := oneshot(home2, "And OPO-LHR? Also, which booking reference did the Lisbon client use?"); !slices.Equal(tools, []string{"skill_view", "terminal", "memory_search"}) {
 		t.Errorf("tools = %v", tools)
 	}
 	if results := strings.Join(model.seen, "\n"); !strings.Contains(results, "fare OPO-LHR: 420 EUR") || !strings.Contains(results, "quote the result in EUR") {
 		t.Errorf("second boot:\n%s", results)
+	}
+	// the turn's message came with the archived record recalled in front of it; the model found it
+	// again by keyword; the session file keeps the message as written
+	if len(model.seen) != 4 || !strings.Contains(model.seen[0], `\u003cmemory-context\u003e\n[Recalled`) || !strings.Contains(model.seen[0], "ZX-4471") ||
+		!strings.Contains(model.seen[3], "ZX-4471") || !strings.Contains(model.seen[3], `\"total\":1`) {
+		t.Errorf("recall and search after the reboot:\n%s", strings.Join(model.seen, "\n"))
+	}
+	sessionFiles, _ := filepath.Glob(filepath.Join(home2, "sessions", "oneshot-*.jsonl"))
+	for _, f := range sessionFiles {
+		if body, _ := os.ReadFile(f); strings.Contains(string(body), "memory-context") {
+			t.Errorf("%s holds the recalled block", f)
+		}
 	}
 	n2 := nap(home2, "nt-2", t0.Add(time.Hour))
 	r2, _ := dream()
@@ -391,6 +434,39 @@ func TestNapRehydrateDream(t *testing.T) {
 			t.Errorf("re-sighting = %+v", e)
 		}
 	}
+	// 5. A reviewer rejects the user entry: the next boot's merge purges it from USER.md. The
+	// runtime cannot tell that from a nap skew without rehydrate's merge report (not built,
+	// docs/needletail.md §11), so its record stays, moved to the archive: never lost, but a
+	// rejected entry lingers there (the model could find it and pin it again).
+	for _, e := range ledger {
+		if e.Kind == learning.KindUser && strings.Contains(e.Text, "EUR") {
+			e.Status = learning.Rejected
+		}
+	}
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	w.rebuild()
+	home3 := filepath.Join(tmp, "home3")
+	if r := rehydrate(home3); r.PurgedMemories != 1 {
+		t.Fatalf("rehydrate after the rejection = %+v", r)
+	}
+	if body, _ := os.ReadFile(filepath.Join(home3, "memories", "USER.md")); strings.Contains(string(body), "EUR") {
+		t.Fatalf("USER.md = %q", body)
+	}
+	model.script(textStep("Done."))
+	oneshot(home3, "Hello again.")
+	records3, _ := os.ReadFile(filepath.Join(home3, "memories", "RECORDS.md"))
+	var rejectedRec *memory.Record
+	for _, r := range memory.ParseRecords(string(records3), time.Now()).Recs {
+		if strings.Contains(r.Text, "fares quoted in EUR") {
+			rejectedRec = r
+		}
+	}
+	if rejectedRec == nil || rejectedRec.Hot != 0 || !strings.Contains(string(records3), "ZX-4471") {
+		t.Errorf("after the rejection, RECORDS.md:\n%s", records3)
+	}
+
 	t.Logf("dream 1: %d new learnings, proposals %v; dream 2: %d re-sighted; fare-lookup usage %v",
 		r1.NewLearnings, r1.SkillProposals, r2.Resighted, usage["fare-lookup"])
 }
