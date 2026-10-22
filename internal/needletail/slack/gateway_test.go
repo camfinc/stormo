@@ -804,9 +804,12 @@ func TestQueueCapCountsRunningBatches(t *testing.T) {
 	if !slices.Contains(r.fake.Acks(), "c2") {
 		t.Errorf("the retry was not acked: %v", r.fake.Acks())
 	}
-	r.g.mu.Lock()
-	queued := r.g.queued
-	r.g.mu.Unlock()
+	queued := -1
+	for deadline := time.Now().Add(2 * time.Second); queued != 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		r.g.mu.Lock()
+		queued = r.g.queued
+		r.g.mu.Unlock()
+	}
 	if queued != 0 {
 		t.Errorf("queued %d after every turn ended", queued)
 	}
@@ -818,13 +821,15 @@ func TestPanickingTurnReleasesItsSlot(t *testing.T) {
 	r := newRig(t, nil)
 	r.fake.Send("p1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "PANIC", TS: "1700000130.000100"})
 	<-r.turns.started
-	time.Sleep(100 * time.Millisecond)
+	running, queued := -1, -1
+	for deadline := time.Now().Add(2 * time.Second); (running != 0 || queued != 0) && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		r.g.mu.Lock()
+		running, queued = len(r.g.running), r.g.queued
+		r.g.mu.Unlock()
+	}
 	if reserved, released := r.turns.slots(); reserved != 1 || released != 1 {
 		t.Errorf("slots reserved %d, released %d", reserved, released)
 	}
-	r.g.mu.Lock()
-	running, queued := len(r.g.running), r.g.queued
-	r.g.mu.Unlock()
 	if running != 0 || queued != 0 {
 		t.Errorf("after the panic: %d turns still marked running, queued %d", running, queued)
 	}
