@@ -126,11 +126,27 @@ func (l *Library) ReadOnly(dir string) bool {
 		}
 	}
 	for _, g := range l.Generated {
-		if dir == g || strings.HasPrefix(dir, g+"/") || path.Base(dir) == path.Base(g) {
+		if below(dir, g) || strings.EqualFold(path.Base(dir), path.Base(g)) {
 			return true
 		}
 	}
 	return false
+}
+
+// below is whether dir is top or inside it, segment by segment as Unicode case folds
+// (strings.EqualFold: ſ is s): on a case-insensitive home any spelling the filesystem folds
+// together is the same directory.
+func below(dir, top string) bool {
+	d, t := strings.Split(dir, "/"), strings.Split(top, "/")
+	if len(d) < len(t) {
+		return false
+	}
+	for i := range t {
+		if !strings.EqualFold(d[i], t[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Resolve is text with ${SKILL_DIR} replaced by the skill's directory.

@@ -490,3 +490,23 @@ func TestSetGroup(t *testing.T) {
 		t.Fatalf("after replace %q", got)
 	}
 }
+
+// Protected names compare as Unicode case folds, one path segment at a time: ſ (long s) is s and
+// K (the Kelvin sign) is k, as a case-insensitive filesystem may take them.
+func TestProtectedFolds(t *testing.T) {
+	for _, rel := range []string{"ſtate/needletail/x", "ſessions", "SESSIONS/a.json", ".ſwarm/booted.json", "Cron/jobs.json", "needletail.yaml", "NEEDLETAIL.YAML", "LOGS/audit"} {
+		if !isProtected(rel) {
+			t.Errorf("%s writable", rel)
+		}
+	}
+	for _, rel := range []string{"ſtate", "LOGS", "ſessions/x"} {
+		if !inRuntimeDir(rel) {
+			t.Errorf("%s not a runtime dir", rel)
+		}
+	}
+	for _, rel := range []string{"stated/x", "work/cron", "skills/x", "cronjobs"} {
+		if isProtected(rel) {
+			t.Errorf("%s protected", rel)
+		}
+	}
+}

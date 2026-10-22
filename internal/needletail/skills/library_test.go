@@ -63,6 +63,12 @@ func TestFind(t *testing.T) {
 	if !l.ReadOnly("acme-knowledge") || !l.ReadOnly("x/acme-shared-docs") || !l.ReadOnly(".hub/x") || l.ReadOnly("crm/crm-api") {
 		t.Error("ReadOnly")
 	}
+	// generated names compare as Unicode case folds (ſ is s), as a case-insensitive home takes them
+	for _, dir := range []string{"ACME-KNOWLEDGE", "acme-knowledge/sub", "x/acme-ſhared-docs", "Acme-Shared-Docs"} {
+		if !l.ReadOnly(dir) {
+			t.Errorf("ReadOnly(%s)", dir)
+		}
+	}
 }
 
 func TestView(t *testing.T) {

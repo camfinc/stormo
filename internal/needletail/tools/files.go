@@ -41,10 +41,16 @@ var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs",
 var skipDirs = map[string]bool{".git": true, "node_modules": true, "__pycache__": true, ".venv": true}
 
 // isProtected compares case-folded: on a case-insensitive home Cron/ is cron/.
-func isProtected(rel string) bool {
-	rel = strings.ToLower(rel)
-	for _, p := range protected {
-		if rel == p || strings.HasPrefix(rel, p+"/") {
+func isProtected(rel string) bool { return under(rel, protected) }
+
+// under is whether rel (slash-separated, relative to the home) is one of the home's top-level
+// entries names or below one, compared as Unicode case folds (strings.EqualFold: ſ is s, K is
+// k), not lower-cased: on a case-insensitive home any spelling the filesystem folds together is
+// the same entry.
+func under(rel string, names []string) bool {
+	first, _, _ := strings.Cut(rel, "/")
+	for _, n := range names {
+		if strings.EqualFold(first, n) {
 			return true
 		}
 	}
@@ -508,17 +514,10 @@ var runtimeDirs = []string{"sessions", "state", "logs"}
 // runtimeDir: p is one of runtimeDirs or inside one.
 func runtimeDir(env *Env, p string) bool {
 	rel, ok := env.Sandbox.HomeRel(p)
-	if !ok {
-		return false
-	}
-	rel = strings.ToLower(rel)
-	for _, d := range runtimeDirs {
-		if rel == d || strings.HasPrefix(rel, d+"/") {
-			return true
-		}
-	}
-	return false
+	return ok && inRuntimeDir(rel)
 }
+
+func inRuntimeDir(rel string) bool { return under(rel, runtimeDirs) }
 
 func nameMatch(pattern, name string) bool {
 	if !strings.ContainsAny(pattern, "*?[") {
