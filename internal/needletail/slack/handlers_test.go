@@ -173,3 +173,54 @@ func TestHandlersBeforeSend(t *testing.T) {
 		t.Errorf("posts %+v", p)
 	}
 }
+
+// A before_send handler that fails (fail closed) keeps the agent's own messages back, never the
+// runtime's: its busy and error notes and a job's failure notice go out (redacted, and a
+// delivery still under the policy), while a handler's deliberate block holds them too. A reply
+// the failure keeps back gets ❌, so the person sees it was not answered.
+func TestBrokenBeforeSendSpareNotices(t *testing.T) {
+	failed := messaging.Verdict{Action: "block", Failed: true, By: "guard__broken", Reason: "the handler failed, so the message is blocked: boom"}
+	h := &fakeHandlers{out: func(o messaging.Outgoing) messaging.Verdict {
+		if strings.Contains(o.Text, "DELIBERATE") {
+			return messaging.Verdict{Action: "block", By: "guard__stop", Reason: "policy"}
+		}
+		return failed
+	}}
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.BusyWait = 50 * time.Millisecond })
+	r.turns.mu.Lock()
+	r.turns.busy = 1 << 30
+	r.turns.mu.Unlock()
+	r.fake.Send("n1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "anyone?", TS: "1700000300.000100"})
+	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Text != busyNote {
+		t.Fatalf("busy note %+v", p)
+	}
+	r.turns.mu.Lock()
+	r.turns.busy = 0
+	r.turns.mu.Unlock()
+	r.fake.Send("n2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "hello", TS: "1700000300.000200"})
+	time.Sleep(300 * time.Millisecond)
+	r.quiet(1)
+	if added, removed := reactions(r.fake, "1700000300.000200"); strings.Join(added, ",") != "eyes,x" || strings.Join(removed, ",") != "eyes" {
+		t.Errorf("a reply the broken handler kept back: added %v removed %v", added, removed)
+	}
+	ctx := context.Background()
+	if err := r.g.Deliver(ctx, sched.Delivery{JobID: "j", Target: sched.Target{Platform: "slack"}, Text: "⚠ Job 'j' failed\n\ntoken sekret-value", Failure: true, Trusted: true}); err != nil {
+		t.Errorf("a failure notice: %v", err)
+	}
+	if err := r.g.Deliver(ctx, sched.Delivery{JobID: "j", Target: sched.Target{Platform: "slack"}, Text: "the daily digest"}); !errors.Is(err, messaging.ErrBlocked) {
+		t.Errorf("a job's output went out: %v", err)
+	}
+	if err := r.g.Deliver(ctx, sched.Delivery{JobID: "j", Target: sched.Target{Platform: "slack", Channel: "C0SECRET01"}, Text: "⚠ Job 'j' failed", Failure: true}); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("a failure notice past the policy: %v", err)
+	}
+	if err := r.g.Deliver(ctx, sched.Delivery{JobID: "j", Target: sched.Target{Platform: "slack"}, Text: "⚠ DELIBERATE", Failure: true, Trusted: true}); !errors.Is(err, messaging.ErrBlocked) {
+		t.Errorf("a deliberate block let a notice out: %v", err)
+	}
+	p := r.fake.Posts()
+	if len(p) != 2 || p[1].Text != "⚠ Job 'j' failed\n\ntoken [REDACTED]" {
+		t.Errorf("posts %+v", p)
+	}
+	if !r.logged("handler guard__broken failed; the runtime's notice is posted all the same") {
+		t.Error("the notice past a failed handler was not logged")
+	}
+}

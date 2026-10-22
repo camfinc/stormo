@@ -34,7 +34,8 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	if u := userIDRe.FindStringSubmatch(channel); u != nil {
 		mt = messaging.Target{Platform: "slack", User: u[1]}
 	}
-	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt)
+	// a failure (or auto-pause) notice is the runtime's: a broken handler does not keep it back
+	text, err := g.beforeSendAs(ctx, messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt, d.Failure)
 	if err != nil {
 		return err
 	}

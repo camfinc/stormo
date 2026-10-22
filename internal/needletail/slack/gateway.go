@@ -787,6 +787,15 @@ func (g *Gateway) handlerReply(session string, j job, v messaging.Verdict) error
 // decides after them. A message sent from inside a before_send handler never gets here (Luau
 // refuses it), so they do not recurse.
 func (g *Gateway) beforeSend(ctx context.Context, o messaging.Outgoing, target messaging.Target) (string, error) {
+	return g.beforeSendAs(ctx, o, target, o.Kind == messaging.KindNotice)
+}
+
+// beforeSendAs is beforeSend; notice marks the runtime's own message (its busy and error notes, a
+// job's failure or auto-pause notice): a handler that failed (fails closed) does not keep it
+// back, so a broken handler cannot silence the runtime's word that something went wrong. It is
+// posted as it is (redacted; a delivery still meets the messaging policy after), logged; a
+// handler's deliberate block holds it as any message.
+func (g *Gateway) beforeSendAs(ctx context.Context, o messaging.Outgoing, target messaging.Target, notice bool) (string, error) {
 	if g.o.Handlers == nil || messaging.HandlerEvent(ctx) == "before_send" {
 		return o.Text, nil
 	}
@@ -798,6 +807,10 @@ func (g *Gateway) beforeSend(ctx context.Context, o messaging.Outgoing, target m
 	v := g.o.Handlers.BeforeSend(ctx, o)
 	switch v.Action {
 	case "block":
+		if v.Failed && notice {
+			g.logf("slack: a %s to %s: the agent's handler %s failed; the runtime's notice is posted all the same", o.Kind, o.Target, v.By)
+			return o.Text, nil
+		}
 		why := ""
 		if v.Reason != "" {
 			why = ": " + v.Reason
@@ -915,8 +928,8 @@ func (g *Gateway) turn(session string, jobs []job, input string) {
 	}
 	if strings.TrimSpace(text) != "" {
 		if _, err := g.say(ctx, messaging.KindReply, session, j.channel, j.thread, text); errors.Is(err, messaging.ErrBlocked) {
-			react("eyes", true)
-			return // the agent's own handler kept the reply back (logged)
+			finish(false) // the agent's own handler kept the reply back (logged): ❌, not silence
+			return
 		} else if err != nil {
 			g.logf("slack: %s: reply not posted: %v", session, err)
 			finish(false)
