@@ -60,12 +60,15 @@ func TestCronJobToolBounds(t *testing.T) {
 		b, _ := json.Marshal(args)
 		return reg.Call(context.Background(), &tools.Env{}, CronJobTool, string(b))
 	}
-	for _, sch := range []string{"every 4m", "2m", "*/2 * * * *", "58,2 * * * *", "0,3 9 * * *", "* 9 * * *"} {
+	// the gap is measured from the first run on, however far it is: every minute of the 15th,
+	// of January 1st, or across two days that meet (January 31st into February 1st)
+	for _, sch := range []string{"every 4m", "2m", "*/2 * * * *", "58,2 * * * *", "0,3 9 * * *", "* 9 * * *",
+		"* * 15 * *", "*/2 9 1 1 *", "0,1 0 1 1 *", "0,59 0,23 1,31 1,2 *"} {
 		if out, failed := call(map[string]any{"action": "create", "schedule": sch, "prompt": "x"}); !failed {
 			t.Errorf("%s accepted: %s", sch, out)
 		}
 	}
-	for _, sch := range []string{"every 5m", "*/5 * * * *", "0 9 * * *", "55,0 * * * *"} {
+	for _, sch := range []string{"every 5m", "*/5 * * * *", "0 9 * * *", "55,0 * * * *", "0 9 15 * *", "0,30 9 1 1 *"} {
 		if out, failed := call(map[string]any{"action": "create", "schedule": sch, "prompt": "Report " + sch}); failed {
 			t.Errorf("%s refused: %s", sch, out)
 		}
@@ -82,7 +85,7 @@ func TestCronJobToolBounds(t *testing.T) {
 	if out, failed := call(map[string]any{"action": "update", "job_id": "repo1", "schedule": "every 1m"}); !failed {
 		t.Errorf("update to every minute accepted: %s", out)
 	}
-	for i := 4; i < 20; i++ {
+	for i := 6; i < 20; i++ {
 		if out, failed := call(map[string]any{"action": "create", "schedule": "1h", "prompt": fmt.Sprintf("Job %d", i)}); failed {
 			t.Fatalf("job %d: %s", i, out)
 		}

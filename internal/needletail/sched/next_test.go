@@ -260,6 +260,18 @@ func TestRunningNamesPathsAndCaps(t *testing.T) {
 	if len(c) != 1 || len(c[0].input) > maxScriptPrompt+2000 || !strings.Contains(c[0].input, "[script output truncated") {
 		t.Errorf("prompt %d bytes", len(c[0].input))
 	}
+	// a failing script's output is capped the same way in its Script Error block
+	if err := os.WriteFile(filepath.Join(r.home, "scripts", "big.sh"), []byte("head -c 40000 /dev/zero | tr '\\0' x\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.s.mutate(func(f *File) (bool, error) { f.Find("a").Set("next_run_at", "2026-10-21T08:00:00Z"); return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	r.tick()
+	c = r.turns.taken()
+	if len(c) != 1 || !strings.Contains(c[0].input, "## Script Error") || len(c[0].input) > maxScriptPrompt+2000 || !strings.Contains(c[0].input, "[script output truncated") {
+		t.Errorf("failed script prompt: %d runs, %d bytes: %.300s", len(c), len(c[len(c)-1].input), c[len(c)-1].input)
+	}
 	for _, l := range r.logs {
 		if strings.TrimSpace(l) == "cron:" {
 			t.Errorf("bare log line %q", l)

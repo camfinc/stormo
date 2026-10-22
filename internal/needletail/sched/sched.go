@@ -656,12 +656,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		case ok && out == "":
 			return outcome{status: wire.StatusSilent, doc: "the script printed nothing"}
 		case ok:
-			if len(out) > maxScriptPrompt {
-				out = strings.ToValidUTF8(out[:maxScriptPrompt], "") + fmt.Sprintf("\n... [script output truncated: %d bytes, the first %d shown]", len(out), maxScriptPrompt)
-			}
-			scriptBlock = fence("Script Output", "The following data was collected by the job's script before this run. Use it as context.", out)
+			scriptBlock = fence("Script Output", "The following data was collected by the job's script before this run. Use it as context.", capPrompt(out))
 		default:
-			scriptBlock = fence("Script Error", "The job's script failed. Report this.", out)
+			scriptBlock = fence("Script Error", "The job's script failed. Report this.", capPrompt(out))
 		}
 	}
 	release()
@@ -707,6 +704,15 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		return outcome{status: wire.StatusSilent, session: session, doc: doc}
 	}
 	return outcome{status: wire.StatusOK, text: res.Text, session: session, doc: doc}
+}
+
+// capPrompt cuts a script's output (or its failure) to maxScriptPrompt bytes for the prompt, with
+// a note of its size.
+func capPrompt(out string) string {
+	if len(out) <= maxScriptPrompt {
+		return out
+	}
+	return strings.ToValidUTF8(out[:maxScriptPrompt], "") + fmt.Sprintf("\n... [script output truncated: %d bytes, the first %d shown]", len(out), maxScriptPrompt)
 }
 
 // fence is a "## heading" data block before the prompt.

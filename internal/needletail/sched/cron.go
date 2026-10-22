@@ -143,20 +143,55 @@ func (c *Cron) Matches(t time.Time) bool {
 		has(c.month, int(t.Month())) && c.dayMatches(t)
 }
 
-// MinGap is the shortest time between two of the expression's runs, over the eight days after
-// from (a day-of-week pattern repeats within them); zero when it has fewer than two.
+// MinGap is the shortest time between two of the expression's runs, measured from its first run
+// after from on, however far that is (`* * 15 * *` runs every minute of the 15th): the shortest
+// gap between two times of one day (every matching day has the same times), the night between
+// two matching days that follow each other (January 31st into February 1st) when there are any
+// within searchYears, and the runs of the eight days after the first one on loc's wall clock (a
+// DST change can shorten a gap). Zero when it has fewer than two runs.
 func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
-	end := from.AddDate(0, 0, 8)
+	if loc == nil {
+		loc = time.UTC
+	}
+	first := c.Next(from, loc)
+	if first.IsZero() {
+		return 0
+	}
 	var gap time.Duration
-	prev := c.Next(from, loc)
-	for n := 0; !prev.IsZero() && prev.Before(end) && n < 20000; n++ {
+	shorter := func(d time.Duration) {
+		if d > 0 && (gap == 0 || d < gap) {
+			gap = d
+		}
+	}
+	times := []int{} // minutes of the day a matching day runs at
+	for h := 0; h < 24; h++ {
+		for m := 0; m < 60; m++ {
+			if has(c.hour, h) && has(c.minute, m) {
+				times = append(times, h*60+m)
+			}
+		}
+	}
+	for i := 1; i < len(times); i++ {
+		shorter(time.Duration(times[i]-times[i-1]) * time.Minute)
+	}
+	if len(times) > 0 {
+		matches := func(d time.Time) bool { return has(c.month, int(d.Month())) && c.dayMatches(d) }
+		day := time.Date(first.Year(), first.Month(), first.Day(), 12, 0, 0, 0, time.UTC)
+		for end := day.AddDate(searchYears, 0, 0); day.Before(end); day = day.AddDate(0, 0, 1) {
+			if matches(day) && matches(day.AddDate(0, 0, 1)) {
+				shorter(time.Duration(24*60-times[len(times)-1]+times[0]) * time.Minute)
+				break
+			}
+		}
+	}
+	end := first.AddDate(0, 0, 8)
+	prev := first
+	for n := 0; prev.Before(end) && n < 20000; n++ {
 		next := c.Next(prev, loc)
 		if next.IsZero() {
 			break
 		}
-		if d := next.Sub(prev); gap == 0 || d < gap {
-			gap = d
-		}
+		shorter(next.Sub(prev))
 		prev = next
 	}
 	return gap
