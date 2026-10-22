@@ -24,7 +24,16 @@ type posting struct {
 type doc struct {
 	rec    *Record
 	length float64
-	terms  []string // its distinct terms (to remove its postings)
+	// terms are its distinct terms (to remove its postings): first its text's, sorted (has), then
+	// those only its tags have
+	terms []string
+	nText int
+}
+
+// has: t is a term of the document's text (not only of its tags).
+func (d *doc) has(t string) bool {
+	i := sort.SearchStrings(d.terms[:d.nText], t)
+	return i < d.nText && d.terms[i] == t
 }
 
 type index struct {
@@ -58,15 +67,22 @@ func (x *index) add(r *Record) {
 		x.tf[t]++
 	}
 	d.length = float64(len(text))
+	var tags []string
 	for _, tag := range r.Tags {
-		for _, t := range tokens(tag) {
-			x.tf[t] += tagsWeight
-			d.length += tagsWeight
-		}
+		tags = append(tags, tokens(tag)...)
 	}
-	d.terms = make([]string, 0, len(x.tf))
+	d.terms = make([]string, 0, len(x.tf)+len(tags))
 	for t := range x.tf {
 		d.terms = append(d.terms, t)
+	}
+	sort.Strings(d.terms)
+	d.nText = len(d.terms)
+	for _, t := range tags {
+		if _, ok := x.tf[t]; !ok {
+			d.terms = append(d.terms, t)
+		}
+		x.tf[t] += tagsWeight
+		d.length += tagsWeight
 	}
 	var n int32
 	if k := len(x.free); k > 0 {

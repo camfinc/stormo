@@ -66,6 +66,7 @@ type Store struct {
 	lk         *os.File // the home's lock file (lock.go), open once
 	lockWarned bool
 	srcCache   map[string]Audience // Where of the sessions older records name (scopeOf)
+	current    bool                // lockRead found st the files' generation (no stat again)
 }
 
 // state is the records as last read or written.
@@ -172,7 +173,7 @@ func (s *Store) Open() error {
 // load is the current state: read again when a file changed since it was last read or written.
 // The caller holds the lock (lock), so no other process writes between the read and the change.
 func (s *Store) load() (*state, error) {
-	if s.st != nil && s.st.prints == s.prints() {
+	if s.st != nil && (s.current || s.st.prints == s.prints()) {
 		return s.st, nil
 	}
 	now := s.now()
@@ -362,9 +363,10 @@ func (s *Store) flushUsage(st *state, force bool) {
 	}
 }
 
-// Flush writes the usage counters now (shutdown).
+// Flush writes the usage counters now (shutdown): this process' own, no lock file.
 func (s *Store) Flush() {
-	defer s.lock()()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.st != nil {
 		s.flushUsage(s.st, true)
 	}
@@ -452,7 +454,7 @@ func (s *Store) Entries(target string) ([]string, error) {
 	if _, err := s.path(target); err != nil {
 		return nil, err
 	}
-	defer s.lock()()
+	defer s.lockRead()()
 	st, err := s.load()
 	if err != nil {
 		return nil, err

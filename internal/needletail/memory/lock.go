@@ -22,6 +22,27 @@ const LockFile = "state/needletail/memory.lock"
 // guarded by its mutex alone, and says so once.
 func (s *Store) lock() func() {
 	s.mu.Lock()
+	return s.flock()
+}
+
+// lockRead is lock for a read (a search, a recall, the hot entries): when the three files are
+// still the generation the store holds, it answers from memory under its mutex alone, with no
+// flock (a few microseconds on Linux, much more on macOS, on every turn); else it takes the lock
+// file too, to read them again.
+func (s *Store) lockRead() func() {
+	s.mu.Lock()
+	if s.st != nil && s.st.prints == s.prints() {
+		s.current = true // load needs not look again
+		return func() {
+			s.current = false
+			s.mu.Unlock()
+		}
+	}
+	return s.flock()
+}
+
+// flock takes the home's lock file, s.mu held: the returned func gives both back.
+func (s *Store) flock() func() {
 	if s.lk == nil {
 		p := filepath.Join(s.Home, filepath.FromSlash(LockFile))
 		f, err := openLock(p)

@@ -218,20 +218,21 @@ func (st *state) similar(text string, n int, ok func(*Record) bool) []Similar {
 	}
 	cands := []cand{}
 	for _, h := range hits {
-		if !ok(h.doc.rec) {
+		// containment from the index's own terms of the text (no text tokenised again; a tag's
+		// terms do not count)
+		// h.matched (text or tags) bounds what the text shares: a hit that cannot reach the
+		// threshold is passed over before anything else is looked at
+		d := h.doc
+		if d.nText == 0 || max(float64(h.matched)/float64(len(q)), float64(h.matched)/float64(d.nText)) < similarAt || !ok(d.rec) {
 			continue
 		}
-		d := distinct(tokens(h.doc.rec.Text))
 		inter := 0
-		for t := range q {
-			if d[t] {
+		for _, t := range terms {
+			if d.has(t) {
 				inter++
 			}
 		}
-		if len(d) == 0 {
-			continue
-		}
-		c := max(float64(inter)/float64(len(q)), float64(inter)/float64(len(d)))
+		c := max(float64(inter)/float64(len(q)), float64(inter)/float64(d.nText))
 		if c >= similarAt {
 			cands = append(cands, cand{h.doc, c, h.score})
 		}

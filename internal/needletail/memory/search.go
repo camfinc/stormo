@@ -109,7 +109,7 @@ type SearchResult struct {
 var phraseRe = regexp.MustCompile(`"([^"]*)"`)
 
 // parseQuery is a query's terms (a trailing * a prefix) and phrases (folded words).
-func parseQuery(q string) (terms, phrases []string) {
+func parseQuery(q string) (terms []string, phrases []phrase) {
 	seen := map[string]bool{}
 	add := func(t string) {
 		if !seen[t] {
@@ -120,7 +120,7 @@ func parseQuery(q string) (terms, phrases []string) {
 	rest := phraseRe.ReplaceAllStringFunc(q, func(m string) string {
 		ws := words(strings.Trim(m, `"`))
 		if len(ws) > 0 {
-			phrases = append(phrases, strings.Join(ws, " "))
+			phrases = append(phrases, phrase{text: strings.Join(ws, " "), terms: tokens(strings.Trim(m, `"`))})
 		}
 		for _, t := range tokens(strings.Trim(m, `"`)) {
 			add(t)
@@ -167,7 +167,7 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 	if q.All && !q.Audience.Operator {
 		return SearchResult{}, ErrAllScopes
 	}
-	defer s.lock()()
+	defer s.lockRead()()
 	st, err := s.load()
 	if err != nil {
 		return SearchResult{}, err
@@ -222,18 +222,8 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		if !keep(r) || q.Match == "all" && h.matched < len(terms) {
 			continue
 		}
-		if len(phrases) > 0 {
-			folded := " " + strings.Join(words(r.Text), " ") + " "
-			ok := true
-			for _, p := range phrases {
-				if !strings.Contains(folded, " "+p+" ") {
-					ok = false
-					break
-				}
-			}
-			if !ok {
-				continue
-			}
+		if len(phrases) > 0 && !hasPhrases(h.doc, phrases) {
+			continue
 		}
 		hits = append(hits, h)
 	}
@@ -245,6 +235,33 @@ func (s *Store) Search(q Query) (SearchResult, error) {
 		out.Results = append(out.Results, st.view(rk.r, now, rk.score, true))
 	}
 	return out, nil
+}
+
+// phrase is a query's "a phrase": its folded words joined by spaces, and its index terms (the
+// words a text must have for the phrase to be in it).
+type phrase struct {
+	text  string
+	terms []string
+}
+
+// hasPhrases: d's text has every phrase, as its folded words. The index's terms answer first
+// (a text without one of a phrase's terms cannot have it); only then is the text read, its folded
+// words kept for the next search.
+func hasPhrases(d *doc, phrases []phrase) bool {
+	for _, p := range phrases {
+		for _, t := range p.terms {
+			if !d.has(t) {
+				return false
+			}
+		}
+	}
+	folded := d.rec.folded()
+	for _, p := range phrases {
+		if !strings.Contains(folded, " "+p.text+" ") {
+			return false
+		}
+	}
+	return true
 }
 
 // filter is q's filters as a predicate.

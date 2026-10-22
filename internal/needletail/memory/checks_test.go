@@ -137,3 +137,22 @@ func TestRecallFence(t *testing.T) {
 		t.Errorf("luau update: %v", err)
 	}
 }
+
+// A phrase is found in a record's text, not its tags; a near-duplicate is measured on the texts
+// alone (what the index keeps of them, not the text read again).
+func TestPhraseAndSimilarUseTheText(t *testing.T) {
+	s := newStore(newHome(t, "", ""))
+	a, _ := s.Save(SaveOptions{Text: "Call the client in the morning.", Tags: []string{"telefono"}})
+	b, _ := s.Save(SaveOptions{Text: "Quotes go out por telefono only.", Force: true})
+	res, err := s.Search(Query{Text: `"por telefono"`})
+	if err != nil || len(res.Results) != 1 || res.Results[0].ID != b.ID {
+		t.Errorf("phrase = %+v %v", res, err)
+	}
+	r, err := s.Save(SaveOptions{Text: "Call the client in the morning, please."})
+	if err != nil || r.Status != StatusSimilar || len(r.Similar) != 1 || r.Similar[0].ID != a.ID || r.Similar[0].Score != 1 {
+		t.Errorf("similar = %+v %v", r, err)
+	}
+	if r, _ := s.Save(SaveOptions{Text: "Telefono numbers for the morning shift."}); r.Status != StatusCreated {
+		t.Errorf("a tag counted as text: %+v", r)
+	}
+}

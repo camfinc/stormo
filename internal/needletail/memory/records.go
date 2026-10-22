@@ -69,8 +69,11 @@ type Record struct {
 	extra map[string]json.RawMessage // header keys this version does not know, kept
 
 	normText, norm  string // Normalize(Text), cached for normText
+	foldText, fold  string // " " + words(Text) + " ", cached for foldText (phrase search)
 	piiText         string // the text piiAny was computed for (personal)
 	piiDone, piiAny bool
+	injText         string // the text injAny was computed for (instructions)
+	injDone, injAny bool
 }
 
 // key is Normalize(r.Text), computed once per text.
@@ -79,6 +82,15 @@ func (r *Record) key() string {
 		r.normText, r.norm = r.Text, Normalize(r.Text)
 	}
 	return r.norm
+}
+
+// folded is r's text as a phrase search reads it: its folded words, space-separated, with a space
+// before and after; computed once per text.
+func (r *Record) folded() string {
+	if r.fold == "" || r.foldText != r.Text {
+		r.foldText, r.fold = r.Text, " "+strings.Join(words(r.Text), " ")+" "
+	}
+	return r.fold
 }
 
 // Target is the hot file the record renders to.

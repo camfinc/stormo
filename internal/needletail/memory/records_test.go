@@ -555,8 +555,9 @@ func TestTokens(t *testing.T) {
 		t.Errorf("tokens = %q", got)
 	}
 	terms, phrases := parseQuery(`cotización "por  Teléfono" reserv* de`)
-	if !slices.Equal(terms, []string{"telefono", "cotizacion", "reserv*"}) || !slices.Equal(phrases, []string{"por telefono"}) {
-		t.Errorf("query = %q %q", terms, phrases)
+	if !slices.Equal(terms, []string{"telefono", "cotizacion", "reserv*"}) || len(phrases) != 1 || phrases[0].text != "por telefono" ||
+		!slices.Equal(phrases[0].terms, []string{"telefono"}) {
+		t.Errorf("query = %q %+v", terms, phrases)
 	}
 	if cut("😀😀😀", 4) != "😀…" || cut("abc", 3) != "abc" {
 		t.Errorf("cut = %q", cut("😀😀😀", 4))

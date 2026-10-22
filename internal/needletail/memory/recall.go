@@ -62,7 +62,7 @@ func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max,
 	if len(terms) < 2 {
 		return "", nil
 	}
-	defer s.lock()()
+	defer s.lockRead()()
 	st, err := s.load()
 	if err != nil {
 		return "", nil
@@ -96,7 +96,7 @@ func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max,
 		if c.lex < recallLex || float64(c.h.matched)/float64(len(terms)) < recallCover && !c.h.rare {
 			continue
 		}
-		if checkHot(c.r.Text) != nil {
+		if c.r.instructions() {
 			// saved before the check, or by hand: never put in front of a message
 			s.logf("memory: record %s reads as instructions to the model: not recalled (memory_manage update or delete it)", c.r.ID)
 			continue
@@ -139,8 +139,21 @@ var fenceName = regexp.MustCompile(`(?i)memory[\p{Pd}_]context`)
 // fenced is s as a recalled line carries it: no "<" or ">" (so nothing in it closes the block or
 // opens another tag; they read as ‹ and ›) and no spelling of the block's tag name.
 func fenced(s string) string {
-	s = strings.NewReplacer("<", "‹", ">", "›").Replace(s)
-	return fenceName.ReplaceAllString(s, "memory context")
+	s = angles.Replace(s)
+	if strings.Contains(strings.ToLower(s), "context") {
+		s = fenceName.ReplaceAllString(s, "memory context")
+	}
+	return s
+}
+
+var angles = strings.NewReplacer("<", "‹", ">", "›")
+
+// instructions: r's text reads as instructions to the model (checkHot); computed once per text.
+func (r *Record) instructions() bool {
+	if r.injText != r.Text || !r.injDone {
+		r.injText, r.injDone, r.injAny = r.Text, true, checkHot(r.Text) != nil
+	}
+	return r.injAny
 }
 
 func recallLine(r *Record) string {
