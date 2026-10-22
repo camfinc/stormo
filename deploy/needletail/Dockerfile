@@ -16,7 +16,9 @@ COPY cmd/needletail ./cmd/needletail
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
-# Only the binary's own modules are fetched (go.yaml.in/yaml/v3 and github.com/gorilla/websocket), checked against go.sum.
+# Only the binary's own modules are fetched (go.yaml.in/yaml/v3, github.com/gorilla/websocket,
+# github.com/tetratelabs/wazero and its golang.org/x/sys), checked against go.sum. The Luau module
+# (internal/needletail/luau/wasm/luau.wasm) is committed and embedded: no C toolchain is needed.
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X github.com/camfinc/stormo/internal/needletail/cli.Version=${VERSION}" \
     -o /out/needletail ./cmd/needletail

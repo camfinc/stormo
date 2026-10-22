@@ -159,11 +159,22 @@ A job's `script` and `monitor_script` are files in the home's `scripts/` (the ag
 `agents/<id>/scripts/`, rebuilt from the repo at every boot); a path that resolves outside it,
 symlinks included, is refused. `cronjob_manage` stores the path relative to `scripts/`, as
 agent.yaml names it, whatever form the agent gave. The interpreter comes from the extension, never the shebang:
-`.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` from M6 on).
+`.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` in the Luau sandbox, below).
 The working directory is the script's own directory (`scripts/` for a script there), the environment the terminal's (secrets scrubbed, the
 passthrough allowlist kept), the bound 1 hour (Hermes' default), and the whole process tree is
 killed at the end. stdout and stderr are trimmed and redacted; a non-zero exit is a failure
 described as `Script exited with code N`, then its stderr and stdout.
+
+**`.luau` scripts (needletail only).** A `.luau` script runs in the Luau sandbox
+(docs/needletail.md §5), not as a process: no environment, no working directory, the bound
+`limits.script_timeout` (30 s by default; a lower `timeout:` in its header wins), not the hour.
+It must open with the `--[[needletail … ]]` header (`format: 1` and the `caps:` it uses; name and
+description are optional), and it gets the effective caps (declared ∩ granted) like a tool. Its
+output is what it printed (`print`), then what its chunk returned: a string as it is, any other
+value as JSON (`nil` adds nothing). The rules on output are the same as a process's: empty or
+`{"wakeAgent": false}` is silent, a monitor's output is hashed. A script that raises an error, is
+refused a call it did not catch, or passes its bound fails, described as `Script failed:
+<code>: <message>`, then its `nt.log` lines and its output. Hermes has no `.luau` scripts.
 
 TODO (needletail): a script the agent writes or changes under `scripts/` is not napped on this
 branch (`scripts/**` is rebuilt from the repo at every boot); the napping rule for agent-written
