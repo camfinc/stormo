@@ -263,10 +263,14 @@ promoted from the agent's into agent.yaml no longer counts), a prompt of at most
 schedule that runs more often than every 5 minutes (an interval under 5 minutes, or a cron
 expression with two runs less than 5 minutes apart, measured from its first run on, however far
 away: `* * 15 * *` runs every minute of the 15th and is refused; in elapsed time on the agent's
-wall clock, around every daylight-saving change of the year ahead: in Europe/Rome
-`0,59 1,3 * * *` runs at 01:59 and, a minute later, at 03:00 on the last Sunday of March). The `deliver` and
-`failure_deliver` it sets meet the messaging policy (§6), `origin` read as the chat the job was
-made from (else the home channel), as its deliveries read it. `cron/**` is not written by the file
+wall clock, around every daylight-saving change of the 28 years ahead, the calendar's weekday
+cycle: in Europe/Rome `0,59 1,3 * * *` runs at 01:59 and, a minute later, at 03:00 on the last
+Sunday of March, and `2,58 1,3 31 3 *` four minutes apart in 2030, when March 31st is that
+Sunday). The `deliver` and `failure_deliver` it sets meet the messaging policy (§6), `origin` read
+as the chat the job was made from (else the home channel), as its deliveries read it; so does the
+default `origin` of a job created with no `deliver` (a job made in a DM the agent may not message
+is refused at once). The targets are checked before `cron/jobs.json`'s lock is taken (the policy
+may ask Slack whose DM a channel is). `cron/**` is not written by the file
 tools, nor, with needletail's uid split (docs/needletail.md §7), by the terminal or a job's
 scripts, which run as another user than the runtime: these bounds hold for everything the agent
 does. (Started without the split, or on Hermes, the terminal can still edit `cron/jobs.json`.)

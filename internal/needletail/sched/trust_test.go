@@ -106,3 +106,53 @@ func TestFailureNoticesAreCapped(t *testing.T) {
 		}
 	}
 }
+
+// The default deliver (origin, when create names none) is checked at create like a named one: a
+// job made from a DM the policy does not let the agent message is refused at once, not left to
+// fail at every delivery.
+func TestDefaultOriginCheckedOnCreate(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0)
+	r.s.SetTargetCheck(func(tg Target) error {
+		if tg.Channel == "D0UNLISTED1" {
+			return errors.New("not a target you may message: D0UNLISTED1 is the DM of U0STRANGER, who is not in allowed_users")
+		}
+		return nil
+	})
+	from := json.RawMessage(`{"platform":"slack","chat_id":"D0UNLISTED1"}`)
+	reg := tools.NewRegistry(r.s.Tool(func(string) json.RawMessage { return from }))
+	out, failed := reg.Call(context.Background(), &tools.Env{Session: "slack-D0UNLISTED1"}, CronJobTool, `{"action":"create","schedule":"1h","prompt":"Report."}`)
+	if !failed || !strings.Contains(out, "allowed_users") {
+		t.Errorf("a job delivering to an unlisted DM by default was made: %s", out)
+	}
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"create","schedule":"1h","prompt":"Report.","deliver":"local"}`); failed {
+		t.Errorf("deliver local refused: %s", out)
+	}
+}
+
+// A target check (which may ask Slack whose DM a channel is) never runs under cron/jobs.json's
+// lock: an update resolves its targets first.
+func TestTargetCheckOutsideTheFileLock(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, strings.Replace(jobJSON("a", `{"kind":"interval","minutes":60}`, `"2026-10-21T10:00:00Z"`), `"deliver":"local"`, `"deliver":"local","created_at":"2026-10-20T09:00:00Z"`, 1))
+	checks, locked := 0, 0
+	r.s.SetTargetCheck(func(Target) error {
+		checks++
+		if !r.s.mu.TryLock() {
+			locked++
+			return nil
+		}
+		r.s.mu.Unlock()
+		return nil
+	})
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"update","job_id":"a","deliver":"slack:D0ALLOWED01","failure_deliver":"slack:C0DEVCHAN1"}`); failed {
+		t.Fatal(out)
+	}
+	if checks != 2 || locked != 0 {
+		t.Errorf("%d target checks, %d of them under the file's lock", checks, locked)
+	}
+	if j := r.job("a"); j.Str("deliver") != "slack:D0ALLOWED01" || j.Str("failure_deliver") != "slack:C0DEVCHAN1" {
+		t.Errorf("deliver %q failure_deliver %q", j.Str("deliver"), j.Str("failure_deliver"))
+	}
+}

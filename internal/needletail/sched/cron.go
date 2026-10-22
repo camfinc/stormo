@@ -148,8 +148,10 @@ func (c *Cron) Matches(t time.Time) bool {
 // gap between two times of one day (every matching day has the same times), the night between
 // two matching days that follow each other (January 31st into February 1st) when there are any
 // within searchYears, and on loc's wall clock the runs of the eight days after the first one and
-// those around every change of loc's offset in the year after it (a DST change can shorten a gap,
-// in March as in the first week). Zero when it has fewer than two runs.
+// those around every change of loc's offset in the dstYears after it (a DST change can shorten a
+// gap, in March as in the first week, and an expression with a date or a weekday meets the change
+// only in some years: March 31st is Europe's change only when it is a Sunday). Zero when it has
+// fewer than two runs.
 func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
 	if loc == nil {
 		loc = time.UTC
@@ -197,10 +199,10 @@ func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
 		}
 	}
 	runs(first.Add(-time.Nanosecond), first.AddDate(0, 0, 8))
-	// every change of loc's offset in the year after the first run (a DST change shortens a gap
-	// whenever it comes): the runs from the day before it to the day after
+	// every change of loc's offset in the dstYears after the first run (a DST change shortens a
+	// gap whenever it comes): the runs from the day before it to the day after
 	f := first.In(loc)
-	for i := 0; i <= 366; i++ {
+	for i, days := 0, int(f.AddDate(dstYears, 0, 0).Sub(f).Hours()/24)+1; i <= days; i++ {
 		noon := time.Date(f.Year(), f.Month(), f.Day()+i, 12, 0, 0, 0, loc)
 		next := time.Date(f.Year(), f.Month(), f.Day()+i+1, 12, 0, 0, 0, loc)
 		_, before := noon.Zone()
@@ -213,6 +215,12 @@ func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
 
 // searchYears bounds Next: an expression that matches nothing (Feb 30) has no next run.
 const searchYears = 5
+
+// dstYears is how far MinGap looks for offset changes: 28 years, the cycle after which the
+// calendar's dates fall on the same weekdays again (in the Gregorian calendar between 1901 and
+// 2099), so a date- or weekday-restricted expression meets every change it ever meets under
+// rules that keep their shape (Europe's last Sunday of March, the US' second Sunday).
+const dstYears = 28
 
 // Next is the first time strictly after after whose wall clock in loc matches. A wall-clock time
 // that does not exist (a DST gap) is skipped; zero when nothing matches within five years.

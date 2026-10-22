@@ -206,6 +206,29 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 	var result jobView
 	now := s.o.Now()
 	kick := false
+	if action == "update" && (a.Deliver != nil || a.FailureDeliver != nil) {
+		// the targets are checked before the file's lock is taken: the policy may ask Slack whose
+		// DM a channel is, and the scheduler's ticks and runs wait on that lock
+		var origin json.RawMessage
+		found := false
+		if err := s.mutate(func(f *File) (bool, error) {
+			if j := f.Find(a.JobID); j != nil {
+				found = true
+				if j.Has("origin") {
+					origin = append(json.RawMessage{}, j.raw["origin"]...)
+				}
+			}
+			return false, nil
+		}); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("no job %q (list the jobs first)", a.JobID)
+		}
+		if err := s.checkLanes(a, origin); err != nil {
+			return nil, err
+		}
+	}
 	err := s.mutate(func(f *File) (bool, error) {
 		j := f.Find(a.JobID)
 		if j == nil {
@@ -305,6 +328,17 @@ func (s *Scheduler) create(a cronArgs, origin json.RawMessage) (any, error) {
 	if err := s.apply(j, a, now, true); err != nil {
 		return nil, err
 	}
+	// the targets are checked outside the file's lock (create holds it only to add the job), the
+	// default origin as a named one: a job made in a chat its deliveries may not reach is refused
+	// now, not at every run
+	if err := s.checkLanes(a, origin); err != nil {
+		return nil, err
+	}
+	if a.Deliver == nil {
+		if err := s.checkTargets("origin", origin); err != nil {
+			return nil, fmt.Errorf("%w (the default deliver is origin, the chat the job is made from: name another, such as local or slack)", err)
+		}
+	}
 	if j.Str("name") == "" {
 		j.Set("name", clip(j.Str("prompt"), 50))
 	}
@@ -350,12 +384,30 @@ func repoFixed(a cronArgs) []string {
 	return out
 }
 
-// apply sets the fields a create or update names ("" and [] clear on update).
-func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) error {
-	var origin json.RawMessage // the chat the job was made from: what "origin" delivers to
-	if j.Has("origin") {
-		origin = j.raw["origin"]
+// checkLanes holds the deliver and failure_deliver a create or update names to the messaging
+// policy (checkTargets; "" deliver is origin), origin being the job's. Called outside the file's
+// lock: the policy may ask Slack whose DM a channel is.
+func (s *Scheduler) checkLanes(a cronArgs, origin json.RawMessage) error {
+	if a.Deliver != nil {
+		d := strings.TrimSpace(*a.Deliver)
+		if d == "" {
+			d = "origin"
+		}
+		if err := s.checkTargets(d, origin); err != nil {
+			return err
+		}
 	}
+	if a.FailureDeliver != nil {
+		if err := s.checkTargets(*a.FailureDeliver, origin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// apply sets the fields a create or update names ("" and [] clear on update). The targets are
+// checked before (checkLanes), outside the file's lock; apply reads them for their grammar only.
+func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) error {
 	if a.Schedule != nil {
 		sch, err := ParseSchedule(*a.Schedule)
 		if err != nil {
@@ -390,13 +442,13 @@ func (s *Scheduler) apply(j *Job, a cronArgs, now time.Time, creating bool) erro
 		if d == "" {
 			d = "origin"
 		}
-		if err := s.checkTargets(d, origin); err != nil {
+		if _, err := Targets(d, nil); err != nil {
 			return err
 		}
 		j.Set("deliver", d)
 	}
 	if a.FailureDeliver != nil {
-		if err := s.checkTargets(*a.FailureDeliver, origin); err != nil {
+		if _, err := Targets(*a.FailureDeliver, nil); err != nil {
 			return err
 		}
 		j.Set("failure_deliver", nullable(strings.TrimSpace(*a.FailureDeliver)))

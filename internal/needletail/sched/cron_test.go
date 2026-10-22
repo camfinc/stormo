@@ -149,3 +149,30 @@ func TestMinGapAcrossLaterDSTChanges(t *testing.T) {
 		t.Errorf("a schedule a minute apart in March accepted: %s", out)
 	}
 }
+
+// The minimum gap holds across the daylight-saving changes of the whole horizon, not only the
+// year ahead: `2,58 1,3 31 3 *` in Europe/Rome runs four minutes apart only when March 31 is the
+// change's Sunday (2030: 01:58+01:00, then 03:02+02:00), which a scan from January 2027 of one
+// year never reaches.
+func TestMinGapDateRestrictedDST(t *testing.T) {
+	rome, err := time.LoadLocation("Europe/Rome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2027, 1, 10, 9, 0, 0, 0, rome)
+	for expr, want := range map[string]time.Duration{"2,58 1,3 31 3 *": 4 * time.Minute, "0 1,3 31 3 *": time.Hour, "0 1,3 15 3 *": 2 * time.Hour} {
+		c, err := ParseCron(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.MinGap(from, rome); got != want {
+			t.Errorf("%s: gap %s, want %s", expr, got, want)
+		}
+	}
+	r := bareRig(t, from)
+	r.s.o.Location = rome
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"create","schedule":"2,58 1,3 31 3 *","prompt":"x"}`); !failed {
+		t.Errorf("a schedule four minutes apart in March 2030 accepted: %s", out)
+	}
+}
