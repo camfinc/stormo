@@ -55,7 +55,8 @@ func Bindings() []Binding {
 	content := Param{Name: "content", Type: "string", Doc: "the text to write"}
 	return []Binding{
 		{Name: "fs.read", Global: "read_file", Params: []Param{path}, Returns: "string: the file's content",
-			Doc:   "Reads a file of the home or the shared space. Symlinks are refused; at most 8 MiB per run.",
+			Doc: "Reads a file of the home or the shared space. Symlinks are refused; at most 8 MiB per run. " +
+				"The memory archive (memories/RECORDS.md) and its counters need memory:read besides.",
 			Grant: "fs.read:home | fs.read:shared", Example: `local text = read_file("notes/today.md")`, run: fsRead},
 		{Name: "fs.write", Global: "write_file", Params: []Param{path, content}, Returns: "nil",
 			Doc: "Writes (replaces) a file. Home: protected paths (needletail.yaml, SOUL.md, memories/, sessions/, logs/, state/, skills/, cron/, scripts/, the home's hidden entries, .git/) are refused, missing directories are made. " +
@@ -96,15 +97,15 @@ func Bindings() []Binding {
 			Grant: "memory:read", Example: `local r = search_memory("cotización quote", {tags = {"cruceros"}})`, run: memorySearch},
 		{Name: "memory.save", Global: "save_memory", Params: []Param{{Name: "text", Type: "string", Doc: "the memory, one self-contained note (at most 1000 characters)"},
 			{Name: "opts", Type: "table", Optional: true, Doc: `{kind = "fact|preference|procedure|episode|user", tags = {…}, importance = 1-5, expires = "YYYY-MM-DD", force = false, scope = "here|agent"}`}},
-			Returns: `{status, id, similar}: status "created", "exists" (id: the same text's) or "similar" (similar: { {id, text, score} }, nothing saved)`,
+			Returns: `{status, id, similar}: status "created", "exists" (id: the same text's) or "similar" (similar: { {id, text, score} }, nothing saved; without memory:read only similar_count)`,
 			Doc: "Saves a record to the memory archive (never the always-shown memory: hot is refused), marked as saved by this tool. " +
 				"exists: the same text is there (its id); similar: close records, nothing saved (update one, or save with force = true; " +
-				"their texts only with memory:read). Secret values are refused. scope \"here\" (the default) is the run's conversation's " +
+				"which ones only with memory:read: a writer alone gets similar_count). Secret values are refused. scope \"here\" (the default) is the run's conversation's " +
 				"(a schedule's script has none: agent-wide); \"agent\" is everyone's, refused for personal data or a person's profile.",
 			Grant: "memory:write", Example: `local r = save_memory("Ana prefers balcony cabins.", {kind = "preference", tags = {"cruceros"}})`, Write: true, run: memorySave},
 		{Name: "memory.update", Global: "update_memory", Params: []Param{{Name: "id", Type: "string"},
 			{Name: "fields", Type: "table", Doc: `{text, kind, tags, importance, expires} to change (expires = "" clears it)`}},
-			Returns: "{id, kind, tags, imp, updated, …, text}: the record as changed",
+			Returns: "{id, kind, tags, imp, updated, …, text}: the record as changed (text and tags only with memory:read)",
 			Doc:     "Changes an archive record. A hot record (in the system prompt) is the model's: refused, as is any pin.",
 			Grant:   "memory:write", Example: `update_memory(id, {expires = "2026-12-31"})`, Write: true, run: memoryUpdate},
 		{Name: "memory.delete", Global: "delete_memory", Params: []Param{{Name: "id", Type: "string"}}, Returns: "{deleted = id}",

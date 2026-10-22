@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
@@ -481,6 +482,9 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, ioErr(p, err)
 	}
+	if !p.shared && !c.Caps.Memory("read") && c.memoryFile(p.rel, info) {
+		return nil, c.deny("fs.read", "memory:read")
+	}
 	if readStatted != nil {
 		readStatted(p.rel)
 	}
@@ -498,6 +502,27 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return string(b), nil
+}
+
+// memoryFile: the file a script opened at rel (in the home) is the memory archive or its
+// counters, or a write's temporary copy of either, which fs.read:home does not cover: the archive
+// is memory:read's (it holds more client data than the hot files, which read_memory and
+// fs.read:home give). Matched by the file itself, so another spelling of the path (case, on a
+// case-insensitive disk) or a hard link is the same file.
+func (c *Call) memoryFile(rel string, info os.FileInfo) bool {
+	for _, f := range []string{memory.RecordsFile, memory.UsageFile} {
+		if strings.EqualFold(rel, f) {
+			return true
+		}
+		if st, err := os.Stat(filepath.Join(c.rt.Home, filepath.FromSlash(f))); err == nil && os.SameFile(st, info) {
+			return true
+		}
+		if dir, base := path.Split(rel); strings.EqualFold(path.Clean(dir), fsx.TmpDir) &&
+			strings.HasPrefix(strings.ToLower(base), "."+strings.ToLower(path.Base(f))+".tmp") {
+			return true
+		}
+	}
+	return false
 }
 
 func display(p place) string {

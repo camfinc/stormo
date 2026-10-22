@@ -465,8 +465,12 @@ func TestMemoryArchive(t *testing.T) {
 	res, _ := exec(t, rt, []string{"memory:write"}, `
 		local a = save_memory("Ana prefers balcony cabins on cruises.", {kind = "preference", tags = {"cruceros"}, importance = 4})
 		local b = save_memory("Ana prefers balcony cabins on cruises!", {})
-		return {a.status, b.status, b.similar[1].id == a.id, b.similar[1].text == nil}`)
-	wantValue(t, res, `["created", "similar", true, true]`)
+		local ok, e = pcall(update_memory, a.id, {})
+		local u = update_memory(a.id, {importance = 5})
+		return {a.status, b.status, b.similar == nil, b.similar_count, ok or e, u.text == nil, u.tags == nil, u.id == a.id, u.imp}`)
+	// memory:write alone learns no archive text: no similar ids or texts (a count), no text or
+	// tags in an update's answer; an update needs a field
+	wantValue(t, res, `["created", "similar", true, 1, "bad_args: update_memory needs a field to change (text, kind, tags, importance, expires)", true, true, true, 5]`)
 	rt.Grants = append(rt.Grants, "memory:read")
 	res, _ = exec(t, rt, both, `
 		local r = search_memory("balcony cabin cabins", {tags = {"cruceros"}})
@@ -575,6 +579,34 @@ func TestMemoryScriptScoped(t *testing.T) {
 	}
 	if v := run("schedule", `local ok, e = pcall(save_memory, "Call Ana at +1 415 555 0123.") return ok or e`); !strings.Contains(v, "personal data") {
 		t.Errorf("a schedule's script saved personal data agent-wide: %s", v)
+	}
+}
+
+// The archive and its counters are memory:read's: fs.read:home does not read them, by any path
+// that reaches the file (another spelling, a hard link); listing or stat-ing them only shows they
+// are there.
+func TestFSReadOfTheArchiveNeedsMemoryRead(t *testing.T) {
+	rt, _ := newRuntime(t)
+	if _, err := rt.Memory.Save(memory.SaveOptions{Text: "A client's private note.", Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	rt.Memory.Flush()
+	write(t, filepath.Join(rt.Home, "state", "needletail", "memory-usage.json"), `{"v":1,"records":{}}`)
+	if err := os.Link(filepath.Join(rt.Home, "memories", "RECORDS.md"), filepath.Join(rt.Home, "notes.md")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"memories/RECORDS.md", "~/memories/RECORDS.md", rt.Home + "/memories/RECORDS.md", "memories/./RECORDS.md",
+		"notes.md", "state/needletail/memory-usage.json"} {
+		fails(t, rt, []string{"fs.read:home"}, `return read_file("`+p+`")`, "denied")
+	}
+	res, _ := exec(t, rt, []string{"fs.read:home"}, `return {stat_file("memories/RECORDS.md").type, #list_files("memories")}`)
+	if res.Err != nil || !strings.Contains(string(res.Value), `"file"`) {
+		t.Errorf("stat and list = %v %s", res.Err, res.Value)
+	}
+	rt.Grants = append(rt.Grants, "memory:read")
+	res, _ = exec(t, rt, []string{"fs.read:home", "memory:read"}, `return read_file("memories/RECORDS.md")`)
+	if res.Err != nil || !strings.Contains(string(res.Value), "private note") {
+		t.Errorf("with memory:read = %v %s", res.Err, res.Value)
 	}
 }
 

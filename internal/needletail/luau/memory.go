@@ -171,11 +171,11 @@ func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, memoryErr("save_memory", err)
 	}
-	if !c.Caps.Memory("read") {
-		// the archive's texts are memory:read's: a writer learns only the ids
-		for i := range res.Similar {
-			res.Similar[i].Text = ""
-		}
+	if !c.Caps.Memory("read") && len(res.Similar) > 0 {
+		// the archive is memory:read's: a writer learns how many similar records there are, not
+		// which (an id fetches its text where memory:read is granted, and names a record to
+		// change blind)
+		return map[string]any{"status": res.Status, "similar_count": len(res.Similar)}, nil
 	}
 	return res, nil
 }
@@ -197,6 +197,9 @@ func memoryUpdate(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	var f map[string]json.RawMessage
 	if err := object(a.Fields, &f, "update_memory's fields"); err != nil {
 		return nil, err
+	}
+	if len(f) == 0 {
+		return nil, errf("bad_args", "update_memory needs a field to change (text, kind, tags, importance, expires)")
 	}
 	var ch memory.Change
 	for k, v := range f {
@@ -247,6 +250,11 @@ func memoryUpdate(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	v, err := mem.Update(c.audience(mem), id, ch, true)
 	if err != nil {
 		return nil, memoryErr("update_memory", err)
+	}
+	if !c.Caps.Memory("read") {
+		// the record's text and tags are memory:read's: a writer gets what it changed confirmed
+		return map[string]any{"id": v.ID, "kind": v.Kind, "imp": v.Imp, "hot": v.Hot, "expires": v.Expires, "scope": v.Scope,
+			"updated": v.Updated, "pii": v.PII}, nil
 	}
 	return v, nil
 }
