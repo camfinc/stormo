@@ -286,7 +286,9 @@ func TestNoPlantedExecution(t *testing.T) {
 	write(t, filepath.Join(rt.Home, "scripts", "fares.py"), "print(1)")
 	for _, p := range []string{"scripts/fares.py", "scripts/x.luau", "scripts/sub/x.sh", "scripts", ".bash_profile", ".bash_login", ".profile",
 		".bashrc", ".bash_logout", ".inputrc", ".config/git/config", ".local/lib/python3.12/site-packages/usercustomize.py", ".gitconfig",
-		".ssh/config", "~/.profile", "work/repo/.git/hooks/pre-commit", "work/repo/.git/config", "a/.GIT/hooks/post-checkout"} {
+		".ssh/config", "~/.profile", "work/repo/.git/hooks/pre-commit", "work/repo/.git/config", "a/.GIT/hooks/post-checkout",
+		// the terminal's cwd is the home, first on sys.path for python3 -c: a module there shadows the standard one
+		"json.py", "Requests.PY", "json/__init__.py", "json.pyc"} {
 		fails(t, rt, homeRW, fmt.Sprintf(`write_file(%q, "echo planted")`, p), "protected")
 		fails(t, rt, homeRW, fmt.Sprintf(`append_file(%q, "echo planted")`, p), "protected")
 	}
@@ -294,8 +296,9 @@ func TestNoPlantedExecution(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(rt.Home, "scripts", "fares.py")); string(b) != "print(1)" {
 		t.Fatalf("scripts/fares.py is %q", b)
 	}
-	// hidden files below the root are ordinary files
-	res, _ := exec(t, rt, homeRW, `write_file("reports/.draft.md", "x") return read_file("reports/.draft.md")`)
+	// hidden files below the root are ordinary files, and so is Python below the root's directories
+	res, _ := exec(t, rt, homeRW, `write_file("reports/.draft.md", "x") write_file("reports/calc.py", "x") write_file("reports/sub/__init__.py", "x")
+		return read_file("reports/.draft.md")`)
 	wantValue(t, res, `"x"`)
 }
 

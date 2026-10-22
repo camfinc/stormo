@@ -274,12 +274,18 @@ var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "stat
 
 // isProtected: rel (slash-separated, relative to the home) is a protected entry or below one, a
 // hidden entry of the home's root or below one (shell startup files, .config, .local's Python
-// user site, .gitconfig, .ssh: files a program runs without being told to), or inside a git
-// repository's .git (hooks, config). Names compare case-folded: on a case-insensitive home
-// Skills/ is skills/.
+// user site, .gitconfig, .ssh: files a program runs without being told to), a Python module or
+// package at the home's root (the terminal's cwd, first on sys.path for python3 -c: json.py
+// would shadow the standard json), or inside a git repository's .git (hooks, config). Names
+// compare case-folded: on a case-insensitive home Skills/ is skills/.
 func isProtected(rel string) bool {
 	segs := strings.Split(rel, "/")
 	if strings.HasPrefix(segs[0], ".") {
+		return true
+	}
+	last := strings.ToLower(segs[len(segs)-1])
+	if len(segs) == 1 && (strings.HasSuffix(last, ".py") || strings.HasSuffix(last, ".pyc")) ||
+		len(segs) == 2 && (last == "__init__.py" || last == "__init__.pyc") {
 		return true
 	}
 	for _, p := range protected {
