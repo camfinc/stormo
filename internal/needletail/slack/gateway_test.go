@@ -889,9 +889,9 @@ func TestReactionsPerMessage(t *testing.T) {
 	}
 }
 
-// A bot's message allow_bots refuses is refused with its app_mention twin: Slack may name the
-// mention only in the twin (a mention in blocks, not the text), and the twin must not get the
-// turn the message was refused.
+// A bot's message allow_bots refuses is refused with its app_mention twin: neither names the
+// agent in its text or blocks, so the twin (an app_mention by type) must not get the turn the
+// message was refused.
 func TestRefusedBotMessageTwin(t *testing.T) {
 	const peerUser = "U0PEERBOT1"
 	r := newRig(t, func(o *Options) { o.AllowedUsers = []string{alice, peerUser} })
@@ -955,5 +955,79 @@ func TestDMChannelNeedsAnAllowedUser(t *testing.T) {
 		if err := r.g.Deliver(context.Background(), sched.Delivery{JobID: "mine", Target: tg, Text: "x"}); (err == nil) != ok {
 			t.Errorf("Deliver %v: %v", tg, err)
 		}
+	}
+}
+
+// A bot's message and its app_mention twin get the same answer whichever comes first: mentioned
+// is read from the text or the blocks (a rich-text user element) of each, never from which twin it
+// is, and a refusal under `mentions` that the other twin could still overturn marks nothing seen.
+// A mention only in the blocks counts; no mention anywhere is refused in both orders.
+func TestBotMentionTwinsInEitherOrder(t *testing.T) {
+	const peerUser = "U0PEERBOT1"
+	blocks := []any{map[string]any{"type": "rich_text", "elements": []any{map[string]any{"type": "rich_text_section", "elements": []any{
+		map[string]any{"type": "user", "user_id": slacktest.BotUser}, map[string]any{"type": "text", "text": " status for the agent"}}}}}}
+	for _, c := range []struct {
+		name, bots string
+		appFirst   bool
+		blocks     any
+		want       int
+	}{
+		{"blocks, message first", "mentions", false, blocks, 1},
+		{"blocks, app_mention first", "mentions", true, blocks, 1},
+		{"none, message first", "mentions", false, nil, 0},
+		{"none, app_mention first", "mentions", true, nil, 0},
+		{"refused, app_mention first", "none", true, blocks, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t, func(o *Options) { o.AllowedUsers = []string{alice, peerUser}; o.AllowBots = c.bots })
+			msg := slacktest.Event{Channel: dev, ChannelType: "channel", User: peerUser, BotID: peer, Text: "status for the agent", TS: "1700000160.000100", Blocks: c.blocks}
+			app := msg
+			app.Type, app.ChannelType = "app_mention", ""
+			first, second := msg, app
+			if c.appFirst {
+				first, second = app, msg
+			}
+			r.fake.Send("t1", first)
+			time.Sleep(50 * time.Millisecond)
+			r.fake.Send("t2", second)
+			if c.want > 0 {
+				r.fake.WaitPosts(c.want, 5*time.Second)
+			}
+			r.quiet(c.want)
+			if got := r.turns.got(SessionID(dev, "1700000160.000100")); len(got) != c.want {
+				t.Errorf("%d turns, want %d", len(got), c.want)
+			}
+		})
+	}
+}
+
+// A panic in one batch's turn does not lose the messages queued behind it: the worker recovers
+// the batch (❌ on its DMs and mentions) and answers the next one.
+func TestPanickingBatchKeepsTheFollowUps(t *testing.T) {
+	r := newRig(t, nil)
+	hold := make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	r.fake.Send("p1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "PANIC", TS: "1700000170.000100"})
+	<-r.turns.started
+	r.fake.Send("p2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "after", TS: "1700000170.000200"})
+	time.Sleep(100 * time.Millisecond)
+	r.turns.mu.Lock()
+	r.turns.hold = nil
+	r.turns.mu.Unlock()
+	close(hold)
+	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Text != "re: after" {
+		t.Errorf("after the panic: %+v", p)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if added, removed := reactions(r.fake, "1700000170.000100"); !slices.Contains(added, "x") || !slices.Contains(removed, "eyes") {
+		t.Errorf("the batch that panicked: added %v removed %v", added, removed)
+	}
+	r.g.mu.Lock()
+	queued := r.g.queued
+	r.g.mu.Unlock()
+	if queued != 0 {
+		t.Errorf("queued %d after both batches", queued)
 	}
 }

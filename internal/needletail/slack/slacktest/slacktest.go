@@ -216,6 +216,8 @@ func (s *Server) WaitConnected(timeout time.Duration) {
 // Event is a message event as Slack sends it.
 type Event struct {
 	Type, Subtype, Channel, ChannelType, User, BotID, Text, TS, ThreadTS string
+	// Blocks, when set, is the event's blocks (rich text).
+	Blocks any
 }
 
 // Send sends an events_api envelope with the event, as envelope id.
@@ -229,6 +231,9 @@ func (s *Server) Send(id string, e Event) {
 		if v != "" {
 			ev[k] = v
 		}
+	}
+	if e.Blocks != nil {
+		ev["blocks"] = e.Blocks
 	}
 	env := map[string]any{"envelope_id": id, "type": "events_api", "accepts_response_payload": false,
 		"payload": map[string]any{"team_id": Team, "event_id": "Ev" + id, "type": "event_callback", "event": ev}}

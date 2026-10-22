@@ -363,8 +363,9 @@ func (g *Gateway) route(ev Message) bool {
 	if ev.User != "" && ev.User == g.id.UserID || ev.BotID != "" && ev.BotID == g.id.BotID {
 		return true // its own
 	}
-	mention := "<@" + g.id.UserID
-	mentioned := ev.Type == "app_mention" || strings.Contains(ev.Text, mention+">") || strings.Contains(ev.Text, mention+"|")
+	// mentioned is read from the message itself (its text or its blocks), the same for a message
+	// and its app_mention twin: whichever comes first gets the answer the other would
+	mentioned := g.mentions(ev)
 	bot := ev.BotID != "" || ev.Subtype == "bot_message" || len(ev.BotProfile) > 0 && string(ev.BotProfile) != "null"
 	// allowed_users is the gate for people and bots alike (a mention alone is never enough);
 	// allow_bots then filters the bots it lets through
@@ -375,8 +376,11 @@ func (g *Gateway) route(ev Message) bool {
 		return true
 	case bot && g.o.AllowBots == "all":
 	case bot && g.o.AllowBots == "mentions" && mentioned:
+	case bot && g.o.AllowBots == "mentions":
+		// not marked handled: its twin decides for itself, and comes to the same answer
+		return true
 	case bot:
-		// handled: its app_mention twin (Slack may name the mention only there) is refused too
+		// a final refusal (allow_bots none): its app_mention twin is refused too
 		g.seen.add(ev.Channel + ":" + ev.TS)
 		return true
 	}
@@ -420,6 +424,49 @@ func (g *Gateway) route(ev Message) bool {
 		g.threads.add(key)
 	}
 	return true
+}
+
+// mentions is whether a message mentions the agent: <@its user id> in the text, or a user element
+// naming it in the blocks (rich text).
+func (g *Gateway) mentions(ev Message) bool {
+	mention := "<@" + g.id.UserID
+	if strings.Contains(ev.Text, mention+">") || strings.Contains(ev.Text, mention+"|") {
+		return true
+	}
+	if len(ev.Blocks) == 0 {
+		return false
+	}
+	var blocks any
+	if json.Unmarshal(ev.Blocks, &blocks) != nil {
+		return false
+	}
+	return namesUser(blocks, g.id.UserID, 0)
+}
+
+// namesUser is whether a block (any part of it, at most 32 levels down) is a user element naming
+// id.
+func namesUser(v any, id string, depth int) bool {
+	if depth > 32 {
+		return false
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		if x["type"] == "user" && x["user_id"] == id {
+			return true
+		}
+		for _, c := range x {
+			if namesUser(c, id, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if namesUser(c, id, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (g *Gateway) allowed(user string) bool {
@@ -677,8 +724,10 @@ func (g *Gateway) enqueue(session string, j job) bool {
 
 func (g *Gateway) work(session string, w *worker) {
 	defer func() {
+		// a panic outside a batch (the batches recover their own): the worker ends, its
+		// messages counted out of the queue
 		if p := recover(); p != nil {
-			g.logf("slack: %s: the turn crashed: %v", session, p)
+			g.logf("slack: %s: the worker crashed: %v", session, p)
 			g.mu.Lock()
 			g.queued -= len(w.pending) + w.inflight
 			delete(g.workers, session)
@@ -698,20 +747,38 @@ func (g *Gateway) work(session string, w *worker) {
 		w.pending = nil
 		w.inflight = len(jobs)
 		g.mu.Unlock()
-		var lines []messaging.ContextLine
-		if first := jobs[0]; first.reply && !g.o.Exists(session) {
-			// a reply in a thread the agent has no session in: the thread's earlier messages
-			// (once, for the handlers and the turn)
-			skip := map[string]bool{}
-			for _, j := range jobs {
-				skip[j.ts] = true
+		g.batch(session, jobs)
+	}
+}
+
+// batch answers one batch of a conversation's messages: the handlers, then a turn. A panic in it
+// ends the batch, not the worker: logged, ❌ on its DMs and mentions (their 👀 removed), and the
+// messages queued behind it are answered next.
+func (g *Gateway) batch(session string, jobs []job) {
+	defer func() {
+		if p := recover(); p != nil {
+			g.logf("slack: %s: the turn crashed: %v", session, p)
+			for _, x := range jobs {
+				if x.react {
+					g.react(x.channel, x.ts, "eyes", true)
+					g.react(x.channel, x.ts, "x", false)
+				}
 			}
-			lines = g.threadLines(first.channel, first.threadTS, skip)
 		}
-		jobs = g.dispatch(session, jobs, lines)
-		if input := g.input(jobs, lines); input != "" {
-			g.turn(session, jobs, input)
+	}()
+	var lines []messaging.ContextLine
+	if first := jobs[0]; first.reply && !g.o.Exists(session) {
+		// a reply in a thread the agent has no session in: the thread's earlier messages (once,
+		// for the handlers and the turn)
+		skip := map[string]bool{}
+		for _, j := range jobs {
+			skip[j.ts] = true
 		}
+		lines = g.threadLines(first.channel, first.threadTS, skip)
+	}
+	left := g.dispatch(session, jobs, lines)
+	if input := g.input(left, lines); input != "" {
+		g.turn(session, left, input)
 	}
 }
 

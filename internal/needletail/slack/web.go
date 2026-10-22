@@ -213,6 +213,8 @@ type Message struct {
 	TS          string          `json:"ts"`
 	ThreadTS    string          `json:"thread_ts"`
 	Team        string          `json:"team"`
+	// Blocks are the message's blocks (rich text names a mention as a user element).
+	Blocks json.RawMessage `json:"blocks"`
 }
 
 // Replies is a thread's messages, oldest first, at most limit (the root included).
