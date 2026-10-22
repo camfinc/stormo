@@ -269,6 +269,17 @@ func (s *Server) Acks() []string {
 	return append([]string{}, s.acks...)
 }
 
+// SetFail makes method answer {"ok":false,"error":code} ("" stops it), under the fake's lock.
+func (s *Server) SetFail(method, code string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if code == "" {
+		delete(s.Fail, method)
+		return
+	}
+	s.Fail[method] = code
+}
+
 // Opens is how many times the gateway asked for a Socket Mode URL.
 func (s *Server) Opens() int {
 	s.mu.Lock()

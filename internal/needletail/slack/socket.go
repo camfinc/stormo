@@ -70,10 +70,9 @@ func (s *socket) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			break
 		}
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && (apiErr.Code == "invalid_auth" || apiErr.Code == "not_authed" || apiErr.Code == "account_inactive") {
+		if code, refused := tokenRefused(err); refused {
 			s.state("fatal")
-			s.logf("slack: the app token is refused (%s); trying again in %s", apiErr.Code, backoffMax)
+			s.logf("slack: the app token is refused (%s); trying again in %s", code, backoffMax)
 			wait = backoffMax
 		} else {
 			s.state("disconnected")
@@ -87,6 +86,17 @@ func (s *socket) run(ctx context.Context) {
 		wait = min(wait*2, backoffMax)
 	}
 	s.state("disconnected")
+}
+
+// tokenRefused is an answer that says the token itself is bad (invalid_auth, not_authed,
+// account_inactive): the state is fatal, not merely disconnected. A rate limit or any other
+// error is not.
+func tokenRefused(err error) (string, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && (apiErr.Code == "invalid_auth" || apiErr.Code == "not_authed" || apiErr.Code == "account_inactive") {
+		return apiErr.Code, true
+	}
+	return "", false
 }
 
 // checkLink refuses a websocket URL that is not wss, unless the Web API is a loopback test

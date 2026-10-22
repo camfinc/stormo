@@ -414,3 +414,37 @@ func TestBaseURLGuard(t *testing.T) {
 		t.Error("a wss link refused")
 	}
 }
+
+// auth.test refused for a while (rate limited) is no reason to call the tokens bad: only
+// invalid_auth, not_authed and account_inactive make the state fatal.
+func TestAuthTestRetry(t *testing.T) {
+	for _, c := range []struct {
+		code  string
+		fatal bool
+	}{{"ratelimited", false}, {"internal_error", false}, {"invalid_auth", true}, {"account_inactive", true}} {
+		t.Run(c.code, func(t *testing.T) {
+			fake := slacktest.New(t)
+			fake.SetFail("auth.test", c.code)
+			g, err := New(Options{Web: &Web{BaseURL: fake.API(), BotToken: slacktest.BotToken, AppToken: slacktest.AppToken}, Turns: newTurns()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			g.Start()
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				g.Shutdown(ctx)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for len(fake.Calls("auth.test")) == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if st := g.Platform(); (st.State == "fatal") != c.fatal {
+				t.Errorf("state %q after auth.test %s", st.State, c.code)
+			}
+			fake.SetFail("auth.test", "")
+			fake.WaitConnected(5 * time.Second)
+		})
+	}
+}

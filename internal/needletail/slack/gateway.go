@@ -159,8 +159,8 @@ func (g *Gateway) Platform() wire.Platform {
 	return wire.Platform{State: g.state, NeedsAttention: g.state == "fatal" || g.state != "connected" && time.Since(g.since) > 2*time.Minute}
 }
 
-// Start learns the bot's identity (auth.test, retried until it answers) and keeps the socket
-// up until Shutdown.
+// Start learns the bot's identity (auth.test, retried until it answers; only a refused token
+// makes the state fatal) and keeps the socket up until Shutdown.
 func (g *Gateway) Start() {
 	g.wg.Add(2)
 	go g.dispatch()
@@ -177,9 +177,8 @@ func (g *Gateway) Start() {
 			if g.base.Err() != nil {
 				return
 			}
-			var apiErr *APIError
-			if errors.As(err, &apiErr) {
-				g.setState("fatal")
+			if _, refused := tokenRefused(err); refused {
+				g.setState("fatal") // a rate limit or Slack's own trouble is not the token's fault
 			}
 			g.logf("slack: auth.test: %v; trying again in %s", err, wait)
 			if sleepCtx(g.base, wait) != nil {
