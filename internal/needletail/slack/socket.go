@@ -38,9 +38,10 @@ type envelope struct {
 type socket struct {
 	web    *Web
 	dialer *websocket.Dialer
-	// handle gets every events_api payload, after its ack; ack decides whether to ack it (false:
+	// handle gets every events_api payload, then it is acked unless handle says false (its queue
+	// is full: left for Slack to send again); ack decides first whether to take it at all (false:
 	// left for Slack to send again, as during a shutdown).
-	handle func(payload json.RawMessage)
+	handle func(payload json.RawMessage) bool
 	ack    func() bool
 	state  func(string)
 	logf   func(string, ...any)
@@ -183,13 +184,12 @@ func (s *socket) serve(ctx context.Context, link string) (hello bool, err error)
 			s.logf("slack: Slack asks for a new connection (%s)", orDefault(e.Reason, "no reason"))
 			return hello, nil
 		case "events_api":
-			if e.EnvelopeID == "" || !s.ack() {
-				continue
+			if e.EnvelopeID == "" || !s.ack() || !s.handle(e.Payload) {
+				continue // not acked: Slack sends it again
 			}
 			if err := s.write(conn, websocket.TextMessage, ackFrame(e.EnvelopeID)); err != nil {
 				return hello, err
 			}
-			s.handle(e.Payload)
 		default:
 			// slash commands, interactivity, options: acked so Slack does not retry them;
 			// needletail serves none of them (docs/needletail.md §1 non-goals)

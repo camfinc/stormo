@@ -58,12 +58,14 @@ type Server struct {
 	Fail    map[string]string
 	// RateLimit makes the next call of a method answer 429 with Retry-After 1.
 	RateLimit map[string]bool
+	// SlowUsers makes users.info for a user answer after a delay (set before the calls).
+	SlowUsers map[string]time.Duration
 }
 
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
-		RateLimit: map[string]bool{}, connCh: make(chan struct{}, 16), nextTS: 1}
+		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
@@ -127,7 +129,15 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		reply(map[string]any{"ok": true, "channel": params["channel"], "ts": ts})
 	case "users.info":
-		name := s.Names[params["user"]]
+		s.mu.Lock()
+		name, slow := s.Names[params["user"]], s.SlowUsers[params["user"]]
+		s.mu.Unlock()
+		if slow > 0 {
+			select {
+			case <-time.After(slow):
+			case <-r.Context().Done():
+			}
+		}
 		reply(map[string]any{"ok": true, "user": map[string]any{"id": params["user"], "name": strings.ToLower(name), "profile": map[string]any{"display_name": name}}})
 	case "conversations.replies":
 		s.mu.Lock()

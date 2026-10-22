@@ -83,7 +83,11 @@ type Options struct {
 	// BusyWait is how long a message waits for a turn slot before a busy note (default 10 min);
 	// RetryEvery how often it asks (default 2 s).
 	BusyWait, RetryEvery time.Duration
-	Dialer               *websocket.Dialer
+	// MaxPending is how many messages may wait for one conversation's next turn (default 32),
+	// MaxQueued for all conversations together (default 512). An event that finds its queue
+	// full is not acked, so Slack sends it again.
+	MaxPending, MaxQueued int
+	Dialer                *websocket.Dialer
 }
 
 // Gateway is the agent's Slack app: it hears messages over Socket Mode, runs a turn per thread
@@ -101,19 +105,25 @@ type Gateway struct {
 	workers  map[string]*worker
 	users    map[string]string // user id → display name
 	warned   map[string]bool
+	queued   int    // messages waiting in the workers (MaxQueued)
 	seen     *tsSet // events handled (channel:ts), against Slack's retries and message+app_mention
 	threads  *tsSet // threads the agent posted in or was mentioned in (channel:thread_ts)
 	ready    chan struct{}
-	events   chan Message
 	wg       sync.WaitGroup
+	notes    sync.WaitGroup // the ❌ on messages a shutdown leaves unhandled
 	base     context.Context
 	cancel   context.CancelFunc
 	statusOn atomic.Bool
 }
 
+// job is one message for a conversation's worker, routed but not yet prepared: the worker reads
+// names (users.info) and a thread's earlier messages, so a slow lookup holds up only its own
+// conversation.
 type job struct {
-	channel, thread, ts, text string
-	react                     bool
+	ev                  Message
+	channel, thread, ts string // where the reply goes (thread "" is top-level), the message
+	threadTS            string // the Slack thread it is in (its own ts at the top level)
+	bot, reply, react   bool
 }
 
 type worker struct{ pending []job }
@@ -148,11 +158,17 @@ func New(o Options) (*Gateway, error) {
 	if o.RetryEvery <= 0 {
 		o.RetryEvery = 2 * time.Second
 	}
+	if o.MaxPending <= 0 {
+		o.MaxPending = 32
+	}
+	if o.MaxQueued <= 0 {
+		o.MaxQueued = 512
+	}
 	if o.Dialer == nil {
 		o.Dialer = &websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
 	}
 	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{},
-		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{}), events: make(chan Message, 1024)}
+		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{})}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
 	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
@@ -184,8 +200,7 @@ func (g *Gateway) Platform() wire.Platform {
 // Start learns the bot's identity (auth.test, retried until it answers; only a refused token
 // makes the state fatal) and keeps the socket up until Shutdown.
 func (g *Gateway) Start() {
-	g.wg.Add(2)
-	go g.dispatch()
+	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
 		wait := backoffStart
@@ -221,20 +236,30 @@ func (g *Gateway) accepting() bool {
 	return !g.closing
 }
 
-// BeginShutdown stops taking messages: new events are left unacked, queued ones are dropped,
-// turns already running finish (the API's drain) and post their replies.
+// BeginShutdown stops taking messages: new events are left unacked (Slack sends them again to
+// the next runtime), turns already running finish (the API's drain) and post their replies,
+// and each message still queued gets a ❌, so its author knows it will not be answered.
 func (g *Gateway) BeginShutdown() {
 	g.mu.Lock()
 	g.closing = true
-	n := 0
+	dropped := []job{}
 	for _, w := range g.workers {
-		n += len(w.pending)
+		dropped = append(dropped, w.pending...)
 		w.pending = nil
 	}
+	g.queued = 0
 	g.mu.Unlock()
-	if n > 0 {
-		g.logf("slack: shutting down: %d queued messages dropped", n)
+	if len(dropped) == 0 {
+		return
 	}
+	g.logf("slack: shutting down: %d queued messages will not be answered (marked ❌)", len(dropped))
+	g.notes.Add(1)
+	go func() {
+		defer g.notes.Done()
+		for _, j := range dropped {
+			g.react(j.channel, j.ts, "x", false)
+		}
+	}()
 }
 
 // Shutdown waits (until ctx ends) for the replies of running turns, then closes the socket.
@@ -243,6 +268,7 @@ func (g *Gateway) Shutdown(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		g.waitWorkers()
+		g.notes.Wait()
 		close(done)
 	}()
 	select {
@@ -274,51 +300,39 @@ type eventCallback struct {
 	Event   Message `json:"event"`
 }
 
-// handle takes an acked events_api payload from the socket's reader and queues it for the
-// dispatcher, which reads events one at a time in the order Slack sent them (messages in a
-// thread keep their order).
-func (g *Gateway) handle(payload json.RawMessage) {
+// handle takes an events_api payload from the socket's reader and routes it to its
+// conversation's worker, in the order Slack sent them (messages in a thread keep their order).
+// Routing reads nothing from Slack, so the reader never waits on a lookup. False: the queue is
+// full (or the gateway is closing) and the envelope must not be acked, so Slack sends it again.
+func (g *Gateway) handle(payload json.RawMessage) bool {
 	var cb eventCallback
 	if json.Unmarshal(payload, &cb) != nil {
-		return
+		return true
 	}
-	select {
-	case g.events <- cb.Event:
-	default:
-		g.logf("slack: %d events waiting: one dropped", cap(g.events))
-	}
-}
-
-func (g *Gateway) dispatch() {
-	defer g.wg.Done()
-	for {
-		select {
-		case <-g.base.Done():
-			return
-		case ev := <-g.events:
-			g.onEvent(ev)
-		}
-	}
+	return g.route(cb.Event)
 }
 
 // subtypes are the message subtypes answered (Hermes' allowlist); edits, deletions, joins,
 // topic changes and the like are not.
 var subtypes = map[string]bool{"": true, "file_share": true, "thread_broadcast": true, "me_message": true, "bot_message": true}
 
-func (g *Gateway) onEvent(ev Message) {
+// route decides whether a message is answered and queues it in its conversation's worker; a
+// message is marked handled (seen) only once it is queued, so Slack's retry of one the full queue
+// refused is not taken for a duplicate.
+func (g *Gateway) route(ev Message) bool {
 	select {
 	case <-g.ready:
-	case <-g.base.Done():
-		return
+	default:
+		return false // the socket runs only once auth.test answered; never here
 	}
 	if ev.Type != "message" && ev.Type != "app_mention" || !subtypes[ev.Subtype] || ev.Channel == "" || ev.TS == "" {
-		return
+		return true
 	}
-	if !g.seen.add(ev.Channel + ":" + ev.TS) {
-		return // Slack's retry, or the app_mention twin of a message
+	if g.seen.has(ev.Channel + ":" + ev.TS) {
+		return true // Slack's retry, or the app_mention twin of a message
 	}
 	if ev.User != "" && ev.User == g.id.UserID || ev.BotID != "" && ev.BotID == g.id.BotID {
-		return // its own
+		return true // its own
 	}
 	mention := "<@" + g.id.UserID
 	mentioned := ev.Type == "app_mention" || strings.Contains(ev.Text, mention+">") || strings.Contains(ev.Text, mention+"|")
@@ -329,11 +343,11 @@ func (g *Gateway) onEvent(ev Message) {
 	case !g.admitted(ev.User, ev.BotID):
 		who := orDefault(ev.User, ev.BotID)
 		g.warnOnce("user:"+who, fmt.Sprintf("slack: a message from %s, who is not in allowed_users, is ignored", who))
-		return
+		return true
 	case bot && g.o.AllowBots == "all":
 	case bot && g.o.AllowBots == "mentions" && mentioned:
 	case bot:
-		return
+		return true
 	}
 	dm := ev.ChannelType == "im" || ev.ChannelType == "" && strings.HasPrefix(ev.Channel, "D")
 	thread := ev.ThreadTS
@@ -351,20 +365,27 @@ func (g *Gateway) onEvent(ev Message) {
 		// a channel answers a mention, or a reply in a thread the agent is in (it posted there,
 		// was mentioned there, or has the thread's session)
 		if !reply || !g.threads.has(key) && !g.o.Exists(session) {
-			return
+			return true
 		}
 	}
+	if strings.TrimSpace(mentionRe.ReplaceAllStringFunc(ev.Text, func(m string) string {
+		if mentionRe.FindStringSubmatch(m)[1] == g.id.UserID {
+			return ""
+		}
+		return m
+	})) == "" {
+		g.seen.add(ev.Channel + ":" + ev.TS)
+		return true // nothing but the agent's own mention
+	}
+	j := job{ev: ev, channel: ev.Channel, thread: post, ts: ev.TS, threadTS: thread, bot: bot, reply: reply, react: dm || mentioned}
+	if !g.enqueue(session, j) {
+		return false
+	}
+	g.seen.add(ev.Channel + ":" + ev.TS)
 	if mentioned {
 		g.threads.add(key)
 	}
-	text := g.prepare(ev, bot)
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if reply && !g.o.Exists(session) {
-		text = g.threadContext(ev, thread) + text
-	}
-	g.enqueue(session, job{channel: ev.Channel, thread: post, ts: ev.TS, text: text, react: dm || mentioned})
+	return true
 }
 
 func (g *Gateway) allowed(user string) bool {
@@ -403,38 +424,48 @@ func (g *Gateway) warnOnce(key, msg string) {
 
 var mentionRe = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]*)?>`)
 
+// maxLookups is how many names (users.info) one message may look up; the rest show as ids.
+const maxLookups = 20
+
 // prepare is the turn's input for a message: who sent it, then its text with the agent's own
-// mention removed and other mentions as @Name (Hermes' users.info names).
+// mention removed and other mentions as @Name (Hermes' users.info names, at most maxLookups
+// looked up, cached).
 func (g *Gateway) prepare(ev Message, bot bool) string {
+	budget := maxLookups
+	who := "a bot"
+	if ev.User != "" {
+		who = fmt.Sprintf("%s (%s)", g.name(ev.User, &budget), ev.User)
+		if bot {
+			who = "the bot " + who
+		}
+	}
 	text := mentionRe.ReplaceAllStringFunc(ev.Text, func(m string) string {
 		id := mentionRe.FindStringSubmatch(m)[1]
 		if id == g.id.UserID {
 			return ""
 		}
-		return "@" + g.name(id)
+		return "@" + g.name(id, &budget)
 	})
 	text = neutralise(strings.TrimSpace(text))
 	if text == "" {
 		return ""
 	}
-	who := "a bot"
-	if ev.User != "" {
-		who = fmt.Sprintf("%s (%s)", g.name(ev.User), ev.User)
-		if bot {
-			who = "the bot " + who
-		}
-	}
 	return fmt.Sprintf("[Slack message from %s]\n%s", who, text)
 }
 
-// name is a user's display name, cached (users.info; the id when Slack does not say).
-func (g *Gateway) name(id string) string {
+// name is a user's display name, cached (users.info; the id when Slack does not say, or when
+// the message's budget of lookups is spent).
+func (g *Gateway) name(id string, budget *int) string {
 	g.mu.Lock()
 	n, ok := g.users[id]
 	g.mu.Unlock()
 	if ok {
 		return n
 	}
+	if *budget <= 0 {
+		return id
+	}
+	*budget--
 	ctx, cancel := context.WithTimeout(g.base, 10*time.Second)
 	defer cancel()
 	u, err := g.o.Web.UserInfo(ctx, id)
@@ -454,11 +485,13 @@ func (g *Gateway) name(id string) string {
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // threadContext is the thread's earlier messages, for a reply in a thread the agent has no
-// session in yet (Hermes' cold-start thread context): at most 30, each on one line.
-func (g *Gateway) threadContext(ev Message, thread string) string {
+// session in yet (Hermes' cold-start thread context): at most 30, each on one line, leaving out
+// the messages of skip (the ones the turn carries).
+func (g *Gateway) threadContext(channel, thread string, skip map[string]bool) string {
 	ctx, cancel := context.WithTimeout(g.base, 15*time.Second)
 	defer cancel()
-	msgs, err := g.o.Web.Replies(ctx, ev.Channel, thread, 31)
+	budget := maxLookups
+	msgs, err := g.o.Web.Replies(ctx, channel, thread, 31)
 	if err != nil {
 		g.logf("slack: thread context: %v", err)
 		return ""
@@ -466,7 +499,7 @@ func (g *Gateway) threadContext(ev Message, thread string) string {
 	lines := []string{}
 	unverified := false
 	for _, m := range msgs {
-		if m.TS == ev.TS || strings.TrimSpace(m.Text) == "" {
+		if skip[m.TS] || strings.TrimSpace(m.Text) == "" {
 			continue
 		}
 		text := neutralise(oneLine(mentionRe.ReplaceAllStringFunc(m.Text, func(s string) string {
@@ -474,7 +507,7 @@ func (g *Gateway) threadContext(ev Message, thread string) string {
 			if id == g.id.UserID {
 				return "@you"
 			}
-			return "@" + g.name(id)
+			return "@" + g.name(id, &budget)
 		})))
 		var tag string
 		switch {
@@ -490,7 +523,7 @@ func (g *Gateway) threadContext(ev Message, thread string) string {
 		}
 		who := "a bot"
 		if m.User != "" {
-			who = g.name(m.User)
+			who = g.name(m.User, &budget)
 		}
 		lines = append(lines, tag+who+": "+text)
 	}
@@ -504,23 +537,30 @@ func (g *Gateway) threadContext(ev Message, thread string) string {
 	return head + "\n" + strings.Join(lines, "\n") + "\n[End of thread context]\n\n"
 }
 
-// enqueue runs the message in its thread's worker: one turn at a time per thread, and messages
-// that arrive while a turn runs are merged into the next one (Hermes queues follow-ups).
-func (g *Gateway) enqueue(session string, j job) {
+// enqueue queues the message in its conversation's worker: one turn at a time per
+// conversation, and messages that arrive while a turn runs are merged into the next one (Hermes
+// queues follow-ups). False when the gateway is closing or the queue is full (MaxPending for the
+// conversation, MaxQueued in all).
+func (g *Gateway) enqueue(session string, j job) bool {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.closing {
-		g.mu.Unlock()
-		return
+		return false
 	}
-	if w := g.workers[session]; w != nil {
+	w := g.workers[session]
+	if g.queued >= g.o.MaxQueued || w != nil && len(w.pending) >= g.o.MaxPending {
+		g.logf("slack: %s: the queue is full; the message is left for Slack to send again", session)
+		return false
+	}
+	g.queued++
+	if w != nil {
 		w.pending = append(w.pending, j)
-		g.mu.Unlock()
-		return
+		return true
 	}
-	w := &worker{pending: []job{j}}
+	w = &worker{pending: []job{j}}
 	g.workers[session] = w
-	g.mu.Unlock()
 	go g.work(session, w)
+	return true
 }
 
 func (g *Gateway) work(session string, w *worker) {
@@ -528,6 +568,7 @@ func (g *Gateway) work(session string, w *worker) {
 		if p := recover(); p != nil {
 			g.logf("slack: %s: the turn crashed: %v", session, p)
 			g.mu.Lock()
+			g.queued -= len(w.pending)
 			delete(g.workers, session)
 			g.mu.Unlock()
 		}
@@ -541,15 +582,36 @@ func (g *Gateway) work(session string, w *worker) {
 		}
 		jobs := w.pending
 		w.pending = nil
+		g.queued -= len(jobs)
 		g.mu.Unlock()
-		texts := []string{}
-		for _, j := range jobs {
-			if !slices.Contains(texts, j.text) {
-				texts = append(texts, j.text)
-			}
+		if input := g.input(session, jobs); input != "" {
+			g.turn(session, jobs[len(jobs)-1], input)
 		}
-		g.turn(session, jobs[len(jobs)-1], strings.Join(texts, "\n\n"))
 	}
+}
+
+// input is a turn's input for the messages that waited for it: each prepared (who sent it, names
+// for mentions), merged, after the thread's earlier messages when the conversation has no
+// session yet and the first message is a reply in a thread.
+func (g *Gateway) input(session string, jobs []job) string {
+	texts := []string{}
+	for _, j := range jobs {
+		if t := g.prepare(j.ev, j.bot); t != "" && !slices.Contains(texts, t) {
+			texts = append(texts, t)
+		}
+	}
+	if len(texts) == 0 {
+		return ""
+	}
+	text := strings.Join(texts, "\n\n")
+	if first := jobs[0]; first.reply && !g.o.Exists(session) {
+		skip := map[string]bool{}
+		for _, j := range jobs {
+			skip[j.ts] = true
+		}
+		text = g.threadContext(first.channel, first.threadTS, skip) + text
+	}
+	return text
 }
 
 // busyNote is posted when a message waited BusyWait for a turn.

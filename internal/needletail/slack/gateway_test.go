@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -512,5 +513,90 @@ func TestOrigin(t *testing.T) {
 		if ch != want[0] || th != want[1] || ok != (want[2] == "ok") {
 			t.Errorf("%s: %q %q %v", id, ch, th, ok)
 		}
+	}
+}
+
+// A full queue is not acked: Slack sends the envelope again, and the retry is answered (it is
+// not taken for a duplicate).
+func TestFullQueueNotAcked(t *testing.T) {
+	r := newRig(t, func(o *Options) { o.MaxPending = 1 })
+	hold := make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	r.fake.Send("q1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "one", TS: "1700000080.000100"})
+	<-r.turns.started
+	r.fake.Send("q2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "two", TS: "1700000080.000200"})
+	r.fake.Send("q3", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "three", TS: "1700000080.000300"})
+	time.Sleep(150 * time.Millisecond)
+	if a := r.fake.Acks(); slices.Contains(a, "q3") || !slices.Contains(a, "q2") {
+		t.Errorf("acks %v: q3 found the queue full and must not be acked", a)
+	}
+	close(hold)
+	r.fake.WaitPosts(2, 5*time.Second)
+	r.fake.Send("q3", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "three", TS: "1700000080.000300"}) // Slack's retry
+	p := r.fake.WaitPosts(3, 5*time.Second)
+	if p[2].Text != "re: three" || !slices.Contains(r.fake.Acks(), "q3") {
+		t.Errorf("the retry: %+v acks %v", p, r.fake.Acks())
+	}
+}
+
+// Slow users.info lookups for one conversation never hold up another's.
+func TestSlowLookupDoesNotStall(t *testing.T) {
+	r := newRig(t, nil)
+	r.fake.SlowUsers["U0SLOWUSER"] = 3 * time.Second
+	r.fake.Send("s1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> ask <@U0SLOWUSER>", TS: "1700000090.000100"})
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	r.fake.Send("s2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "quick one", TS: "1700000090.000200"})
+	p := r.fake.WaitPosts(1, 5*time.Second)
+	if p[0].Text != "re: quick one" || time.Since(start) > 2*time.Second {
+		t.Errorf("the DM waited for another conversation's lookup: %+v after %s", p, time.Since(start))
+	}
+}
+
+// A message names at most 20 people through users.info (the rest by id); names are cached.
+func TestNameLookupsCapped(t *testing.T) {
+	r := newRig(t, nil)
+	mentions := []string{}
+	for i := 0; i < 30; i++ {
+		mentions = append(mentions, fmt.Sprintf("<@U0PERSON%02d>", i))
+	}
+	r.fake.Send("n1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "who: " + strings.Join(mentions, " "), TS: "1700000095.000100"})
+	r.fake.WaitPosts(1, 5*time.Second)
+	if n := len(r.fake.Calls("users.info")); n > maxLookups {
+		t.Errorf("%d users.info calls for one message", n)
+	}
+	if in := r.turns.got(DMSessionID(dm)); len(in) != 1 || !strings.Contains(in[0], "@U0PERSON29") {
+		t.Errorf("input %q", in)
+	}
+}
+
+// Messages still queued when the runtime stops are not handled: each gets a ❌ so its author
+// knows, instead of silence.
+func TestShutdownMarksQueued(t *testing.T) {
+	r := newRig(t, nil)
+	hold := make(chan struct{})
+	r.turns.mu.Lock()
+	r.turns.hold = hold
+	r.turns.mu.Unlock()
+	r.fake.Send("z1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "one", TS: "1700000099.000100"})
+	<-r.turns.started
+	r.fake.Send("z2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "two", TS: "1700000099.000200"})
+	r.fake.Send("z3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> three", TS: "1700000099.000300", ThreadTS: "1700000002.000100"})
+	time.Sleep(100 * time.Millisecond)
+	r.g.BeginShutdown()
+	close(hold)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r.g.Shutdown(ctx)
+	crossed := map[string]bool{}
+	for _, c := range r.fake.Calls("reactions.add") {
+		if c.Params["name"] == "x" {
+			crossed[c.Params["timestamp"]] = true
+		}
+	}
+	if !crossed["1700000099.000200"] {
+		t.Errorf("queued messages not marked: %v", crossed)
 	}
 }
