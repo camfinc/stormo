@@ -255,11 +255,11 @@ func origin(store *sessions.Store) func(session string) json.RawMessage {
 	}
 }
 
-// reservations are the API server's turn slots as the scheduler takes them.
+// reservations are the API server's turn slots as the scheduler takes them: its jobs' lane.
 type reservations struct{ srv *api.Server }
 
 func (r reservations) Reserve(session string, create wire.Session) (sched.Slot, error) {
-	res, err := r.srv.Reserve(session, create)
+	res, err := r.srv.ReserveJob(session, create) // the jobs' own lane, beside the chat's
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +369,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	defer link.close(3 * time.Second)
 	var gw *slack.Gateway
 	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
-		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running,
+		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns,
 		Platforms: func() map[string]wire.Platform {
 			if gw == nil {
 				return nil

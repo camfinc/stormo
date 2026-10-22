@@ -376,10 +376,10 @@ func TestShutdownBounded(t *testing.T) {
 	}
 }
 
-// A scheduled job reserves its turn before it runs anything (its monitor, its script), so it
-// shares the cap with the API and never loses its slot halfway; the session is made only when the
-// turn runs, and the job shows in the activity while it runs.
-func TestReserveSharesTheCap(t *testing.T) {
+// Scheduled runs have their own lane (ReserveJob: one turn by default, Options.JobTurns), beside
+// the chat's two, so neither starves the other; a reservation makes no session until its turn
+// runs, and the job shows in the activity while it runs.
+func TestJobLane(t *testing.T) {
 	store, err := sessions.Open(filepath.Join(t.TempDir(), "sessions"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -394,28 +394,36 @@ func TestReserveSharesTheCap(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 	cron := wire.Session{Source: "cron", Title: "Daily digest"}
-	r1, err := s.Reserve("cron-j1-20261021T090000", cron)
+	r1, err := s.ReserveJob("cron-j1-20261021T090000", cron)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := store.Get("cron-j1-20261021T090000"); ok {
 		t.Error("a reservation made the session")
 	}
-	if _, err := s.Reserve("cron-j1-20261021T090000", cron); !errors.Is(err, ErrSessionBusy) {
+	if _, err := s.ReserveJob("cron-j1-20261021T090000", cron); !errors.Is(err, ErrSessionBusy) {
 		t.Errorf("same session: %v", err)
 	}
-	r2, err := s.Reserve("cron-j2-20261021T090000", cron)
+	if _, err := s.ReserveJob("cron-j2-20261021T090000", cron); !errors.Is(err, ErrBusy) {
+		t.Errorf("a second job over the lane's one turn: %v", err)
+	}
+	// the chat's two turns stay free while a job runs, and a job's lane while the chat is full
+	c1, err := s.Reserve("chat-1", wire.Session{Source: SourceAPI})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Reserve("cron-j3-20261021T090000", cron); !errors.Is(err, ErrBusy) {
-		t.Errorf("over the cap: %v", err)
-	}
-	if _, err := store.Create(wire.Session{ID: "c", Source: SourceAPI}); err != nil {
+	c2, err := s.Reserve("chat-2", wire.Session{Source: SourceAPI})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if status, _, _ := call(srv, key)(context.Background(), http.MethodPost, "/v1/sessions/c/chat", wire.ChatRequest{Message: "x"}); status != http.StatusTooManyRequests {
-		t.Errorf("chat while two jobs hold the slots = %d", status)
+	if _, err := s.Reserve("chat-3", wire.Session{Source: SourceAPI}); !errors.Is(err, ErrBusy) {
+		t.Errorf("a third chat turn: %v", err)
+	}
+	c1.Release()
+	c2.Release()
+	r2, err := s.Reserve("chat-2", wire.Session{Source: SourceAPI})
+	if err != nil {
+		t.Fatal(err)
 	}
 	r2.Release()
 	r2.Release() // twice is once
@@ -429,12 +437,22 @@ func TestReserveSharesTheCap(t *testing.T) {
 	_, raw, _ := call(srv, key)(context.Background(), http.MethodGet, "/v1/activity", nil)
 	var act wire.Activity
 	_ = json.Unmarshal(raw, &act)
-	if act.ActiveTurns != 1 || act.Source != "cron" || len(act.RunningJobs) != 1 || act.RunningJobs[0] != "j1" || act.LastJobAt != "2026-10-21T09:00:00Z" {
+	if act.ActiveTurns != 1 || act.Source != SourceAPI /* the last turn taken */ || len(act.RunningJobs) != 1 || act.RunningJobs[0] != "j1" || act.LastJobAt != "2026-10-21T09:00:00Z" {
 		t.Errorf("activity = %+v", act)
 	}
 	r1.Release()
 	s.Shutdown(context.Background())
-	if _, err := s.Reserve("cron-j4-20261021T090000", cron); !errors.Is(err, ErrClosing) {
+	if _, err := s.ReserveJob("cron-j4-20261021T090000", cron); !errors.Is(err, ErrClosing) {
 		t.Errorf("after shutdown: %v", err)
+	}
+	// the lane's size is configurable
+	s2, _ := New(Options{Key: key, Store: store, Agent: fa, JobTurns: 2})
+	for _, id := range []string{"cron-a-1", "cron-b-1"} {
+		if _, err := s2.ReserveJob(id, cron); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+	}
+	if _, err := s2.ReserveJob("cron-c-1", cron); !errors.Is(err, ErrBusy) {
+		t.Errorf("a third job: %v", err)
 	}
 }

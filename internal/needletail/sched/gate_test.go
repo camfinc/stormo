@@ -1,13 +1,17 @@
 package sched
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
 func writeScript(t *testing.T, home, name, body string) {
@@ -85,5 +89,64 @@ func TestGateCap(t *testing.T) {
 	}
 	if c := r.turns.taken(); len(c) != 3 {
 		t.Errorf("%d turns", len(c))
+	}
+}
+
+// A gate that wants a turn while the jobs' lane is busy leaves the job for the next tick: no kick
+// (which would run its scripts again at once, in a loop, until a turn is free), and a run asked
+// for meanwhile is taken, not left to fire later.
+func TestBusyGateWaitsForTheTick(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, gatedJob("new", "monitor_script", "new.sh"))
+	writeScript(t, r.home, "new.sh", "sleep 0.3; echo fresh output\n")
+	r.turns.busy = true
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	r.s.Tick()
+	time.Sleep(100 * time.Millisecond)
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"run","job_id":"new"}`); failed {
+		t.Fatal(out)
+	}
+	select {
+	case <-r.s.kick: // the tool's own kick
+	default:
+	}
+	r.s.Wait()
+	if n := len(r.s.kick); n != 0 {
+		t.Error("a busy outcome kicked the ticker")
+	}
+	r.s.runMu.Lock()
+	left := len(r.s.requested)
+	r.s.runMu.Unlock()
+	if left != 0 {
+		t.Errorf("the run asked during a busy run is still pending: %v", r.s.requested)
+	}
+}
+
+// A job never runs twice at once: a tick while it runs leaves it alone, and runs asked for
+// while it runs coalesce into one more run once it ends.
+func TestSingleFlightAndCoalescedRuns(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	r := bareRig(t, t0, jobJSON("solo", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`))
+	release := make(chan struct{})
+	var once sync.Once
+	r.turns.onTurn = func() { once.Do(func() { <-release }) }
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	r.s.Tick()
+	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 3; i++ {
+		if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"run","job_id":"solo"}`); failed {
+			t.Fatal(out)
+		}
+		r.s.Tick() // due now, but running: not started again
+	}
+	if running, _ := r.s.Running(); len(running) != 1 {
+		t.Errorf("running %v", running)
+	}
+	close(release)
+	r.s.Wait()
+	r.tick() // the one run the three requests asked for
+	r.tick() // nothing more
+	if c := r.turns.taken(); len(c) != 2 {
+		t.Errorf("%d turns, want 2", len(c))
 	}
 }

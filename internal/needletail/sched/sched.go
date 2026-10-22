@@ -1,7 +1,8 @@
 // Package sched is the runtime's scheduler (docs/needletail.md §4.7; the semantics, shared with
 // Hermes, are docs/schedules.md): it runs the jobs of cron/jobs.json on their interval or cron
-// expression, through the same turn slots as the API (so they share its cap of two turns), each
-// run in its own session with source "cron". A job's monitor script runs first and decides
+// expression, in the API's turn slots for scheduled runs (their own lane, one turn by default, so
+// jobs and chat never starve each other), each run in its own session with source "cron". A
+// job's monitor script runs first and decides
 // whether the agent runs at all; a script's output goes into the prompt, or with no_agent is the
 // job's whole output; a "[SILENT]" reply is not delivered. The agent manages its own jobs with
 // the cronjob_manage tool (tool.go).
@@ -97,6 +98,7 @@ type Scheduler struct {
 	mu                    sync.Mutex        // cron/jobs.json
 	runMu                 sync.Mutex        // running, requested, stopping, lastStart, warned
 	running               map[string]string // id → name
+	claimed               map[string]bool   // jobs a start has taken, running or about to (single-flight)
 	requested             map[string]bool   // `run` asked while the job was running
 	stopping              bool              // the ticks ended: a run cut short now is interrupted
 	lastStart             time.Time
@@ -135,7 +137,7 @@ func New(o Options) *Scheduler {
 		o.Env.Home = o.Home
 	}
 	s := &Scheduler{o: o, path: filepath.Join(o.Home, "cron", "jobs.json"), state: filepath.Join(o.Home, "state", "needletail"),
-		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1), gates: make(chan struct{}, MaxGates)}
+		tmp: filepath.Join(o.Home, fsx.TmpDir), running: map[string]string{}, claimed: map[string]bool{}, requested: map[string]bool{}, warned: map[string]string{}, kick: make(chan struct{}, 1), gates: make(chan struct{}, MaxGates)}
 	s.out = filepath.Join(s.state, "jobs")
 	s.runCtx, s.cancelRuns = context.WithCancel(context.Background())
 	return s
@@ -187,7 +189,25 @@ func (s *Scheduler) isRunning(id string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	_, ok := s.running[id]
-	return ok
+	return ok || s.claimed[id]
+}
+
+// claim marks a job running before anything of its run starts: a job never runs twice at once
+// (single-flight); false when it already runs.
+func (s *Scheduler) claim(id string) bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.claimed[id] {
+		return false
+	}
+	s.claimed[id] = true
+	return true
+}
+
+func (s *Scheduler) unclaim(id string) {
+	s.runMu.Lock()
+	delete(s.claimed, id)
+	s.runMu.Unlock()
 }
 
 // request asks for another run of a running job once this one ends (the tool's run); false when
@@ -196,7 +216,7 @@ func (s *Scheduler) request(id string) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	_, ok := s.running[id]
-	if ok {
+	if ok = ok || s.claimed[id]; ok {
 		s.requested[id] = true
 	}
 	return ok
@@ -504,9 +524,15 @@ func (s *Scheduler) start(id string, now time.Time) {
 		}
 		return false, nil
 	})
-	if job == nil {
+	if job == nil || !s.claim(id) {
 		return
 	}
+	claimed := true
+	defer func() {
+		if claimed {
+			s.unclaim(id)
+		}
+	}()
 	session := fmt.Sprintf("cron-%s-%s", safeID(id), now.UTC().Format("20060102T150405"))
 	agent, gated := !job.Bool("no_agent"), hasGate(job)
 	if agent && s.o.Turns == nil {
@@ -546,17 +572,19 @@ func (s *Scheduler) start(id string, now time.Time) {
 	s.running[id] = job.Name()
 	s.lastStart = now
 	s.runMu.Unlock()
+	claimed = false // the run goroutine lets it go
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		defer func() {
 			s.runMu.Lock()
 			delete(s.running, id)
+			delete(s.claimed, id)
 			s.runMu.Unlock()
 		}()
 		// A job with a script (a monitor, a pre-run script, a script-only job) runs it under
 		// the gates' own cap, holding no turn slot: a script may take an hour, and the agent's
-		// two turns are for turns. Its turn slot is taken once the gate says the agent runs
+		// turn slots are for turns. Its turn slot is taken once the gate says the agent runs
 		// (execute).
 		release := func() {}
 		if gated {
@@ -575,6 +603,9 @@ func (s *Scheduler) start(id string, now time.Time) {
 			slot.Release()
 		}
 		s.finish(s.runCtx, job, o)
+		if o.status == statusBusy {
+			return // no turn was free: the next tick tries again (a kick would rerun its scripts at once)
+		}
 		// a slot is free again: a job the busy agent left due starts now, not a tick later
 		select {
 		case s.kick <- struct{}{}:
@@ -861,7 +892,9 @@ func (s *Scheduler) monitorGate(j *Job, out string) (string, bool, func()) {
 func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	id, now := j.ID(), s.o.Now()
 	if o.status == statusBusy {
-		// the gate ran but no turn was free: due again as it was, nothing recorded
+		// the gate ran but no turn was free: due again as it was, nothing recorded (a run asked
+		// for meanwhile is that same due run)
+		s.takeRequest(id)
 		s.warnOnce("busy:"+id, fmt.Sprintf("job %s: its gate wants a turn but none is free (%s); next tick runs it again", id, o.err))
 		if err := s.mutate(func(f *File) (bool, error) {
 			if live := f.Find(id); live != nil {

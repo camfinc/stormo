@@ -166,6 +166,12 @@ func TestServeSlack(t *testing.T) {
 		t.Errorf("activity %+v", act)
 	}
 	jobs := jobsIn(t, h)
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); jobs = jobsIn(t, h) {
+		if jobs["agentjob001"]["last_status"] != nil && jobs["silentjob01"]["last_status"] != nil {
+			break // the jobs' lane runs one at a time
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	for _, id := range []string{"homejob0001", "originjob01"} {
 		if jobs[id]["last_status"] != "ok" || jobs[id]["last_delivery_error"] != nil {
 			t.Errorf("%s: %v / %v", id, jobs[id]["last_status"], jobs[id]["last_delivery_error"])

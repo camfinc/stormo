@@ -3,7 +3,8 @@
 // The adapter is the contract: status codes, bodies and lineage behaviour follow it exactly.
 //
 // Every route but /health needs "Authorization: Bearer <API_SERVER_KEY>". Turns are limited to one
-// per conversation (409 when it is busy) and two in all (429), so the adapter's ErrBusy covers both.
+// per conversation (409 when it is busy) and two chat turns in all (429), so the adapter's ErrBusy
+// covers both; scheduled runs have their own lane (ReserveJob, one turn by default).
 package api
 
 import (
@@ -39,6 +40,7 @@ const MinKey = 16
 
 const (
 	defaultMaxTurns = 2
+	defaultJobTurns = 1
 	defaultGrace    = 3 * time.Second
 	maxBody         = 4 << 20
 	defaultList     = 50
@@ -61,6 +63,7 @@ type Server struct {
 	agent    Turns
 	idem     *idemStore
 	maxTurns int
+	maxJobs  int
 	log      func(string)
 	redact   func(string) string
 	now      func() time.Time
@@ -75,7 +78,8 @@ type Server struct {
 	mu         sync.Mutex
 	closing    bool            // Shutdown has begun: no turn starts
 	busy       map[string]bool // conversation roots with a running turn
-	active     int
+	active     int             // turns held, both lanes
+	jobTurns   int             // of which scheduled runs' (their own lane)
 	lastActive time.Time
 	lastSource string
 }
@@ -89,8 +93,11 @@ type Options struct {
 	// StateDir holds idem.json; TmpDir is where its temporary file goes (the home's fsx.TmpDir,
 	// which no snapshot rule claims; "": beside it).
 	StateDir, TmpDir string
-	// MaxTurns is the global cap (default 2).
+	// MaxTurns is the chat turns' cap (default 2): the API's, Slack's.
 	MaxTurns int
+	// JobTurns is the scheduled runs' own lane (ReserveJob, default 1), beside the chat's, so
+	// neither starves the other.
+	JobTurns int
 	// StopGrace is how long Shutdown waits for turns it cancelled to stop (default 3 s).
 	StopGrace time.Duration
 	Log       func(string)
@@ -109,10 +116,13 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, log: o.Log, redact: o.Redact,
+	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
 		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
+	}
+	if s.maxJobs <= 0 {
+		s.maxJobs = defaultJobTurns
 	}
 	if s.grace <= 0 {
 		s.grace = defaultGrace
@@ -197,10 +207,10 @@ func intParam(r *http.Request, name string, def, max int) int {
 
 // ---- turns -----------------------------------------------------------------------------------
 
-// Acquire reserves a turn on root's conversation; release must follow. It counts the turn in wg
-// under mu, after checking closing, so no turn starts once Shutdown has begun and no wg.Add
-// races Shutdown's wg.Wait.
-func (s *Server) acquire(root, source string) error {
+// Acquire reserves a turn on root's conversation in the chat lane or the jobs' (job); release
+// must follow. It counts the turn in wg under mu, after checking closing, so no turn starts once
+// Shutdown has begun and no wg.Add races Shutdown's wg.Wait.
+func (s *Server) acquire(root, source string, job bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
@@ -209,21 +219,27 @@ func (s *Server) acquire(root, source string) error {
 	if s.busy[root] {
 		return ErrSessionBusy
 	}
-	if s.active >= s.maxTurns {
+	if job && s.jobTurns >= s.maxJobs || !job && s.active-s.jobTurns >= s.maxTurns {
 		return ErrBusy
 	}
 	s.busy[root] = true
 	s.active++
+	if job {
+		s.jobTurns++
+	}
 	s.lastActive, s.lastSource = s.now(), source
 	s.wg.Add(1)
 	return nil
 }
 
-func (s *Server) release(root string) {
+func (s *Server) release(root string, job bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.busy, root)
 	s.active--
+	if job {
+		s.jobTurns--
+	}
 	s.lastActive = s.now()
 	s.wg.Done()
 }
@@ -243,18 +259,27 @@ func (s *Server) Turn(ctx context.Context, session, input string, create wire.Se
 // from the moment it is taken until Release, whether or not a turn runs in it.
 type Reservation struct {
 	s       *Server
+	job     bool // the jobs' lane
 	root    string
 	session string
 	create  wire.Session
 	once    sync.Once
 }
 
-// Reserve takes a turn slot for session's conversation without running anything yet (a
-// scheduled job holds it while it builds its prompt; one with scripts reserves only after
-// they said the agent runs). A session that does not exist is created (with create's title
-// and source) only when the turn runs. Errors as for a turn: ErrSessionBusy, ErrBusy,
-// ErrClosing.
+// Reserve takes a chat turn slot (the API's, Slack's) for session's conversation without running
+// anything yet. A session that does not exist is created (with create's title and source) only
+// when the turn runs. Errors as for a turn: ErrSessionBusy, ErrBusy, ErrClosing.
 func (s *Server) Reserve(session string, create wire.Session) (*Reservation, error) {
+	return s.reserve(session, create, false)
+}
+
+// ReserveJob is Reserve in the scheduled runs' own lane (JobTurns): a scheduled job holds it
+// while it builds its prompt (one with scripts reserves only after they said the agent runs).
+func (s *Server) ReserveJob(session string, create wire.Session) (*Reservation, error) {
+	return s.reserve(session, create, true)
+}
+
+func (s *Server) reserve(session string, create wire.Session, job bool) (*Reservation, error) {
 	if !sessions.ValidID(session) {
 		return nil, sessions.ErrBadID
 	}
@@ -264,10 +289,10 @@ func (s *Server) Reserve(session string, create wire.Session) (*Reservation, err
 		h, _ := s.store.Get(root)
 		source = h.Source
 	}
-	if err := s.acquire(root, source); err != nil {
+	if err := s.acquire(root, source, job); err != nil {
 		return nil, err
 	}
-	return &Reservation{s: s, root: root, session: session, create: create}, nil
+	return &Reservation{s: s, job: job, root: root, session: session, create: create}, nil
 }
 
 // Turn runs one turn in the slot (creating the session if needed). It is cancelled with ctx,
@@ -288,7 +313,7 @@ func (r *Reservation) Turn(ctx context.Context, input string, opts loop.Options)
 }
 
 // Release gives the slot back; calls after the first do nothing.
-func (r *Reservation) Release() { r.once.Do(func() { r.s.release(r.root) }) }
+func (r *Reservation) Release() { r.once.Do(func() { r.s.release(r.root, r.job) }) }
 
 func (s *Server) run(ctx context.Context, session, input string, opts loop.Options) (*loop.Result, error) {
 	started := time.Now()
@@ -420,7 +445,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h, _ := s.store.Get(root)
-	if err := s.acquire(root, h.Source); err != nil {
+	if err := s.acquire(root, h.Source, false); err != nil {
 		writeError(w, busyStatus(err), err.Error())
 		return
 	}
@@ -432,7 +457,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	go func() {
-		defer s.release(root)
+		defer s.release(root, false)
 		_, _ = s.run(s.base, session, req.Input, loop.Options{})
 	}()
 	writeJSON(w, http.StatusAccepted, accepted)
@@ -502,12 +527,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h, _ := s.store.Get(root)
-	if err := s.acquire(root, h.Source); err != nil {
+	if err := s.acquire(root, h.Source, false); err != nil {
 		writeError(w, busyStatus(err), err.Error())
 		return
 	}
 	res, err := func() (*loop.Result, error) {
-		defer s.release(root)
+		defer s.release(root, false)
 		return s.run(s.base, id, req.Message, loop.Options{})
 	}()
 	if err != nil {
