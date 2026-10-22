@@ -17,7 +17,7 @@ var toolsets = map[string][]string{
 	"terminal":  {"terminal"},
 	"file":      {"read_file", "write_file", "patch", "search_files"},
 	"skills":    {"skills_list", "skill_view", "skill_manage"},
-	"memory":    {"memory"},
+	"memory":    {"memory", "memory_search"},
 	"cronjob":   {CronJobTool},
 	"messaging": {messaging.SendTool},
 	"debugging": {"terminal", "read_file", "write_file", "patch", "search_files"},
@@ -28,6 +28,11 @@ var toolsets = map[string][]string{
 // conversation to stay out of).
 var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool}
 
+// onlyByName are tools a scheduled run gets only when its list names them: memory_manage
+// changes the memory archive, and a job's fixed prompt has no new knowledge to file unless its
+// author says so (the memory tool, Hermes', stays in the default set).
+var onlyByName = []string{"memory_manage"}
+
 // noTools is a tool list that names no tool: loop.Options.Tools empty means every tool.
 var noTools = []string{"(no tools)"}
 
@@ -36,6 +41,7 @@ var noTools = []string{"(no tools)"}
 // Hermes layers its MCP servers onto a job's list; never the tools a scheduled run is denied.
 func ExpandToolsets(enabled, all []string) []string {
 	want := map[string]bool{}
+	named := map[string]bool{}
 	if len(enabled) == 0 {
 		for _, t := range all {
 			want[t] = true
@@ -57,6 +63,7 @@ func ExpandToolsets(enabled, all []string) []string {
 				}
 			default:
 				want[name] = true
+				named[name] = true
 			}
 		}
 		if mcp {
@@ -69,7 +76,7 @@ func ExpandToolsets(enabled, all []string) []string {
 	}
 	out := []string{}
 	for _, t := range all {
-		if want[t] && !slices.Contains(neverInCron, t) {
+		if want[t] && !slices.Contains(neverInCron, t) && (named[t] || !slices.Contains(onlyByName, t)) {
 			out = append(out, t)
 		}
 	}

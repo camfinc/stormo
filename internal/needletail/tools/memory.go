@@ -5,9 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
 )
+
+// The memory tools (docs/needletail.md §4.5, §4.6): memory (Hermes' hot entries, unchanged), and
+// memory_search / memory_manage on the records by id.
+
+// Memory tool names.
+const (
+	MemorySearchTool = "memory_search"
+	MemoryManageTool = "memory_manage"
+)
+
+func memoryOf(env *Env) (*memory.Store, error) {
+	if env == nil || env.Memory == nil {
+		return nil, errors.New("memory is not available")
+	}
+	return env.Memory, nil
+}
+
+// memorySource is a record's src for a call in session.
+func memorySource(env *Env) string {
+	if env == nil || env.Session == "" {
+		return "chat"
+	}
+	return "chat:" + env.Session
+}
 
 func memoryTool() Tool {
 	return Tool{
@@ -16,7 +41,8 @@ func memoryTool() Tool {
 			"(facts, conventions, lessons); target \"user\" is about the people you work with (preferences, roles). " +
 			"Both are shown to you at the start of every conversation. Keep entries short and specific; each file " +
 			"has a size budget, so replace or remove stale entries rather than piling up new ones. " +
-			"add needs content; replace needs old_text (a unique part of the entry) and content; remove needs old_text.",
+			"add needs content; replace needs old_text (a unique part of the entry) and content; remove needs old_text. " +
+			"For more than fits, use your archive: memory_search and memory_manage.",
 		Schema: schema(`{"type":"object","properties":{
 "action":{"type":"string","enum":["add","replace","remove"]},
 "target":{"type":"string","enum":["memory","user"]},
@@ -33,18 +59,21 @@ func memoryTool() Tool {
 			if err := decode(raw, &a); err != nil {
 				return nil, err
 			}
-			if env.Memory == nil {
-				return nil, errors.New("memory is not available")
+			mem, err := memoryOf(env)
+			if err != nil {
+				return nil, err
+			}
+			if err := noSecrets(env, a.Content); err != nil {
+				return nil, err
 			}
 			var u memory.Usage
-			var err error
 			switch a.Action {
 			case "add":
-				u, err = env.Memory.Add(a.Target, a.Content)
+				u, err = mem.AddAs(memorySource(env), a.Target, a.Content)
 			case "replace":
-				u, err = env.Memory.Replace(a.Target, a.OldText, a.Content)
+				u, err = mem.Replace(a.Target, a.OldText, a.Content)
 			case "remove":
-				u, err = env.Memory.Remove(a.Target, a.OldText)
+				u, err = mem.Remove(a.Target, a.OldText)
 			default:
 				return nil, errors.New(`action must be "add", "replace" or "remove"`)
 			}
@@ -61,4 +90,189 @@ func memoryTool() Tool {
 			return map[string]any{"success": true, "target": u.Target, "entries": u.Entries, "usage": u.String()}, nil
 		},
 	}
+}
+
+func memorySearchTool() Tool {
+	return Tool{
+		Name: MemorySearchTool,
+		Description: "Search your memory archive (every memory you saved, hot or not) by keyword. Put synonyms and both " +
+			"Spanish and English words in query (\"cotización quote precio price\"); \"a phrase\" must appear as written, " +
+			"word* is a prefix. Empty query: newest first, with the filters. ids fetches records whole. " +
+			"Results: id, kind, tags, hot (its place in the always-shown memory, 0 = archive), imp, dates, pii, text (long ones cut).",
+		Schema: schema(`{"type":"object","properties":{
+"query":{"type":"string","description":"Words to look for; include synonyms and both Spanish and English. \"…\" for a phrase, word* for a prefix. Empty: newest first."},
+"ids":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"Fetch these records in full."},
+"kind":{"type":"string","enum":["fact","preference","procedure","episode","user"]},
+"tags":{"type":"array","items":{"type":"string"},"maxItems":8,"description":"Records with all these tags."},
+"scope":{"type":"string","enum":["all","hot","archive"],"description":"Default all."},
+"match":{"type":"string","enum":["any","all"],"description":"any (default) or all of the words."},
+"since":{"type":"string","description":"RFC 3339 or YYYY-MM-DD: updated after."},
+"include_expired":{"type":"boolean","description":"Also records past their expiry date."},
+"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Default 8."}}}`),
+		Run: func(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
+			var a struct {
+				Query          string   `json:"query"`
+				IDs            []string `json:"ids"`
+				Kind           string   `json:"kind"`
+				Tags           []string `json:"tags"`
+				Scope          string   `json:"scope"`
+				Match          string   `json:"match"`
+				Since          string   `json:"since"`
+				IncludeExpired bool     `json:"include_expired"`
+				Limit          int      `json:"limit"`
+			}
+			if err := decode(raw, &a); err != nil {
+				return nil, err
+			}
+			mem, err := memoryOf(env)
+			if err != nil {
+				return nil, err
+			}
+			if len(a.IDs) > memory.MaxLimit {
+				return nil, fmt.Errorf("at most %d ids", memory.MaxLimit)
+			}
+			return mem.Search(memory.Query{Text: a.Query, IDs: a.IDs, Kind: a.Kind, Tags: a.Tags, Scope: a.Scope, Match: a.Match,
+				Since: a.Since, IncludeExpired: a.IncludeExpired, Limit: a.Limit})
+		},
+	}
+}
+
+func memoryManageTool() Tool {
+	return Tool{
+		Name: MemoryManageTool,
+		Description: "Change your memory archive by id. save: a new record (text; kind fact, preference, procedure, episode or user " +
+			"(about a person); tags; importance 1-5; expires YYYY-MM-DD for time-bound facts; hot: true puts it in the always-shown " +
+			"memory, budget permitting). save answers exists (the same text is there) or similar (close records, nothing saved: update " +
+			"one of them, or save again with force: true). update (id and the fields to change; expires \"\" clears it), delete (id), " +
+			"pin (id: into the always-shown memory) and unpin (id: back to the archive). Never save secrets or credentials.",
+		Schema: schema(`{"type":"object","properties":{
+"action":{"type":"string","enum":["save","update","delete","pin","unpin"]},
+"id":{"type":"string","description":"update, delete, pin, unpin: the record's id (memory_search finds it)."},
+"text":{"type":"string","description":"save, update: the memory, one self-contained note (at most 1000 characters)."},
+"kind":{"type":"string","enum":["fact","preference","procedure","episode","user"]},
+"tags":{"type":"array","items":{"type":"string"},"maxItems":8,"description":"Short lowercase labels (a-z, 0-9, _ and -)."},
+"importance":{"type":"integer","minimum":1,"maximum":5},
+"expires":{"type":"string","description":"YYYY-MM-DD; \"\" clears (update)."},
+"hot":{"type":"boolean","description":"save: straight into the always-shown memory (budget permitting)."},
+"force":{"type":"boolean","description":"save: even though similar records exist."}},
+"required":["action"]}`),
+		Run: runMemoryManage,
+	}
+}
+
+func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
+	var a struct {
+		Action     string    `json:"action"`
+		ID         string    `json:"id"`
+		Text       *string   `json:"text"`
+		Kind       *string   `json:"kind"`
+		Tags       *[]string `json:"tags"`
+		Importance *int      `json:"importance"`
+		Expires    *string   `json:"expires"`
+		Hot        bool      `json:"hot"`
+		Force      bool      `json:"force"`
+	}
+	if err := decode(raw, &a); err != nil {
+		return nil, err
+	}
+	mem, err := memoryOf(env)
+	if err != nil {
+		return nil, err
+	}
+	texts := []string{}
+	if a.Text != nil {
+		texts = append(texts, *a.Text)
+	}
+	if a.Tags != nil {
+		texts = append(texts, strings.Join(*a.Tags, " "))
+	}
+	if err := noSecrets(env, texts...); err != nil {
+		return nil, err
+	}
+	id := strings.TrimSpace(a.ID)
+	needID := func() error {
+		if id == "" {
+			return fmt.Errorf("%s needs id (memory_search finds it)", a.Action)
+		}
+		return nil
+	}
+	switch a.Action {
+	case "save":
+		if a.Text == nil {
+			return nil, errors.New("save needs text")
+		}
+		o := memory.SaveOptions{Text: *a.Text, Hot: a.Hot, Force: a.Force, Src: memorySource(env)}
+		if a.Kind != nil {
+			o.Kind = *a.Kind
+		}
+		if a.Tags != nil {
+			o.Tags = *a.Tags
+		}
+		if a.Importance != nil {
+			o.Importance = *a.Importance
+		}
+		if a.Expires != nil {
+			o.Expires = *a.Expires
+		}
+		res, err := mem.Save(o)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"status": res.Status}
+		switch res.Status {
+		case memory.StatusCreated:
+			out["id"] = res.ID
+			if res.Hot > 0 {
+				out["hot"], out["usage"] = res.Hot, res.Usage
+			}
+			if len(res.PII) > 0 {
+				out["pii"] = res.PII
+				if res.Hot > 0 {
+					out["note"] = "it holds personal data: the review flags it and it stays this agent's alone"
+				}
+			}
+		case memory.StatusExists:
+			out["id"], out["hot"] = res.ID, res.Hot
+			out["note"] = "the same memory is already saved; update it to change it"
+		case memory.StatusSimilar:
+			out["similar"] = res.Similar
+			out["note"] = "nothing saved: update one of these with what is new (a merge), or save again with force: true if it is different"
+		}
+		return out, nil
+	case "update":
+		if err := needID(); err != nil {
+			return nil, err
+		}
+		v, err := mem.Update(id, memory.Change{Text: a.Text, Kind: a.Kind, Tags: a.Tags, Importance: a.Importance, Expires: a.Expires}, false)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"success": true, "record": v}, nil
+	case "delete":
+		if err := needID(); err != nil {
+			return nil, err
+		}
+		if err := mem.Delete(id, false); err != nil {
+			return nil, err
+		}
+		return map[string]any{"success": true, "deleted": id}, nil
+	case "pin", "unpin":
+		if err := needID(); err != nil {
+			return nil, err
+		}
+		pin := mem.Pin
+		if a.Action == "unpin" {
+			pin = mem.Unpin
+		}
+		v, u, err := pin(id)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"success": true, "id": v.ID, "hot": v.Hot, "target": u.Target, "usage": u.String()}
+		if a.Action == "pin" && len(v.PII) > 0 {
+			out["note"] = "it holds personal data: the review flags it and it stays this agent's alone"
+		}
+		return out, nil
+	}
+	return nil, errors.New("action must be save, update, delete, pin or unpin")
 }

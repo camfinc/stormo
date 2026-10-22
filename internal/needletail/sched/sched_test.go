@@ -763,3 +763,22 @@ func TestReviewReadsTheRuntimesFile(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// memory_manage reaches a scheduled run only when its list names it; memory_search comes with the
+// memory toolset and the default set, as memory does.
+func TestMemoryToolsets(t *testing.T) {
+	all := []string{"cronjob_manage", "mcp_core_fs_ls", "memory", "memory_manage", "memory_search", "terminal"}
+	for _, c := range []struct {
+		enabled []string
+		want    []string
+	}{
+		{nil, []string{"mcp_core_fs_ls", "memory", "memory_search", "terminal"}},
+		{[]string{"all"}, []string{"mcp_core_fs_ls", "memory", "memory_search", "terminal"}},
+		{[]string{"memory"}, []string{"mcp_core_fs_ls", "memory", "memory_search"}},
+		{[]string{"memory", "memory_manage", "no_mcp"}, []string{"memory", "memory_manage", "memory_search"}},
+	} {
+		if got := ExpandToolsets(c.enabled, all); !slices.Equal(got, c.want) {
+			t.Errorf("%v: %v, want %v", c.enabled, got, c.want)
+		}
+	}
+}

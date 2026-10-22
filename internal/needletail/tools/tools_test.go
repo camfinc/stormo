@@ -186,11 +186,78 @@ func TestMemoryAndErrors(t *testing.T) {
 	if out, failed := panicky.Call(context.Background(), env, "boom", ""); !failed || !strings.Contains(out, "crashed") {
 		t.Errorf("panic = %s", out)
 	}
-	if names := r.Names(); !slices.Equal(names, []string{"memory", "patch", "read_file", "search_files", "skill_manage", "skill_view", "skills_list", "terminal", "write_file"}) {
+	if names := r.Names(); !slices.Equal(names, []string{"memory", "memory_manage", "memory_search", "patch", "read_file", "search_files", "skill_manage", "skill_view", "skills_list", "terminal", "write_file"}) {
 		t.Errorf("names = %v", names)
 	}
 	if f := r.Filter([]string{"terminal", "ghost"}); len(f) != 1 || f[0].Name != "terminal" {
 		t.Errorf("filter = %v", f)
+	}
+}
+
+// The archive tools: save (with its dedupe answers), search, fetch by id, pin within the budget,
+// update and delete; secret values the runtime knows are refused in every memory tool.
+func TestMemoryTools(t *testing.T) {
+	r, env := setup(t)
+	env.Session = "s1"
+	env.Memory.Limits["memory"] = 2200
+	m, failed := call(t, r, env, "memory_manage", map[string]any{"action": "save", "text": "Ana prefiere camarotes con balcón en cruceros.",
+		"kind": "preference", "tags": []string{"Cruceros", "ana"}, "importance": 4})
+	id, _ := m["id"].(string)
+	if failed || m["status"] != "created" || !memory.ValidID(id) {
+		t.Fatalf("save = %v", m)
+	}
+	if m, _ := call(t, r, env, "memory_manage", map[string]any{"action": "save", "text": "ana prefiere camarotes con balcón en  cruceros.", "kind": "preference"}); m["status"] != "exists" || m["id"] != id {
+		t.Errorf("exists = %v", m)
+	}
+	m, _ = call(t, r, env, "memory_manage", map[string]any{"action": "save", "text": "Ana prefiere camarotes con balcón."})
+	if sim, _ := m["similar"].([]any); m["status"] != "similar" || len(sim) != 1 || !strings.Contains(m["note"].(string), "nothing saved") {
+		t.Errorf("similar = %v", m)
+	}
+	m, _ = call(t, r, env, "memory_search", map[string]any{"query": "balcon cabin camarote*", "tags": []string{"cruceros"}})
+	res, _ := m["results"].([]any)
+	if m["total"] != float64(1) || len(res) != 1 || res[0].(map[string]any)["id"] != id || res[0].(map[string]any)["src"] != "chat:s1" {
+		t.Errorf("search = %v", m)
+	}
+	if m, _ := call(t, r, env, "memory_search", map[string]any{"ids": []string{id}}); m["total"] != float64(1) {
+		t.Errorf("ids = %v", m)
+	}
+	m, failed = call(t, r, env, "memory_manage", map[string]any{"action": "pin", "id": id})
+	if failed || m["hot"] != float64(1) || m["target"] != "memory" {
+		t.Errorf("pin = %v", m)
+	}
+	if body, _ := os.ReadFile(filepath.Join(env.Home, "memories", "MEMORY.md")); string(body) != "Ana prefiere camarotes con balcón en cruceros." {
+		t.Errorf("MEMORY.md = %q", body)
+	}
+	m, failed = call(t, r, env, "memory_manage", map[string]any{"action": "update", "id": id, "kind": "user", "expires": "2027-01-31"})
+	if rec, _ := m["record"].(map[string]any); failed || rec["kind"] != "user" || rec["expires"] != "2027-01-31" {
+		t.Errorf("update = %v", m)
+	}
+	if body, _ := os.ReadFile(filepath.Join(env.Home, "memories", "USER.md")); string(body) != "Ana prefiere camarotes con balcón en cruceros." {
+		t.Errorf("USER.md = %q", body)
+	}
+	if m, failed := call(t, r, env, "memory_manage", map[string]any{"action": "delete", "id": id}); failed || m["deleted"] != id {
+		t.Errorf("delete = %v", m)
+	}
+	if m, failed := call(t, r, env, "memory_manage", map[string]any{"action": "pin"}); !failed || !strings.Contains(m["error"].(string), "needs id") {
+		t.Errorf("no id = %v", m)
+	}
+	// secrets: refused, and never echoed
+	for _, c := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"memory", map[string]any{"action": "add", "target": "memory", "content": "the CRM token is acme_abcdefgh123"}},
+		{"memory_manage", map[string]any{"action": "save", "text": "the CRM token is acme_abcdefgh123"}},
+		{"memory_manage", map[string]any{"action": "save", "text": "a note", "tags": []string{"acme_abcdefgh123"}}},
+	} {
+		b, _ := json.Marshal(c.args)
+		out, failed := r.Call(context.Background(), env, c.tool, string(b))
+		if !failed || !strings.Contains(out, "secret value") || strings.Contains(out, "acme_abcdefgh123") {
+			t.Errorf("%s %v = %s", c.tool, c.args, out)
+		}
+	}
+	if body, _ := os.ReadFile(filepath.Join(env.Home, "memories", "RECORDS.md")); strings.Contains(string(body), "acme_abcdefgh123") {
+		t.Error("a secret reached RECORDS.md")
 	}
 }
 

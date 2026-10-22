@@ -152,7 +152,13 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	mem := &memory.Store{Home: cfg.Home, Limits: map[string]int{memory.TargetMemory: cfg.Memory.MemoryCharLimit, memory.TargetUser: cfg.Memory.UserCharLimit}}
+	// The memory (§4.6): RECORDS.md read and reconciled with the hot files rehydrate wrote, before
+	// the first turn. Secret values are refused in it, as in skills.
+	mem := &memory.Store{Home: cfg.Home, Limits: map[string]int{memory.TargetMemory: cfg.Memory.MemoryCharLimit, memory.TargetUser: cfg.Memory.UserCharLimit},
+		Check: tools.SecretCheck(red.Redact), Log: logf}
+	if err := mem.Open(); err != nil {
+		logf(fmt.Sprintf("memory: %v", err))
+	}
 	env := tools.Env{
 		Home:           cfg.Home,
 		Sandbox:        sandbox.Sandbox{Home: cfg.Home, Shared: cfg.SharedRoots()},
@@ -486,6 +492,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		gw.Shutdown(gctx) // the drained turns' replies are posted, then the socket closes
 		cancel()
 	}
+	rt.agent.Env.Memory.Flush() // the memory's use counts
 	return 0
 }
 
@@ -529,6 +536,7 @@ func oneshot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		_ = rt.store.End(res.Session, "oneshot")
 	}
+	rt.agent.Env.Memory.Flush()
 	return oneshotResult(stdout, stderr, *format, res, err)
 }
 

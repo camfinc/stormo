@@ -137,7 +137,7 @@ func (r *Registry) Taken(group, name string) bool {
 // Builtins are the built-in tools.
 func Builtins() []Tool {
 	return []Tool{terminalTool(), readFileTool(), writeFileTool(), patchTool(), searchFilesTool(), memoryTool(),
-		skillsListTool(), skillViewTool(), skillManageTool()}
+		memorySearchTool(), memoryManageTool(), skillsListTool(), skillViewTool(), skillManageTool()}
 }
 
 // Names is the tools' names, sorted.
