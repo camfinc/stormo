@@ -430,7 +430,10 @@ func (l *Library) Delete(name string) (Skill, error) {
 		_ = os.Remove(gone)
 		return Skill{}, err
 	}
-	_ = fsx.RemoveAll(gone)
+	// Removed by descriptor, never followed (os.RemoveAll); what resists (a directory the agent's
+	// commands made read-only, or theirs under the uid split) stays in the temp dir as it is for
+	// the boot sweep: a path-based chmod here could be redirected by a symlink a command races in.
+	_ = os.RemoveAll(gone)
 	l.deleted(s)
 	return s, nil
 }

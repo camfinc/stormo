@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/camfinc/stormo/internal/needletail/fsx"
 )
 
 // A skill's front matter can never lock the agent out: a huge description is cut in the index
@@ -237,6 +239,7 @@ func TestDeleteRefusesBootedSkill(t *testing.T) {
 
 // Delete takes the skill out of skills/ in one rename before removing its files, so a nap taken
 // meanwhile never sees half a skill, and a skill whose files resist removal is still gone.
+// What resists stays in the temp dir untouched until the boot sweep.
 func TestDeleteIsOneStep(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory modes")
@@ -266,7 +269,26 @@ func TestDeleteIsOneStep(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(l.Home, "skills", "stuck")); !os.IsNotExist(err) {
 		t.Errorf("skills/stuck is still there: %v", err)
 	}
+	// what resists removal stays in the temp dir as it is: never chmod-ed by path, which a
+	// symlink raced in by the agent's commands would redirect (docs/needletail.md §7); the boot
+	// sweep removes it by descriptor
+	var left []string
+	_ = filepath.WalkDir(filepath.Join(l.Home, TmpDir), func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() && d.Name() == "data" {
+			left = append(left, p)
+			if info, err := os.Lstat(p); err != nil || info.Mode().Perm() != 0o555 {
+				t.Errorf("%s was changed: %v %v", p, info.Mode(), err)
+			}
+		}
+		return nil
+	})
+	if len(left) != 1 {
+		t.Errorf("the locked directory is not left for the boot sweep: %v", left)
+	}
+	if err := fsx.Sweep(l.Home); err != nil {
+		t.Errorf("sweep: %v", err)
+	}
 	if entries, _ := os.ReadDir(filepath.Join(l.Home, TmpDir)); len(entries) != 0 {
-		t.Errorf("left in the temp dir: %v", entries)
+		t.Errorf("left in the temp dir after the sweep: %v", entries)
 	}
 }
