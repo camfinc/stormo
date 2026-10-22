@@ -118,33 +118,50 @@ func (rt *Runtime) CheckTool(ctx context.Context, rel string, body []byte) error
 	return nil
 }
 
-// compiles checks src once per content (tools are discovered every turn).
+// compiles checks src once per content (tools are discovered every turn). A syntax error is kept
+// as long as the content is; a failure of the engine itself (the check timed out, say) is kept
+// with its reason for checkFailureTTL, so a source that makes the check fail is not checked again
+// every turn, and a transient failure still clears. A check the caller cancelled is not kept.
 func (rt *Runtime) compiles(ctx context.Context, src []byte) error {
 	sum := sha256.Sum256(src)
+	now := time.Now()
 	checked.mu.Lock()
-	err, ok := checked.m[sum]
+	c, ok := checked.m[sum]
 	checked.mu.Unlock()
-	if ok {
-		return err
+	if ok && (c.until.IsZero() || now.Before(c.until)) {
+		return c.err
 	}
-	err = rt.Runner.Check(ctx, src)
+	err := rt.Runner.Check(ctx, src)
 	var se *SyntaxError
+	entry := checkResult{err: err}
 	if err != nil && !errors.As(err, &se) {
-		return err // the engine failed: not cached
+		if ctx.Err() != nil {
+			return err // the caller gave up: not kept
+		}
+		entry = checkResult{err: fmt.Errorf("the compile check failed (not retried for %s unless the file changes): %w", checkFailureTTL, err),
+			until: now.Add(checkFailureTTL)}
 	}
 	checked.mu.Lock()
 	if len(checked.m) > 1024 {
-		checked.m = map[[32]byte]error{}
+		checked.m = map[[32]byte]checkResult{}
 	}
-	checked.m[sum] = err
+	checked.m[sum] = entry
 	checked.mu.Unlock()
-	return err
+	return entry.err
+}
+
+// checkFailureTTL is how long a failure of the engine to check a source is kept.
+const checkFailureTTL = 10 * time.Minute
+
+type checkResult struct {
+	err   error
+	until time.Time // zero: kept while the content is
 }
 
 var checked = struct {
 	mu sync.Mutex
-	m  map[[32]byte]error
-}{m: map[[32]byte]error{}}
+	m  map[[32]byte]checkResult
+}{m: map[[32]byte]checkResult{}}
 
 // Discover is every .luau file in the home's skills' tools/ directories, in a stable order.
 // Symlinks are skipped; a tool whose registered name another one (or a built-in) has is invalid.

@@ -341,7 +341,7 @@ Rejected:
 
 Fallback, only if profiling shows CPU-bound use: a cgo wrapper over the vendored C API behind the same `luau.Runner` interface.
 
-**The wasm artifact.** `internal/needletail/luau/wasm/build.sh` pins the wasi-sdk version (and each host's asset sha256 from the release), the Luau tag, its tarball's sha256 and its commit; it downloads them into a cache, builds Luau's Common, Ast, Bytecode, Compiler and VM with `src/shim.cpp`, and links `luau.wasm` (825 KB). The build is reproducible (the same bytes twice on one host; across host OSes it is expected, not yet shown). `luau.wasm` is committed and embedded with `go:embed`, and its sha256 is pinned by `TestModuleSHA256`.
+**The wasm artifact.** `internal/needletail/luau/wasm/build.sh` pins the wasi-sdk version (and each host's asset sha256 from the release), the Luau tag, its tarball's sha256 and its commit; it downloads them into a cache, builds Luau's Common, Ast, Bytecode, Compiler and VM with `src/shim.cpp`, and links `luau.wasm` (827 KB). The build is reproducible (the same bytes twice on one host; across host OSes it is expected, not yet shown). `luau.wasm` is committed and embedded with `go:embed`, and its sha256 is pinned by `TestModuleSHA256`.
 
 **Error handling (the M6 spike).** Luau keeps its C++ exceptions (`LUA_USE_LONGJMP=0`), compiled to the standard WebAssembly exception-handling proposal (exnref: `-fwasm-exceptions -mllvm -wasm-use-legacy-eh=false`, wasi-sdk's exception-enabled libc++ and `-lunwind`), which wazero runs behind `experimental.CoreFeaturesExceptionHandling`. Every error is raised and caught inside the module. **The engine is wazero's interpreter**: its compiler (v1.12.0, the newest release) faults when Luau's parser catches its own exception (the landing pad in `Parser::parse` hands a corrupted exception pointer to the personality routine, a `call_indirect` fault in `__dynamic_cast`; a plain C++ throw through 5000 frames works), while the interpreter runs every case correctly; `TestParserErrorIsCaught` keeps it. The interpreter is about ten times slower (`fib(25)` 0.5 s, a 3-million-iteration loop 2.2 s, an instance about 5 ms) and needs no executable memory. Moving to the compiler waits for a wazero fix.
 
@@ -422,7 +422,7 @@ return function(args) ... end
 - A call outside the effective caps fails with code `denied` and is audited.
 
 **Lifecycle**
-- `skill_manage` validates the header and runs `luau check` before saving.
+- `skill_manage` validates the header and runs `luau check` before saving. A check is kept per content: a syntax error as long as the file is unchanged, a failure of the engine itself (the check timed out) with its reason for 10 minutes, so a file that makes the check fail is not checked again every turn; a check the turn cancelled is not kept. The compiler's own failures say why (`the compiler ran out of memory`, or the exception's message).
 - At turn start, valid tools are registered as `<skill>__<name>` (the skill dir's last segment; at most 64 characters), replacing the last turn's set, so a tool written in one turn is offered from the next and a removed or broken one stops being offered. Invalid ones (and one whose name another tool has) are listed with their error in `skill_view` and never registered. Symlinked files are ignored.
 - Because tools live under `skills/[!.]*/**` (Learning), the dream's existing skill diff proposes them with no dream change. The proposal review should show the declared caps.
 

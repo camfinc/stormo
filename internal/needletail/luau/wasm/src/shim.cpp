@@ -30,6 +30,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <exception>
 #include <new>
 #include <string>
 
@@ -1054,6 +1055,16 @@ __attribute__((export_name("nt_check"))) int32_t nt_check(const char* src, int32
         free(bc);
         return bad;
     }
+    catch (const std::bad_alloc&)
+    {
+        g_out = "the compiler ran out of memory";
+        return 1;
+    }
+    catch (const std::exception& e)
+    {
+        g_out = std::string("the compiler failed: ") + e.what();
+        return 1;
+    }
     catch (...)
     {
         g_out = "the compiler failed";
@@ -1098,6 +1109,11 @@ __attribute__((export_name("nt_run"))) int32_t nt_run(const char* src, int32_t l
     catch (const std::bad_alloc&)
     {
         set_error("memory", "out of memory");
+        return 1;
+    }
+    catch (const std::exception& e)
+    {
+        set_error("runtime", std::string("the runtime failed: ") + e.what());
         return 1;
     }
     catch (...)

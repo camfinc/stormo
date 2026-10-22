@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -962,6 +963,57 @@ func TestToolTimeout(t *testing.T) {
 	write(t, filepath.Join(rt.Home, "scripts", "s.luau"), "--[[needletail\nformat: 1\n]]\nreturn 1\n")
 	if ok, out := rt.RunScript(context.Background(), filepath.Join(rt.Home, "scripts", "s.luau"), "s.luau"); !ok || rec.last() != 900*time.Second {
 		t.Errorf("script: %v %s, bound %s", ok, out, rec.last())
+	}
+}
+
+// failingChecker is a Runner whose compile check fails outside the source (an engine timeout).
+type failingChecker struct {
+	Runner
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *failingChecker) Check(ctx context.Context, src []byte) error {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return fmt.Errorf("luau: check: module closed with context deadline exceeded")
+}
+
+// A source the engine fails to check (a timeout) is not checked again every turn: the failure is
+// kept per content, with its reason, unless the caller gave up (a cancelled turn).
+func TestCheckFailureIsCached(t *testing.T) {
+	rt, _ := newRuntime(t)
+	fc := &failingChecker{Runner: rt.Runner}
+	rt.Runner = fc
+	src := []byte("return 'cached failure " + t.Name() + "'")
+	for range 3 {
+		if err := rt.compiles(context.Background(), src); err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+			t.Fatalf("compiles: %v", err)
+		}
+	}
+	if fc.calls != 1 {
+		t.Fatalf("checked %d times", fc.calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	other := []byte("return 'not cached " + t.Name() + "'")
+	_ = rt.compiles(ctx, other)
+	_ = rt.compiles(ctx, other)
+	if fc.calls != 3 {
+		t.Fatalf("a cancelled check was cached (%d checks)", fc.calls)
+	}
+}
+
+// The compiler's own failure says why (the shim reports the exception's what()).
+func TestCompilerFailureSaysWhy(t *testing.T) {
+	if raceEnabled {
+		t.Skip("a megabyte through the interpreter under the race detector")
+	}
+	err := engine(t).Check(context.Background(), []byte("local a = {"+strings.Repeat("1,", 500000)+"}"))
+	var se *SyntaxError
+	if !errors.As(err, &se) || se.Msg == "the compiler failed" || !strings.Contains(se.Msg, "compiler") {
+		t.Fatalf("check: %v", err)
 	}
 }
 
