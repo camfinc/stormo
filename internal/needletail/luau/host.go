@@ -128,6 +128,7 @@ type Call struct {
 	touched []string // /shared paths written (the hooks attribute them)
 	logs    []string
 	logSize int
+	logCut  bool
 	denied  []string
 }
 
@@ -372,8 +373,8 @@ func (c *Call) place(p string) (place, error) {
 }
 
 // placed (tests only) runs once a path is read, before the file system is touched: where a
-// concurrent change of the tree lands.
-var placed func(rel string)
+// concurrent change of the tree lands. readStatted (tests only) runs once fs.read measured its file.
+var placed, readStatted func(rel string)
 
 func scope(p place) string {
 	if p.shared {
@@ -432,6 +433,13 @@ func (c *Call) writePlace(name string, a pathArgs) (place, error) {
 	return p, nil
 }
 
+// readLeft is what the run may still read.
+func (c *Call) readLeft() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return ReadQuota - c.read
+}
+
 func (c *Call) quota(read, wrote int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -460,12 +468,21 @@ func fsRead(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, ioErr(p, err)
 	}
-	if err := c.quota(info.Size(), 0); err != nil {
-		return nil, err
+	if readStatted != nil {
+		readStatted(p.rel)
 	}
-	b, err := io.ReadAll(io.LimitReader(f, ReadQuota+1))
+	// refused early by its size, then read only up to what is left of the quota (the file may
+	// grow), and charged what was read
+	left := c.readLeft()
+	if info.Size() > left {
+		return nil, errf("quota", "the run's read quota (%d bytes) is used up", ReadQuota)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, left+1))
 	if err != nil {
 		return nil, ioErr(p, err)
+	}
+	if err := c.quota(int64(len(b)), 0); err != nil {
+		return nil, err
 	}
 	return string(b), nil
 }
@@ -657,15 +674,14 @@ func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 			return nil, errf("bad_args", "core.call: args must be a table with string keys")
 		}
 	}
-	// A shared write through the core is the script's: the hooks attribute it.
-	if p, ok := args["path"].(string); ok && a.Tool == "fs_write" && strings.HasPrefix(path.Clean(p), SharedPrefix+"/") {
-		defer func() {
-			c.mu.Lock()
-			c.touched = append(c.touched, path.Clean(p))
-			c.mu.Unlock()
-		}()
+	v, err := c.core(ctx, a.Tool, args)
+	// A shared write through the core is the script's: the hooks attribute it (once it is done).
+	if p, ok := args["path"].(string); ok && err == nil && a.Tool == "fs_write" && strings.HasPrefix(path.Clean(p), SharedPrefix+"/") {
+		c.mu.Lock()
+		c.touched = append(c.touched, path.Clean(p))
+		c.mu.Unlock()
 	}
-	return c.core(ctx, a.Tool, args)
+	return v, err
 }
 
 // core calls one of the core's tools: an object answer as it is, any other text as {result}.
@@ -736,12 +752,23 @@ func logLine(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	}
 	line := c.rt.redact(level + ": " + msg)
 	c.mu.Lock()
-	if c.logSize+len(line) <= maxLogs {
+	keep := c.logSize+len(line) <= maxLogs
+	first := !keep && !c.logCut
+	if keep {
 		c.logs = append(c.logs, line)
 		c.logSize += len(line)
+	} else if first {
+		// past the quota: one notice, in the run's log and the runtime's, then nothing more
+		c.logCut = true
+		c.logs = append(c.logs, "warn: the log is over its 64 KiB; later lines are dropped (truncated)")
 	}
 	c.mu.Unlock()
-	c.rt.logf("luau %s: %s", c.Tool, line)
+	switch {
+	case keep:
+		c.rt.logf("luau %s: %s", c.Tool, line)
+	case first:
+		c.rt.logf("luau %s: log truncated at %d bytes; later lines are dropped", c.Tool, maxLogs)
+	}
 	return nil, nil
 }
 

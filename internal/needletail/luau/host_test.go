@@ -367,6 +367,72 @@ func TestQuotas(t *testing.T) {
 	fails(t, rt, homeRW, `local s = string.rep("y", 1024 * 1024) for i = 1, 5 do write_file("w" .. i, s) end`, "quota")
 }
 
+// Past the run's log quota nothing more reaches the runtime's log either, but one notice.
+func TestLogQuotaBoundsTheRuntimeLog(t *testing.T) {
+	rt, _ := newRuntime(t)
+	var mu sync.Mutex
+	var lines []string
+	rt.Log = func(s string) { mu.Lock(); lines = append(lines, s); mu.Unlock() }
+	_, call := exec(t, rt, nil, `for i = 1, 200 do log("info", string.rep("x", 1990)) end`)
+	mu.Lock()
+	defer mu.Unlock()
+	notices := 0
+	size := 0
+	for _, l := range lines {
+		size += len(l)
+		if strings.Contains(l, "truncated") {
+			notices++
+		}
+	}
+	if size > maxLogs+4096 || notices != 1 {
+		t.Fatalf("%d lines, %d bytes, %d notices", len(lines), size, notices)
+	}
+	if logs := call.Logs(); !strings.Contains(logs[len(logs)-1], "truncated") {
+		t.Fatalf("the run's last log line: %q", logs[len(logs)-1])
+	}
+}
+
+// A core call that fails wrote nothing: nothing is attributed.
+func TestCoreCallTouchesOnlyOnSuccess(t *testing.T) {
+	rt, core := newRuntime(t)
+	core.reply = func(string, map[string]any) (*mcp.Result, error) {
+		return &mcp.Result{Text: "locked by atlas", IsError: true}, nil
+	}
+	rt.Grants = append(rt.Grants, "core:fs_write")
+	_, call := exec(t, rt, []string{"core:fs_write"}, `pcall(core_call, "fs_write", {path = "/shared/group/n.md", content = "x"})`)
+	if tp := call.Touched(); len(tp) != 0 {
+		t.Fatalf("touched %q", tp)
+	}
+}
+
+// A file that grows after it was measured is read only up to what is left of the quota, and the
+// run is charged what it read.
+func TestReadQuotaGrowingFile(t *testing.T) {
+	if raceEnabled {
+		t.Skip("megabytes through the interpreter under the race detector")
+	}
+	rt, _ := newRuntime(t)
+	p := filepath.Join(rt.Home, "grow.txt")
+	write(t, p, "small")
+	readStatted = func(string) {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = f.WriteString(strings.Repeat("y", ReadQuota+10))
+		f.Close()
+	}
+	t.Cleanup(func() { readStatted = nil })
+	res, call := exec(t, rt, homeRW, `local ok, e = pcall(read_file, "grow.txt") return {ok, ok and #e or e}`)
+	if res.Err != nil || !strings.Contains(string(res.Value), "quota") {
+		t.Fatalf("read a grown file: %v %.200s", res.Err, res.Value)
+	}
+	if call.read > ReadQuota {
+		t.Fatalf("charged %d", call.read)
+	}
+}
+
 func TestMemoryAndLog(t *testing.T) {
 	rt, _ := newRuntime(t)
 	write(t, filepath.Join(rt.Home, "memories", "MEMORY.md"), "likes tea\n§\nworks late")
