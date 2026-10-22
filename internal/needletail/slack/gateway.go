@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/loop"
@@ -373,6 +375,8 @@ func (g *Gateway) route(ev Message) bool {
 	case bot && g.o.AllowBots == "all":
 	case bot && g.o.AllowBots == "mentions" && mentioned:
 	case bot:
+		// handled: its app_mention twin (Slack may name the mention only there) is refused too
+		g.seen.add(ev.Channel + ":" + ev.TS)
 		return true
 	}
 	dm := ev.ChannelType == "im" || ev.ChannelType == "" && strings.HasPrefix(ev.Channel, "D")
@@ -429,11 +433,60 @@ func (g *Gateway) admitted(user, botID string) bool {
 }
 
 // markerRe finds the runtime's own markers in text it quotes (a message, a thread's earlier
-// messages, a name): neutralised, so quoted text cannot pass for one.
-var markerRe = regexp.MustCompile(`(?i)\[(\s*(?:slack message from|thread context|end of thread context|thread parent|assistant|unverified|handler notes))`)
+// messages, a name), matched on the text as markerFold folds it: neutralised, so quoted text
+// cannot pass for one. Any spacing (none too) may part the words; (?i) folds case as Unicode
+// does (ſ is s, K is k).
+var markerRe = regexp.MustCompile(`(?i)\[\s*(?:slack\s*message\s*from|thread\s*context|end\s*of\s*thread\s*context|thread\s*parent|assistant|unverified|handler\s*notes)`)
 
-// neutralise turns a marker's opening bracket into a parenthesis.
-func neutralise(s string) string { return markerRe.ReplaceAllString(s, "($1") }
+// brackets are opening brackets a reader takes for "[".
+var brackets = map[rune]bool{'⟦': true, '〚': true, '【': true, '〔': true, '〖': true, '⁅': true, '⦋': true, '⦍': true, '⦏': true, '﹝': true}
+
+// markerFold is text as markerRe reads it, rune for rune but for the format characters it drops
+// (zero-width spaces and joiners, the soft hyphen, bidi controls): fullwidth forms as ASCII, any
+// space as " ", a lookalike bracket as "[". at[i] is the byte offset in s of the rune that gave
+// the folded byte i.
+func markerFold(s string) (folded string, at []int) {
+	var b strings.Builder
+	for i, r := range s {
+		switch {
+		case unicode.Is(unicode.Cf, r):
+			continue
+		case r >= 0xFF01 && r <= 0xFF5E:
+			r -= 0xFEE0
+		case unicode.IsSpace(r):
+			r = ' '
+		case brackets[r]:
+			r = '['
+		}
+		n := b.Len()
+		b.WriteRune(r)
+		for ; n < b.Len(); n++ {
+			at = append(at, i)
+		}
+	}
+	return b.String(), at
+}
+
+// neutralise turns a marker's opening bracket (whichever bracket it is) into a parenthesis; the
+// rest of the text is kept as it is.
+func neutralise(s string) string {
+	folded, at := markerFold(s)
+	found := markerRe.FindAllStringIndex(folded, -1)
+	if len(found) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range found {
+		i := at[m[0]]
+		_, size := utf8.DecodeRuneInString(s[i:])
+		b.WriteString(s[last:i])
+		b.WriteString("(")
+		last = i + size
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
 
 func (g *Gateway) warnOnce(key, msg string) {
 	g.mu.Lock()
