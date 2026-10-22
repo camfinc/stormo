@@ -302,7 +302,7 @@ All routes except `/health` need `Authorization: Bearer API_SERVER_KEY`.
 
 Once shutdown has begun (SIGTERM) no turn starts: `/chat` and `/v1/runs` answer 503. Running turns get the drain budget, then are cancelled and waited for at most a few seconds more, so a turn stuck in something that ignores cancellation cannot keep the process from exiting.
 
-Status mapping on the client side: 404 → `ErrNotFound`; 409, 429 and 503 → `ErrBusy`.
+Status mapping on the client side: 404 → `ErrNotFound`; 409, 429 and 503 → `ErrBusy`; any other (a 403 for a Slack or oneshot conversation) is an error carrying the API's message.
 
 ### 4.9 Channels (`slack`)
 
