@@ -199,6 +199,33 @@ func TestRedactBeforeEncoding(t *testing.T) {
 
 // Capping long output never leaves part of a secret at the cut: a secret straddling the end of
 // the kept head or the start of the kept tail is masked whole or dropped whole.
+// The terminal is not a login shell: startup files in the home (which a Luau tool or a file the
+// agent fetched could plant) never run, and the PATH is explicit.
+func TestTerminalReadsNoStartupFiles(t *testing.T) {
+	r, env := setup(t)
+	for _, f := range []string{".bash_profile", ".bash_login", ".profile", ".bashrc"} {
+		if err := os.WriteFile(filepath.Join(env.Home, f), []byte("echo PLANTED-"+f+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, failed := call(t, r, env, "terminal", map[string]any{"command": "echo ok"})
+	if out, _ := m["output"].(string); failed || strings.Contains(out, "PLANTED") || !strings.Contains(out, "ok") {
+		t.Fatalf("terminal = %v", m)
+	}
+	// no PATH in the env: the login default, never bash's own (which ends in ".")
+	env.Environ = func() []string { return []string{"HOME=/root"} }
+	m, _ = call(t, r, env, "terminal", map[string]any{"command": `echo "path=$PATH"`})
+	if out, _ := m["output"].(string); !strings.Contains(out, "path="+DefaultPath+"\n") {
+		t.Fatalf("default PATH: %v", m)
+	}
+	// relative entries (".", "", "bin") are dropped: the cwd is the home
+	env.Environ = func() []string { return []string{"PATH=.:/usr/bin::bin:/bin"} }
+	m, _ = call(t, r, env, "terminal", map[string]any{"command": `echo "path=$PATH"`})
+	if out, _ := m["output"].(string); !strings.Contains(out, "path=/usr/bin:/bin\n") {
+		t.Fatalf("relative PATH entries: %v", m)
+	}
+}
+
 func TestTerminalCapKeepsSecretsWhole(t *testing.T) {
 	r, env := setup(t)
 	for _, c := range []struct{ cmd, part string }{

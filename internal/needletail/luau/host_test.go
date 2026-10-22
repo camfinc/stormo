@@ -175,6 +175,36 @@ func TestProtectedPaths(t *testing.T) {
 	fails(t, rt, homeRW, `remove_file("SOUL.md")`, "protected")
 }
 
+// Luau never plants a file something else executes: job scripts (scripts/**), shell startup files
+// and every other hidden entry of the home's root (.config, .local's Python user site, .gitconfig,
+// .ssh), and git's hooks and config in any repository.
+func TestNoPlantedExecution(t *testing.T) {
+	rt, _ := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "scripts", "fares.py"), "print(1)")
+	for _, p := range []string{"scripts/fares.py", "scripts/x.luau", "scripts/sub/x.sh", "scripts", ".bash_profile", ".bash_login", ".profile",
+		".bashrc", ".bash_logout", ".inputrc", ".config/git/config", ".local/lib/python3.12/site-packages/usercustomize.py", ".gitconfig",
+		".ssh/config", "~/.profile", "work/repo/.git/hooks/pre-commit", "work/repo/.git/config", "a/.GIT/hooks/post-checkout"} {
+		fails(t, rt, homeRW, fmt.Sprintf(`write_file(%q, "echo planted")`, p), "protected")
+		fails(t, rt, homeRW, fmt.Sprintf(`append_file(%q, "echo planted")`, p), "protected")
+	}
+	fails(t, rt, homeRW, `remove_file("scripts/fares.py")`, "protected")
+	if b, _ := os.ReadFile(filepath.Join(rt.Home, "scripts", "fares.py")); string(b) != "print(1)" {
+		t.Fatalf("scripts/fares.py is %q", b)
+	}
+	// hidden files below the root are ordinary files
+	res, _ := exec(t, rt, homeRW, `write_file("reports/.draft.md", "x") return read_file("reports/.draft.md")`)
+	wantValue(t, res, `"x"`)
+}
+
+// A case-insensitive home (macOS) reaches skills/ as Skills/: protected names compare folded.
+func TestProtectedPathsIgnoreCase(t *testing.T) {
+	rt, _ := newRuntime(t)
+	for _, p := range []string{"Skills/crm/tools/x.luau", "SKILLS/x", "soul.md", "Needletail.YAML", "Memories/MEMORY.md", "CRON/jobs.json",
+		"Scripts/x.py", "LOGS/x", "Sessions/a.jsonl", "State/x"} {
+		fails(t, rt, homeRW, fmt.Sprintf(`write_file(%q, "x")`, p), "protected")
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	rt, _ := newRuntime(t)
 	write(t, filepath.Join(rt.Home, "a.txt"), "a")

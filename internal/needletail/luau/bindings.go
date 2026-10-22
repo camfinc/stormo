@@ -58,7 +58,7 @@ func Bindings() []Binding {
 			Doc:   "Reads a file of the home or the shared space. Symlinks are refused; at most 8 MiB per run.",
 			Grant: "fs.read:home | fs.read:shared", Example: `local text = read_file("notes/today.md")`, run: fsRead},
 		{Name: "fs.write", Global: "write_file", Params: []Param{path, content}, Returns: "nil",
-			Doc: "Writes (replaces) a file. Home: protected paths (needletail.yaml, SOUL.md, memories/, sessions/, logs/, state/, skills/, cron/) are refused, missing directories are made. " +
+			Doc: "Writes (replaces) a file. Home: protected paths (needletail.yaml, SOUL.md, memories/, sessions/, logs/, state/, skills/, cron/, scripts/, the home's hidden entries, .git/) are refused, missing directories are made. " +
 				"Shared: written through the core (fs_write), recorded as yours. At most 4 MiB per run.",
 			Grant: "fs.write:home[/glob] | fs.write:shared", Example: `write_file("reports/fares.md", text)`, Write: true, run: fsWrite},
 		{Name: "fs.append", Global: "append_file", Params: []Param{path, content}, Returns: "nil",

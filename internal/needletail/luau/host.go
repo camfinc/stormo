@@ -262,14 +262,29 @@ func (p place) real() string {
 	return filepath.Join(p.root, filepath.FromSlash(p.rel))
 }
 
-// protected are home paths a script never writes: the runtime's own files, the agent's memory
-// (the memory tool), its skills (skill_manage checks every change), its schedules
-// (cronjob_manage) and the temp dir.
-var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "state", "memories", "skills", "cron", ".needletail-tmp", ".swarm"}
+// protected are the home's top-level entries a script never writes: the runtime's own files, the
+// agent's memory (the memory tool), its skills (skill_manage checks every change), its schedules
+// (cronjob_manage) and the job scripts they run (scripts/: the baseline's, and the ones the agent
+// writes with its own file tools or terminal), and the temp dir.
+var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "state", "memories", "skills", "cron", "scripts", ".needletail-tmp", ".swarm"}
 
+// isProtected: rel (slash-separated, relative to the home) is a protected entry or below one, a
+// hidden entry of the home's root or below one (shell startup files, .config, .local's Python
+// user site, .gitconfig, .ssh: files a program runs without being told to), or inside a git
+// repository's .git (hooks, config). Names compare case-folded: on a case-insensitive home
+// Skills/ is skills/.
 func isProtected(rel string) bool {
+	segs := strings.Split(rel, "/")
+	if strings.HasPrefix(segs[0], ".") {
+		return true
+	}
 	for _, p := range protected {
-		if rel == p || strings.HasPrefix(rel, p+"/") {
+		if strings.EqualFold(segs[0], p) {
+			return true
+		}
+	}
+	for _, s := range segs {
+		if strings.EqualFold(s, ".git") {
 			return true
 		}
 	}
@@ -398,7 +413,8 @@ func (c *Call) writePlace(name string, a pathArgs) (place, error) {
 		return p, nil
 	}
 	if p.rel == "" || isProtected(p.rel) {
-		return place{}, errf("protected", "%s is protected: Luau never writes the runtime's files, memories/, skills/, cron/ or logs/", a.Path)
+		return place{}, errf("protected", "%s is protected: Luau never writes the runtime's files, memories/, skills/, cron/, scripts/, logs/, "+
+			"the home's hidden entries (.profile, .config, …) or a .git directory", a.Path)
 	}
 	if !c.Caps.FSWrite("home", p.rel) {
 		return place{}, c.deny(name, "fs.write:home/"+p.rel)

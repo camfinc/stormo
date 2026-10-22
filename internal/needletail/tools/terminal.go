@@ -88,7 +88,10 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "bash", "-lc", a.Command)
+	// Not a login shell and no rc file: nothing in the home (.bash_profile, .profile, .bashrc, which
+	// a Luau tool or a fetched file could plant) runs before the command. The environment is
+	// explicit instead (terminalEnv).
+	cmd := exec.CommandContext(cctx, "bash", "--noprofile", "--norc", "-c", a.Command)
 	cmd.Dir = dir
 	cmd.Env = terminalEnv(env)
 	if skillDir != "" {
@@ -164,6 +167,10 @@ func fromSkill(env *Env, a terminalArgs) (string, error) {
 	return env.Skills.Abs(s), nil
 }
 
+// DefaultPath is the PATH a command gets when the runtime's env has none: what the image's login
+// profile set (Alpine's /etc/profile) when the terminal was a login shell.
+const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 // CommandEnv is the environment a command the runtime starts gets (the terminal's, a schedule's
 // script): the scrubbed process env with HOME set to the agent's home.
 func CommandEnv(env *Env) []string { return terminalEnv(env) }
@@ -171,7 +178,9 @@ func CommandEnv(env *Env) []string { return terminalEnv(env) }
 // KillGroup runs cmd in its own process group, killed whole when cmd is cancelled (unix).
 func KillGroup(cmd *exec.Cmd) { killGroup(cmd) }
 
-// terminalEnv is the scrubbed process env with HOME set to the agent's home.
+// terminalEnv is the scrubbed process env with HOME set to the agent's home and an explicit PATH:
+// the env's absolute entries, else DefaultPath. A relative entry ("", ".", "bin") would run what
+// is in the command's directory, the home, by a bare command name.
 func terminalEnv(env *Env) []string {
 	var base []string
 	if env.Environ != nil {
@@ -179,13 +188,32 @@ func terminalEnv(env *Env) []string {
 	} else {
 		base = os.Environ()
 	}
-	out := make([]string, 0, len(base)+1)
+	out := make([]string, 0, len(base)+2)
+	path := ""
 	for _, kv := range base {
-		if !strings.HasPrefix(kv, "HOME=") {
+		switch {
+		case strings.HasPrefix(kv, "HOME="):
+		case strings.HasPrefix(kv, "PATH="):
+			path = absolutePath(strings.TrimPrefix(kv, "PATH="))
+		default:
 			out = append(out, kv)
 		}
 	}
-	return append(out, "HOME="+env.Home)
+	if path == "" {
+		path = DefaultPath
+	}
+	return append(out, "PATH="+path, "HOME="+env.Home)
+}
+
+// absolutePath is a PATH value with its relative entries dropped.
+func absolutePath(p string) string {
+	var keep []string
+	for _, d := range strings.Split(p, ":") {
+		if strings.HasPrefix(d, "/") {
+			keep = append(keep, d)
+		}
+	}
+	return strings.Join(keep, ":")
 }
 
 // capped keeps the first outputHead and the last outputTail bytes written, each with overlap
