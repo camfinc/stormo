@@ -12,6 +12,16 @@
    "glob": "memories/{MEMORY,USER}.md"
   },
   {
+   "path": "memories/RECORDS.md",
+   "class": "raw",
+   "glob": "memories/RECORDS.md"
+  },
+  {
+   "path": "memories/.RECORDS.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
    "path": "memories/OTHER.md",
    "class": null,
    "glob": null

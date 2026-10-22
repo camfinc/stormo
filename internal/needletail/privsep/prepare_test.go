@@ -47,6 +47,7 @@ func TestPrepare(t *testing.T) {
 	put(t, filepath.Join(home, "cron", "jobs.json"), "{}", 0o644)
 	put(t, filepath.Join(home, "sessions", "a.jsonl"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "MEMORY.md"), "x", 0o644)
+	put(t, filepath.Join(home, "memories", "RECORDS.md"), "x", 0o644) // as rehydrate restores it
 	put(t, filepath.Join(home, "needletail.yaml"), "x", 0o644)
 	outside := filepath.Join(t.TempDir(), "outside.txt") // a symlink's target: never changed
 	put(t, outside, "secret", 0o600)
@@ -79,6 +80,7 @@ func TestPrepare(t *testing.T) {
 		".needletail-tmp":           fs.ModeDir | 0o700,
 		"memories":                  fs.ModeDir | 0o750,
 		"memories/MEMORY.md":        0o640,
+		"memories/RECORDS.md":       0o640,
 		"needletail.yaml":           0o600,
 		"SOUL.md":                   0o644,
 		"skills/crm/link":           fs.ModeSymlink | mode(t, filepath.Join(home, "skills", "crm", "link")).Perm(),

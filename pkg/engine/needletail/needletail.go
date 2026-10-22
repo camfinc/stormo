@@ -55,6 +55,9 @@ func New(inst *instance.Instance) *Needletail {
 			{Class: engine.Learning, Glob: "needletail.yaml"},
 			// raw: conversation history and the Luau audit log (PII)
 			{Class: engine.Raw, Glob: "sessions/**"},
+			// the memory archive (every record, hot or not: client data): restored verbatim and
+			// never read by the dream, which learns from the hot files alone
+			{Class: engine.Raw, Glob: "memories/RECORDS.md"},
 			{Class: engine.Raw, Glob: "logs/audit/**"},
 			// a monitor's last output and each run's record hold what jobs fetched and replied:
 			// client data, before the state rule that would claim them
