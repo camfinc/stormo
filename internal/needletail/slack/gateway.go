@@ -23,10 +23,32 @@ import (
 // reads it to give a job made in a thread its "origin").
 const Source = "slack"
 
-// SessionID is a Slack thread's session: slack-<channel>-<thread_ts>. A top-level message
-// starts a thread of its own (the reply goes under it, as Hermes replies), so every session is
-// a thread.
+// SessionID is a Slack thread's session: slack-<channel>-<thread_ts>. In a channel a top-level
+// message starts a thread of its own (the reply goes under it, as Hermes replies), so every
+// channel session is a thread.
 func SessionID(channel, thread string) string { return "slack-" + channel + "-" + thread }
+
+// DMSessionID is a DM's session, slack-<channel>-dm: one continuing conversation with each
+// person. Replies are posted in the DM itself (in a DM thread when the person wrote in one, and
+// such a thread is the same conversation).
+func DMSessionID(channel string) string { return "slack-" + channel + "-dm" }
+
+// Origin is the Slack chat a session belongs to: a thread's channel and thread_ts, or a DM's
+// channel and no thread; false for a session that is not a Slack chat's.
+func Origin(session string) (channel, thread string, ok bool) {
+	rest, ok := strings.CutPrefix(session, "slack-")
+	if !ok {
+		return "", "", false
+	}
+	channel, thread, _ = strings.Cut(rest, "-")
+	if channel == "" {
+		return "", "", false
+	}
+	if thread == "dm" {
+		thread = ""
+	}
+	return channel, thread, true
+}
 
 // Turns hands out turn slots (api.Server.Reserve), shared with the API and the scheduler.
 type Turns interface {
@@ -317,6 +339,10 @@ func (g *Gateway) onEvent(ev Message) {
 	}
 	reply := ev.ThreadTS != "" && ev.ThreadTS != ev.TS
 	session := SessionID(ev.Channel, thread)
+	post := thread // where the reply goes
+	if dm {
+		session, post = DMSessionID(ev.Channel), ev.ThreadTS
+	}
 	key := ev.Channel + ":" + thread
 	if !dm && !mentioned {
 		// a channel answers a mention, or a reply in a thread the agent is in (it posted there,
@@ -335,7 +361,7 @@ func (g *Gateway) onEvent(ev Message) {
 	if reply && !g.o.Exists(session) {
 		text = g.threadContext(ev, thread) + text
 	}
-	g.enqueue(session, job{channel: ev.Channel, thread: thread, ts: ev.TS, text: text, react: dm || mentioned})
+	g.enqueue(session, job{channel: ev.Channel, thread: post, ts: ev.TS, text: text, react: dm || mentioned})
 }
 
 func (g *Gateway) allowed(user string) bool {
@@ -533,10 +559,10 @@ func (g *Gateway) turn(session string, j job, input string) {
 		finish(false)
 		return
 	}
-	g.status(j.channel, j.thread, "is thinking...")
+	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
 	res, err := slot.Turn(ctx, input, loop.Options{})
 	slot.Release()
-	g.status(j.channel, j.thread, "")
+	g.status(j.channel, orDefault(j.thread, j.ts), "")
 	if err != nil {
 		g.logf("slack: %s: turn failed: %v", session, err)
 		detail := oneLine(g.o.Redact(err.Error()))

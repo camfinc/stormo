@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/sched"
+	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -125,7 +126,7 @@ func TestServeSlack(t *testing.T) {
 	// a DM, then a channel mention, then a reply in that thread
 	fake.Send("e1", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "Hello there", TS: "1700000200.000100"})
 	posts = fake.WaitPosts(3, 15*time.Second)
-	if p := posts[2]; p.Channel != "D0DMCHAN01" || p.Thread != "1700000200.000100" || p.Text != "Reply to: Hello there" {
+	if p := posts[2]; p.Channel != "D0DMCHAN01" || p.Thread != "" || p.Text != "Reply to: Hello there" {
 		t.Errorf("DM reply %+v", p)
 	}
 	fake.Send("e2", slacktest.Event{Type: "app_mention", Channel: "C0DEVCHAN1", ChannelType: "channel", User: "U0ALLOWED1",
@@ -179,9 +180,33 @@ func TestServeSlack(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("serve did not stop")
 	}
-	head, err := os.ReadFile(filepath.Join(h, "sessions", "slack-D0DMCHAN01-1700000200.000100.jsonl"))
+	head, err := os.ReadFile(filepath.Join(h, "sessions", "slack-D0DMCHAN01-dm.jsonl"))
 	if err != nil || !strings.Contains(strings.SplitN(string(head), "\n", 2)[0], `"source":"slack"`) {
 		t.Errorf("DM session: %v %.200s", err, head)
 	}
 	t.Logf("posts: %d; Web API calls: %d; socket connections: %d; acks: %v", len(fake.Posts()), len(fake.Calls("")), fake.Opens(), fake.Acks())
+}
+
+// A job made in a Slack chat delivers back to it (deliver: origin): a thread to its thread, a DM
+// to the DM itself (top-level, the one conversation with that person), the API to none.
+func TestOriginOfSlackSessions(t *testing.T) {
+	store, err := sessions.Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []wire.Session{{ID: "slack-C0DEVCHAN1-1700000002.000100", Source: "slack"}, {ID: "slack-D0DMCHAN01-dm", Source: "slack"}, {ID: "api-1", Source: "api_server"}} {
+		if _, err := store.Create(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := origin(store)
+	for id, want := range map[string]string{
+		"slack-C0DEVCHAN1-1700000002.000100": `{"chat_id":"C0DEVCHAN1","platform":"slack","thread_id":"1700000002.000100"}`,
+		"slack-D0DMCHAN01-dm":                `{"chat_id":"D0DMCHAN01","platform":"slack","thread_id":null}`,
+		"api-1":                              ``,
+	} {
+		if got := string(o(id)); got != want {
+			t.Errorf("%s: %s, want %s", id, got, want)
+		}
+	}
 }

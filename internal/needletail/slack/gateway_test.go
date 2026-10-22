@@ -135,47 +135,74 @@ func (r *rig) quiet(n int) {
 
 func TestDMAndThreads(t *testing.T) {
 	r := newRig(t, nil)
-	// a DM: answered in a thread under the message, in session slack-<dm>-<ts>, source slack
+	// a DM: answered in the DM itself, in the one conversation the agent has with that person
+	// (session slack-<dm>-dm, source slack); the next top-level DM continues it, and a reply
+	// in a DM thread goes to the same conversation and is answered in that thread
 	r.fake.Send("e1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "What is on today?", TS: "1700000000.000100"})
 	p := r.fake.WaitPosts(1, 5*time.Second)
-	if p[0].Channel != dm || p[0].Thread != "1700000000.000100" || p[0].Text != "re: What is on today?" {
+	if p[0].Channel != dm || p[0].Thread != "" || p[0].Text != "re: What is on today?" {
 		t.Errorf("DM reply %+v", p[0])
 	}
-	s := SessionID(dm, "1700000000.000100")
+	s := DMSessionID(dm)
+	if s != "slack-"+dm+"-dm" {
+		t.Errorf("DM session %q", s)
+	}
 	if got := r.turns.got(s); len(got) != 1 || !strings.HasPrefix(got[0], "[Slack message from Alice (U0ALLOWED1)]\n") {
 		t.Errorf("input %q", got)
 	}
 	if r.turns.sessions[s].Source != "slack" {
 		t.Errorf("session %+v", r.turns.sessions[s])
 	}
+	r.fake.Send("e1b", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "And tomorrow?", TS: "1700000000.000200"})
+	r.fake.WaitPosts(2, 5*time.Second)
+	r.fake.Send("e1c", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "about that", TS: "1700000000.000300", ThreadTS: "1700000000.000100"})
+	p = r.fake.WaitPosts(3, 5*time.Second)
+	byText := map[string]slacktest.Post{}
+	for _, x := range p {
+		byText[x.Text] = x
+	}
+	if x := byText["re: And tomorrow?"]; x.Channel != dm || x.Thread != "" {
+		t.Errorf("second DM %+v", p)
+	}
+	if x := byText["re: about that"]; x.Channel != dm || x.Thread != "1700000000.000100" {
+		t.Errorf("DM thread reply %+v", p)
+	}
+	if got := r.turns.got(s); len(got) != 3 {
+		t.Errorf("DM conversation inputs %q", got)
+	}
+	for k := range r.turns.sessions {
+		if strings.HasPrefix(k, "slack-"+dm+"-1") {
+			t.Errorf("a DM thread got its own session %s", k)
+		}
+	}
 	// a channel message without a mention: ignored; with one: answered in its thread, the
 	// mention stripped and another person's mention named
 	r.fake.Send("e2", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "lunch?", TS: "1700000001.000100"})
-	r.quiet(1)
+	r.quiet(3)
 	r.fake.Names["U0BOB00001"] = "Bob"
 	r.fake.Send("e3", slacktest.Event{Type: "app_mention", Channel: dev, ChannelType: "channel", User: alice,
 		Text: "<@" + slacktest.BotUser + "> ask <@U0BOB00001> about the deck", TS: "1700000002.000100"})
-	p = r.fake.WaitPosts(2, 5*time.Second)
-	if p[1].Channel != dev || p[1].Thread != "1700000002.000100" || p[1].Text != "re: ask @Bob about the deck" {
-		t.Errorf("mention reply %+v", p[1])
+	p = r.fake.WaitPosts(4, 5*time.Second)
+	if p[3].Channel != dev || p[3].Thread != "1700000002.000100" || p[3].Text != "re: ask @Bob about the deck" {
+		t.Errorf("mention reply %+v", p[3])
 	}
 	// the same message as a "message" event (Slack sends both): not answered twice
 	r.fake.Send("e3b", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> ask <@U0BOB00001> about the deck", TS: "1700000002.000100"})
-	r.quiet(2)
+	r.quiet(4)
 	// a reply in that thread with no mention: the agent is in it, so it answers
 	r.fake.Send("e4", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "and the budget", TS: "1700000003.000100", ThreadTS: "1700000002.000100"})
-	p = r.fake.WaitPosts(3, 5*time.Second)
-	if p[2].Thread != "1700000002.000100" || p[2].Text != "re: and the budget" {
-		t.Errorf("thread reply %+v", p[2])
+	p = r.fake.WaitPosts(5, 5*time.Second)
+	if p[4].Thread != "1700000002.000100" || p[4].Text != "re: and the budget" {
+		t.Errorf("thread reply %+v", p[4])
 	}
 	if got := r.turns.got(SessionID(dev, "1700000002.000100")); len(got) != 2 {
 		t.Errorf("thread inputs %q", got)
 	}
 	// a reply in a thread the agent is not in, with no mention: ignored
 	r.fake.Send("e5", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "unrelated", TS: "1700000004.000200", ThreadTS: "1700000004.000100"})
-	r.quiet(3)
+	r.quiet(5)
 	// every envelope was acked
-	if a := r.fake.Acks(); len(a) != 6 {
+	if a := r.fake.Acks(); len(a) != 8 {
 		t.Errorf("acks %v", a)
 	}
 	// reactions on the DM and the mention: eyes, then a check
@@ -292,7 +319,7 @@ func TestBusy(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(hold)
 	p := r.fake.WaitPosts(3, 5*time.Second)
-	in := r.turns.got(SessionID(dm, thread))
+	in := r.turns.got(DMSessionID(dm))[1:]
 	if len(in) != 2 || !strings.Contains(in[1], "two") || !strings.Contains(in[1], "three") || p[2].Text != "re: three" {
 		t.Errorf("inputs %q posts %+v", in, p)
 	}
@@ -300,7 +327,7 @@ func TestBusy(t *testing.T) {
 	r2 := newRig(t, func(o *Options) { o.BusyWait = 50 * time.Millisecond })
 	r2.turns.busy = 1 << 30
 	r2.fake.Send("x1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "anyone?", TS: "1700000052.000100"})
-	if p := r2.fake.WaitPosts(1, 5*time.Second); p[0].Text != busyNote || p[0].Thread != "1700000052.000100" {
+	if p := r2.fake.WaitPosts(1, 5*time.Second); p[0].Text != busyNote || p[0].Channel != dm || p[0].Thread != "" {
 		t.Errorf("busy note %+v", p)
 	}
 }
@@ -446,5 +473,21 @@ func TestAuthTestRetry(t *testing.T) {
 			fake.SetFail("auth.test", "")
 			fake.WaitConnected(5 * time.Second)
 		})
+	}
+}
+
+// A session's chat: a Slack thread's channel and thread, a DM's channel and no thread (its
+// replies are top-level); anything else is no Slack chat.
+func TestOrigin(t *testing.T) {
+	for id, want := range map[string][3]string{
+		"slack-C0DEVCHAN1-1700000002.000100": {"C0DEVCHAN1", "1700000002.000100", "ok"},
+		"slack-D0DMCHAN01-dm":                {"D0DMCHAN01", "", "ok"},
+		"api-1":                              {"", "", ""},
+		"slack-":                             {"", "", ""},
+	} {
+		ch, th, ok := Origin(id)
+		if ch != want[0] || th != want[1] || ok != (want[2] == "ok") {
+			t.Errorf("%s: %q %q %v", id, ch, th, ok)
+		}
 	}
 }

@@ -233,7 +233,8 @@ func luauCommand(ctx context.Context, args []string, stdout, stderr io.Writer) i
 }
 
 // origin is the chat a session belongs to, as a job's "origin" (Hermes' {platform, chat_id,
-// thread_id}): a Slack thread's session (slack-<channel>-<thread_ts>); none for the API's.
+// thread_id}): a Slack thread's session (slack-<channel>-<thread_ts>), or a DM's
+// (slack-<channel>-dm, no thread: the DM itself); none for the API's.
 func origin(store *sessions.Store) func(session string) json.RawMessage {
 	return func(session string) json.RawMessage {
 		root, ok := store.Root(session)
@@ -241,11 +242,10 @@ func origin(store *sessions.Store) func(session string) json.RawMessage {
 			return nil
 		}
 		h, _ := store.Get(root)
-		rest, ok := strings.CutPrefix(root, "slack-")
-		if h.Source != "slack" || !ok {
+		channel, thread, ok := slack.Origin(root)
+		if h.Source != slack.Source || !ok {
 			return nil
 		}
-		channel, thread, _ := strings.Cut(rest, "-")
 		o := map[string]any{"platform": "slack", "chat_id": channel, "thread_id": nil}
 		if thread != "" {
 			o["thread_id"] = thread
@@ -329,8 +329,7 @@ func slackChannels(store *sessions.Store) []string {
 		if s.Root != "" {
 			id = s.Root
 		}
-		rest, ok := strings.CutPrefix(id, "slack-")
-		if ch, _, _ := strings.Cut(rest, "-"); ok && ch != "" && !seen[ch] {
+		if ch, _, ok := slack.Origin(id); ok && !seen[ch] {
 			seen[ch] = true
 			out = append(out, ch)
 		}
