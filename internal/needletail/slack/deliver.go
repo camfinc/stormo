@@ -28,6 +28,15 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		return nil
 	}
 	channel, thread := d.Target.Channel, d.Target.Thread
+	// the agent's before_send handlers first; the messaging policy decides after them
+	mt := messaging.Target{Platform: "slack", Channel: channel, Thread: thread}
+	if u := userIDRe.FindStringSubmatch(channel); u != nil {
+		mt = messaging.Target{Platform: "slack", User: u[1]}
+	}
+	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt)
+	if err != nil {
+		return err
+	}
 	if !d.Trusted {
 		if err := g.CheckTarget(d.Target); err != nil {
 			return err
@@ -39,11 +48,11 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		}
 		channel = g.o.HomeChannel
 	}
-	channel, err := g.channelFor(ctx, channel)
+	channel, err = g.channelFor(ctx, channel)
 	if err != nil {
 		return err
 	}
-	_, err = g.post(ctx, channel, thread, d.Text)
+	_, err = g.post(ctx, channel, thread, text)
 	return err
 }
 
@@ -110,6 +119,12 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
+	// the agent's before_send handlers first (they change only the text); the messaging policy
+	// decides after them
+	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindSend, Text: r.Text, Broadcast: r.Broadcast}, t)
+	if err != nil {
+		return messaging.Sent{}, err
+	}
 	broadcast, err := g.Policy().Check(t, r.Broadcast)
 	if err != nil {
 		return messaging.Sent{}, err
@@ -123,7 +138,7 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	case channel == "":
 		channel = g.o.HomeChannel
 	}
-	ts, err := g.postAs(ctx, channel, thread, r.Text, broadcast)
+	ts, err := g.postAs(ctx, channel, thread, text, broadcast)
 	if err != nil {
 		return messaging.Sent{}, err
 	}
