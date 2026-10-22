@@ -36,6 +36,8 @@ type fakeTurns struct {
 	inputs   map[string][]string
 	hold     chan struct{} // when set, turns wait for it
 	started  chan string
+	// during, when set, runs in each turn (a tool call the model would make)
+	during func(session, input string)
 }
 
 func newTurns() *fakeTurns {
@@ -78,11 +80,21 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, _ loop.Options) (*loo
 	s.f.mu.Lock()
 	hold := s.f.hold
 	s.f.inputs[s.session] = append(s.f.inputs[s.session], input)
+	during := s.f.during
 	s.f.mu.Unlock()
 	if hold != nil {
 		<-hold
 	}
+	if during != nil {
+		during(s.session, input)
+	}
 	lines := strings.Split(strings.TrimSpace(input), "\n")
+	switch last := lines[len(lines)-1]; last {
+	case "SILENTMSG":
+		return &loop.Result{Text: "[SILENT]", Session: s.session}, nil
+	case "HALFSILENT":
+		return &loop.Result{Text: "[SILENT]\nOn second thought: yes.", Session: s.session}, nil
+	}
 	return &loop.Result{Text: "re: " + lines[len(lines)-1], Session: s.session}, nil
 }
 
@@ -598,5 +610,76 @@ func TestShutdownMarksQueued(t *testing.T) {
 	}
 	if !crossed["1700000099.000200"] {
 		t.Errorf("queued messages not marked: %v", crossed)
+	}
+}
+
+func reactions(fake *slacktest.Server, ts string) (added, removed []string) {
+	for _, c := range fake.Calls("reactions.add") {
+		if c.Params["timestamp"] == ts {
+			added = append(added, c.Params["name"])
+		}
+	}
+	for _, c := range fake.Calls("reactions.remove") {
+		if c.Params["timestamp"] == ts {
+			removed = append(removed, c.Params["name"])
+		}
+	}
+	return added, removed
+}
+
+// In a thread with other people the agent may stay out of it: a [SILENT] reply (or the no_reply
+// tool) posts nothing and leaves no reaction. A DM or a mention is always answered: a reply that
+// is only [SILENT] posts nothing (logged), its 👀 removed with no ✅ or ❌; the rest of a reply
+// whose first or last line is [SILENT] is posted.
+func TestGroupSilence(t *testing.T) {
+	r := newRig(t, nil)
+	reg := tools.NewRegistry(r.g.Tools()...)
+	r.turns.during = func(session, input string) {
+		if strings.HasSuffix(input, "NOREPLY") {
+			out, failed := reg.Call(context.Background(), &tools.Env{Session: session}, "no_reply", `{}`)
+			if failed != strings.Contains(session, "-dm") {
+				t.Errorf("no_reply in %s: %v %s", session, failed, out)
+			}
+		}
+	}
+	thread := "1700000110.000100"
+	r.fake.Send("g1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> start", TS: thread})
+	r.fake.WaitPosts(1, 5*time.Second)
+	r.fake.Send("g2", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "SILENTMSG", TS: "1700000110.000200", ThreadTS: thread})
+	r.fake.Send("g3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "NOREPLY", TS: "1700000110.000300", ThreadTS: thread})
+	r.quiet(1)
+	for _, ts := range []string{"1700000110.000200", "1700000110.000300"} {
+		if added, removed := reactions(r.fake, ts); len(added)+len(removed) > 0 {
+			t.Errorf("%s reactions %v %v", ts, added, removed)
+		}
+	}
+	if got := r.turns.got(SessionID(dev, thread)); len(got) < 2 {
+		t.Errorf("the silent messages had no turn: %q", got)
+	}
+	// a DM: [SILENT] alone posts nothing but is logged; half-silent is answered with the rest;
+	// no_reply is refused (the model answers)
+	r.fake.Send("g4", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "SILENTMSG", TS: "1700000111.000100"})
+	time.Sleep(200 * time.Millisecond)
+	r.quiet(1)
+	if added, removed := reactions(r.fake, "1700000111.000100"); strings.Join(added, ",") != "eyes" || strings.Join(removed, ",") != "eyes" {
+		t.Errorf("DM silence reactions %v %v", added, removed)
+	}
+	r.mu.Lock()
+	logged := strings.Join(r.logs, "\n")
+	r.mu.Unlock()
+	if !strings.Contains(logged, "chose not to answer") {
+		t.Errorf("DM silence not logged:\n%s", logged)
+	}
+	r.fake.Send("g5", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "HALFSILENT", TS: "1700000111.000200"})
+	if p := r.fake.WaitPosts(2, 5*time.Second); p[1].Text != "On second thought: yes." {
+		t.Errorf("half-silent DM %+v", p[1])
+	}
+	r.fake.Send("g6", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "NOREPLY", TS: "1700000111.000300"})
+	if p := r.fake.WaitPosts(3, 5*time.Second); p[2].Text != "re: NOREPLY" {
+		t.Errorf("no_reply in a DM %+v", p[2])
+	}
+	// the guidance the system prompt carries
+	if g := r.g.Guidance(); !strings.Contains(g, "[SILENT]") || !strings.Contains(g, "no_reply") {
+		t.Errorf("guidance %q", g)
 	}
 }

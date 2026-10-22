@@ -528,6 +528,18 @@ func TestSystemPromptTimeZone(t *testing.T) {
 	}
 }
 
+// A channel's guidance (the Slack gateway's) joins the system prompt before the time.
+func TestSystemPromptSections(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	a := newAgent(t, srv)
+	a.Sections = append(a.Sections, func() string { return "## Slack\nStay out of it.\n\n" })
+	sys := a.SystemPrompt()
+	if i, j := strings.Index(sys, "## Slack\nStay out of it."), strings.Index(sys, "## Now"); i < 0 || j < i {
+		t.Errorf("system prompt: %s", sys)
+	}
+}
+
 // pathEvents records what observers get: names and arguments.
 type pathEvents struct{ log []string }
 

@@ -227,7 +227,7 @@ type rig struct {
 }
 
 var allTools = []string{"terminal", "read_file", "write_file", "patch", "search_files", "memory", "skills_list", "skill_view",
-	"skill_manage", CronJobTool, "send_message", "mcp_core_msg_send", "mcp_core_fs_note"}
+	"skill_manage", CronJobTool, "send_message", "no_reply", "mcp_core_msg_send", "mcp_core_fs_note"}
 
 func newRig(t *testing.T, home string, now time.Time) *rig {
 	r := &rig{t: t, home: home, now: now, turns: &fakeTurns{}, sink: &sink{}}
@@ -380,7 +380,7 @@ func TestRealJobs(t *testing.T) {
 			status: "ok streak=0 err=\"\"", turn: []string{"Monitor Baseline (first run)", "FINDING beta owner=b", "[Scheduled job:", `The job loads the "crm-api" skill`, "Query Acme deals", "If findings only disappeared"},
 			deliver: "slack (home)|Two findings",
 			check: func(t *testing.T, c []turnCall) {
-				if slices.Contains(c[0].tools, CronJobTool) || slices.Contains(c[0].tools, "send_message") || !slices.Contains(c[0].tools, "terminal") || !slices.Contains(c[0].tools, "mcp_core_msg_send") {
+				if slices.Contains(c[0].tools, CronJobTool) || slices.Contains(c[0].tools, "send_message") || slices.Contains(c[0].tools, "no_reply") || !slices.Contains(c[0].tools, "terminal") || !slices.Contains(c[0].tools, "mcp_core_msg_send") {
 					t.Errorf("a job with no toolsets got %v", c[0].tools)
 				}
 				if !strings.HasPrefix(c[0].session, "cron-"+watch+"-") {

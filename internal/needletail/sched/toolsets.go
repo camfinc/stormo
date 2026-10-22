@@ -3,6 +3,8 @@ package sched
 import (
 	"slices"
 	"strings"
+
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 // CronJobTool is the scheduling tool's name (Hermes': its toolset is "cronjob").
@@ -17,13 +19,14 @@ var toolsets = map[string][]string{
 	"skills":    {"skills_list", "skill_view", "skill_manage"},
 	"memory":    {"memory"},
 	"cronjob":   {CronJobTool},
-	"messaging": {"send_message"},
+	"messaging": {messaging.SendTool},
 	"debugging": {"terminal", "read_file", "write_file", "patch", "search_files"},
 }
 
 // neverInCron are tools a scheduled run is never offered, as in Hermes: scheduling (a job that
-// makes jobs loops) and messaging (the run's reply is what gets delivered).
-var neverInCron = []string{CronJobTool, "send_message"}
+// makes jobs loops) and messaging (the run's reply is what gets delivered; no_reply has no
+// conversation to stay out of).
+var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool}
 
 // noTools is a tool list that names no tool: loop.Options.Tools empty means every tool.
 var noTools = []string{"(no tools)"}

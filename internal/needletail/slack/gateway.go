@@ -15,6 +15,9 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/loop"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
+	"github.com/camfinc/stormo/internal/needletail/sched"
+	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/gorilla/websocket"
 )
@@ -69,6 +72,9 @@ type Options struct {
 	// Exists is whether a conversation exists (sessions.Store.Root): a thread the agent has a
 	// session in is one it answers without a mention, across restarts.
 	Exists func(session string) bool
+	// Root is a session's conversation (sessions.Store.Root; nil: the session itself), so
+	// no_reply finds the turn it is called in whatever compaction did to the session.
+	Root func(session string) (string, bool)
 	// Channels are the channels the agent has conversations in (send_message's targets).
 	Channels func() []string
 	// AllowedUsers may talk to the agent (SLACK_ALLOWED_USERS); AllowAll lets anyone
@@ -110,7 +116,8 @@ type Gateway struct {
 	threads  *tsSet // threads the agent posted in or was mentioned in (channel:thread_ts)
 	ready    chan struct{}
 	wg       sync.WaitGroup
-	notes    sync.WaitGroup // the ❌ on messages a shutdown leaves unhandled
+	notes    sync.WaitGroup        // the ❌ on messages a shutdown leaves unhandled
+	running  map[string]*turnState // conversation root → the turn running in it
 	base     context.Context
 	cancel   context.CancelFunc
 	statusOn atomic.Bool
@@ -127,6 +134,10 @@ type job struct {
 }
 
 type worker struct{ pending []job }
+
+// turnState is a running turn as no_reply sees it: whether the agent was addressed directly (a DM
+// or a mention: always answered), and whether it asked to stay silent.
+type turnState struct{ direct, noReply bool }
 
 // New builds a gateway; Start connects it.
 func New(o Options) (*Gateway, error) {
@@ -167,7 +178,7 @@ func New(o Options) (*Gateway, error) {
 	if o.Dialer == nil {
 		o.Dialer = &websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
 	}
-	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{},
+	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{}, running: map[string]*turnState{},
 		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{})}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
@@ -585,7 +596,11 @@ func (g *Gateway) work(session string, w *worker) {
 		g.queued -= len(jobs)
 		g.mu.Unlock()
 		if input := g.input(session, jobs); input != "" {
-			g.turn(session, jobs[len(jobs)-1], input)
+			direct := false
+			for _, j := range jobs {
+				direct = direct || j.react
+			}
+			g.turn(session, jobs[len(jobs)-1], input, direct)
 		}
 	}
 }
@@ -617,9 +632,13 @@ func (g *Gateway) input(session string, jobs []job) string {
 // busyNote is posted when a message waited BusyWait for a turn.
 const busyNote = "I'm busy with other work right now and could not get to this message. Please send it again in a few minutes."
 
-// turn runs one turn for a thread and posts the reply in it: 👀 on the message while it runs
-// (a DM or a mention, as Hermes reacts), then ✅ or ❌, and the assistant status line.
-func (g *Gateway) turn(session string, j job, input string) {
+// turn runs one turn for a conversation and posts the reply: 👀 on the message while it runs (a
+// DM or a mention, as Hermes reacts), then ✅ or ❌, and the assistant status line. In a
+// conversation with other people the agent may stay out of it (a [SILENT] reply or no_reply):
+// nothing is posted and no reaction is left. A direct message (direct: a DM or a mention) is
+// always answered: a [SILENT] first or last line is dropped and the rest posted; a reply that
+// is nothing else posts nothing and is logged, its 👀 removed.
+func (g *Gateway) turn(session string, j job, input string, direct bool) {
 	ctx := g.base
 	if j.react {
 		g.react(j.channel, j.ts, "eyes", false)
@@ -641,9 +660,18 @@ func (g *Gateway) turn(session string, j job, input string) {
 		finish(false)
 		return
 	}
+	root := g.root(session)
+	state := &turnState{direct: direct}
+	g.mu.Lock()
+	g.running[root] = state
+	g.mu.Unlock()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
 	res, err := slot.Turn(ctx, input, loop.Options{})
 	slot.Release()
+	g.mu.Lock()
+	delete(g.running, root)
+	noReply := state.noReply
+	g.mu.Unlock()
 	g.status(j.channel, orDefault(j.thread, j.ts), "")
 	if err != nil {
 		g.logf("slack: %s: turn failed: %v", session, err)
@@ -655,8 +683,21 @@ func (g *Gateway) turn(session string, j job, input string) {
 		finish(false)
 		return
 	}
-	if strings.TrimSpace(res.Text) != "" {
-		if _, err := g.post(ctx, j.channel, j.thread, res.Text); err != nil {
+	text := res.Text
+	if noReply || sched.Silent(text) {
+		if !direct {
+			return // the agent stays out of a conversation between others
+		}
+		if text = withoutSilence(text); strings.TrimSpace(text) == "" {
+			g.logf("slack: %s: the agent chose not to answer a direct message; nothing posted", session)
+			if j.react {
+				g.react(j.channel, j.ts, "eyes", true)
+			}
+			return
+		}
+	}
+	if strings.TrimSpace(text) != "" {
+		if _, err := g.post(ctx, j.channel, j.thread, text); err != nil {
 			g.logf("slack: %s: reply not posted: %v", session, err)
 			finish(false)
 			return
@@ -664,6 +705,67 @@ func (g *Gateway) turn(session string, j job, input string) {
 	}
 	finish(true)
 }
+
+// withoutSilence is a reply with its silence token dropped where sched.Silent finds one: the
+// whole reply, or its first or last line.
+func withoutSilence(reply string) string {
+	lines := strings.Split(strings.TrimSpace(reply), "\n")
+	if len(lines) > 0 && sched.Silent(lines[0]) {
+		lines = lines[1:]
+	}
+	if len(lines) > 0 && sched.Silent(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (g *Gateway) root(session string) string {
+	if g.o.Root != nil {
+		if r, ok := g.o.Root(session); ok {
+			return r
+		}
+	}
+	return session
+}
+
+// Guidance is the system prompt's Slack section: when the agent may stay out of a
+// conversation.
+func (g *Gateway) Guidance() string {
+	return "## Slack\nYour final reply in a Slack conversation is posted there. In a channel or a thread with other people you " +
+		"may stay out of it when a message is not for you: people talking to each other, a thanks or an acknowledgement that " +
+		"needs no answer, a question someone else is already answering. Then reply exactly \"[SILENT]\" (or call " +
+		messaging.NoReplyTool + ") and nothing is posted. A direct message to you, or a message that mentions you, is always " +
+		"answered.\n\n"
+}
+
+// NoReplyTool lets the agent stay out of a Slack conversation with other people (the same as a
+// [SILENT] reply). It is refused in a DM or when the agent was mentioned, which are always
+// answered, and outside a Slack conversation.
+func (g *Gateway) NoReplyTool() tools.Tool {
+	return tools.Tool{Name: messaging.NoReplyTool, Schema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Description: "Stay out of this Slack conversation: nothing is posted for the message you are reading. Only in a channel or thread " +
+			"with other people, when the message is not for you; a DM or a message that mentions you is always answered. End your turn after it.",
+		Run: func(_ context.Context, env *tools.Env, _ json.RawMessage) (any, error) {
+			session := ""
+			if env != nil {
+				session = env.Session
+			}
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			state := g.running[g.root(session)]
+			switch {
+			case state == nil:
+				return nil, errors.New("no_reply only applies to a Slack conversation: answer normally")
+			case state.direct:
+				return nil, errors.New("you were written to directly (a DM or a mention): answer")
+			}
+			state.noReply = true
+			return map[string]any{"ok": true, "note": "Nothing will be posted for this message. End your turn now."}, nil
+		}}
+}
+
+// Tools are the gateway's tools: send_message and no_reply.
+func (g *Gateway) Tools() []tools.Tool { return []tools.Tool{g.SendTool(), g.NoReplyTool()} }
 
 // reserve waits for a turn slot: the thread's conversation busy elsewhere (an API turn) or the
 // agent's two turns taken are waited out, up to BusyWait.

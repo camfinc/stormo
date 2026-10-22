@@ -93,6 +93,9 @@ type Agent struct {
 	// Refresh, when set, runs as a turn starts, before the tools are offered: the Luau tools are
 	// found again, so a tool the agent wrote last turn is offered in this one.
 	Refresh func(ctx context.Context)
+	// Sections are further system prompt sections, each read every turn and placed before the
+	// current time (the Slack gateway's guidance).
+	Sections []func() string
 }
 
 // Options shape one turn.
@@ -414,7 +417,7 @@ func rowChars(m wire.Message) int {
 }
 
 // SystemPrompt is, in order: SOUL.md, the MEMORY block, the USER block, the skills index, the
-// shared-space instructions and the current time (§4.4).
+// shared-space instructions, the Sections (a channel's guidance) and the current time (§4.4).
 func (a *Agent) SystemPrompt() string {
 	var b strings.Builder
 	soul, err := os.ReadFile(filepath.Join(a.Cfg.Home, "SOUL.md"))
@@ -451,6 +454,9 @@ func (a *Agent) SystemPrompt() string {
 			fmt.Fprintf(&b, " and %s (your unit)", roots[1])
 		}
 		b.WriteString(". Read and write them with the file tools; never use another unit's directory.\n\n")
+	}
+	for _, section := range a.Sections {
+		b.WriteString(section())
 	}
 	loc := a.Cfg.Location
 	if loc == nil {

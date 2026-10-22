@@ -302,6 +302,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		Web:          &slack.Web{BaseURL: os.Getenv(SlackAPIEnv), BotToken: bot, AppToken: app},
 		Turns:        slackTurns{srv},
 		Exists:       func(session string) bool { _, ok := store.Root(session); return ok },
+		Root:         store.Root,
 		Channels:     func() []string { return slackChannels(store) },
 		AllowedUsers: users,
 		AllowAll:     strings.EqualFold(os.Getenv("SLACK_ALLOW_ALL_USERS"), "true"),
@@ -314,7 +315,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		rt.logger.Printf("slack: %v: the gateway is off", err)
 		return nil
 	}
-	rt.agent.Tools.Add(gw.SendTool())
+	rt.agent.Tools.Add(gw.Tools()...)
+	rt.agent.Sections = append(rt.agent.Sections, gw.Guidance)
 	rt.sched.SetDeliverer(gw)
 	gw.Start()
 	return gw
