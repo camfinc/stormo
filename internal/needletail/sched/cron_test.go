@@ -1,10 +1,13 @@
 package sched
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
 func at(s string) time.Time {
@@ -117,5 +120,32 @@ func TestParseSchedule(t *testing.T) {
 		if _, err := ParseSchedule(in); err == nil {
 			t.Errorf("%q parsed", in)
 		}
+	}
+}
+
+// The minimum gap holds across every daylight-saving change of the year ahead, not only the
+// ones of the first week: in Europe/Rome `0,59 1,3 * * *` made in October is a minute apart on
+// 2027-03-28 (01:59+01:00, then 03:00+02:00).
+func TestMinGapAcrossLaterDSTChanges(t *testing.T) {
+	rome, err := time.LoadLocation("Europe/Rome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 10, 21, 9, 0, 0, 0, rome)
+	for expr, want := range map[string]time.Duration{"0,59 1,3 * * *": time.Minute, "0 1,3 * * *": time.Hour, "0 9 * * *": 23 * time.Hour,
+		"30 2 * * *": 24 * time.Hour} {
+		c, err := ParseCron(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.MinGap(from, rome); got != want {
+			t.Errorf("%s: gap %s, want %s", expr, got, want)
+		}
+	}
+	r := bareRig(t, from)
+	r.s.o.Location = rome
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"create","schedule":"0,59 1,3 * * *","prompt":"x"}`); !failed {
+		t.Errorf("a schedule a minute apart in March accepted: %s", out)
 	}
 }

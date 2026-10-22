@@ -254,7 +254,9 @@ Needletail also bounds the agent's own jobs (Hermes does not): at most 20 (jobs 
 promoted from the agent's into agent.yaml no longer counts), a prompt of at most 8 KB, and no
 schedule that runs more often than every 5 minutes (an interval under 5 minutes, or a cron
 expression with two runs less than 5 minutes apart, measured from its first run on, however far
-away: `* * 15 * *` runs every minute of the 15th and is refused). The `deliver` and
+away: `* * 15 * *` runs every minute of the 15th and is refused; in elapsed time on the agent's
+wall clock, around every daylight-saving change of the year ahead: in Europe/Rome
+`0,59 1,3 * * *` runs at 01:59 and, a minute later, at 03:00 on the last Sunday of March). The `deliver` and
 `failure_deliver` it sets meet the messaging policy (§6), `origin` read as the chat the job was
 made from (else the home channel), as its deliveries read it. `cron/**` is not written by the file
 tools, nor, with needletail's uid split (docs/needletail.md §7), by the terminal or a job's

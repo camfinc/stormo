@@ -147,8 +147,9 @@ func (c *Cron) Matches(t time.Time) bool {
 // after from on, however far that is (`* * 15 * *` runs every minute of the 15th): the shortest
 // gap between two times of one day (every matching day has the same times), the night between
 // two matching days that follow each other (January 31st into February 1st) when there are any
-// within searchYears, and the runs of the eight days after the first one on loc's wall clock (a
-// DST change can shorten a gap). Zero when it has fewer than two runs.
+// within searchYears, and on loc's wall clock the runs of the eight days after the first one and
+// those around every change of loc's offset in the year after it (a DST change can shorten a gap,
+// in March as in the first week). Zero when it has fewer than two runs.
 func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
 	if loc == nil {
 		loc = time.UTC
@@ -184,15 +185,28 @@ func (c *Cron) MinGap(from time.Time, loc *time.Location) time.Duration {
 			}
 		}
 	}
-	end := first.AddDate(0, 0, 8)
-	prev := first
-	for n := 0; prev.Before(end) && n < 20000; n++ {
-		next := c.Next(prev, loc)
-		if next.IsZero() {
-			break
+	runs := func(from, end time.Time) { // the gaps between the runs from from to end
+		prev := c.Next(from, loc)
+		for n := 0; !prev.IsZero() && prev.Before(end) && n < 20000; n++ {
+			next := c.Next(prev, loc)
+			if next.IsZero() {
+				break
+			}
+			shorter(next.Sub(prev))
+			prev = next
 		}
-		shorter(next.Sub(prev))
-		prev = next
+	}
+	runs(first.Add(-time.Nanosecond), first.AddDate(0, 0, 8))
+	// every change of loc's offset in the year after the first run (a DST change shortens a gap
+	// whenever it comes): the runs from the day before it to the day after
+	f := first.In(loc)
+	for i := 0; i <= 366; i++ {
+		noon := time.Date(f.Year(), f.Month(), f.Day()+i, 12, 0, 0, 0, loc)
+		next := time.Date(f.Year(), f.Month(), f.Day()+i+1, 12, 0, 0, 0, loc)
+		_, before := noon.Zone()
+		if _, after := next.Zone(); before != after {
+			runs(noon.AddDate(0, 0, -1), next.AddDate(0, 0, 1))
+		}
 	}
 	return gap
 }
