@@ -83,8 +83,9 @@ func Parse(target string) (Target, error) {
 }
 
 // Policy is who the agent may message on its own. By default: the home channel (and a thread in
-// it), a channel or DM it has a conversation in, a thread it is engaged in (it has the thread's
-// session, posted there or was mentioned there), and the DM of a person allowed_users names. A
+// it), a channel it has a conversation in, a thread it is engaged in (it has the thread's
+// session, posted there or was mentioned there), and the DM of a person allowed_users names (by
+// their user id or the DM's channel id: a DM channel is a target only for such a person). A
 // broadcast (@channel, @here, @everyone, a user group) only when the call asks for one and the
 // config grants it (slack.broadcast).
 type Policy struct {
@@ -98,6 +99,9 @@ type Policy struct {
 	// Engaged is whether the agent is in a conversation: a channel (thread "") it has a
 	// conversation in, or a thread it is engaged in.
 	Engaged func(channel, thread string) bool
+	// DMUser is the person of a DM channel (D…): such a channel is that person's DM, a target
+	// only when AllowedUsers names them (nil: no DM channel is a target).
+	DMUser func(channel string) (string, error)
 }
 
 // ErrRefused wraps every policy refusal.
@@ -117,6 +121,23 @@ func (p Policy) Check(t Target, broadcast bool) (bool, error) {
 	case t.User != "":
 		if !slices.Contains(p.AllowedUsers, t.User) {
 			return false, fmt.Errorf("%w: %s is not in allowed_users", ErrRefused, t.User)
+		}
+	case strings.HasPrefix(t.Channel, "D") && t.Channel != p.Home:
+		// a DM channel is its person's DM (any thread of it): allowed_users decides, as for
+		// slack:<user>, whatever conversation the agent has there
+		user, err := "", error(nil)
+		if p.DMUser != nil {
+			user, err = p.DMUser(t.Channel)
+		}
+		switch {
+		case err != nil || user == "":
+			why := "whose DM it is could not be told"
+			if err != nil {
+				why += ": " + err.Error()
+			}
+			return false, fmt.Errorf("%w: %s is a DM, and %s", ErrRefused, t.Channel, why)
+		case !slices.Contains(p.AllowedUsers, user):
+			return false, fmt.Errorf("%w: %s is the DM of %s, who is not in allowed_users", ErrRefused, t.Channel, user)
 		}
 	case t.Channel == "" || t.Channel == p.Home:
 		if p.Home == "" {

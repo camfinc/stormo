@@ -254,6 +254,24 @@ func (w *Web) UserInfo(ctx context.Context, id string) (User, error) {
 	return out.User, err
 }
 
+// DMUser is the person of a DM channel (conversations.info's user; "" for a channel that is not a
+// DM).
+func (w *Web) DMUser(ctx context.Context, channel string) (string, error) {
+	var out struct {
+		Channel struct {
+			IsIM bool   `json:"is_im"`
+			User string `json:"user"`
+		} `json:"channel"`
+	}
+	if err := w.call(ctx, "conversations.info", w.BotToken, url.Values{"channel": {channel}}, &out); err != nil {
+		return "", err
+	}
+	if !out.Channel.IsIM {
+		return "", nil
+	}
+	return out.Channel.User, nil
+}
+
 // OpenDM is the DM channel with a user (conversations.open).
 func (w *Web) OpenDM(ctx context.Context, user string) (string, error) {
 	var out struct {

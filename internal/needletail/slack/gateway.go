@@ -120,6 +120,7 @@ type Gateway struct {
 	closing  bool
 	workers  map[string]*worker
 	users    map[string]string // user id → display name
+	dmUsers  map[string]string // DM channel → its person (the messaging policy)
 	warned   map[string]bool
 	queued   int    // messages in the workers, waiting or in the turn running (MaxQueued)
 	seen     *tsSet // events handled (channel:ts), against Slack's retries and message+app_mention
@@ -195,7 +196,7 @@ func New(o Options) (*Gateway, error) {
 	if o.Dialer == nil {
 		o.Dialer = &websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
 	}
-	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{}, running: map[string]*turnState{},
+	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{}, dmUsers: map[string]string{}, running: map[string]*turnState{},
 		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{})}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
@@ -380,6 +381,9 @@ func (g *Gateway) route(ev Message) bool {
 		return true
 	}
 	dm := ev.ChannelType == "im" || ev.ChannelType == "" && strings.HasPrefix(ev.Channel, "D")
+	if dm && ev.ChannelType == "im" && ev.User != "" {
+		g.rememberDM(ev.Channel, ev.User) // a DM's other person is whoever writes there
+	}
 	thread := ev.ThreadTS
 	if thread == "" {
 		thread = ev.TS
@@ -751,11 +755,17 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 	return left
 }
 
-// handlerReply posts a handler's reply in the conversation of the message it answers.
+// handlerReply posts a handler's reply in the conversation of the message it answers. A DM is
+// answered as the turn's reply would be (its author was admitted: under allow_all_users not
+// necessarily a person the policy lets the agent message on its own).
 func (g *Gateway) handlerReply(session string, j job, v messaging.Verdict) error {
 	target := messaging.Target{Platform: "slack", Channel: j.channel, Thread: j.thread}
 	text, err := g.beforeSend(g.base, messaging.Outgoing{Kind: messaging.KindHandlerReply, Session: session, Text: v.Text}, target)
 	if err != nil {
+		return err
+	}
+	if j.dm {
+		_, err = g.postAs(g.base, j.channel, j.thread, text, false)
 		return err
 	}
 	policy := g.Policy()

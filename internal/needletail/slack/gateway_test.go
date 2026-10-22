@@ -144,6 +144,7 @@ type rig struct {
 func newRig(t *testing.T, mod func(*Options), before ...func(*Gateway)) *rig {
 	r := &rig{t: t, fake: slacktest.New(t), turns: newTurns()}
 	r.fake.Names[alice] = "Alice"
+	r.fake.DMUsers[dm] = alice
 	o := Options{Web: &Web{BaseURL: r.fake.API(), BotToken: slacktest.BotToken, AppToken: slacktest.AppToken},
 		Turns: r.turns, Exists: r.turns.exists, AllowedUsers: []string{alice}, HomeChannel: home,
 		Channels: func() []string { return []string{dev} }, RetryEvery: 10 * time.Millisecond,
@@ -922,6 +923,32 @@ func TestNeutraliseLookalikes(t *testing.T) {
 	for _, keep := range []string{"[link](https://x.y)", "👨‍👩‍👧 family", "[slacker message] fine", "a [note] here"} {
 		if out := neutralise(keep); out != keep {
 			t.Errorf("changed: %q → %q", keep, out)
+		}
+	}
+}
+
+// A DM channel id is a person's DM: a target only when allowed_users lists that person by id,
+// even when the agent has a conversation there (allow_all_users lets anyone talk to it, never
+// makes anyone a target).
+func TestDMChannelNeedsAnAllowedUser(t *testing.T) {
+	const strangerDM = "D0STRANGE1"
+	r := newRig(t, func(o *Options) { o.AllowAll = true })
+	r.fake.DMUsers[strangerDM] = mallet
+	r.fake.Send("d1", slacktest.Event{Channel: strangerDM, ChannelType: "im", User: mallet, Text: "hi there", TS: "1700000160.000100"})
+	r.fake.WaitPosts(1, 5*time.Second)
+	reg := tools.NewRegistry(r.g.SendTool())
+	for target, ok := range map[string]bool{"slack:" + strangerDM: false, "slack:" + strangerDM + ":1700000160.000100": false, "slack:" + dm: true} {
+		out, failed := reg.Call(context.Background(), &tools.Env{Session: "api-1"}, "send_message", `{"target":"`+target+`","message":"x"}`)
+		if failed == ok {
+			t.Errorf("send_message %s: %v %s", target, failed, out)
+		}
+	}
+	for tg, ok := range map[sched.Target]bool{{Platform: "slack", Channel: strangerDM}: false, {Platform: "slack", Channel: dm}: true} {
+		if err := r.g.CheckTarget(tg); (err == nil) != ok {
+			t.Errorf("CheckTarget %v: %v", tg, err)
+		}
+		if err := r.g.Deliver(context.Background(), sched.Delivery{JobID: "mine", Target: tg, Text: "x"}); (err == nil) != ok {
+			t.Errorf("Deliver %v: %v", tg, err)
 		}
 	}
 }

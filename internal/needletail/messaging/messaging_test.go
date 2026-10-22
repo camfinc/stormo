@@ -32,9 +32,16 @@ func TestParse(t *testing.T) {
 // The default policy: the home channel (and its threads), a channel or thread the agent is in,
 // an allowed user's DM; a broadcast only when asked and granted.
 func TestPolicy(t *testing.T) {
-	engaged := map[string]bool{"C0DEVCHAN1:": true, "C0DEVCHAN1:1700000002.000100": true, "D0DMCHAN01:": true}
+	engaged := map[string]bool{"C0DEVCHAN1:": true, "C0DEVCHAN1:1700000002.000100": true, "D0DMCHAN01:": true, "D0STRANGE1:": true}
+	dms := map[string]string{"D0DMCHAN01": "U0ALLOWED1", "D0STRANGE1": "U0STRANGER", "D0OTHERDM1": "U0STRANGER"}
 	p := Policy{Home: "C0HOME0001", AllowedUsers: []string{"U0ALLOWED1", "*"},
-		Engaged: func(c, th string) bool { return engaged[c+":"+th] }}
+		Engaged: func(c, th string) bool { return engaged[c+":"+th] },
+		DMUser: func(c string) (string, error) {
+			if u, ok := dms[c]; ok {
+				return u, nil
+			}
+			return "", errors.New("channel_not_found")
+		}}
 	for _, ok := range []string{"slack", "slack:C0HOME0001", "slack:C0HOME0001:1700000009.000100", "slack:C0DEVCHAN1",
 		"slack:C0DEVCHAN1:1700000002.000100", "slack:U0ALLOWED1", "slack:D0DMCHAN01"} {
 		tg, _ := Parse(ok)
@@ -42,7 +49,9 @@ func TestPolicy(t *testing.T) {
 			t.Errorf("%s refused: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"slack:C0SECRET01", "slack:C0DEVCHAN1:1700000003.000100", "slack:U0STRANGER", "slack:D0OTHERDM1"} {
+	// a DM channel is its person's DM: allowed_users decides, a conversation there does not
+	for _, bad := range []string{"slack:C0SECRET01", "slack:C0DEVCHAN1:1700000003.000100", "slack:U0STRANGER", "slack:D0OTHERDM1",
+		"slack:D0STRANGE1", "slack:D0STRANGE1:1700000004.000100", "slack:D0UNKNOWN1"} {
 		tg, _ := Parse(bad)
 		if _, err := p.Check(tg, false); !errors.Is(err, ErrRefused) {
 			t.Errorf("%s: %v", bad, err)
@@ -61,6 +70,10 @@ func TestPolicy(t *testing.T) {
 	}
 	if _, err := (Policy{}).Check(home, false); err == nil {
 		t.Error("the home channel with none set")
+	}
+	dmTarget, _ := Parse("slack:D0DMCHAN01")
+	if _, err := (Policy{AllowedUsers: []string{"U0ALLOWED1"}, Engaged: func(string, string) bool { return true }}).Check(dmTarget, false); !errors.Is(err, ErrRefused) {
+		t.Errorf("a DM channel whose person cannot be told: %v", err)
 	}
 }
 

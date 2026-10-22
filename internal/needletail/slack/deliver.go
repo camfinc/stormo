@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
@@ -84,8 +85,9 @@ func (g *Gateway) channelFor(ctx context.Context, target string) (string, error)
 }
 
 // Policy is the messaging policy as this gateway applies it: the home channel, the channels and
-// threads the agent is engaged in, the DMs of the people allowed_users names (by id), and a
-// broadcast only with the config's grant (slack.broadcast).
+// threads the agent is engaged in, the DMs of the people allowed_users names (by id: a DM channel
+// is theirs only when its person is one of them), and a broadcast only with the config's grant
+// (slack.broadcast).
 func (g *Gateway) Policy() messaging.Policy {
 	users := []string{}
 	for _, u := range g.o.AllowedUsers {
@@ -93,16 +95,44 @@ func (g *Gateway) Policy() messaging.Policy {
 			users = append(users, u)
 		}
 	}
-	return messaging.Policy{Home: g.o.HomeChannel, AllowedUsers: users, Broadcast: g.o.Broadcast, Engaged: g.engaged}
+	return messaging.Policy{Home: g.o.HomeChannel, AllowedUsers: users, Broadcast: g.o.Broadcast, Engaged: g.engaged, DMUser: g.dmUser}
+}
+
+// dmUser is the person of a DM channel: the author the gateway saw write there, else Slack's
+// conversations.info (cached).
+func (g *Gateway) dmUser(channel string) (string, error) {
+	g.mu.Lock()
+	u, ok := g.dmUsers[channel]
+	g.mu.Unlock()
+	if ok {
+		return u, nil
+	}
+	ctx, cancel := context.WithTimeout(g.base, 10*time.Second)
+	defer cancel()
+	u, err := g.o.Web.DMUser(ctx, channel)
+	if err != nil {
+		return "", err
+	}
+	g.rememberDM(channel, u)
+	return u, nil
+}
+
+func (g *Gateway) rememberDM(channel, user string) {
+	if user == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.dmUsers) >= 5000 {
+		g.dmUsers = map[string]string{}
+	}
+	g.dmUsers[channel] = user
 }
 
 // engaged is whether the agent is in a conversation: a channel it has a conversation in (thread
-// ""), a DM it has its conversation in (any thread of it), or a thread it posted in, was
-// mentioned in or has the session of.
+// ""), or a thread it posted in, was mentioned in or has the session of. (A DM channel is never
+// asked: the policy decides it by its person, dmUser.)
 func (g *Gateway) engaged(channel, thread string) bool {
-	if strings.HasPrefix(channel, "D") {
-		return g.o.Exists(DMSessionID(channel)) || slices.Contains(g.known(), channel)
-	}
 	if thread == "" {
 		return slices.Contains(g.known(), channel)
 	}

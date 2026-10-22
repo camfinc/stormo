@@ -60,12 +60,15 @@ type Server struct {
 	RateLimit map[string]bool
 	// SlowUsers makes users.info for a user answer after a delay (set before the calls).
 	SlowUsers map[string]time.Duration
+	// DMUsers are the people of DM channels (conversations.info); a channel not listed is the DM
+	// conversations.open gives the user (D0<id> for U<id>).
+	DMUsers map[string]string
 }
 
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
-		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1}
+		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, connCh: make(chan struct{}, 16), nextTS: 1}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
@@ -144,6 +147,19 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		msgs := s.Replies[params["channel"]+":"+params["ts"]]
 		s.mu.Unlock()
 		reply(map[string]any{"ok": true, "messages": msgs})
+	case "conversations.info":
+		ch := params["channel"]
+		s.mu.Lock()
+		user := s.DMUsers[ch]
+		s.mu.Unlock()
+		if !strings.HasPrefix(ch, "D") {
+			reply(map[string]any{"ok": true, "channel": map[string]any{"id": ch, "is_channel": true}})
+			return
+		}
+		if user == "" {
+			user = "U" + strings.TrimPrefix(ch, "D0")
+		}
+		reply(map[string]any{"ok": true, "channel": map[string]any{"id": ch, "is_im": true, "user": user}})
 	case "conversations.open":
 		reply(map[string]any{"ok": true, "channel": map[string]any{"id": "D0" + strings.TrimPrefix(params["users"], "U")}})
 	case "chat.update", "reactions.add", "reactions.remove", "assistant.threads.setStatus":
