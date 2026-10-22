@@ -35,7 +35,7 @@ func jailFor(split bool, spec jail.Spec, abi func() (int, error), self func() (s
 	n, err := abi()
 	if err != nil {
 		logf(fmt.Sprintf("JAIL OFF: %v. The agent's commands (terminal, scheduled scripts, monitors) can read the whole "+
-			"container's filesystem and write wherever their user may (/tmp included); only the uid split keeps them out "+
+			"container's filesystem and write wherever their user may (/tmp too, unless the root filesystem is read-only); only the uid split keeps them out "+
 			"of the runtime's files. Run on a kernel with Landlock (5.13+, enabled) to confine them to the home and the shared layers.", err))
 		return jailState{state: "off: " + err.Error()}
 	}
