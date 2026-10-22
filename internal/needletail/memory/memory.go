@@ -96,6 +96,23 @@ func Parse(raw string) []string {
 	return out
 }
 
+// cleanEntries is entries without the bare § lines at their edges (stripBare), an entry left empty
+// dropped, and how many changed.
+func cleanEntries(entries []string) ([]string, int) {
+	n := 0
+	out := entries[:0:0]
+	for _, e := range entries {
+		c, changed := stripBare(e)
+		if changed {
+			n++
+		}
+		if c != "" {
+			out = append(out, c)
+		}
+	}
+	return out, n
+}
+
 // Format joins entries as the file stores them.
 func Format(entries []string) string { return strings.Join(entries, Delimiter) }
 
@@ -161,18 +178,31 @@ func (s *Store) load() (*state, error) {
 	} else {
 		st.use = loadUsage(s.Home)
 	}
+	dirty := []string{} // hot files to write again: an entry had a bare § line
 	for _, t := range targets {
 		p, _ := s.path(t)
 		body, err := os.ReadFile(p)
 		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
-		st.files[t] = Parse(string(body))
+		entries, cleaned := cleanEntries(Parse(string(body)))
+		st.files[t] = entries
+		if cleaned > 0 {
+			dirty = append(dirty, t)
+			s.logf("memory: %d entries of %s had a line holding only § at an edge (an empty entry, or a § first or last): dropped", cleaned, files[t])
+		}
 	}
 	if len(parsed.Bad) > 0 {
 		s.logf("memory: %d entries of %s are not records (kept as they are, after the records): fix or remove them by hand", len(parsed.Bad), RecordsFile)
 	}
 	write := false
+	if st.version != RecordsVersion {
+		dirty = nil
+	}
+	if st.version == RecordsVersion && (parsed.Repaired > 0 || parsed.Renamed > 0) {
+		write = true
+		s.logf("memory: %s mended: %d damaged entries repaired, %d repeated ids renamed", RecordsFile, parsed.Repaired, parsed.Renamed)
+	}
 	if st.version == RecordsVersion {
 		src := "boot"
 		if missing {
@@ -181,7 +211,7 @@ func (s *Store) load() (*state, error) {
 		var rep Reconciled
 		st.recs, rep = reconcile(st.recs, st.files, src, now)
 		if rep.Changed {
-			write = !missing || len(st.recs) > 0
+			write = write || !missing || len(st.recs) > 0
 		}
 		if rep.Created > 0 || rep.Demoted > 0 || rep.Rewritten > 0 {
 			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or an entry a reviewer rejected)",
@@ -201,6 +231,15 @@ func (s *Store) load() (*state, error) {
 		if err := fsx.WriteAtomicIn(s.recordsPath(), s.tmp(), []byte(FormatRecords(st.recs, st.bad)), 0o640); err != nil {
 			s.logf("memory: could not write %s: %v", RecordsFile, err)
 		}
+	}
+	for _, t := range dirty {
+		p, _ := s.path(t)
+		entries := texts(st.hot(t))
+		if err := fsx.WriteAtomicIn(p, s.tmp(), []byte(Format(entries)), 0o640); err != nil {
+			s.logf("memory: could not write %s: %v", files[t], err)
+			continue
+		}
+		st.files[t] = entries
 	}
 	st.prints = s.prints()
 	return st, nil

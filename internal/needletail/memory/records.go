@@ -244,17 +244,26 @@ type Records struct {
 	// Bad are entries that could not be read as records, kept verbatim so a rewrite never drops
 	// them (a hand edit gone wrong, a torn line): written back after the records.
 	Bad []string
+	// Repaired is how many damaged entries were mended (see repair); Renamed how many records got a
+	// new id because theirs repeated an earlier one's. Either way the file should be written again.
+	Repaired, Renamed int
 }
 
 var headerRe = regexp.MustCompile(`^<!-- (\{.*\}) -->$`)
 
 // ParseRecords reads RECORDS.md. It never fails: an entry it cannot read is kept in Bad. A record
-// whose id repeats an earlier one's is kept with a new id (the earlier keeps it).
+// whose id repeats an earlier one's is kept with a new id (the earlier keeps it; Renamed counts
+// them). Damage an earlier runtime could leave is mended (Repaired counts it): a bare § line at an
+// entry's edge is dropped, and a header with no text followed by a text with no header (a record
+// whose text began with a bare § line, read back as two entries) is one record again; a record so
+// mended that repeats another's text is a copy a boot made, and dropped.
 func ParseRecords(raw string, now time.Time) Records {
 	out := Records{Version: RecordsVersion}
 	ids := map[string]bool{}
-	for i, e := range strings.Split(raw, Delimiter) {
-		e = trim(e)
+	entries := strings.Split(raw, Delimiter)
+	var mended map[*Record]bool
+	for i := 0; i < len(entries); i++ {
+		e := trim(entries[i])
 		if e == "" {
 			continue
 		}
@@ -264,18 +273,113 @@ func ParseRecords(raw string, now time.Time) Records {
 				continue
 			}
 		}
+		if s, changed := stripBare(e); changed {
+			out.Repaired++
+			if e = s; e == "" {
+				continue
+			}
+		}
 		r, ok := parseRecord(e)
+		if !ok && headerOnly(e) {
+			// the text went to the next entry: join them back
+			for j := i + 1; j < len(entries); j++ {
+				next, _ := stripBare(trim(entries[j]))
+				if next == "" {
+					continue
+				}
+				if !strings.HasPrefix(next, "<!-- ") {
+					if r, ok = parseRecord(e + "\n" + next); ok {
+						out.Repaired++
+						i = j
+						if mended == nil {
+							mended = map[*Record]bool{}
+						}
+						mended[r] = true
+					}
+				}
+				break
+			}
+		}
 		if !ok {
 			out.Bad = append(out.Bad, e)
 			continue
 		}
 		if ids[r.ID] {
 			r.ID = newID(now, func(id string) bool { return ids[id] })
+			out.Renamed++
 		}
 		ids[r.ID] = true
 		out.Recs = append(out.Recs, r)
 	}
+	if len(mended) > 0 {
+		seen := map[string]bool{}
+		for _, r := range out.Recs {
+			if !mended[r] {
+				seen[r.Target()+"\x00"+r.key()] = true
+			}
+		}
+		out.Recs = slices.DeleteFunc(out.Recs, func(r *Record) bool {
+			if !mended[r] {
+				return false
+			}
+			k := r.Target() + "\x00" + r.key()
+			if seen[k] {
+				out.Repaired++
+				return true
+			}
+			seen[k] = true
+			return false
+		})
+	}
 	return out
+}
+
+// headerOnly: e is a record's header line and nothing else.
+func headerOnly(e string) bool {
+	return !strings.Contains(e, "\n") && headerRe.MatchString(strings.TrimRight(e, "\r"))
+}
+
+// bare is the delimiter's § as a line of its own.
+const bare = "§"
+
+// stripBare is text without the bare § lines at its edges (trimmed after each), and whether it
+// had any. Parse never leaves one inside an entry (it splits there), but an empty entry between
+// two delimiters, or a § first or last in a file, leaves one at an edge, and such a line next to
+// the delimiter's newlines would read as a delimiter of its own once written into RECORDS.md.
+func stripBare(text string) (string, bool) {
+	changed := false
+	for {
+		switch {
+		case text == bare:
+			return "", true
+		case strings.HasPrefix(text, bare+"\n"):
+			text = trim(text[len(bare)+1:])
+		case strings.HasSuffix(text, "\n"+bare):
+			text = trim(text[:len(text)-len(bare)-1])
+		default:
+			return text, changed
+		}
+		changed = true
+	}
+}
+
+// roundTrips: text, written as a record's text (after a newline, before the delimiter's), reads
+// back as itself.
+func roundTrips(text string) bool { return !strings.Contains("\n"+text+"\n", Delimiter) }
+
+// safeText is text as FormatRecords writes it: a bare § line (no entry point lets one in) becomes
+// "(§)", so it can never read back as a delimiter.
+func safeText(text string) string {
+	if roundTrips(text) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if l == bare {
+			lines[i] = "(" + bare + ")"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // recordHeader is a header's known keys (the fast path: a header with no other key).
@@ -349,11 +453,11 @@ func FormatRecords(recs []*Record, bad []string) string {
 		b.WriteString(Delimiter)
 		r.header(&b)
 		b.WriteByte('\n')
-		b.WriteString(r.Text)
+		b.WriteString(safeText(r.Text))
 	}
 	for _, e := range bad {
 		b.WriteString(Delimiter)
-		b.WriteString(e)
+		b.WriteString(safeText(e))
 	}
 	b.WriteByte('\n')
 	return b.String()

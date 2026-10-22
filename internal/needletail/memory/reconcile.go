@@ -48,7 +48,9 @@ func reconcile(recs []*Record, files map[string][]string, src string, now time.T
 	}
 	used := map[*Record]bool{}
 	for _, t := range targets {
-		for pos, e := range files[t] {
+		entries, _ := cleanEntries(files[t]) // load cleaned them; a caller that did not is not trusted
+		files[t] = entries
+		for pos, e := range entries {
 			var r *Record
 			for _, c := range byKey[t+"\x00"+Normalize(e)] {
 				if !used[c] {
