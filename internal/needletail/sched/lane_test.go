@@ -189,3 +189,76 @@ func TestWaitingGateExpires(t *testing.T) {
 		t.Errorf("%d script runs after the hour, want 2", n)
 	}
 }
+
+// A `run` on a job already in line keeps its place: the line moves on (here, the jobs' lane of
+// one is free again and both waiting jobs run, oldest first), never stalls with each job seeing
+// the other ahead of it, and the job's due time does not move back.
+func TestRunOnAWaitingJobKeepsTheLineMoving(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	a := gatedJob("a", "script", "data.sh")
+	b := strings.Replace(gatedJob("b", "script", "data.sh"), `"2026-10-21T08:00:00Z"`, `"2026-10-21T08:10:00Z"`, 1)
+	r := bareRig(t, t0, b, a)
+	writeScript(t, r.home, "data.sh", "echo data\n")
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	r.turns.lane = 1
+	r.turns.busy = true
+	r.tick() // both gates run, both wait in line
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"run","job_id":"a"}`); failed {
+		t.Fatal(out)
+	}
+	if got := r.job("a").Str("next_run_at"); got != "2026-10-21T08:00:00Z" {
+		t.Errorf("run moved a due job back: next %q", got)
+	}
+	r.turns.busy = false
+	r.advance(30 * time.Second)
+	r.tick()
+	r.tick()
+	if c := r.turns.taken(); len(c) != 2 || c[0].job != "a" || c[1].job != "b" {
+		t.Errorf("turns %+v: the line stalled", c)
+	}
+}
+
+// A waiting job whose kept gate result expired keeps its place in line while its gate runs
+// again: a later job does not take the lane before it.
+func TestExpiredGateKeepsItsPlace(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	a := gatedJob("a", "script", "slow.sh")
+	b := jobJSON("b", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:10:00Z"`)
+	r := bareRig(t, t0, a, b)
+	writeScript(t, r.home, "slow.sh", "sleep 0.3; echo data\n")
+	r.turns.lane = 1
+	r.turns.busy = true
+	r.tick()                    // a: gate, busy, waits with its result; b: busy, waits
+	r.advance(61 * time.Minute) // past a's next time: its kept result is stale
+	r.turns.busy = false
+	r.tick() // a's gate runs again; b must not take the lane meanwhile
+	r.tick()
+	if c := r.turns.taken(); len(c) != 2 || c[0].job != "a" || c[1].job != "b" {
+		t.Errorf("turns %+v: the later job went first", c)
+	}
+}
+
+// A job changed while its gate runs does not get that gate's result back: the update's change is
+// not mixed with output its old definition made.
+func TestUpdateDuringTheGateDropsItsResult(t *testing.T) {
+	t0, _ := time.Parse(time.RFC3339, t0String)
+	// an agent's own job (created_at stamped): its script can be updated
+	r := bareRig(t, t0, strings.Replace(gatedJob("a", "script", "old.sh"), `"deliver":"local"`, `"deliver":"local","created_at":"2026-10-20T09:00:00Z"`, 1))
+	writeScript(t, r.home, "old.sh", "sleep 0.3; echo old output\n")
+	writeScript(t, r.home, "new.sh", "echo new output\n")
+	reg := tools.NewRegistry(r.s.Tool(nil))
+	r.turns.busy = true
+	r.s.Tick()
+	time.Sleep(100 * time.Millisecond)
+	if out, failed := reg.Call(context.Background(), &tools.Env{}, CronJobTool, `{"action":"update","job_id":"a","script":"new.sh"}`); failed {
+		t.Fatal(out)
+	}
+	r.s.Wait()
+	r.turns.busy = false
+	r.due("a")
+	r.tick()
+	c := r.turns.taken()
+	if len(c) != 1 || strings.Contains(c[0].input, "old output") || !strings.Contains(c[0].input, "new output") {
+		t.Errorf("turns %+v", c)
+	}
+}

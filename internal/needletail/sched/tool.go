@@ -237,7 +237,11 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 			if _, err := s.nextRun(j, now); err != nil {
 				return false, fmt.Errorf("job %s cannot run: %v (update its schedule)", a.JobID, err)
 			}
-			j.Set("next_run_at", s.at(now))
+			// due now, unless it is already due (or waiting in line for the lane): its due time,
+			// and so its place in line, stays as it is
+			if next, ok := parseStamp(j.Str("next_run_at")); !ok || next.After(now) {
+				j.Set("next_run_at", s.at(now))
+			}
 			s.request(a.JobID) // running: once this run ends
 			kick = true
 		case "update":
@@ -252,6 +256,12 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 				return false, err
 			}
 		}
+		if action == "update" || action == "remove" || action == "pause" {
+			// a gate's result kept for the old definition is not this job's; under the file's
+			// lock, as a busy run's finish puts its job in line, so the result of a gate running
+			// now is checked against the changed definition (finish)
+			s.unwait(a.JobID)
+		}
 		result = view(j)
 		return true, nil
 	})
@@ -263,9 +273,6 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 		case s.kick <- struct{}{}:
 		default:
 		}
-	}
-	if action == "update" || action == "remove" || action == "pause" {
-		s.unwait(a.JobID) // a gate's result kept for the old definition is not this job's
 	}
 	if action == "remove" {
 		return map[string]any{"removed": a.JobID}, nil

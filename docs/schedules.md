@@ -71,11 +71,14 @@ proposal for review. (Needletail never lets the agent change what a repo job run
   the monitor's new output not stored until the turn holds its slot; it keeps its gate's result
   (the monitor's block, the script's output, the handlers' notes) and takes a slot on a later tick
   without running its scripts or handlers again, until its schedule's next time after it found
-  the lane busy, when the result is dropped and the gate runs again on fresh data; a `run` asked
-  meanwhile is that same due run. Due jobs start the longest due first, and a job that found the
-  lane busy keeps its place in line: a job due after it (with no script, or whose gate ends
-  first) does not take the lane before it. A `run` asked while a run ends is taken in the same
-  step that lets the job go: one more run, never lost and never two.
+  the lane busy, when the result is dropped and the gate runs again on fresh data (the job keeping
+  its place in line meanwhile); a result is also dropped when the job is updated, paused or
+  removed while its gate runs. A `run` asked meanwhile is that same due run: `run` on a job
+  already due (or in line) leaves its due time, and so its place, as it is. Due jobs start the
+  longest due first, and a job that found the lane busy keeps its place in line: a job due after
+  it (with no script, or whose gate ends first) does not take the lane before it (logged once),
+  and every job is compared at its own place, so the line always moves. A `run` asked while a
+  run ends is taken in the same step that lets the job go: one more run, never lost and never two.
 - `enabled: false` (`state: paused`) and `state: completed` jobs do not run.
 - A job whose next time cannot be computed (a schedule the engine does not run, such as
   needletail's `@hourly`, `mon#1`, `L` or a one-time `once` kind; an interval over 366 days; an

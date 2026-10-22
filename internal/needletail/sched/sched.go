@@ -253,9 +253,11 @@ func (s *Scheduler) settleRun(id string) bool {
 }
 
 // waiter is a due job in line for the jobs' lane: it found the lane busy (or an older job in
-// line). due is its place (its due time when it first found it busy); a gated job keeps its
-// gate's result, so its scripts do not run again while it waits, until its schedule's next time
-// after it found the lane busy (until), when the data may be stale and the gate runs again.
+// line). due is its place (its due time when it first found it busy, or an earlier one it was
+// due at since: a place is never given up while the job waits); a gated job keeps its gate's
+// result, so its scripts do not run again while it waits, until its schedule's next time after
+// it found the lane busy (until), when the data may be stale and the gate runs again (keeping
+// the job's place).
 type waiter struct {
 	due, until time.Time
 	gate       *gateResult
@@ -287,9 +289,19 @@ func (s *Scheduler) unwait(id string) {
 }
 
 // ahead is whether another job waits in line before a job due at due: the lane is theirs first.
+// Every job is compared at its place in line: a job in line at the earlier of its recorded place
+// and due (which it keeps from then on), the others at their recorded places. So two jobs never
+// both see the other ahead of them (a job whose due time moved since it got in line, by a `run`,
+// is still at its place), and the line always moves.
 func (s *Scheduler) ahead(id string, due time.Time) bool {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
+	if w := s.waiting[id]; w != nil {
+		if due.Before(w.due) {
+			w.due = due
+		}
+		due = w.due
+	}
 	for other, w := range s.waiting {
 		if other != id && (w.due.Before(due) || w.due.Equal(due) && other < id) {
 			return true
@@ -298,9 +310,15 @@ func (s *Scheduler) ahead(id string, due time.Time) bool {
 	return false
 }
 
+// yield logs (once until it changes) that a due job leaves the lane to an older one in line.
+func (s *Scheduler) yield(id string) {
+	s.warnOnce("yield:"+id, fmt.Sprintf("job %s is due but an older job waits for the jobs' turn: it goes first", id))
+}
+
 // cachedGate is the gate result a waiting job kept, while it is still fresh (before until). An
-// expired one leaves the line with its result: the job's gate runs again (holding no place while
-// it runs) and it comes back in line at its due time if the lane is still busy.
+// expired one is dropped but the job keeps its place in line: its gate runs again (the line
+// waits for it, as it would for the turn the job was about to take) and it takes the lane, or
+// comes back to its place if the lane is busy again.
 func (s *Scheduler) cachedGate(id string, now time.Time) *gateResult {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
@@ -309,7 +327,7 @@ func (s *Scheduler) cachedGate(id string, now time.Time) *gateResult {
 		return nil
 	}
 	if !now.Before(w.until) {
-		delete(s.waiting, id)
+		w.gate, w.until = nil, time.Time{}
 		return nil
 	}
 	return w.gate
@@ -370,6 +388,21 @@ func (s *Scheduler) nextRun(j *Job, from time.Time) (time.Time, error) {
 }
 
 func (s *Scheduler) at(t time.Time) string { return stamp(t.In(s.o.Location)) }
+
+// definitionKeys are what a job's gate result depends on: what it runs and how (its scripts,
+// prompt, skills, schedule), and what its on_schedule handlers are told about it.
+var definitionKeys = []string{"name", "prompt", "skills", "skill", "script", "monitor_script", "no_agent", "schedule",
+	"enabled_toolsets", "deliver", "failure_deliver", "model", "provider"}
+
+// sameDefinition is whether a and b are the same job definition (definitionKeys, as stored).
+func sameDefinition(a, b *Job) bool {
+	for _, k := range definitionKeys {
+		if string(a.raw[k]) != string(b.raw[k]) {
+			return false
+		}
+	}
+	return true
+}
 
 // Boot settles the file at start: a run a crash or restart cut short (running still set) is
 // recorded as failed, and a job with no next run gets one.
@@ -652,6 +685,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 	if agent && !gated {
 		due := dueAt(job, now)
 		if s.ahead(id, due) {
+			s.yield(id)
 			return // an older job waits for the lane: it goes first, this one stays due
 		}
 		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: job.Name()})
@@ -663,6 +697,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 			return
 		}
 		s.warnOnce("busy:"+id, "")
+		s.warnOnce("yield:"+id, "")
 		s.unwait(id)
 		slot = r
 	}
@@ -870,6 +905,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		if s.ahead(id, dueAt(j, s.o.Now())) {
 			// an older job waits for the lane: it goes first (the kick lets it try now, the lane
 			// may be free), and this one waits behind it with its gate's result
+			s.yield(id)
 			select {
 			case s.kick <- struct{}{}:
 			default:
@@ -891,6 +927,7 @@ func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, promp
 	id := j.ID()
 	s.unwait(id)
 	s.warnOnce("busy:"+id, "")
+	s.warnOnce("yield:"+id, "")
 	gate.commit()
 	runContext, scriptBlock := gate.runContext, gate.scriptBlock
 	if j.Str("model") != "" || j.Str("provider") != "" {
@@ -1085,8 +1122,12 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 					due = s.at(now)
 				}
 				live.Set("next_run_at", due)
-				if o.gate != nil {
+				// the gate's result is kept only for the definition it ran on: a job changed (or
+				// paused) while its gate ran runs its gate again
+				if o.gate != nil && live.Enabled() && sameDefinition(live, j) {
 					s.wait(id, dueAt(j, now), s.nextAfter(j, now), o.gate)
+				} else {
+					s.unwait(id)
 				}
 				return true, nil
 			}
