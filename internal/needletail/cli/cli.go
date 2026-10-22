@@ -28,6 +28,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/luau"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
+	"github.com/camfinc/stormo/internal/needletail/privsep"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
@@ -123,6 +124,12 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	_ = os.Setenv("HOME", cfg.Home)
 	logger := log.New(red.Writer(stderr), "", log.LstdFlags|log.LUTC)
 	logf := func(s string) { logger.Println(s) }
+	// Started as root (the image), the runtime lays the home out and drops to its own user before
+	// anything else touches the home; the agent's commands then run as another (§7).
+	split, err := privsep.Enter(cfg.Home, logf)
+	if err != nil {
+		return nil, err
+	}
 	// Scrub changes only this process' own copy of the env: the kernel still shows the env it
 	// started with in /proc/<pid>/environ, which a terminal command (same uid) could read.
 	if err := undumpable(); err != nil {
@@ -150,6 +157,9 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		LongestSecret:  red.Longest,
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
+	if split.Exec != nil {
+		env.Agent = &tools.User{UID: uint32(split.Exec.ExecUID), GID: uint32(split.Exec.RuntimeGID)}
+	}
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
@@ -163,7 +173,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger,
-		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout}}
+		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout}}
 	rt.setGuide()
 	// the guide comes first among the sections, before a channel's guidance
 	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)

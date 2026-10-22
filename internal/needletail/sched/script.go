@@ -50,7 +50,7 @@ func (s *Scheduler) runScript(ctx context.Context, script string) (bool, string)
 	cmd.Env = tools.CommandEnv(&env)
 	var stdout, stderr limited
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	tools.KillGroup(cmd)
+	tools.Command(cmd, &env) // as the agent's user, with the uid split
 	cmd.WaitDelay = 2 * time.Second
 	runErr := cmd.Run()
 	out := strings.TrimSpace(s.o.Env.Redact(stdout.String()))

@@ -31,8 +31,11 @@ COPY --from=build /out/needletail /usr/local/bin/needletail
 ENV AGENT_HOME=/opt/data \
     NEEDLETAIL_API_PORT=8642
 WORKDIR /opt/data
-# shared.PosixUID: the agent's home and its shared directories are owned by this uid.
-USER 10000:10000
+# No USER: the container starts as root and the runtime splits itself (docs/needletail.md §7).
+# It lays the home out, then runs as 10000:10000 (shared.PosixUID, the home's and the shared
+# space's owner) keeping only CAP_SETUID, CAP_SETGID and CAP_KILL, and starts everything the agent
+# executes (the terminal, scheduled scripts and monitors) as 10001:10000 with no capabilities.
+# Started as any other user it runs as that one user, without the split (logged).
 EXPOSE 8642
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/needletail", "healthcheck"]
 # The engine's Command is ["serve"]; the bench runs `needletail oneshot …` (the binary drops its

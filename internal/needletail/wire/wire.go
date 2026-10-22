@@ -323,3 +323,13 @@ type HTTPSecret struct {
 	Header   string `json:"header" yaml:"header"`
 	Template string `json:"template,omitempty" yaml:"template,omitempty"`
 }
+
+// Users of the runtime's container (docs/needletail.md §7). The runtime runs as RuntimeUID (the
+// shared space's owner, shared.PosixUID, which the adapter's Layout and the EFS access points
+// use) and owns its own state; everything the agent executes (the terminal, scheduled scripts
+// and monitors) runs as ExecUID with the runtime's group, so its files stay out of their reach.
+const (
+	RuntimeUID = 10000
+	RuntimeGID = 10000
+	ExecUID    = 10001
+)

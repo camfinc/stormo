@@ -4,4 +4,4 @@ package tools
 
 import "os/exec"
 
-func killGroup(*exec.Cmd) {}
+func command(*exec.Cmd, *User) {}

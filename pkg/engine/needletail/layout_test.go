@@ -5,8 +5,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/shared"
 )
 
 // testdata/classify.json pins every snapshot rule (docs/needletail.md §6, §8): a misclassified path
@@ -66,4 +68,22 @@ func TestClassify(t *testing.T) {
 	if l.Home != "/opt/data" || l.Schedules != "cron/jobs.json" || l.ScheduleSource != "" || l.SkillUsage != "skills/.usage.json" || l.RuntimeUID != 10000 {
 		t.Errorf("layout = %+v", l)
 	}
+}
+
+// The runtime's uid (the binary's, wire.RuntimeUID) is the Layout's, which rehydrate hands the
+// home to and the EFS access points use; the agent's commands run as another (wire.ExecUID).
+func TestRuntimeUsers(t *testing.T) {
+	l := New(mustInstance(t)).Layout()
+	if l.RuntimeUID != wire.RuntimeUID || l.RuntimeGID != wire.RuntimeGID || wire.RuntimeUID != shared.PosixUID || wire.ExecUID == wire.RuntimeUID {
+		t.Fatalf("layout %d:%d, wire %d:%d exec %d, shared %d", l.RuntimeUID, l.RuntimeGID, wire.RuntimeUID, wire.RuntimeGID, wire.ExecUID, shared.PosixUID)
+	}
+}
+
+func mustInstance(t *testing.T) *instance.Instance {
+	t.Helper()
+	inst, err := instance.Load(minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inst
 }

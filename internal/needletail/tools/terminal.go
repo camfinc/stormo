@@ -104,7 +104,7 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 		out.overlap = 2 * env.LongestSecret()
 	}
 	cmd.Stdout, cmd.Stderr = out, out
-	killGroup(cmd)
+	command(cmd, env.Agent)
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
 	res := terminalResult{Output: out.String(env.Redact)}
@@ -175,8 +175,9 @@ const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 // script): the scrubbed process env with HOME set to the agent's home.
 func CommandEnv(env *Env) []string { return terminalEnv(env) }
 
-// KillGroup runs cmd in its own process group, killed whole when cmd is cancelled (unix).
-func KillGroup(cmd *exec.Cmd) { killGroup(cmd) }
+// Command prepares cmd as one the agent runs (a schedule's script, as the terminal's): its own
+// process group, killed whole when cmd is cancelled, and env's Agent user (the uid split).
+func Command(cmd *exec.Cmd, env *Env) { command(cmd, env.Agent) }
 
 // terminalEnv is the scrubbed process env with HOME set to the agent's home and an explicit PATH:
 // the env's absolute entries, else DefaultPath. A relative entry ("", ".", "bin") would run what

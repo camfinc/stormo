@@ -45,7 +45,13 @@ type Env struct {
 	// Touched, set per call by the loop, is told the /shared paths a tool wrote another way than
 	// the file tools (a Luau tool through the core), so its tool_done hook names them.
 	Touched func(path string)
+	// Agent, when set, is the user the agent's commands run as (the terminal, a schedule's
+	// scripts): the uid split (docs/needletail.md §7). nil: the runtime's own.
+	Agent *User
 }
+
+// User is a uid and gid a command runs as.
+type User struct{ UID, GID uint32 }
 
 // Tool is one function the model may call.
 type Tool struct {
