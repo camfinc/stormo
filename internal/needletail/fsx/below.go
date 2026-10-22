@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -237,4 +238,60 @@ func ReadDirBelow(root, rel string) ([]os.DirEntry, error) {
 	ents, err := d.ReadDir(-1)
 	slices.SortFunc(ents, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	return ents, err
+}
+
+// WalkBelow walks the directory rel below root by descriptor, depth first in name order: fn is
+// called for every entry below it (not rel itself), with its path relative to root
+// (slash-separated). A directory is entered after fn returns nil for it (fs.SkipDir leaves it
+// out; fs.SkipAll ends the walk); a directory that cannot be opened is left out. Nothing is
+// followed: rel is reached as OpenDirBelow does, a symlink is passed to fn as itself, and each
+// directory is opened relative to its parent's descriptor with O_NOFOLLOW, so one swapped for a
+// symlink after it was listed is not entered (filepath.WalkDir and os.Root would read the
+// directory it points to). Only the error of opening rel is returned (or fn's).
+func WalkBelow(root, rel string, fn func(rel string, d fs.DirEntry) error) error {
+	fd, err := OpenDirBelow(root, rel, false)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	if rel == "." {
+		rel = ""
+	}
+	if err := walkFD(fd, filepath.Join(root, filepath.FromSlash(rel)), rel, fn); err != nil && err != fs.SkipAll {
+		return err
+	}
+	return nil
+}
+
+func walkFD(fd int, abs, rel string, fn func(string, fs.DirEntry) error) error {
+	dup, err := unix.Dup(fd)
+	if err != nil {
+		return nil
+	}
+	d := os.NewFile(uintptr(dup), abs)
+	ents, _ := d.ReadDir(-1)
+	d.Close()
+	slices.SortFunc(ents, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	for _, e := range ents {
+		p := path.Join(rel, e.Name())
+		err := fn(p, e)
+		switch {
+		case err == fs.SkipDir:
+			continue
+		case err != nil:
+			return err
+		case !e.IsDir():
+			continue
+		}
+		child, err := unix.Openat(fd, e.Name(), dirFlags, 0)
+		if err != nil {
+			continue // gone, or no longer a directory (a symlink now): not entered
+		}
+		err = walkFD(child, filepath.Join(abs, e.Name()), p, fn)
+		unix.Close(child)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

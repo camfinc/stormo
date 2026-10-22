@@ -54,7 +54,7 @@ func TestOpenNoFollow(t *testing.T) {
 	if err := writeFile(env, filepath.Join(real, "swapped.md"), []byte("x"), 0o644); err == nil {
 		t.Error("wrote through a symlink")
 	}
-	if _, _, err := openRead(filepath.Join(real, "swapped.md"), "swapped.md"); err == nil {
+	if _, _, err := openRead(env, filepath.Join(real, "swapped.md"), "swapped.md"); err == nil {
 		t.Error("read through a symlink")
 	}
 	// the flags themselves: the link is not followed even without the Lstat check before
@@ -64,5 +64,40 @@ func TestOpenNoFollow(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(target); string(b) != "keep" {
 		t.Errorf("target = %q", b)
+	}
+}
+
+// Every component of a read is opened without following a symlink, not only the last: a
+// directory the agent's commands swap for a symlink to the runtime's sessions/ after the path
+// was resolved is not read through (search_files would otherwise show a conversation).
+func TestReadNoFollowAncestor(t *testing.T) {
+	_, env := setup(t)
+	put := func(rel, body string) {
+		p := filepath.Join(env.Home, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("work/dir/notes.jsonl", "mine")
+	put("sessions/notes.jsonl", "a client's conversation")
+	real, err := env.Sandbox.Resolve("work/dir/notes.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the race: once resolved, work/dir becomes a link to sessions/
+	if err := os.Rename(filepath.Join(env.Home, "work", "dir"), filepath.Join(env.Home, "work", "old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(env.Home, "sessions"), filepath.Join(env.Home, "work", "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, err := openRead(env, real, "work/dir/notes.jsonl"); err == nil {
+		b := make([]byte, 64)
+		n, _ := f.Read(b)
+		_ = f.Close()
+		t.Errorf("read through a swapped ancestor: %q", b[:n])
 	}
 }

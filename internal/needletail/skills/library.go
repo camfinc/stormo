@@ -331,39 +331,34 @@ func (l *Library) View(session, name, file string) (*View, error) {
 // files is the skill's files other than SKILL.md, relative to its directory: regular files only,
 // hidden ones and nested skills left out.
 func (l *Library) files(s Skill) ([]string, bool) {
-	dir, err := l.real("skills/" + s.Dir)
-	if err != nil {
+	base := "skills/" + s.Dir
+	if _, err := l.real(base); err != nil {
 		return nil, false
 	}
 	out := []string{}
 	more := false
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if p == dir {
-			return nil
-		}
+	// walked by descriptor (fsx.WalkBelow): no symlink is followed, and a directory swapped for
+	// one while it is listed is not entered
+	_ = fsx.WalkBelow(l.Home, base, func(p string, d fs.DirEntry) error {
 		if strings.HasPrefix(d.Name(), ".") {
 			if d.IsDir() {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
 		if d.IsDir() {
-			if _, err := os.Lstat(filepath.Join(p, "SKILL.md")); err == nil {
-				return filepath.SkipDir // a skill of its own
+			if _, err := os.Lstat(filepath.Join(l.Home, filepath.FromSlash(p), "SKILL.md")); err == nil {
+				return fs.SkipDir // a skill of its own
 			}
 			return nil
 		}
-		rel, _ := filepath.Rel(dir, p)
-		rel = filepath.ToSlash(rel)
+		rel := strings.TrimPrefix(p, base+"/")
 		if !d.Type().IsRegular() || rel == "SKILL.md" {
 			return nil
 		}
 		if len(out) == viewFiles {
 			more = true
-			return filepath.SkipAll
+			return fs.SkipAll
 		}
 		out = append(out, rel)
 		return nil

@@ -126,6 +126,23 @@ func (s Sandbox) Below(resolved string) (root, rel string, ok bool) {
 	return root, filepath.ToSlash(rel), true
 }
 
+// Split is a resolved path as its root (resolved) and the path below it, "" for a root itself:
+// what a walk or a read by descriptor starts from (fsx.WalkBelow, fsx.OpenFileBelow).
+func (s Sandbox) Split(resolved string) (root, rel string, ok bool) {
+	if root, rel, ok := s.Below(resolved); ok {
+		return root, rel, true
+	}
+	for _, r := range append([]string{s.Home}, s.Shared...) {
+		if r == "" {
+			continue
+		}
+		if rr, err := evalExisting(filepath.Clean(r)); err == nil && resolved == rr {
+			return rr, "", true
+		}
+	}
+	return "", "", false
+}
+
 // Display is how a resolved path is shown to the model: relative to the home when inside it.
 func (s Sandbox) Display(resolved string) string {
 	if rel, ok := s.HomeRel(resolved); ok {

@@ -2,8 +2,11 @@ package fsx
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +73,51 @@ func TestBelowNeverFollows(t *testing.T) {
 		if err := WriteAtomicBelow(home, bad, tmp, nil, FilePerm); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// WalkBelow lists by descriptor: a symlink is passed as itself and never entered, and a
+// directory swapped for a symlink after it was listed (here, from inside the walk, as a command
+// racing it would) is not entered either, where filepath.WalkDir reads what the link points to.
+func TestWalkBelowFollowsNothing(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{"skills/a/SKILL.md", "skills/b/x/file.txt", "sessions/secret.jsonl"} {
+		p := filepath.Join(root, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "sessions"), filepath.Join(root, "skills", "link")); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	err := WalkBelow(root, "skills", func(rel string, d fs.DirEntry) error {
+		seen = append(seen, rel)
+		if rel == "skills/b/x" { // swapped once listed, before it is entered
+			if err := os.Rename(filepath.Join(root, "skills", "b", "x"), filepath.Join(root, "skills", "b", "old")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(root, "sessions"), filepath.Join(root, "skills", "b", "x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range seen {
+		if strings.Contains(s, "secret") {
+			t.Errorf("the walk read the runtime's sessions/ through a link: %v", seen)
+		}
+	}
+	if !slices.Contains(seen, "skills/a/SKILL.md") || !slices.Contains(seen, "skills/link") {
+		t.Errorf("seen %v", seen)
+	}
+	if err := WalkBelow(root, "skills/link", func(string, fs.DirEntry) error { return nil }); !errors.Is(err, ErrLink) {
+		t.Errorf("a walk started at a symlink: %v", err)
 	}
 }

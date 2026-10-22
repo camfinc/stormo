@@ -10,7 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"unicode"
@@ -53,36 +53,29 @@ var skipDirs = map[string]bool{"node_modules": true, "__pycache__": true, "site-
 
 // Index is every skill under home/skills, sorted by path. Hidden and dependency directories are
 // skipped; a SKILL.md without a name is listed by its directory. Only the front matter is read.
+// The tree is walked by descriptor (fsx.WalkBelow: no symlink is followed, a directory swapped
+// for one meanwhile is not entered), and each SKILL.md read the same way (readFront).
 func Index(home string) []Skill {
-	root := filepath.Join(home, "skills")
 	out := []Skill{}
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
+	_ = fsx.WalkBelow(home, "skills", func(rel string, d fs.DirEntry) error {
 		if d.IsDir() {
-			if p != root && (strings.HasPrefix(d.Name(), ".") || skipDirs[d.Name()]) {
-				return filepath.SkipDir
+			if strings.HasPrefix(d.Name(), ".") || skipDirs[d.Name()] {
+				return fs.SkipDir
 			}
 			return nil
 		}
-		if d.Name() != "SKILL.md" || !d.Type().IsRegular() || filepath.Dir(p) == root {
+		if d.Name() != "SKILL.md" || !d.Type().IsRegular() || path.Dir(rel) == "skills" {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > maxSkillFile {
-			return nil
-		}
-		rel, _ := filepath.Rel(home, p)
-		head, err := readFront(home, filepath.ToSlash(rel))
+		head, err := readFront(home, rel)
 		if err != nil {
 			return nil
 		}
 		s := front(head)
-		s.Path = filepath.ToSlash(rel)
+		s.Path = rel
 		s.Dir = strings.TrimSuffix(strings.TrimPrefix(s.Path, "skills/"), "/SKILL.md")
 		if s.Name == "" {
-			s.Name = filepath.Base(filepath.Dir(p))
+			s.Name = path.Base(path.Dir(rel))
 		}
 		out = append(out, s)
 		return nil
@@ -94,13 +87,17 @@ func Index(home string) []Skill {
 // readFront reads a SKILL.md up to the end of its front matter (the first "\n---" after the
 // opening "---"), at most maxSkillFile bytes: all front() looks at, without the body. It is read
 // by descriptor (rel below home, never through a symlink, a regular file only, non-blocking): a
-// FIFO a command swaps in would otherwise block every turn's index.
+// FIFO a command swaps in would otherwise block every turn's index. A SKILL.md over maxSkillFile
+// is not a skill.
 func readFront(home, rel string) ([]byte, error) {
 	f, err := fsx.OpenFileBelow(home, rel, os.O_RDONLY, 0, false)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil || info.Size() > maxSkillFile {
+		return nil, fmt.Errorf("%s is over %d bytes", rel, maxSkillFile)
+	}
 	buf := make([]byte, 0, 4096)
 	chunk := make([]byte, 4096)
 	for len(buf) < maxSkillFile {

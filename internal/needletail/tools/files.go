@@ -75,8 +75,11 @@ func writable(env *Env, p string) (string, error) {
 }
 
 // openRead opens a resolved path for reading: a regular file only (a FIFO would block the call,
-// and the turn with it, until a writer came), never through a symlink swapped in since Resolve.
-func openRead(real, display string) (*os.File, os.FileInfo, error) {
+// and the turn with it, until a writer came), never through a symlink swapped in since Resolve,
+// in any component: the file is reached by descriptor from its root (fsx.OpenFileBelow, every
+// directory and the file opened with O_NOFOLLOW), so a directory the agent's commands swap for a
+// link to the runtime's sessions/ or logs/ is not read through.
+func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
 	info, err := os.Lstat(real)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
@@ -87,8 +90,17 @@ func openRead(real, display string) (*os.File, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("%s is not a regular file", display)
 	}
-	f, err := os.OpenFile(real, os.O_RDONLY|oNoFollow|oNonblock, 0)
-	if err != nil {
+	root, rel, ok := env.Sandbox.Below(real)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s: %w", display, sandbox.ErrOutside)
+	}
+	f, err := fsx.OpenFileBelow(root, rel, os.O_RDONLY, 0, false)
+	switch {
+	case errors.Is(err, fsx.ErrLink):
+		return nil, nil, fmt.Errorf("%s: a symlink is in its path (the path changed after it was resolved)", display)
+	case errors.Is(err, fsx.ErrNotRegular):
+		return nil, nil, fmt.Errorf("%s is not a regular file", display)
+	case err != nil:
 		return nil, nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
 	}
 	got, err := f.Stat()
@@ -184,7 +196,7 @@ func readFileTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			out, err := readLines(real, env.Sandbox.Display(real), a.Offset, a.Limit)
+			out, err := readLines(env, real, env.Sandbox.Display(real), a.Offset, a.Limit)
 			if err == nil {
 				noteSkillRead(env, real)
 			}
@@ -201,8 +213,8 @@ type readResult struct {
 	Next       int    `json:"next_offset,omitempty"`
 }
 
-func readLines(real, display string, offset, limit int) (any, error) {
-	f, _, err := openRead(real, display)
+func readLines(env *Env, real, display string, offset, limit int) (any, error) {
+	f, _, err := openRead(env, real, display)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +367,7 @@ func patchTool() Tool {
 				return nil, err
 			}
 			display := env.Sandbox.Display(real)
-			f, info, err := openRead(real, display)
+			f, info, err := openRead(env, real, display)
 			if err != nil {
 				return nil, err
 			}
@@ -466,16 +478,14 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 	truncated := false
 	visited := 0
 	stop := errors.New("stop")
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable: skipped
-		}
+	// what one entry adds: a directory may be skipped, a regular file is matched
+	visit := func(p string, d fs.DirEntry) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if p != root && (skipDirs[d.Name()] || runtimeDir(env, p)) {
-				return filepath.SkipDir
+			if skipDirs[d.Name()] || runtimeDir(env, p) {
+				return fs.SkipDir
 			}
 			return nil
 		}
@@ -492,15 +502,28 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 				results = append(results, show)
 			}
 		} else if a.FileGlob == "" || nameMatch(a.FileGlob, d.Name()) {
-			grep(p, show, re, &results, a.Limit+1)
+			grep(env, p, show, re, &results, a.Limit+1)
 		}
 		if len(results) > a.Limit {
 			truncated = true
 			return stop
 		}
 		return nil
-	})
-	if err != nil && err != stop {
+	}
+	// the tree is walked by descriptor from its root (fsx.WalkBelow): a directory swapped for a
+	// symlink while the search runs is not entered, so the runtime's own directories stay out
+	if info, lerr := os.Lstat(root); lerr == nil && !info.IsDir() {
+		err = visit(root, fs.FileInfoToDirEntry(info))
+	} else {
+		top, rel, ok := env.Sandbox.Split(root)
+		if !ok {
+			return nil, fmt.Errorf("%s: %w", env.Sandbox.Display(root), sandbox.ErrOutside)
+		}
+		err = fsx.WalkBelow(top, rel, func(rel string, d fs.DirEntry) error {
+			return visit(filepath.Join(top, filepath.FromSlash(rel)), d)
+		})
+	}
+	if err != nil && err != stop && err != fs.SkipDir {
 		return nil, err
 	}
 	if len(results) > a.Limit {
@@ -529,8 +552,8 @@ func nameMatch(pattern, name string) bool {
 	return ok
 }
 
-func grep(p, show string, re *regexp.Regexp, results *[]string, max int) {
-	f, info, err := openRead(p, show)
+func grep(env *Env, p, show string, re *regexp.Regexp, results *[]string, max int) {
+	f, info, err := openRead(env, p, show)
 	if err != nil {
 		return
 	}
