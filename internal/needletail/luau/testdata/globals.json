@@ -222,6 +222,98 @@
       }
     },
     {
+      "name": "memory.search",
+      "global": "search_memory",
+      "params": [
+        {
+          "name": "query",
+          "type": "string"
+        },
+        {
+          "name": "opts",
+          "type": "table",
+          "optional": true
+        }
+      ],
+      "grant": "memory:read",
+      "wire": {
+        "name": "memory.search",
+        "global": "search_memory",
+        "params": [
+          "query",
+          "opts"
+        ]
+      }
+    },
+    {
+      "name": "memory.save",
+      "global": "save_memory",
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "opts",
+          "type": "table",
+          "optional": true
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.save",
+        "global": "save_memory",
+        "params": [
+          "text",
+          "opts"
+        ]
+      }
+    },
+    {
+      "name": "memory.update",
+      "global": "update_memory",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "fields",
+          "type": "table"
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.update",
+        "global": "update_memory",
+        "params": [
+          "id",
+          "fields"
+        ]
+      }
+    },
+    {
+      "name": "memory.delete",
+      "global": "delete_memory",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.delete",
+        "global": "delete_memory",
+        "params": [
+          "id"
+        ]
+      }
+    },
+    {
       "name": "message.send",
       "global": "send_message",
       "params": [
@@ -324,6 +416,7 @@
     "buffer",
     "collectgarbage",
     "core_call",
+    "delete_memory",
     "error",
     "getmetatable",
     "http_request",
@@ -348,6 +441,8 @@
     "read_file",
     "read_memory",
     "remove_file",
+    "save_memory",
+    "search_memory",
     "select",
     "send_message",
     "setmetatable",
@@ -360,6 +455,7 @@
     "typeof",
     "unlock",
     "unpack",
+    "update_memory",
     "utf8",
     "write_file",
     "xpcall"
@@ -384,7 +480,11 @@
     "json.null",
     "log",
     "memory",
+    "memory.delete",
     "memory.read",
+    "memory.save",
+    "memory.search",
+    "memory.update",
     "message",
     "message.send",
     "time",

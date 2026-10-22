@@ -87,6 +87,26 @@ func Bindings() []Binding {
 			Example: `core_call("msg_send", {to = "atlas", text = "fares updated"})`, Write: true, run: coreCall},
 		{Name: "memory.read", Global: "read_memory", Returns: "{memory = {…}, user = {…}}: the hot-memory entries",
 			Doc: "Reads the agent's memory (read-only; the memory tool changes it).", Grant: "fs.read:home", Example: `local m = read_memory()`, run: memoryRead},
+		{Name: "memory.search", Global: "search_memory", Params: []Param{{Name: "query", Type: "string", Doc: `words (synonyms and both languages help), "a phrase", word* a prefix; "" lists newest first`},
+			{Name: "opts", Type: "table", Optional: true, Doc: `{ids = {…}, kind = "…", tags = {…}, scope = "all|hot|archive", match = "any|all", since = "YYYY-MM-DD", include_expired = false, limit = 8}`}},
+			Returns: "{total, results}: the best records, each {id, kind, tags, hot, imp, created, updated, expires, pii, src, score, text, cut}",
+			Doc: "Searches the memory archive (every record, hot or not) by keyword, as memory_search does: BM25 with recency, importance and use; " +
+				"ids fetch records whole. memory:read is apart from fs.read:home, which only covers read_memory: the archive holds more client data than the prompt.",
+			Grant: "memory:read", Example: `local r = search_memory("cotización quote", {tags = {"cruceros"}})`, run: memorySearch},
+		{Name: "memory.save", Global: "save_memory", Params: []Param{{Name: "text", Type: "string", Doc: "the memory, one self-contained note (at most 1000 characters)"},
+			{Name: "opts", Type: "table", Optional: true, Doc: `{kind = "fact|preference|procedure|episode|user", tags = {…}, importance = 1-5, expires = "YYYY-MM-DD", force = false}`}},
+			Returns: `{status, id, similar}: status "created", "exists" (id: the same text's) or "similar" (similar: { {id, text, score} }, nothing saved)`,
+			Doc: "Saves a record to the memory archive (never the always-shown memory: hot is refused), marked as saved by this tool. " +
+				"exists: the same text is there (its id); similar: close records, nothing saved (update one, or save with force = true; " +
+				"their texts only with memory:read). Secret values are refused.",
+			Grant: "memory:write", Example: `local r = save_memory("Ana prefers balcony cabins.", {kind = "preference", tags = {"cruceros"}})`, Write: true, run: memorySave},
+		{Name: "memory.update", Global: "update_memory", Params: []Param{{Name: "id", Type: "string"},
+			{Name: "fields", Type: "table", Doc: `{text, kind, tags, importance, expires} to change (expires = "" clears it)`}},
+			Returns: "{id, kind, tags, imp, updated, …, text}: the record as changed",
+			Doc:     "Changes an archive record. A hot record (in the system prompt) is the model's: refused, as is any pin.",
+			Grant:   "memory:write", Example: `update_memory(id, {expires = "2026-12-31"})`, Write: true, run: memoryUpdate},
+		{Name: "memory.delete", Global: "delete_memory", Params: []Param{{Name: "id", Type: "string"}}, Returns: "{deleted = id}",
+			Doc: "Deletes an archive record (a hot one is refused).", Grant: "memory:write", Example: `delete_memory(id)`, Write: true, run: memoryDelete},
 		{Name: "message.send", Global: "send_message", Params: []Param{{Name: "target", Type: "string", Doc: "where to (send_message's targets)"}, {Name: "text", Type: "string"}},
 			Returns: "{platform, chat_id, message_id, home}",
 			Doc: "Sends a message (Markdown) through the runtime's messaging policy, as the send_message tool does: the home channel ('slack'), " +

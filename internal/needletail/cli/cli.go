@@ -195,7 +195,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger,
 		jail: js.state,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
-			ScriptTimeout: cfg.Limits.ScriptTimeout}}
+			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
 	rt.setGuide()
 	// the guide comes first among the sections, before a channel's guidance
 	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)

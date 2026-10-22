@@ -179,7 +179,8 @@ func TestGrantsRender(t *testing.T) {
 	}
 	// A bad grant is refused; message grants name send_message targets.
 	for g, ok := range map[string]bool{"exec:bash": false, "message:slack": true, "message:slack:*": true, "message:slack:C0DEVCHAN1:*": true,
-		"message:slack:C0DEVCHAN1:1700000002.000100": true, "message:*": true, "message:slack:#general": false, "message:": false} {
+		"message:slack:C0DEVCHAN1:1700000002.000100": true, "message:*": true, "message:slack:#general": false, "message:": false,
+		"memory:read": true, "memory:write": true, "memory:*": false, "memory:hot": false} {
 		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  grants: [\""+g+"\"]\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}

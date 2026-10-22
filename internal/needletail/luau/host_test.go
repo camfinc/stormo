@@ -452,6 +452,68 @@ func TestMemoryAndLog(t *testing.T) {
 	fails(t, rt, nil, `return send_message("slack", "hi")`, "denied")
 }
 
+// The archive's bindings: search_memory needs memory:read (fs.read:home is read_memory's only),
+// the writers memory:write; a script never pins nor touches a hot record, never saves a secret
+// value, and what it saves is marked as its own.
+func TestMemoryArchive(t *testing.T) {
+	rt, _ := newRuntime(t)
+	write(t, filepath.Join(rt.Home, "memories", "MEMORY.md"), "Hot lesson about quotes.")
+	both := []string{"memory:read", "memory:write"}
+	fails(t, rt, both, `return search_memory("quotes")`, "denied") // declared, not granted
+	rt.Grants = append(rt.Grants, "memory:write")
+	fails(t, rt, []string{"fs.read:home", "memory:write"}, `return search_memory("quotes")`, "denied")
+	res, _ := exec(t, rt, []string{"memory:write"}, `
+		local a = save_memory("Ana prefers balcony cabins on cruises.", {kind = "preference", tags = {"cruceros"}, importance = 4})
+		local b = save_memory("Ana prefers balcony cabins on cruises!", {})
+		return {a.status, b.status, b.similar[1].id == a.id, b.similar[1].text == nil}`)
+	wantValue(t, res, `["created", "similar", true, true]`)
+	rt.Grants = append(rt.Grants, "memory:read")
+	res, _ = exec(t, rt, both, `
+		local r = search_memory("balcony cabin cabins", {tags = {"cruceros"}})
+		local id = r.results[1].id
+		local hot = search_memory("", {scope = "hot"}).results[1]
+		update_memory(id, {expires = "2027-01-01", tags = {}})
+		local again = search_memory("", {ids = {id}}).results[1]
+		local ok1, e1 = pcall(update_memory, hot.id, {text = "x"})
+		local ok2, e2 = pcall(delete_memory, hot.id)
+		local ok3, e3 = pcall(update_memory, id, {hot = 1})
+		local ok4, e4 = pcall(save_memory, "pin me", {hot = true})
+		local ok5, e5 = pcall(save_memory, "the token is `+secret+`")
+		local ok6, e6 = pcall(delete_memory, "m000000000zz")
+		delete_memory(id)
+		return {r.total, r.results[1].src, again.expires, #again.tags, hot.text, ok1 or e1, ok2 or e2, ok3 or e3, ok4 or e4, ok5 or e5, ok6 or e6, search_memory("balcony").total}`)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	var got []any
+	_ = json.Unmarshal(res.Value, &got)
+	want := []string{"1", "luau:t", "2027-01-01", "0", "Hot lesson about quotes.", "refused:", "refused:", "refused:", "refused:", "refused:", "not_found:", "0"}
+	for i, w := range want {
+		if i >= len(got) || !strings.Contains(fmt.Sprint(got[i]), w) {
+			t.Errorf("value %d = %v, want %q (all %s)", i, got, w, res.Value)
+			break
+		}
+	}
+	if strings.Contains(string(res.Value), secret) {
+		t.Error("a secret was echoed")
+	}
+	if body, _ := os.ReadFile(filepath.Join(rt.Home, "memories", "MEMORY.md")); string(body) != "Hot lesson about quotes." {
+		t.Errorf("a script changed the hot file: %q", body)
+	}
+	// writes are refused in a dry run; the search is not
+	res, _, err := rt.Exec(context.Background(), Exec{Name: "t", Session: "s1", DryRun: true, Header: &Header{Format: 1, Caps: both},
+		Source: []byte(`local ok, e = pcall(save_memory, "dry note") return {ok, e, search_memory("quotes").total}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res.Value), "dry_run") {
+		t.Errorf("dry run = %s", res.Value)
+	}
+	if c, err := NewCaps([]string{"memory:read"}, []string{"memory:write"}); err != nil || c.Memory("read") || c.Memory("write") {
+		t.Errorf("memory:write grants read: %+v %v", c, err)
+	}
+}
+
 type fakeMessenger struct {
 	mu       sync.Mutex
 	sent     []messaging.Request

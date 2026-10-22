@@ -13,7 +13,8 @@ import "regexp"
 //	http:<host>   http:*.<suffix>  core:<tool>  core:<prefix>*
 //	message:<target>  message:<target prefix>:*  message:*   (send_message's targets: slack,
 //	                  slack:<channel>, slack:<channel>:<thread_ts>, slack:<user>)
-var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?|message:(\*|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?))$`)
+//	memory:read  memory:write   (the memory archive: search_memory; save, update, delete_memory)
+var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?|message:(\*|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?)|memory:(read|write))$`)
 
 // Contract versions.
 const (

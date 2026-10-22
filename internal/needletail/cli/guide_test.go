@@ -19,7 +19,7 @@ var updateGolden = flag.Bool("update", false, "rewrite testdata goldens")
 func TestGuideGolden(t *testing.T) {
 	full := guide{Home: "/opt/data", Shared: []string{"/shared/group", "/shared/sales"}, Split: true, Jailed: true, TmpDir: "/opt/data/.tmp", Luau: true,
 		Grants: []string{"fs.read:home", "fs.write:home", "core:msg_*", "http:api.example.com", "message:slack"}, LuauTimeout: 30, ScriptTimeout: 900,
-		Slack: true, Broadcast: false}
+		Slack: true, Broadcast: false, Recall: true}
 	got := full.render()
 	golden := filepath.Join("testdata", "guide.golden")
 	if *updateGolden {
@@ -59,6 +59,15 @@ func TestGuideGolden(t *testing.T) {
 		}
 	}
 	t.Logf("guide: %d bytes in full, %d without Luau and Slack", len(got), len(min))
+	// memory: the two tiers and their tools, always; recall only when it runs
+	for _, want := range []string{"## Memory\n", "memory_manage save", "memory_search", "RECORDS.md", "<memory-context>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the guide lacks %q", want)
+		}
+	}
+	if !strings.Contains(min, "memory_search") || strings.Contains(min, "<memory-context>") {
+		t.Errorf("a guide without recall:\n%s", min)
+	}
 	for _, want := range []string{"confined to your home and the shared directories", "/tmp and other units' directories", "$TMPDIR (`/opt/data/.tmp`, in your home)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the jailed guide lacks %q", want)
