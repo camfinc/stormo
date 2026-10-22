@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -200,6 +203,93 @@ func TestGlobals(t *testing.T) {
 		}
 	}
 	wantValue(t, run(t, strings.Join(checks, "\n")+"\nreturn true", nil), `true`)
+}
+
+var update = flag.Bool("update", false, "rewrite testdata/globals.json")
+
+// TestGlobalsGolden pins what a script sees: each binding's wire form (its name under nt, global
+// alias, parameters in order with their types, spread, grant, local and write) and the whole set
+// of globals. Agents' tools call these (the tool format is a contract, §8): a change here is a
+// contract change. go test -run TestGlobalsGolden -update rewrites the file.
+func TestGlobalsGolden(t *testing.T) {
+	type param struct {
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Optional bool   `json:"optional,omitempty"`
+	}
+	type binding struct {
+		Name   string  `json:"name"`
+		Global string  `json:"global,omitempty"`
+		Params []param `json:"params"`
+		Spread bool    `json:"spread,omitempty"`
+		Grant  string  `json:"grant,omitempty"`
+		Local  bool    `json:"local,omitempty"`
+		Write  bool    `json:"write,omitempty"`
+		Wire   any     `json:"wire"`
+	}
+	var got struct {
+		Bindings []binding `json:"bindings"`
+		Globals  []string  `json:"globals"`
+		NT       []string  `json:"nt"`
+	}
+	for _, b := range Bindings() {
+		gb := binding{Name: b.Name, Global: b.Global, Params: []param{}, Spread: b.Spread, Grant: b.Grant, Local: b.Local, Write: b.Write, Wire: b.wire()}
+		for _, p := range b.Params {
+			gb.Params = append(gb.Params, param{p.Name, p.Type, p.Optional})
+		}
+		got.Bindings = append(got.Bindings, gb)
+	}
+	// every global a script can name (its own globals table, then the frozen one behind it) and
+	// every key under nt, sorted
+	res := run(t, `
+		local seen, names = {}, {}
+		local function add(t)
+			for k in pairs(t) do if not seen[k] then seen[k] = true table.insert(names, tostring(k)) end end
+		end
+		add(_G)
+		local mt = getmetatable(_G)
+		if type(mt) == "table" and type(mt.__index) == "table" then add(mt.__index) end
+		table.sort(names)
+		local nt_keys = {}
+		local function walk(prefix, t)
+			for k, v in pairs(t) do
+				local name = prefix .. tostring(k)
+				table.insert(nt_keys, name)
+				if type(v) == "table" and k ~= "args" then walk(name .. ".", v) end
+			end
+		end
+		walk("", nt)
+		table.sort(nt_keys)
+		return {names, nt_keys}`, nil)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	var lists [2][]string
+	if err := json.Unmarshal(res.Value, &lists); err != nil {
+		t.Fatal(err)
+	}
+	got.Globals, got.NT = lists[0], lists[1]
+	b, err := json.MarshalIndent(got, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = append(b, '\n')
+	path := filepath.Join("testdata", "globals.json")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (go test -run TestGlobalsGolden -update writes it)", err)
+	}
+	if string(want) != string(b) {
+		t.Fatalf("what scripts see changed (a contract, §8); if on purpose, go test -run TestGlobalsGolden -update and review the diff:\n%s", b)
+	}
 }
 
 func TestReference(t *testing.T) {
