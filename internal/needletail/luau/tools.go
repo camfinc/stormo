@@ -37,6 +37,8 @@ type Exec struct {
 	Args   json.RawMessage
 	Entry  string
 	DryRun bool
+	// Script: a schedule's script (bounded by the script timeout, not the tools').
+	Script bool
 }
 
 // Exec runs x with its effective capabilities (declared ∩ granted). Value, output and error
@@ -52,7 +54,7 @@ func (rt *Runtime) Exec(ctx context.Context, x Exec) (*Result, *Call, error) {
 	}
 	call := rt.NewCall(x.Name, x.Session, caps, x.DryRun)
 	res, err := rt.Runner.Run(ctx, Request{Name: x.Name, Source: x.Source, Entry: x.Entry, Args: x.Args, Bindings: Bindings(),
-		Host: call, Timeout: rt.timeout(x.Header)})
+		Host: call, Timeout: rt.timeout(x.Header, x.Script)})
 	if err != nil {
 		return nil, call, err
 	}
@@ -372,7 +374,7 @@ func (rt *Runtime) RunScript(ctx context.Context, real, name string) (bool, stri
 	if err != nil {
 		return false, fmt.Sprintf("script %s: %v", name, err)
 	}
-	res, call, err := rt.Exec(ctx, Exec{Name: name, Session: "schedule", Source: body, Header: h})
+	res, call, err := rt.Exec(ctx, Exec{Name: name, Session: "schedule", Source: body, Header: h, Script: true})
 	if err != nil {
 		return false, fmt.Sprintf("script %s: %v", name, err)
 	}

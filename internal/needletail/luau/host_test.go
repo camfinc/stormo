@@ -809,6 +809,65 @@ func TestHeaderCloseIsLuaus(t *testing.T) {
 	}
 }
 
+// recorder is a Runner that keeps each run's bound.
+type recorder struct {
+	Runner
+	mu       sync.Mutex
+	timeouts []time.Duration
+}
+
+func (r *recorder) Run(ctx context.Context, req Request) (*Result, error) {
+	r.mu.Lock()
+	r.timeouts = append(r.timeouts, req.Timeout)
+	r.mu.Unlock()
+	return r.Runner.Run(ctx, req)
+}
+
+func (r *recorder) last() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.timeouts[len(r.timeouts)-1]
+}
+
+// A tool the model calls is bounded by limits.luau_timeout (30 s by default), not by the
+// schedules' script_timeout, which agents set to many minutes; a header may only lower either.
+func TestToolTimeout(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rec := &recorder{Runner: rt.Runner}
+	rt.Runner = rec
+	rt.ScriptTimeout = 900 * time.Second
+	skill(t, rt.Home, "ops/fares", map[string]string{"tools/slow.luau": "--[[needletail\nformat: 1\nname: slow\ndescription: s\n]]\nreturn function() return 1 end\n",
+		"tools/quick.luau": "--[[needletail\nformat: 1\nname: quick\ndescription: q\ntimeout: 2s\n]]\nreturn function() return 1 end\n",
+		"tools/long.luau":  "--[[needletail\nformat: 1\nname: long\ndescription: l\ntimeout: 5m\n]]\nreturn function() return 1 end\n"})
+	runTool := func(name string) time.Duration {
+		t.Helper()
+		for _, tl := range rt.Tools(context.Background(), nil) {
+			if tl.Name == name {
+				if _, err := tl.Run(context.Background(), &tools.Env{Session: "s1"}, json.RawMessage(`{}`)); err != nil {
+					t.Fatal(err)
+				}
+				return rec.last()
+			}
+		}
+		t.Fatalf("no tool %s", name)
+		return 0
+	}
+	if got := runTool("fares__slow"); got != DefaultTimeout {
+		t.Errorf("a tool's bound with luau_timeout unset: %s", got)
+	}
+	rt.LuauTimeout = 10 * time.Second
+	for name, want := range map[string]time.Duration{"fares__slow": 10 * time.Second, "fares__quick": 2 * time.Second, "fares__long": 10 * time.Second} {
+		if got := runTool(name); got != want {
+			t.Errorf("%s: %s, want %s", name, got, want)
+		}
+	}
+	// a schedule's script keeps script_timeout
+	write(t, filepath.Join(rt.Home, "scripts", "s.luau"), "--[[needletail\nformat: 1\n]]\nreturn 1\n")
+	if ok, out := rt.RunScript(context.Background(), filepath.Join(rt.Home, "scripts", "s.luau"), "s.luau"); !ok || rec.last() != 900*time.Second {
+		t.Errorf("script: %v %s, bound %s", ok, out, rec.last())
+	}
+}
+
 func TestRunScript(t *testing.T) {
 	rt, _ := newRuntime(t)
 	dir := filepath.Join(rt.Home, "scripts")

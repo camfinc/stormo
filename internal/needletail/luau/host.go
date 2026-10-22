@@ -62,7 +62,10 @@ type Runtime struct {
 	// http_secrets values are masked besides, in any JSON spelling: redact.go).
 	Redact func(string) string
 	Log    func(string)
-	// ScriptTimeout bounds a run (limits.script_timeout); a header's timeout may only lower it.
+	// LuauTimeout bounds a tool's run, as the model calls it or luau_test does
+	// (limits.luau_timeout); ScriptTimeout a schedule's .luau script (limits.script_timeout). A
+	// header's timeout may only lower either; unset, each is DefaultTimeout.
+	LuauTimeout   time.Duration
 	ScriptTimeout time.Duration
 	Now           func() time.Time
 
@@ -95,8 +98,11 @@ func (rt *Runtime) now() time.Time {
 	return time.Now()
 }
 
-func (rt *Runtime) timeout(h *Header) time.Duration {
-	t := rt.ScriptTimeout
+func (rt *Runtime) timeout(h *Header, script bool) time.Duration {
+	t := rt.LuauTimeout
+	if script {
+		t = rt.ScriptTimeout
+	}
 	if t <= 0 {
 		t = DefaultTimeout
 	}

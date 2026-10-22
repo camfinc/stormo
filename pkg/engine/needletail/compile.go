@@ -29,8 +29,14 @@ type agentConfig struct {
 	Luau     struct {
 		Grants      []string          `yaml:"grants"`
 		HTTPSecrets []wire.HTTPSecret `yaml:"http_secrets"`
+		// Timeout bounds a Luau tool the model calls, in seconds (needletail.yaml
+		// limits.luau_timeout; the runtime's default when 0). Schedules keep script_timeout.
+		Timeout int `yaml:"timeout"`
 	} `yaml:"luau"`
 }
+
+// maxLuauTimeout is the longest luau.timeout (a tool header's own longest, luau.MaxTimeout).
+const maxLuauTimeout = 600
 
 func readAgentConfig(dir string) (*agentConfig, error) {
 	c := &agentConfig{}
@@ -61,6 +67,9 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: http_secrets entries need host, header and an env var name", ConfigFile)
 		}
 	}
+	if c.Luau.Timeout < 0 || c.Luau.Timeout > maxLuauTimeout {
+		return nil, fmt.Errorf("%s: luau.timeout %d must be seconds, 1 to %d (0 or unset: the runtime's 30)", ConfigFile, c.Luau.Timeout, maxLuauTimeout)
+	}
 	return c, nil
 }
 
@@ -76,7 +85,7 @@ func onCore(a *manifest.Agent, target manifest.Target) bool {
 func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.Target, core manifest.CoreEndpoints, ac *agentConfig) wire.Config {
 	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
 	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
-		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout},
+		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout},
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit}}
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}

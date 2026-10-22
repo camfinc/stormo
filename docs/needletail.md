@@ -145,12 +145,12 @@ The runtime is the process `needletail serve`, running as uid 10000 with `HOME=$
 `$AGENT_HOME/needletail.yaml` is rendered by Compile and read once at boot. It holds:
 - `model`: `primary {base_url, key_env, model}` and `fallbacks[]`
 - `reasoning`
-- `limits {turns, command_timeout, script_timeout}`
+- `limits {turns, command_timeout, script_timeout, luau_timeout}`: `script_timeout` (default 30 s) bounds a schedule's `.luau` script, `luau_timeout` (default 30 s) a Luau tool the model calls or `luau_test` runs, so an agent whose schedules need many minutes does not give every interactive tool call as long
 - `core {mcp_url, ingest_url, key_env: SWARM_CORE_KEY}`, only when on core
 - `channels`
 - memory budgets
 - `skills {generated}`: the skill dirs the build generates from the instance (the knowledge and shared-docs skills, from `CompileContext.Knowledge`), which `skill_manage` refuses to change (from M3)
-- `luau {grants, http_secrets}` and `timezone` (the agent's wall clock, an IANA name; unset: the container's `TZ`, else UTC), taken from the agent's `engine/needletail/config.yaml`, which only the adapter reads (a Hermes agent's `timezone:` moves there from `engine/hermes/config.yaml` at cutover)
+- `luau {grants, http_secrets, timeout}` (`timeout`, seconds, 1 to 600, is rendered as `limits.luau_timeout`) and `timezone` (the agent's wall clock, an IANA name; unset: the container's `TZ`, else UTC), taken from the agent's `engine/needletail/config.yaml`, which only the adapter reads (a Hermes agent's `timezone:` moves there from `engine/hermes/config.yaml` at cutover)
 
 ### 4.2 Secrets
 
@@ -349,7 +349,7 @@ Fallback, only if profiling shows CPU-bound use: a cgo wrapper over the vendored
 
 **Host side** (`luau.Engine`, behind the `luau.Runner` interface: `Check(src)` and `Run(Request)`)
 - One `wazero.Runtime` per process (the interpreter, §5.1), configured with `WithMemoryLimitPages(1024)` (64 MiB) and `WithCloseOnContextDone(true)`.
-- The module is compiled once. Each run gets a **fresh instance**, closed half a second after its timeout (`limits.script_timeout`, default 30 s; a tool's header may only lower it), whatever it runs.
+- The module is compiled once. Each run gets a **fresh instance**, closed half a second after its timeout, whatever it runs: `limits.luau_timeout` for a tool the model calls (and `luau_test`), `limits.script_timeout` for a schedule's script, each 30 s by default; a header's `timeout` may only lower it.
 - WASI has no preopens, no env, no args and a real monotonic clock (the wall clock is wazero's fixed fake: `os.time()` asks the host). stdout and stderr are each capped at 64 KiB.
 - A `Request` names the source, the bindings it gets (§5.3), JSON args and an **entry**: empty calls the function the chunk returns (a tool), a name calls that field of the table the chunk returns, else the global function the script defined (event handlers such as `on_message`, M6b), with the JSON argument, and returns its JSON result. A chunk that returns no function returns its result.
 - A run fails with a code: `syntax`, `runtime`, `timeout`, `budget`, `memory`, `entry`, `too_large`, `cancelled` or `trap` (the module stopped).

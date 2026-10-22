@@ -25,6 +25,7 @@ const (
 	DefaultTurns          = 90
 	DefaultCommandTimeout = 180 // seconds
 	DefaultScriptTimeout  = 30  // seconds
+	DefaultLuauTimeout    = 30  // seconds: a Luau tool the model calls
 	DefaultPort           = 8642
 	DefaultHome           = "/opt/data"
 	DefaultSharedDir      = "/shared"
@@ -81,6 +82,9 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	}
 	if c.Limits.ScriptTimeout <= 0 {
 		c.Limits.ScriptTimeout = DefaultScriptTimeout
+	}
+	if c.Limits.LuauTimeout <= 0 {
+		c.Limits.LuauTimeout = DefaultLuauTimeout
 	}
 	if c.Memory.MemoryCharLimit <= 0 {
 		c.Memory.MemoryCharLimit = DefaultMemoryLimit

@@ -266,6 +266,9 @@ type Limits struct {
 	Turns          int `json:"turns,omitempty" yaml:"turns,omitempty"`
 	CommandTimeout int `json:"command_timeout,omitempty" yaml:"command_timeout,omitempty"`
 	ScriptTimeout  int `json:"script_timeout,omitempty" yaml:"script_timeout,omitempty"`
+	// LuauTimeout bounds a Luau tool the model calls (a schedule's .luau script has
+	// ScriptTimeout); a tool's header may only lower it.
+	LuauTimeout int `json:"luau_timeout,omitempty" yaml:"luau_timeout,omitempty"`
 }
 
 // CoreConfig is the swarm core, set only when the agent runs on it.

@@ -191,6 +191,34 @@ func TestGeneratedSkills(t *testing.T) {
 
 // engine/needletail/config.yaml's timezone (the one Hermes keeps in engine/hermes/config.yaml)
 // reaches needletail.yaml; a zone that does not exist is refused at build.
+// luau.timeout (seconds) bounds the tools the model calls: limits.luau_timeout, apart from the
+// schedules' script_timeout.
+func TestLuauTimeoutRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  timeout: 45\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, a := atlas(t)
+	a.Limits.ScriptTimeout = 900
+	conn, _ := inst.Connection(a.Engine.Provider)
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+	if c.Limits.LuauTimeout != 45 || c.Limits.ScriptTimeout != 900 {
+		t.Errorf("limits = %+v", c.Limits)
+	}
+	if c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{}); c.Limits.LuauTimeout != 0 {
+		t.Errorf("unset: %+v", c.Limits)
+	}
+	for _, bad := range []string{"-1", "601", "30s"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("luau:\n  timeout: "+bad+"\n"), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("luau.timeout %s accepted", bad)
+		}
+	}
+}
+
 func TestTimezoneRender(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)

@@ -19,7 +19,8 @@ func TestLoadGoldenHome(t *testing.T) {
 	if c.Agent != "atlas" || c.Model.Primary.KeyEnv != "OPENROUTER_API_KEY" || c.Model.Primary.Model != "openai/gpt-6-luna" {
 		t.Errorf("config = %+v", c.Config)
 	}
-	if c.Limits.Turns != DefaultTurns || c.Limits.CommandTimeout != DefaultCommandTimeout || c.Memory.MemoryCharLimit != 2200 {
+	if c.Limits.Turns != DefaultTurns || c.Limits.CommandTimeout != DefaultCommandTimeout || c.Limits.LuauTimeout != DefaultLuauTimeout ||
+		c.Limits.ScriptTimeout != DefaultScriptTimeout || c.Memory.MemoryCharLimit != 2200 {
 		t.Errorf("defaults = %+v %+v", c.Limits, c.Memory)
 	}
 	if c.Port != 9000 || c.SharedDir != "/shared" || len(c.SharedRoots()) != 2 || c.SharedRoots()[1] != "/shared/sales" {
