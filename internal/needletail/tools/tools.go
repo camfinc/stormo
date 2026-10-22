@@ -69,6 +69,9 @@ type Tool struct {
 	// Hook is the name observers (the core's hooks, the bench) see; "" is Name. Luau tools are
 	// luau:<name>.
 	Hook string
+	// HookArgs, when set, is the arguments as observers see them (the memory tools: metadata
+	// only, never a memory's text); nil: as called.
+	HookArgs func(args string) string
 }
 
 // ObservedName is the name observers see.

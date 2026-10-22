@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
@@ -37,6 +38,54 @@ func memorySource(env *Env) string {
 	}
 	return "chat:" + env.Session
 }
+
+// metadata is a memory tool call's arguments as observers (the core's hooks) see them: the keys
+// keep lists their values may take (anything else is "other"), ids an id's form, flags and
+// numbers as they are, counts the size of lists, has the presence of a text; nothing else. A
+// memory's text, its tags and a query are client data, which no hook carries.
+func metadata(keep map[string][]string, ids []string, flags []string, counts []string, has []string) func(string) string {
+	return func(args string) string {
+		var m map[string]any
+		if json.Unmarshal([]byte(args), &m) != nil || m == nil {
+			return "{}"
+		}
+		out := map[string]any{}
+		for k, allowed := range keep {
+			if v, ok := m[k].(string); ok {
+				if slices.Contains(allowed, v) {
+					out[k] = v
+				} else {
+					out[k] = "other"
+				}
+			}
+		}
+		for _, k := range ids {
+			if v, ok := m[k].(string); ok && memory.ValidID(strings.TrimSpace(v)) {
+				out[k] = strings.TrimSpace(v)
+			}
+		}
+		for _, k := range flags {
+			switch v := m[k].(type) {
+			case bool, float64:
+				out[k] = v
+			}
+		}
+		for _, k := range counts {
+			if v, ok := m[k].([]any); ok {
+				out[k+"_count"] = len(v)
+			}
+		}
+		for _, k := range has {
+			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+				out["has_"+k] = true
+			}
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+}
+
+var memoryKinds = []string{"fact", "preference", "procedure", "episode", "user"}
 
 func memoryTool() Tool {
 	return Tool{
@@ -93,6 +142,7 @@ func memoryTool() Tool {
 			}
 			return map[string]any{"success": true, "target": u.Target, "entries": u.Entries, "usage": u.String()}, nil
 		},
+		HookArgs: metadata(map[string][]string{"action": {"add", "replace", "remove"}, "target": {"memory", "user"}}, nil, nil, nil, nil),
 	}
 }
 
@@ -145,6 +195,8 @@ func memorySearchTool() Tool {
 			return mem.Search(memory.Query{Text: a.Query, IDs: a.IDs, Kind: a.Kind, Tags: a.Tags, Scope: a.Scope, Match: a.Match,
 				Since: a.Since, IncludeExpired: a.IncludeExpired, Limit: a.Limit, Audience: audience(env, mem), All: all})
 		},
+		HookArgs: metadata(map[string][]string{"kind": memoryKinds, "scope": {"all", "hot", "archive"}, "match": {"any", "all"}, "audience": {"here", "all"}},
+			nil, []string{"include_expired", "limit"}, []string{"ids", "tags"}, []string{"query", "since"}),
 	}
 }
 
@@ -182,6 +234,8 @@ func memoryManageTool() Tool {
 "scope":{"type":"string","enum":["here","agent"],"description":"save: here (default: this conversation's) or agent (everyone's; no personal data)."}},
 "required":["action"]}`),
 		Run: runMemoryManage,
+		HookArgs: metadata(map[string][]string{"action": {"save", "update", "delete", "pin", "unpin"}, "kind": memoryKinds, "scope": {"here", "agent"}},
+			[]string{"id"}, []string{"importance", "hot", "force"}, []string{"tags"}, []string{"text", "expires"}),
 	}
 }
 

@@ -308,10 +308,14 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 	}
 }
 
-// observed is the call as observers see it: under the tool's hook name (luau:<tool>).
+// observed is the call as observers see it: under the tool's hook name (luau:<tool>), with the
+// arguments it lets them see (HookArgs).
 func observed(reg *tools.Registry, c wire.ToolCall) wire.ToolCall {
 	if t, ok := reg.Get(c.Name); ok {
 		c.Name = t.ObservedName()
+		if t.HookArgs != nil {
+			c.Arguments = t.HookArgs(c.Arguments)
+		}
 	}
 	return c
 }

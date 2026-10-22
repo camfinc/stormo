@@ -594,6 +594,46 @@ func TestRefreshAndObservedCalls(t *testing.T) {
 	}
 }
 
+// The memory tools' calls reach observers (the core's hooks) as metadata only: the action, an id,
+// counts, never a memory's text, its tags or a query.
+func TestMemoryCallsObservedAsMetadata(t *testing.T) {
+	calls := []string{
+		`{"action":"add","target":"user","content":"Ana's passport is X1234567"}`,
+		`{"query":"ana passport","ids":["m00000000001"],"tags":["clientes"],"audience":"here","limit":3}`,
+		`{"action":"save","text":"Ana's passport is X1234567","tags":["clientes","ana"],"kind":"user","scope":"<Ana's data>","importance":4}`,
+	}
+	names := []string{"memory", "memory_search", "memory_manage"}
+	st := &stub{}
+	n := 0
+	st.pick = func(req map[string]any) string {
+		n++
+		if n <= len(calls) {
+			return callTool(fmt.Sprint("c", n), names[n-1], calls[n-1])
+		}
+		return say("done")
+	}
+	srv := httptest.NewServer(st)
+	defer srv.Close()
+	a := newAgent(t, srv)
+	h, _ := a.Store.Create(wire.Session{ID: "s1", Source: "api_server"})
+	ev := &pathEvents{}
+	if _, err := a.Run(context.Background(), h.ID, "remember", Options{Observer: ev}); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(ev.log, "\n")
+	for _, leak := range []string{"passport", "X1234567", "clientes", "Ana"} {
+		if strings.Contains(all, leak) {
+			t.Errorf("observers got %q:\n%s", leak, all)
+		}
+	}
+	for _, want := range []string{`start:memory:{"action":"add","target":"user"}`, `"ids_count":1`, `"tags_count":2`, `"has_query":true`, `"action":"save"`,
+		`"kind":"user"`, `"scope":"other"`, `"has_text":true`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("observers miss %s:\n%s", want, all)
+		}
+	}
+}
+
 // Recalled memory goes in front of the turn's user message in every request of the turn, and
 // nowhere else: not in the system prompt (the cache), not in the session file (transcripts stay
 // what people wrote). A scheduled run says so to the recall.
