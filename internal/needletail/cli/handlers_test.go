@@ -19,7 +19,8 @@ import (
 
 // M6b: the real serve runs the agent's Luau handlers from its skills: on_message answers a
 // message with no turn, before_send signs every message the gateway posts (the model's replies,
-// the handler's, deliveries), and on_schedule answers a job's run with no turn.
+// the handler's, deliveries) and, when it fails, blocks it, and on_schedule answers a job's run
+// with no turn.
 func TestServeHandlers(t *testing.T) {
 	fake := slacktest.New(t)
 	model := httptest.NewServer(echoModel{})
@@ -54,6 +55,9 @@ description: Signs what goes out.
 events: [before_send]
 ]]
 function before_send(ev)
+  if string.find(ev.text, "LONG") then
+    return {action = "rewrite", text = string.rep("x", 40001)} -- not a valid decision: fails closed
+  end
   return {action = "rewrite", text = ev.text .. " [" .. ev.kind .. "]"}
 end
 `,
@@ -126,6 +130,19 @@ end
 	posts = fake.WaitPosts(3, 15*time.Second)
 	if p := posts[2]; p.Text != "Reply to: Hello there [reply]" {
 		t.Errorf("the model's reply %+v", p)
+	}
+	// a before_send handler that fails blocks the reply: nothing goes out unchanged
+	fake.Send("e3", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "Say LONG", TS: "1700000200.000300"})
+	fake.Send("e4", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "And now?", TS: "1700000200.000400"})
+	posts = fake.WaitPosts(4, 15*time.Second)
+	if p := posts[3]; p.Text != "Reply to: And now? [reply]" {
+		t.Errorf("after the blocked reply %+v", posts[3:])
+	}
+	mu.Lock()
+	blocked := strings.Contains(stderr.String(), "handler frontdesk__sign (before_send) failed: the message is blocked")
+	mu.Unlock()
+	if !blocked {
+		t.Error("the failed before_send was not logged")
 	}
 	entries, _ := os.ReadDir(filepath.Join(h, "sessions"))
 	for _, e := range entries {

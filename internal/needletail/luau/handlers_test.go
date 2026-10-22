@@ -210,6 +210,54 @@ end`),
 	}
 }
 
+// before_send fails closed: a handler that fails, passes its bound, answers no valid decision
+// (a rewrite over MaxHandlerText) or cannot be loaded blocks the message rather than let the
+// text it was there to change go out. A message's handlers still fail open.
+func TestBeforeSendFailsClosed(t *testing.T) {
+	for name, body := range map[string]string{
+		"crash":   `function before_send(ev) error("boom") end`,
+		"loop":    `function before_send(ev) while true do end end`,
+		"weird":   `function before_send(ev) return {action = "route"} end`,
+		"long":    `function before_send(ev) return {action = "rewrite", text = string.rep("x", 40001)} end`,
+		"nofn":    `return {}`,
+		"broken":  `function before_send(ev) return {action = "allow"`,
+		"badtype": `function before_send(ev) return {action = "rewrite", text = 7} end`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt, _ := newRuntime(t)
+			rt.LuauTimeout = 2 * time.Second
+			var logs []string
+			var mu sync.Mutex
+			rt.Log = func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() }
+			hooks := &hookLog{}
+			rt.Observer = func() HookObserver { return hooks }
+			header := ""
+			if name == "loop" {
+				header = "timeout: 1s\n"
+			}
+			files := map[string]string{"handlers/" + name + ".luau": handler(name, "before_send", header, body)}
+			skill(t, rt.Home, "a/guard", files)
+			// the file is written as the terminal could (skill_manage would refuse a broken one)
+			v := rt.Dispatch(context.Background(), BeforeSend, "s", map[string]any{"text": "card 4111 1111 1111 1111", "kind": "send"}, nil)
+			if v.Action != "block" || v.By != "guard__"+name || !strings.Contains(v.Reason, "failed") || v.Text != "" {
+				t.Fatalf("verdict %+v", v)
+			}
+			mu.Lock()
+			joined := strings.Join(logs, "\n")
+			mu.Unlock()
+			if !strings.Contains(joined, "handler guard__"+name+" (before_send) failed: the message is blocked") {
+				t.Errorf("log:\n%s", joined)
+			}
+		})
+	}
+	// on_message stays open: the crash is skipped and the event passes
+	rt, _ := newRuntime(t)
+	skill(t, rt.Home, "a/guard", map[string]string{"handlers/crash.luau": handler("crash", "on_message", "", `function on_message(ev) error("boom") end`)})
+	if v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil); v.Action != "pass" {
+		t.Fatalf("on_message verdict %+v", v)
+	}
+}
+
 // on_schedule runs only the handlers whose jobs name the run's job; luau_test dry-runs a handler
 // with a sample event and shows the decision.
 func TestHandlerScheduleAndDryRun(t *testing.T) {

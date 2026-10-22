@@ -123,7 +123,7 @@ In this order:
    no turn (delivered and recorded as a turn's reply would be; the monitor's change counts as
    handled); `silent` is a silent run; a `pass` may add notes, which go into the prompt as a
    "Handler Notes" block, and the next handler runs. A handler that fails is skipped (logged) and
-   the run goes on. They are bounded by `limits.script_timeout`, run while the run still holds
+   the run goes on (a `before_send` one, which the delivery meets, blocks it instead: `delivery_failed`). They are bounded by `limits.script_timeout`, run while the run still holds
    no turn slot when the job has a gate (as its scripts do; a job that then waits for a slot keeps
    their decision with its gate's result, §2), and the link is in the handler, not the job: `cron/jobs.json` and agent.yaml
    do not change, and Hermes, which has no handlers, runs the same job with its prompt.

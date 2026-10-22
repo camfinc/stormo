@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -107,6 +108,9 @@ type HandlerFile struct {
 	Header *Header
 	Source []byte
 	Err    error
+	// Events are the events the file's header names, when it parses (also for a handler that
+	// fails to load otherwise): a before_send handler that cannot run blocks the message.
+	Events []string
 }
 
 // Handlers is every handler of the home's skills, valid or not, in the order they run: by skill
@@ -133,6 +137,9 @@ func (rt *Runtime) loadHandler(ctx context.Context, hf *HandlerFile, real string
 	body, err := os.ReadFile(real)
 	if err != nil {
 		return err
+	}
+	if h, err := ParseHeaderOf(body, KindHandler); err == nil {
+		hf.Events = h.Events
 	}
 	if err := rt.CheckHandler(ctx, HandlerDir+"/"+path.Base(hf.File), body); err != nil {
 		return err
@@ -277,29 +284,42 @@ type Verdict = messaging.Verdict
 //
 // A message's or a schedule's handlers run until one replies or stays silent; a pass adds its
 // context and goes on. Before a send, every handler sees the text the previous ones left: a
-// rewrite changes it and goes on, a block stops the message. A handler that fails, passes its
-// bound or answers something that is not one of the event's actions is skipped: logged, hooked
-// as failed, and the event goes on as if it had passed (or allowed). serves, when set, picks the
-// handlers that apply (on_schedule: the job's).
+// rewrite changes it and goes on, a block stops the message. A message's or a schedule's handler
+// that fails, passes its bound or answers something that is not one of the event's actions is
+// skipped: logged, hooked as failed, and the event goes on as if it had passed. before_send fails
+// closed instead: such a handler, or one whose file declares before_send but cannot be loaded,
+// blocks the message (logged; hooked as failed when it ran), since the text it was there to
+// change would otherwise go out as it was. serves, when set, picks the handlers that apply
+// (on_schedule: the job's).
 func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[string]any, serves func(*Header) bool) Verdict {
 	v := Verdict{Action: actions[event][0]}
 	if messaging.HandlerEvent(ctx) == BeforeSend && event == BeforeSend {
 		return v // never reached (a before_send handler cannot send); no recursion either way
 	}
 	ctx = messaging.WithHandler(ctx, event)
+	closed := event == BeforeSend
 	for _, hf := range rt.Handlers(ctx) {
+		if hf.Err != nil && closed && slices.Contains(hf.Events, event) {
+			return rt.failClosed(v, hf, event, "it cannot be loaded: "+hf.Err.Error())
+		}
 		if hf.Err != nil || !hf.Header.Handles(event) || serves != nil && !serves(hf.Header) {
 			continue
 		}
 		ev["event"] = event
 		args, err := json.Marshal(ev)
 		if err != nil {
+			if closed {
+				return rt.failClosed(v, hf, event, "the event could not be encoded: "+err.Error())
+			}
 			rt.logf("handler %s (%s): the event could not be encoded: %v", hf.Name, event, err)
 			return v
 		}
 		d, err := rt.runHandler(ctx, hf, event, session, args)
 		v.Ran++
 		if err != nil {
+			if closed {
+				return rt.failClosed(v, hf, event, err.Error())
+			}
 			rt.logf("handler %s (%s) skipped: %v", hf.Name, event, err)
 			continue
 		}
@@ -316,6 +336,23 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 			return v
 		}
 	}
+	return v
+}
+
+// failClosed is a before_send verdict when handler hf could not decide: the message is blocked
+// (logged), by hf, with why in the reason (clipped).
+func (rt *Runtime) failClosed(v Verdict, hf HandlerFile, event, why string) Verdict {
+	name := hf.Name
+	if name == "" {
+		if n, err := toolName(hf.Skill, strings.TrimSuffix(path.Base(hf.File), ".luau")); err == nil {
+			name = n
+		} else {
+			name = hf.File
+		}
+	}
+	rt.logf("handler %s (%s) failed: the message is blocked (before_send fails closed): %s", name, event, why)
+	v.Action, v.Text, v.By = "block", "", name
+	v.Reason = "the handler failed, so the message is blocked: " + clip(why, 300)
 	return v
 }
 
@@ -412,8 +449,9 @@ func HandlerReference() string {
 		"the chunk returns), called with the event and returning a decision: nil (the default), the action as a string, or " +
 		"`{action = …, text = …, context = …, reason = …}`. Handlers of an event run in order (skill dir, then name) with their " +
 		"effective caps and the Luau bound; a message's or a schedule's stop at the first reply or silent, before_send's pass the " +
-		"text on through each rewrite and stop at a block. A handler that fails, times out or answers no valid action is skipped " +
-		"(logged) and the event goes on as if it had passed. send_message works in a handler (within its caps; the message meets " +
+		"text on through each rewrite and stop at a block. A message's or schedule's handler that fails, times out or answers no " +
+		"valid action is skipped (logged) and the event goes on as if it had passed; a before_send one that fails (or cannot be " +
+		"loaded) blocks the message (fails closed). send_message works in a handler (within its caps; the message meets " +
 		"before_send), except in before_send. luau_test dry-runs a handler with a sample event.\n\n")
 	for _, d := range EventDocs {
 		fmt.Fprintf(&b, "### %s\n\nWhen: %s.\n\n- event: %s\n- answers: %s\n\n", d.Event, d.When, d.Fields, d.Actions)

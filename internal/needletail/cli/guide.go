@@ -70,7 +70,7 @@ func (g guide) render() string {
 		for _, d := range luau.EventDocs {
 			fmt.Fprintf(&b, "- `%s`: answers %s.\n", d.Event, d.Actions)
 		}
-		b.WriteString("Handlers run in order (skill dir, then name); one that fails is skipped. on_schedule names its jobs " +
+		b.WriteString("Handlers run in order (skill dir, then name); one that fails is skipped, but a failing before_send blocks the message. on_schedule names its jobs " +
 			"(`jobs: [<id or name>]`). Event fields and the rest: luau_reference.\n")
 		grants := "none"
 		if len(g.Grants) > 0 {
