@@ -104,11 +104,22 @@ func TestFileTools(t *testing.T) {
 	if _, failed := call(t, r, env, "write_file", map[string]any{"path": shared, "content": "hi"}); failed || len(notes) != 1 {
 		t.Errorf("shared write: notes %v", notes)
 	}
-	// refused: escapes, protected runtime files, directories
-	for _, p := range []string{"../outside.md", "/etc/passwd", "sessions/x.jsonl", "needletail.yaml", "state/needletail/idem.json", "notes"} {
+	// refused: escapes, protected runtime files (cronjob_manage's and skill_manage's own state
+	// among them, so their limits cannot be skipped through a file tool), directories
+	for _, p := range []string{"../outside.md", "/etc/passwd", "sessions/x.jsonl", "needletail.yaml", "state/needletail/idem.json", "notes",
+		"cron/jobs.json", "state/other/x", "logs/audit/s1.jsonl", "logs/x.log", ".swarm/booted.json", "Cron/jobs.json"} {
 		if m, failed := call(t, r, env, "write_file", map[string]any{"path": p, "content": "x"}); !failed {
 			t.Errorf("%s written: %v", p, m)
 		}
+	}
+	_ = os.MkdirAll(filepath.Join(env.Home, "cron"), 0o755)
+	_ = os.WriteFile(filepath.Join(env.Home, "cron", "jobs.json"), []byte(`{"jobs": []}`), 0o644)
+	if m, failed := call(t, r, env, "patch", map[string]any{"path": "cron/jobs.json", "old_string": "[]", "new_string": "[{}]"}); !failed {
+		t.Errorf("cron/jobs.json patched: %v", m)
+	}
+	// the agent still writes its job scripts with the file tools (cronjob_manage names them)
+	if m, failed := call(t, r, env, "write_file", map[string]any{"path": "scripts/check.sh", "content": "echo ok\n"}); failed {
+		t.Errorf("scripts/check.sh refused: %v", m)
 	}
 	if _, failed := call(t, r, env, "read_file", map[string]any{"path": "/etc/hosts"}); !failed {
 		t.Error("read outside")
@@ -293,7 +304,7 @@ func TestSearchRuntimeDirs(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(env.Home, "logs"), 0o700)
 	_ = os.WriteFile(filepath.Join(env.Home, "sessions", "sub", "s.jsonl"), []byte("private talk\n"), 0o600)
 	_ = os.WriteFile(filepath.Join(env.Home, "logs", "x.log"), []byte("private talk\n"), 0o600)
-	for _, p := range []string{"sessions", "sessions/sub", "logs", "state/needletail"} {
+	for _, p := range []string{"sessions", "sessions/sub", "logs", "state/needletail", "state", "state/other"} {
 		_ = os.MkdirAll(filepath.Join(env.Home, p), 0o700)
 		if m, failed := call(t, r, env, "search_files", map[string]any{"pattern": "private", "path": p}); !failed {
 			t.Errorf("%s searched: %v", p, m)

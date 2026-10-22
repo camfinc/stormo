@@ -27,14 +27,19 @@ const (
 	patchMaxBytes    = 8 << 20
 )
 
-// protected are home paths the file tools never write: the runtime's own files. (The terminal can
-// still reach them; the container is the boundary, §7.)
-var protected = []string{"sessions", "state/needletail", "needletail.yaml"}
+// protected are home paths the file tools never write: the runtime's own files and what the
+// managing tools keep (cron/ is cronjob_manage's: its bounds and the messaging policy for an
+// agent job's targets; .swarm/ holds booted.json, by which skill_manage refuses to delete a repo
+// skill; logs/ holds the Luau audit). The terminal can still reach them until the runtime and the
+// agent's commands run as different users (M6b); the container is the boundary, §7.
+var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs", ".swarm"}
 
 // skipDirs are never searched: the runtime's files, VCS and dependency trees.
 var skipDirs = map[string]bool{".git": true, "node_modules": true, "__pycache__": true, ".venv": true}
 
+// isProtected compares case-folded: on a case-insensitive home Cron/ is cron/.
 func isProtected(rel string) bool {
+	rel = strings.ToLower(rel)
 	for _, p := range protected {
 		if rel == p || strings.HasPrefix(rel, p+"/") {
 			return true
@@ -498,7 +503,7 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 
 // runtimeDirs are the runtime's own directories in the home, never searched (sessions hold whole
 // conversations).
-var runtimeDirs = []string{"sessions", "state/needletail", "logs"}
+var runtimeDirs = []string{"sessions", "state", "logs"}
 
 // runtimeDir: p is one of runtimeDirs or inside one.
 func runtimeDir(env *Env, p string) bool {
@@ -506,6 +511,7 @@ func runtimeDir(env *Env, p string) bool {
 	if !ok {
 		return false
 	}
+	rel = strings.ToLower(rel)
 	for _, d := range runtimeDirs {
 		if rel == d || strings.HasPrefix(rel, d+"/") {
 			return true
