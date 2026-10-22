@@ -383,7 +383,7 @@ Errors are raised as Luau errors (`"<code>: <msg>"`) on the C side, so nothing u
 | `nt.message.send(target, text)` (`send_message`) | A registry entry M6b implements through the runtime's one messaging policy; until then it answers `unavailable`. |
 | `nt.json.encode/decode` (`json_encode`, `json_decode`), `nt.json.null` | In the module, bounded (64 levels, 16 MiB): a table with keys 1..n is an array, any other non-empty table an object, `{}` the empty table; JSON `null` decodes to `nil`, `nt.json.null` encodes as `null`. |
 | `nt.log(level, msg)` (`log`), `nt.time.now()` (`now`), `nt.args` | The run's log (redacted, 64 KiB, shown to the agent and in the runtime's log); Unix time with fractions; the call's arguments. |
-| **No** `nt.env` and **no** `nt.secret` | Secrets reach HTTP only through `http_secrets` grants: host → env name → header template, injected by Go. Luau never sees the value: every answer a script gets is redacted (an echo of the header included), and so are its results, output and logs. |
+| **No** `nt.env` and **no** `nt.secret` | Secrets reach HTTP only through `http_secrets` grants: host → env name → header template, injected by Go. A script is never given the value; what is guaranteed is masking: every answer a script gets, its results, output and logs have the runtime's secrets masked (values of 8 bytes or more, as they are and as Go's JSON writes them) and the `http_secrets` values masked besides, whatever their length, in any spelling a JSON string allows (each character as itself or `\uXXXX` in either hex case, surrogate pairs, `\/`, `\"` and the other short escapes), in every string of an answer before the host encodes it and in the encoded answer after, so `json_decode` of an echoed header or body cannot recover one. A server that echoes a credential encoded some other way (base64, percent-encoding, split across fields) can still hand it to the script, which may then write or send it wherever its caps allow: grant `http_secrets` only for hosts that do not echo credentials. |
 | **No** exec | There is no process capability. |
 
 **Audit**
@@ -487,7 +487,7 @@ return function(args) ... end
   - an undeclared or ungranted cap
   - no env visible
   - agent-supplied bytecode refused
-  - also: removed globals and frozen libraries (`getfenv`, `load`, `string.dump`, `debug`, `io`, `os.getenv`, writes to `nt` or `string`), C-stack recursion through metamethods, `gsub` and `sort`, huge output, malformed, panicking and oversized host answers, unknown bindings, too many host calls, oversized arguments, DNS answers that mix in an internal address, the core's own port, proxies in the env, secrets echoed back by a server, the core or a file
+  - also: removed globals and frozen libraries (`getfenv`, `load`, `string.dump`, `debug`, `io`, `os.getenv`, writes to `nt` or `string`), C-stack recursion through metamethods, `gsub` and `sort`, huge output, malformed, panicking and oversized host answers, unknown bindings, too many host calls, oversized arguments, DNS answers that mix in an internal address, the core's own port, proxies in the env, secrets echoed back by a server (also JSON-escaped, and short ones), the core or a file
 
 ## 8. Versioned contracts
 

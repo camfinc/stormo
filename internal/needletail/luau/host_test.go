@@ -19,6 +19,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/secrets"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -545,6 +546,74 @@ func TestHTTPInternalAddresses(t *testing.T) {
 	}
 	if !internal(netip.MustParseAddr("::ffff:10.1.2.3")) || internal(netip.MustParseAddr("93.184.216.34")) {
 		t.Fatal("internal")
+	}
+}
+
+// jsonEscaped is v with each character as \uXXXX (upper hex when upper), "/" as \/ when slash.
+func jsonEscaped(v string, upper, slash bool) string {
+	var b strings.Builder
+	for _, r := range v {
+		switch {
+		case r == '/' && slash:
+			b.WriteString(`\/`)
+		case upper:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
+}
+
+// A server that echoes an injected credential JSON-escaped (\u0061, PHP's \/) cannot hand it to
+// the script through json_decode, and a short credential is masked too.
+func TestHTTPSecretEchoEscaped(t *testing.T) {
+	for _, value := range []string{"abc/def+ghi-0123456789", "k3y/"} {
+		t.Run(value, func(t *testing.T) {
+			rt, _ := newRuntime(t)
+			// the runtime's general redactor: as it is and as Go's JSON writes it, 8 bytes or more
+			red := secrets.NewRedactor(nil, []string{"API_TOKEN=" + value})
+			rt.Redact = red.Redact
+			rt.Secret = func(env string) string { return map[string]string{"API_TOKEN": value}[env] }
+			_, base := tlsServer(t, rt, func(w http.ResponseWriter, r *http.Request) {
+				v := r.Header.Get("Authorization")
+				var esc string
+				switch r.URL.Path {
+				case "/lower":
+					esc = jsonEscaped(v, false, false)
+				case "/upper":
+					esc = jsonEscaped(v, true, false)
+				case "/slash":
+					esc = strings.ReplaceAll(v, "/", `\/`)
+				case "/raw":
+					esc = v
+				}
+				w.Header().Set("X-Echo", esc)
+				fmt.Fprintf(w, `{"auth":"%s"}`, esc)
+			})
+			rt.Grants = append(rt.Grants, "http:127.0.0.1")
+			rt.HTTPSecrets = []wire.HTTPSecret{{Host: "127.0.0.1", Env: "API_TOKEN", Header: "Authorization"}}
+			res, call := exec(t, rt, []string{"http:127.0.0.1", "fs.write:home"}, fmt.Sprintf(`
+				local out = {}
+				for _, p in {"/lower", "/upper", "/slash", "/raw"} do
+					local r = http_request{url = %q .. p}
+					local got = json_decode(r.body).auth .. "|" .. json_decode('"' .. r.headers["x-echo"] .. '"')
+					log("info", got)
+					print(got)
+					table.insert(out, got)
+				end
+				write_file("leak.txt", table.concat(out, "\n"))
+				return out`, base))
+			if res.Err != nil {
+				t.Fatal(res.Err)
+			}
+			leak, _ := os.ReadFile(filepath.Join(rt.Home, "leak.txt"))
+			for what, text := range map[string]string{"result": string(res.Value), "stdout": res.Stdout, "logs": strings.Join(call.Logs(), "\n"), "file": string(leak)} {
+				if strings.Contains(text, value) || !strings.Contains(text, "[REDACTED]") {
+					t.Errorf("%s: %s", what, text)
+				}
+			}
+		})
 	}
 }
 

@@ -58,7 +58,8 @@ type Runtime struct {
 	Core     CoreCaller
 	CoreURLs []string
 	Memory   *memory.Store
-	// Redact masks secret values in every answer a script gets, its logs and results.
+	// Redact masks secret values in every answer a script gets, its logs and results (the
+	// http_secrets values are masked besides, in any JSON spelling: redact.go).
 	Redact func(string) string
 	Log    func(string)
 	// ScriptTimeout bounds a run (limits.script_timeout); a header's timeout may only lower it.
@@ -70,13 +71,15 @@ type Runtime struct {
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 
 	auditMu sync.Mutex
+	maskMu  sync.Mutex
+	mask    secretMasker
 }
 
 func (rt *Runtime) redact(s string) string {
-	if rt.Redact == nil {
-		return s
+	if rt.Redact != nil {
+		s = rt.Redact(s)
 	}
-	return rt.Redact(s)
+	return rt.maskSecrets(s)
 }
 
 func (rt *Runtime) logf(format string, args ...any) {
@@ -195,12 +198,13 @@ func (c *Call) Call(ctx context.Context, name string, in []byte) []byte {
 		status = code
 		out = failure(code, c.rt.redact(msg))
 	} else {
-		out, err = json.Marshal(map[string]any{"ok": true, "v": v})
+		out, err = json.Marshal(map[string]any{"ok": true, "v": c.rt.scrub(v)})
 		if err != nil {
 			status, out = "error", failure("error", "the answer could not be encoded")
 		}
 	}
-	// Nothing a script gets back holds a secret value: an echo of an injected header included.
+	// Nothing a script gets back holds a secret value: an echo of an injected header included,
+	// masked in its strings before the encoding (scrub) and in the encoded answer after.
 	out = []byte(c.rt.redact(string(out)))
 	c.audit(name, b.Grant, in, len(out), status)
 	return out
