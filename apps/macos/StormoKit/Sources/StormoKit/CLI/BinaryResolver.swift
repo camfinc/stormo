@@ -23,6 +23,14 @@ public struct BinaryCandidate: Sendable, Equatable, Identifiable {
     /// Why it cannot be used (too old, not runnable), nil when usable.
     public var problem: String?
 
+    public init(url: URL, resolved: URL, source: Source, info: VersionInfo? = nil, problem: String? = nil) {
+        self.url = url
+        self.resolved = resolved
+        self.source = source
+        self.info = info
+        self.problem = problem
+    }
+
     public var id: String { resolved.path }
     public var usable: Bool { problem == nil && info != nil }
 }

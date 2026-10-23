@@ -42,6 +42,7 @@ struct CoreView: View {
             }
             ChatGPTSection()
             Section("Command line") {
+                if let note = model.commandLineNote { CommandLineNote(note: note) }
                 if let p = model.pinned, let info = p.info {
                     LabeledContent("Pinned binary") { PathText(path: p.resolved.path) }
                     LabeledContent("Version", value: "\(info.version) (API \(info.api))")

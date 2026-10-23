@@ -118,14 +118,7 @@ struct CommandLineSettings: View {
                 }
                 .foregroundStyle(.secondary)
             }
-            if model.canInstallCommandLineTool {
-                Section {
-                    Button("Install the stormo command") { Task { await model.installCommandLineTool() } }
-                } footer: {
-                    Text("Links ~/.local/bin/stormo to the copy inside Stormo, which updates with the app.")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            TerminalSection()
             Button("Look again") { Task { await model.resolveBinary() } }
         }
         .formStyle(.grouped)
@@ -138,6 +131,111 @@ struct CommandLineSettings: View {
         case .usual: "Installed"
         case .vendored: "The instance's engine"
         case .custom: "Custom"
+        }
+    }
+}
+
+/// The terminal's stormo next to the app's, and the way to make the terminal use the app's.
+struct TerminalSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var confirming = false
+
+    var body: some View {
+        Section {
+            if let note = model.commandLineNote { CommandLineNote(note: note) }
+            LabeledContent("Inside Stormo") { versioned(bundled) }
+            LabeledContent("`stormo` in the terminal") {
+                if let t = model.terminalStormo {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        versioned(t)
+                        if t.url.path != t.resolved.path { PathText(path: t.url.path).font(.caption).foregroundStyle(.secondary) }
+                    }
+                } else {
+                    Text("none on your shell's PATH").foregroundStyle(.secondary)
+                }
+            }
+            LabeledContent("~/.local/bin/stormo") { Text(linkText).foregroundStyle(.secondary).textSelection(.enabled) }
+            if let t = model.terminalStormo, case .current = model.linkState,
+               t.url.standardizedFileURL.path != AppModel.commandLineLink.path {
+                Text("\(t.url.path) comes first on your shell's PATH, so the terminal still runs it.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if case .current = model.linkState, let env = model.environment, let link = model.terminalLink, !link.directoryIsOnPath(env) {
+                Text("~/.local/bin is not on your shell's PATH: add `export PATH=\"$HOME/.local/bin:$PATH\"` to your shell profile.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if let problem = model.linkProblem { Text(problem).font(.caption).foregroundStyle(.orange) }
+            if offersReplace {
+                Button("Use Stormo's copy in the terminal…") { confirming = true }
+            }
+        } header: {
+            Text("Terminal")
+        } footer: {
+            Text("Stormo links ~/.local/bin/stormo to its own copy when nothing is there, and moves a link to an older Stormo app to this one, so the terminal's stormo updates with the app. Anything else there is yours and changes only here.")
+                .foregroundStyle(.secondary)
+        }
+        .confirmationDialog("Use Stormo's copy in the terminal?", isPresented: $confirming) {
+            Button("Replace") { Task { await model.useStormoInTerminal() } }
+        } message: {
+            Text("\(replaced) It will become a link to \(AppModel.bundledBinary.path), which updates with the app.")
+        }
+    }
+
+    private var bundled: BinaryCandidate? { model.candidates.first { $0.source == .bundled } }
+
+    /// The link is not this app's, and the app has a binary to link to.
+    private var offersReplace: Bool {
+        guard model.terminalLink != nil, !CommandLineLink.isEphemeral(AppModel.bundledBinary), let state = model.linkState else { return false }
+        if case .current = state { return false }
+        return true
+    }
+
+    private var linkText: String {
+        switch model.linkState {
+        case nil: "—"
+        case .absent: "nothing there"
+        case .current: "links to the copy inside Stormo"
+        case .appCopy(let target): "links to another Stormo app: \(target)"
+        case .userLink(let target, let broken): "links to \(target)\(broken ? " (missing)" : "")"
+        case .file: "a file, not a link"
+        }
+    }
+
+    /// Names what the replacement removes.
+    private var replaced: String {
+        switch model.linkState {
+        case .userLink(let target, _): "~/.local/bin/stormo now links to \(target); that link is replaced (the file it points to stays)."
+        case .appCopy(let target): "~/.local/bin/stormo now links to \(target); that link is replaced."
+        case .file: "~/.local/bin/stormo is a file, not a link (installed by hand or by another tool); it is deleted."
+        case .absent, .current, nil: "Nothing is at ~/.local/bin/stormo yet."
+        }
+    }
+
+    @ViewBuilder private func versioned(_ c: BinaryCandidate?) -> some View {
+        if let c {
+            VStack(alignment: .trailing, spacing: 2) {
+                if let info = c.info { Text("\(info.version) · API \(info.api)") } else if let p = c.problem { Text(p).foregroundStyle(.orange) }
+                PathText(path: c.resolved.path).font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            Text("not found").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The once-only note that the app put stormo on the terminal.
+struct CommandLineNote: View {
+    @Environment(AppModel.self) private var model
+    let note: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Image(systemName: "terminal").foregroundStyle(.tint)
+            Text(LocalizedStringKey(note)).textSelection(.enabled)
+            Spacer()
+            Button("Dismiss", systemImage: "xmark") { model.commandLineNote = nil }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
         }
     }
 }

@@ -208,6 +208,113 @@ final class Steps: @unchecked Sendable {
     }
 }
 
+/// ~/.local/bin/stormo, in a scratch home: never the real one.
+@Suite struct TerminalLink {
+    struct Home {
+        let s: Scratch
+        let bin: URL
+        let link: CommandLineLink
+        init() throws {
+            s = try Scratch()
+            bin = s.url.appending(path: "home/.local/bin")
+            let bundled = try fakeStormo(s, "Applications/Stormo.app/Contents/Helpers/stormo", version: "v1.3.0")
+            link = CommandLineLink(link: bin.appending(path: "stormo"), bundled: bundled)
+        }
+        func symlink(to target: String) throws {
+            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: link.link.path, withDestinationPath: target)
+        }
+        var target: String? { try? FileManager.default.destinationOfSymbolicLink(atPath: link.link.path) }
+    }
+
+    @Test func absentIsCreatedWithItsDirectory() throws {
+        let h = try Home()
+        #expect(h.link.state() == .absent)
+        #expect(h.link.reconcile() == .created)
+        #expect(h.target == h.link.bundled.path)
+        #expect(h.link.state() == .current)
+        #expect(h.link.reconcile() == .unchanged)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: h.bin.path) == ["stormo"])  // no temp link left
+    }
+
+    @Test func anOlderAppsLinkFollowsThisApp() throws {
+        let h = try Home()
+        let old = try fakeStormo(h.s, "Downloads/Stormo 2.app/Contents/Helpers/stormo", version: "v1.0.0")
+        try h.symlink(to: old.path)
+        #expect(h.link.state() == .appCopy(target: old.path))
+        #expect(h.link.reconcile() == .retargeted(from: old.path))
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aBrokenLinkToAGoneAppIsRetargeted() throws {
+        let h = try Home()
+        let gone = h.s.url.appending(path: "Trash/Stormo.app/Contents/Helpers/stormo").path
+        try h.symlink(to: gone)
+        #expect(h.link.state() == .appCopy(target: gone))
+        #expect(h.link.reconcile() == .retargeted(from: gone))
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aUsersLinkIsLeftUntilAsked() throws {
+        let h = try Home()
+        let dev = try fakeStormo(h.s, "src/stormo/bin/stormo", version: "abc123")
+        try h.symlink(to: dev.path)
+        let state = CommandLineLink.State.userLink(target: dev.path, broken: false)
+        #expect(h.link.state() == state)
+        #expect(h.link.reconcile() == .left(state))
+        #expect(h.target == dev.path)
+        try h.link.install()  // what "Use Stormo's copy in the terminal" does after confirming
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aBrokenUserLinkIsLeft() throws {
+        let h = try Home()
+        try h.symlink(to: "../../src/gone/stormo")
+        let target = h.bin.appending(path: "../../src/gone/stormo").standardizedFileURL.path
+        #expect(h.link.state() == .userLink(target: target, broken: true))
+        #expect(h.link.reconcile() == .left(.userLink(target: target, broken: true)))
+        #expect(h.target == "../../src/gone/stormo")
+    }
+
+    @Test func aRegularFileIsLeftUntilAsked() throws {
+        let h = try Home()
+        try h.s.script("home/.local/bin/stormo", "echo homebrew")
+        #expect(h.link.state() == .file)
+        #expect(h.link.reconcile() == .left(.file))
+        #expect(h.target == nil)
+        try h.link.install()
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func anUnwritableDirectoryFailsWithoutChanges() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.bin, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: h.bin.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: h.bin.path) }
+        guard case .failed = h.link.reconcile() else { Issue.record("expected a failure"); return }
+        #expect(h.link.state() == .absent)
+    }
+
+    @Test func translocatedAppsLinkNothing() throws {
+        let h = try Home()
+        let moved = CommandLineLink(link: h.link.link, bundled: URL(filePath: "/private/var/folders/xy/AppTranslocation/ABC/d/Stormo.app/Contents/Helpers/stormo"))
+        #expect(moved.reconcile() == .skipped)
+        #expect(moved.state() == .absent)
+    }
+
+    @Test func appHelpersAndPath() {
+        #expect(CommandLineLink.isAppHelper("/Applications/Stormo.app/Contents/Helpers/stormo"))
+        #expect(CommandLineLink.isAppHelper("/Users/x/dd/Build/Products/Debug/Stormo Beta.app/Contents/Helpers/stormo"))
+        #expect(!CommandLineLink.isAppHelper("/Users/x/src/stormo/bin/stormo"))
+        #expect(!CommandLineLink.isAppHelper("/Applications/Stormo.app/Contents/Helpers/swarm"))
+        #expect(!CommandLineLink.isAppHelper("/opt/homebrew/bin/stormo"))
+        let link = CommandLineLink(link: URL(filePath: "/Users/x/.local/bin/stormo"), bundled: URL(filePath: "/Applications/Stormo.app/Contents/Helpers/stormo"))
+        #expect(link.directoryIsOnPath(["PATH": "/usr/bin:/Users/x/.local/bin/"]))
+        #expect(link.directoryIsOnPath(["PATH": "~/.local/bin:/usr/bin", "HOME": "/Users/x"]))
+        #expect(!link.directoryIsOnPath(["PATH": "/usr/bin:/opt/homebrew/bin", "HOME": "/Users/x"]))
+    }
+}
+
 @Suite struct Environment {
     @Test func parsesBetweenMarkersIgnoringNoise() throws {
         var out = Data("Welcome back!\n".utf8)

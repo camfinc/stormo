@@ -37,6 +37,13 @@ pulls its published sidecar image.
   Auto's pin is re-checked at every launch and every Look again, so an app update moves it. A
   binary picked in Settings › Command Line stays pinned until Back to Auto. A core started by
   another binary keeps running until you restart it (the Core view says so).
+- **The terminal's `stormo`:** `~/.local/bin/stormo` (that name only; `swarm` and the rest are never
+  touched). At launch the app links it to its own copy when nothing is there (and says so once,
+  with a hint when `~/.local/bin` is not on the shell's PATH), and moves a link into any
+  `*.app/Contents/Helpers/stormo` (an older Stormo app) to this one, so the command updates with
+  the app. Anything else there (a link to a dev checkout, a file, Homebrew's) is yours: Settings ›
+  Command Line shows it next to the app's copy and offers Use Stormo's copy in the terminal, which
+  replaces it after you confirm. A translocated app or one run from a disk image links nothing.
 - **Which environment:** the login shell's (`$SHELL -ilc`), so docker and aws resolve as in a
   terminal; never `SWARM_TARGET`, and every command gets `--target local`. Remote (ECS) work is not
   in this build.
