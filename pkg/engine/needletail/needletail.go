@@ -49,6 +49,10 @@ func New(inst *instance.Instance) *Needletail {
 			{Class: engine.Learning, Glob: "skills/.usage.json"},
 			{Class: engine.Learning, Glob: "skills/[!.]*/**"},
 			{Class: engine.Learning, Glob: "cron/jobs.json"},
+			// Job scripts and the modules they import: the repo's and any the agent wrote or edited
+			// for its own jobs (Layout.ScriptsDir), so a job never outlives the script it runs and
+			// goes to review with it. Caches are left out, as the build leaves them out.
+			{Class: engine.Learning, Glob: "scripts/**", Except: []string{"**/__pycache__/**", "**/node_modules/**", "**/.*", "**/.*/**", "**/*.pyc"}},
 			// The rendered config is rebuilt from the repo on every boot (as Hermes' config.yaml):
 			// never restored from a nap, so a changed agent.yaml or grant reaches the agent on its
 			// next start, and nothing the agent writes into it survives one.
@@ -71,6 +75,7 @@ func New(inst *instance.Instance) *Needletail {
 	l.Memory.Memory, l.Memory.User = "memories/MEMORY.md", "memories/USER.md"
 	l.SkillUsage = "skills/.usage.json"
 	l.Managed = []string{"skills", "scripts"}
+	l.ScriptsDir = "scripts"
 	l.Schedules = "cron/jobs.json"
 	return &Needletail{inst: inst, layout: l}
 }

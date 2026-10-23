@@ -19,7 +19,7 @@ import (
 var update = flag.Bool("update", false, "rewrite testdata/home from the current Compile")
 
 // rebuilt are baseline files no snapshot rule claims: rehydrate rebuilds them from the baseline.
-var rebuilt = []string{"SOUL.md", "scripts/**"}
+var rebuilt = []string{"SOUL.md"}
 
 func TestCompileAtlasGolden(t *testing.T) {
 	inst, a := atlas(t)

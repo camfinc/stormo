@@ -67,7 +67,8 @@ func TestClassify(t *testing.T) {
 		}
 	}
 	l := New(inst).Layout()
-	if l.Home != "/opt/data" || l.Schedules != "cron/jobs.json" || l.ScheduleSource != "" || l.SkillUsage != "skills/.usage.json" || l.RuntimeUID != 10000 {
+	if l.Home != "/opt/data" || l.Schedules != "cron/jobs.json" || l.ScheduleSource != "" || l.SkillUsage != "skills/.usage.json" || l.RuntimeUID != 10000 ||
+		l.ScriptsDir != "scripts" {
 		t.Errorf("layout = %+v", l)
 	}
 }

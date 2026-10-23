@@ -133,6 +133,46 @@
   },
   {
    "path": "scripts/digest.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/lib/helper.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/accounts.json",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/__pycache__/digest.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/__pycache__/helper.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/helper.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.cache",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.venv/bin/python",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/node_modules/x/index.js",
    "class": null,
    "glob": null
   }

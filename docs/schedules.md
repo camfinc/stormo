@@ -182,7 +182,9 @@ error, and a job overdue by more than 15 minutes.
 ## 5. Scripts
 
 A job's `script` and `monitor_script` are files in the home's `scripts/` (the agent's
-`agents/<id>/scripts/`, rebuilt from the repo at every boot); a path that resolves outside it,
+`agents/<id>/scripts/`, plus any script the agent wrote or edited there: both engines nap
+`scripts/**` and bring the agent's own versions back until a reviewer decides, §7 and
+ARCHITECTURE.md's learning loop); a path that resolves outside it,
 symlinks included, is refused. `cronjob_manage` stores the path relative to `scripts/`, as
 agent.yaml names it, whatever form the agent gave. The interpreter comes from the extension, never the shebang:
 `.sh`/`.bash` run with bash, anything else with Python (needletail: `python3`; `.luau` in the Luau sandbox, below).
@@ -203,10 +205,6 @@ value as JSON (`nil` adds nothing). The rules on output are the same as a proces
 `{"wakeAgent": false}` is silent, a monitor's output is hashed. A script that raises an error, is
 refused a call it did not catch, or passes its bound fails, described as `Script failed:
 <code>: <message>`, then its `nt.log` lines and its output. Hermes has no `.luau` scripts.
-
-TODO (needletail): a script the agent writes or changes under `scripts/` is not napped on this
-branch (`scripts/**` is rebuilt from the repo at every boot); the napping rule for agent-written
-scripts lands when main (789b22c, 754c6b7) is merged into it.
 
 ## 6. Delivery
 
@@ -249,7 +247,11 @@ job of its own (which the dream proposes for review) or a person changing agent.
 `schedule`, `repeat`, `deliver` and `failure_deliver` (held to the policy) can change, and it can
 be paused, resumed, removed and run. Schedules: `30m`, `every 2h`, `every hour`, `every monday 9am`,
 `weekdays at 9:30am`, `every day at 14:00`, or a cron expression. A job the agent makes is a job
-like the repo's; across restarts it follows §1.
+like the repo's; across restarts it follows §1. A script the agent writes in `scripts/` for it
+(subdirectories included, caches not) is napped with it, comes back at every restart until a
+reviewer decides, and goes to review with the job (the schedules proposal's scripts): accepting
+puts it in `agents/<id>/scripts/`, rejecting keeps that version out. An edit to a repo script
+comes back the same way, unless the repo changed that script since the instance booted.
 
 The prompt given to `create` and `update` is scanned as Hermes scans it (its strict cron prompt
 scan): an injection directive ("ignore previous instructions", "do not tell the user", …), a
