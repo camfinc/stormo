@@ -281,6 +281,8 @@ private struct SchedulesRow: View {
     @Environment(AppModel.self) private var model
     let agent: String
     let schedules: ReviewSchedules
+    /// Scripts whose text is shown (a button, not a DisclosureGroup: see SkillRow).
+    @State private var open: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -288,6 +290,7 @@ private struct SchedulesRow: View {
                 Image(systemName: "calendar.badge.clock").foregroundStyle(.secondary)
                 Text("Scheduled jobs").fontWeight(.medium)
                 Tag("\(schedules.runtimeJobs.count) created at runtime")
+                if !scripts.isEmpty { Tag("\(scripts.count) script\(scripts.count == 1 ? "" : "s")", tint: .orange) }
                 ForEach(schedules.pii, id: \.self) { Tag("redacted \($0)", tint: .red) }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
@@ -295,8 +298,10 @@ private struct SchedulesRow: View {
                     .disabled(busy)
                     .help("Drops the jobs it created at runtime when it next starts.")
                 Button("Accept") { decide(.accept) }
-                    .disabled(!schedules.pii.isEmpty || busy)
-                    .help(schedules.pii.isEmpty ? "Writes these jobs to agent.yaml's schedules." : "Redacted: copy what you want into agent.yaml by hand, then reject.")
+                    .disabled(!schedules.pii.isEmpty || stale || busy)
+                    .help(!schedules.pii.isEmpty ? "Redacted: copy what you want into agent.yaml by hand, then reject."
+                        : stale ? "The repo changed a script after the agent edited it: merge what you want by hand, then reject."
+                        : "Writes these jobs to agent.yaml's schedules, and their scripts to the agent's scripts folder.")
             }
             .controlSize(.small)
             ReviewNote(ai: schedules.ai, held: schedules.held)
@@ -308,14 +313,47 @@ private struct SchedulesRow: View {
                         if !job.enabled { Tag("paused") }
                         if schedules.runtimeJobs.contains(job.id) { Tag("new", tint: .blue) }
                         if let d = job.deliver, !d.isEmpty { Tag("→ \(d)") }
-                        if job.script != nil { Tag("runs a script", tint: .orange) }
+                        if job.script != nil || job.monitor != nil { Tag("runs a script", tint: .orange) }
                     }
                     if let p = job.prompt { Text(p).font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled) }
+                }
+            }
+            ForEach(scripts) { script in
+                let diff = script.text.map { LineDiff(old: script.current ?? "", new: $0) }
+                let shown = open.contains(script.name)
+                Button {
+                    if shown { open.remove(script.name) } else { open.insert(script.name) }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(shown ? 90 : 0))
+                            .foregroundStyle(.secondary)
+                        Text("scripts/\(script.name)").font(.callout.monospaced())
+                        Tag(script.status == "changed" ? "change" : "new script", tint: script.status == "changed" ? .orange : .blue)
+                        if script.stale ?? false { Tag("older version", tint: .orange) }
+                        if let diff {
+                            if diff.added > 0 { Text("+\(diff.added)").foregroundStyle(.green) }
+                            if diff.removed > 0 { Text("−\(diff.removed)").foregroundStyle(.red) }
+                        }
+                    }
+                    .font(.caption.monospaced())
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if shown {
+                    if let diff {
+                        DiffView(diff: diff)
+                    } else {
+                        Text("\(script.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .padding(.vertical, 2)
     }
+
+    private var scripts: [ReviewScript] { schedules.scripts ?? [] }
+    private var stale: Bool { scripts.contains { $0.stale ?? false } }
 
     private var busy: Bool { model.review.deciding.contains(ReviewDecision.schedules(of: agent, .accept).key) }
 

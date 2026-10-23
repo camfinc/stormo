@@ -55,6 +55,9 @@ public struct ReviewAI: Codable, Sendable, Equatable {
 public struct ReviewSchedules: Codable, Sendable, Equatable {
     public var jobs: [ReviewJob]
     public var runtimeJobs: [String]
+    /// Scripts the agent wrote or edited for these jobs; an accept puts them in the repo with them
+    /// (nil from a core that predates them).
+    public var scripts: [ReviewScript]?
     public var pii: [String]
     public var nap: String
     public var ai: ReviewAI?
@@ -69,9 +72,23 @@ public struct ReviewJob: Codable, Sendable, Equatable, Identifiable {
     public var cron: String?
     public var prompt: String?
     public var script: String?
+    public var monitor: String?
     public var deliver: String?
     public var enabled: Bool
     public var when: String { every ?? cron ?? "" }
+}
+
+/// A script in a schedules proposal.
+public struct ReviewScript: Codable, Sendable, Equatable, Identifiable {
+    public var name: String
+    /// "new", or "changed" (the repo has another version, in `current`).
+    public var status: String
+    /// The repo changed it after the agent did: accept is refused (nil from an older core).
+    public var stale: Bool?
+    public var size: Int64
+    public var text: String?
+    public var current: String?
+    public var id: String { name }
 }
 
 /// A setting the agent changed at runtime.

@@ -51,6 +51,9 @@ func New(inst *instance.Instance) *Hermes {
 			{Class: engine.Learning, Glob: "skills/.archive/**"},
 			{Class: engine.Learning, Glob: "skills/[!.]*/**"},
 			{Class: engine.Learning, Glob: "cron/jobs.json"},
+			// Cron scripts and the modules they import: the repo's and any the agent wrote or edited
+			// for its own jobs (Layout.ScriptsDir). Caches are left out, as the build leaves them out.
+			{Class: engine.Learning, Glob: "scripts/**", Except: []string{"**/__pycache__/**", "**/node_modules/**", "**/.*", "**/.*/**", "**/*.pyc"}},
 			// Rebuilt from the repo on every boot; the dream reads the settings the agent changed
 			// in it (a home channel, an approved command) and proposes them (RuntimeSettings).
 			{Class: engine.Learning, Glob: "config.yaml"},
@@ -76,6 +79,7 @@ func New(inst *instance.Instance) *Hermes {
 	l.Memory.Memory, l.Memory.User = "memories/MEMORY.md", "memories/USER.md"
 	l.SkillUsage = "skills/.usage.json"
 	l.Managed = []string{"skills", "plugins", "scripts"}
+	l.ScriptsDir = "scripts"
 	// Hermes reads a listed-but-missing bundled skill as user-deleted and would stop re-seeding it
 	// from the image.
 	l.NotRestored = []string{"skills/.bundled_manifest"}

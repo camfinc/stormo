@@ -5,6 +5,7 @@ package engine
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ type SnapshotRule struct {
 	Glob string `json:"glob"`
 	// SQLite database: snapshot with VACUUM INTO (consistent under WAL), skip -wal/-shm siblings.
 	SQLite bool `json:"sqlite,omitempty"`
+	// Except are globs this rule does not claim (caches inside a tree it does); such a path falls
+	// through to the next rule.
+	Except []string `json:"except,omitempty"`
 }
 
 // Layout is where things live inside the engine home.
@@ -46,6 +50,11 @@ type Layout struct {
 	Memory struct{ Memory, User string } `json:"memory"`
 	// Skills root relative to home.
 	SkillsDir string `json:"skillsDir"`
+	// ScriptsDir is where Compile ships agents/<id>/scripts/ (the files schedules run), relative to
+	// home; empty when the engine has none. A file the agent adds there at runtime is its own: a
+	// learning rule must snapshot it, rehydrate restores it (never over a repo file) and the dream
+	// proposes it with the schedules, so a job never outlives the script it runs.
+	ScriptsDir string `json:"scriptsDir,omitempty"`
 	// SkillUsage is the engine's skill usage file relative to home, if it keeps one (the dream
 	// copies it next to the learnings).
 	SkillUsage string `json:"skillUsage,omitempty"`
@@ -78,7 +87,7 @@ type Layout struct {
 // Classify returns the first rule matching path (relative to the home), or nil.
 func Classify(path string, rules []SnapshotRule) *SnapshotRule {
 	for i := range rules {
-		if Match(rules[i].Glob, path) {
+		if Match(rules[i].Glob, path) && !slices.ContainsFunc(rules[i].Except, func(g string) bool { return Match(g, path) }) {
 			return &rules[i]
 		}
 	}

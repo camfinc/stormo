@@ -201,11 +201,14 @@ func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 func shaText(s string) string { return build.Sha256([]byte(s)) }
 
 // schedulesCandidate: only new or changed jobs that run a prompt with the agent's own model and
-// deliver where the agent already delivers; a job removed from the repo's list, a script, a
-// monitor, another model or an explicit delivery target waits for a person.
+// deliver where the agent already delivers; a job removed from the repo's list, a script (proposed
+// or named), a monitor, another model or an explicit delivery target waits for a person.
 func schedulesCandidate(agent *manifest.Agent, list []manifest.Schedule, meta *SchedulesProposal) (Candidate, string) {
 	if len(meta.PII) > 0 {
 		return Candidate{}, "the scrubber flagged " + strings.Join(meta.PII, ", ")
+	}
+	if len(meta.Scripts) > 0 {
+		return Candidate{}, "it carries scripts the agent wrote"
 	}
 	repo := map[string]manifest.Schedule{}
 	for _, s := range agent.Schedules {

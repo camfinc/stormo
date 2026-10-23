@@ -40,6 +40,10 @@ type NapBaseline struct {
 	// the dream tells a change the agent made from a restart's reset. Nil in naps from before it
 	// was recorded.
 	Settings map[string]string `json:"settings"`
+	// Scripts are the repo's scripts the instance booted with (file name in Layout.ScriptsDir →
+	// sha256), so the dream and rehydrate tell a script the agent wrote or edited from one the repo
+	// shipped (or has since deleted). Nil in naps from before it was recorded: none is the agent's.
+	Scripts map[string]string `json:"scripts"`
 }
 
 // Nap is <agent>/naps/<id>.json.

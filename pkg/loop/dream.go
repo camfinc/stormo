@@ -59,6 +59,10 @@ type Watermark struct {
 	// at runtime that a reviewer rejected: rehydrate drops them (build.Info.RejectedJobs).
 	ScheduleDecision *SkillDecision `json:"scheduleDecision,omitempty"`
 	RejectedJobs     []string       `json:"rejectedJobs,omitempty"`
+	// Scripts that came with a rejected schedules proposal (file name → the rejected version's
+	// sha256): rehydrate leaves them out (build.Info.RejectedScripts) and the dream does not
+	// propose that version again.
+	RejectedScripts map[string]string `json:"rejectedScripts,omitempty"`
 	// Decisions on runtime settings by key (Hash: the value), so a decided value is not proposed again.
 	SettingDecisions map[string]SkillDecision `json:"settingDecisions,omitempty"`
 }
@@ -97,6 +101,46 @@ func SaveWatermark(root, agent string, w *Watermark) error {
 		return err
 	}
 	return os.WriteFile(p, append(body, '\n'), 0o644)
+}
+
+// runtimeScript is a script in the nap that the agent wrote or edited: its instance did not boot with
+// that version, and the repo does not hold it either.
+type runtimeScript struct {
+	ScriptChange
+	Body string
+}
+
+// runtimeScripts are the nap's scripts the agent wrote or edited, less versions a reviewer
+// rejected. A nap from before booted scripts were recorded has none (nothing tells them apart).
+func runtimeScripts(s Store, root, agentID string, L *engine.Layout, nap *Nap, wm *Watermark) ([]runtimeScript, error) {
+	if L.ScriptsDir == "" || nap.Baseline == nil || nap.Baseline.Scripts == nil {
+		return nil, nil
+	}
+	out := []runtimeScript{}
+	for _, f := range nap.Files {
+		name, ok := strings.CutPrefix(f.Path, L.ScriptsDir+"/")
+		if !ok || f.Class != engine.Learning || nap.Baseline.Scripts[name] == f.Sha256 || wm.RejectedScripts[name] == f.Sha256 {
+			continue
+		}
+		body, err := learningBlob(s, agentID, nap, f.Path)
+		if err != nil {
+			return nil, err
+		}
+		if body == nil {
+			continue
+		}
+		c := ScriptChange{Name: name, Status: "new", Sha256: f.Sha256}
+		if repo, err := os.ReadFile(filepath.Join(manifest.AgentDir(root, agentID), "scripts", filepath.FromSlash(name))); err == nil {
+			if string(repo) == *body {
+				continue // already in the repo
+			}
+			c.Status = "changed"
+			c.Stale = build.Sha256(repo) != nap.Baseline.Scripts[name]
+		}
+		out = append(out, runtimeScript{c, *body})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 func learningBlob(s Store, agent string, nap *Nap, path string) (*string, error) {
@@ -330,7 +374,11 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		// proposed in that form. A job agent.yaml cannot express falls back to the engine's file.
 		if cron != nil && agent.Schedules != nil {
 			if live, err := eng.ReadSchedules([]byte(*cron)); err == nil {
-				if report.CronProposal, err = writeSchedules(proposals, live, agent.Schedules, last.ID, wm, scrubber); err != nil {
+				scripts, err := runtimeScripts(s, root, agentID, L, last, wm)
+				if err != nil {
+					return nil, err
+				}
+				if report.CronProposal, err = writeSchedules(proposals, live, agent.Schedules, scripts, last.ID, wm, scrubber); err != nil {
 					return nil, err
 				}
 				cron = nil
