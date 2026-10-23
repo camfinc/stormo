@@ -298,7 +298,16 @@ func TestLearningLoop(t *testing.T) {
 			t.Fatal(err)
 		}
 		phone := "Client John Doe phone +1 415 555 0123 wants morning calls."
-		if merge.V != 1 || !slices.Equal(merge.Memory.Purged, []string{MemoryMergeHash(phone)}) || len(merge.Memory.Deferred) != 0 ||
+		// with the time the reviewer rejected it (the ledger's decidedAt, carried by the build)
+		decided := ""
+		ledger, _ := learning.LoadLedger(root, "atlas")
+		for _, e := range ledger {
+			if e.Status == learning.Rejected && e.DecidedAt != nil {
+				decided = *e.DecidedAt
+			}
+		}
+		want := []MemoryMergeRejection{{Hash: MemoryMergeHash(phone), At: decided}}
+		if decided == "" || merge.V != 2 || !slices.Equal(merge.Memory.Purged, want) || len(merge.Memory.Deferred) != 0 ||
 			len(merge.User.Purged) != 0 || len(merge.User.Deferred) != 0 || strings.Contains(body, "555") || strings.Contains(body, "John") {
 			t.Errorf("memory-merge.json = %s", body)
 		}
@@ -323,7 +332,7 @@ func TestLearningLoop(t *testing.T) {
 		// every boot writes it afresh (so an engine never reads a previous boot's)
 		h := filepath.Join(tmp, "home2b")
 		rehydrate(h, filepath.Join(tmp, "baseline2"))
-		if err := json.Unmarshal([]byte(read(t, filepath.Join(h, MemoryMergePath))), &merge); err != nil || merge.V != 1 {
+		if err := json.Unmarshal([]byte(read(t, filepath.Join(h, MemoryMergePath))), &merge); err != nil || merge.V != 2 {
 			t.Errorf("second report: %+v %v", merge, err)
 		}
 	})

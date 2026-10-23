@@ -225,6 +225,22 @@ type ScheduleDropper interface {
 	DropSchedules(body []byte, ids []string) ([]byte, error)
 }
 
+// MemoryArchive is an engine that keeps its own copy of the memories beside the hot files (an
+// archive the nap carries): rehydrate reads it from the nap to name, in its memory merge report,
+// every entry a reviewer rejected that the nap holds, archived as well as hot.
+type MemoryArchive interface {
+	// ArchivedMemories are the archive's entries, read with read (a path in the home → the nap's
+	// body, nil when absent). Never an error: an archive it cannot read has none.
+	ArchivedMemories(read func(path string) []byte) []ArchivedMemory
+}
+
+// ArchivedMemory is one archive entry: the hot file it belongs to ("memory" or "user") and its
+// text as the agent saved it.
+type ArchivedMemory struct {
+	Target string
+	Text   string
+}
+
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.
 type Engine interface {
 	Kind() string

@@ -487,3 +487,121 @@ func TestNapRehydrateDream(t *testing.T) {
 	t.Logf("dream 1: %d new learnings, proposals %v; dream 2: %d re-sighted; fare-lookup usage %v",
 		r1.NewLearnings, r1.SkillProposals, r2.Resighted, usage["fare-lookup"])
 }
+
+// A rejection reaches the archive even when the boot that purged it never ran the runtime: the nap
+// sidecar starts before the agent and snapshots at once, so a nap can hold the hot files the merge
+// purged beside a RECORDS.md that still has the rejected records; a task that stops then boots
+// from that nap with nothing left to purge in the hot files. Rehydrate's report names every
+// rejected entry the nap holds, hot or archived, on every boot, so the runtime still deletes them:
+// a PII-free one (the user entry) and one whose ledger text is scrubbed (the phone in the memory).
+func TestRejectionSurvivesEarlyNap(t *testing.T) {
+	w := newLearningWorld(t)
+	const fares = "Fares come from the fare-lookup skill; Dana confirms them by phone at +1 415 555 0123."
+	const eur = "The owner wants fares quoted in EUR."
+	const kept = "Quotes go out before noon."
+
+	home1 := filepath.Join(w.tmp, "home1")
+	w.rehydrate(home1)
+	w.model.script(
+		toolStep("c1", "memory", map[string]any{"action": "add", "target": "memory", "content": fares}),
+		toolStep("c2", "memory", map[string]any{"action": "add", "target": "memory", "content": kept}),
+		toolStep("c3", "memory", map[string]any{"action": "add", "target": "user", "content": eur}),
+		textStep("Done."),
+	)
+	w.oneshot(home1, "Remember how fares work.")
+	t0 := time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC)
+	w.nap(home1, "nt-1", t0)
+	if r, _ := w.dream(); r.NewLearnings != 3 {
+		t.Fatalf("dream = %+v", r)
+	}
+
+	// A reviewer rejects the two entries; the build carries the rejections.
+	ledger, err := learning.LoadLedger(w.root, "atlas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decided := loop.IsoMillis(time.Now())
+	rejected := 0
+	for _, e := range ledger {
+		if strings.Contains(e.Text, "fare-lookup") || strings.Contains(e.Text, "EUR") {
+			e.Status, e.DecidedAt = learning.Rejected, &decided
+			rejected++
+		}
+	}
+	if rejected != 2 {
+		t.Fatalf("ledger = %+v", ledger)
+	}
+	if err := learning.SaveLedger(w.root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	w.rebuild()
+
+	// Boot 2: the merge purges both from the hot files and reports them. The nap sidecar snapshots
+	// the home before the runtime ever opens its memory; the task stops.
+	home2 := filepath.Join(w.tmp, "home2")
+	if r := w.rehydrate(home2); r.PurgedMemories != 2 {
+		t.Fatalf("rehydrate after the rejection = %+v", r)
+	}
+	if records, _ := os.ReadFile(filepath.Join(home2, "memories", "RECORDS.md")); !strings.Contains(string(records), "quoted in EUR") {
+		t.Fatalf("RECORDS.md before the runtime ran:\n%s", records)
+	}
+	w.nap(home2, "nt-2", t0.Add(time.Minute))
+
+	// Boot 3, from that nap: the hot files hold nothing to purge, the archive still has both, and
+	// the report names them anyway.
+	home3 := filepath.Join(w.tmp, "home3")
+	if r := w.rehydrate(home3); r.PurgedMemories != 0 {
+		t.Fatalf("rehydrate from the early nap = %+v", r)
+	}
+	report, err := os.ReadFile(filepath.Join(home3, loop.MemoryMergePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{fares, eur} {
+		if !strings.Contains(string(report), loop.MemoryMergeHash(text)) {
+			t.Errorf("the report does not name %q:\n%s", text, report)
+		}
+	}
+	if strings.Contains(string(report), loop.MemoryMergeHash(kept)) || strings.Contains(string(report), "EUR") || strings.Contains(string(report), "555") {
+		t.Errorf("the report names more than the rejections:\n%s", report)
+	}
+	if st, err := os.Stat(filepath.Join(home3, loop.MemoryMergePath)); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("report mode: %v %v", st, err)
+	}
+
+	w.model.script(textStep("Done."))
+	w.oneshot(home3, "Hello again.")
+	records3, _ := os.ReadFile(filepath.Join(home3, "memories", "RECORDS.md"))
+	parsed := memory.ParseRecords(string(records3), time.Now())
+	texts := map[string]bool{}
+	for _, r := range parsed.Recs {
+		texts[r.Text] = true
+	}
+	if texts[fares] || texts[eur] || !texts[kept] || strings.Contains(string(records3), "555 0123") || strings.Contains(string(records3), "quoted in EUR") {
+		t.Errorf("after the early nap, RECORDS.md:\n%s", records3)
+	}
+	tombs := map[string]bool{}
+	for _, tb := range parsed.Tombs {
+		tombs[tb.Target+":"+tb.Hash] = true
+	}
+	if !tombs["memory:"+memory.TextHash(fares)] || !tombs["user:"+memory.TextHash(eur)] || len(tombs) != 2 {
+		t.Errorf("tombstones = %+v", parsed.Tombs)
+	}
+	if _, err := os.Stat(filepath.Join(home3, loop.MemoryMergePath)); !os.IsNotExist(err) {
+		t.Errorf("the merge report was not consumed: %v", err)
+	}
+
+	// Boot 4 replays the report (it is complete again) against an archive that has nothing left
+	// of it: nothing changes.
+	w.nap(home3, "nt-3", t0.Add(2*time.Minute))
+	home4 := filepath.Join(w.tmp, "home4")
+	w.rehydrate(home4)
+	if report4, _ := os.ReadFile(filepath.Join(home4, loop.MemoryMergePath)); strings.Contains(string(report4), loop.MemoryMergeHash(kept)) {
+		t.Errorf("boot 4 report:\n%s", report4)
+	}
+	w.model.script(textStep("Done."))
+	w.oneshot(home4, "Hello once more.")
+	if records4, _ := os.ReadFile(filepath.Join(home4, "memories", "RECORDS.md")); string(records4) != string(records3) {
+		t.Errorf("the replay changed RECORDS.md:\n%s\nwas:\n%s", records4, records3)
+	}
+}

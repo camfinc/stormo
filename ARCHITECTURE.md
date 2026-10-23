@@ -316,15 +316,23 @@ open in WAL mode. Blobs are content-addressed, so an unchanged nap costs one man
 plus the latest nap:
 - Live memory wins over the seed, but entries a reviewer **rejected** are purged (matched by the
   ledger id of their scrubbed text). Review is enforced at runtime, not only in git.
-- What that merge took out of the hot files is written to `.swarm/memory-merge.json` (a contract,
-  v1; `loop.MemoryMerge`), hashes only, never the text: `{"v":1,"memory":{"purged":[…],
-  "deferred":[…]},"user":{…}}`, each the SHA-256 (hex) of `learning.Normalize` of the entry as
-  the hot file had it, unscrubbed; `purged` are the rejected entries, `deferred` the ones with no
-  room (a live entry past the budget, a seed entry past `seed_fill`). It is written afresh,
-  atomically and 0600, on every boot, and no engine's rules claim `.swarm/`, so it is never
-  napped and speaks of that boot only. An engine that keeps its own copy of the memories (an
-  archive) uses it to drop a rejected entry there too and may delete it once read; one that does
-  not (Hermes) ignores it, as it ignores `rehydrate.json` and `booted.json` beside it.
+- What a reviewer rejected is written to `.swarm/memory-merge.json` (a contract, v2;
+  `loop.MemoryMerge`), hashes only, never the text: `{"v":2,"memory":{"purged":[{"hash":…,
+  "at":…}],"deferred":[…]},"user":{…}}`. Each hash is the SHA-256 (hex) of `learning.Normalize` of
+  the entry as the agent saved it, unscrubbed. `purged` is every entry a reviewer rejected that the
+  nap holds: the hot entries the merge purged, then the entries of the engine's own archive, if it
+  keeps one (`engine.MemoryArchive`), matched the same way (ledger id of the scrubbed text); `at`
+  is when it was rejected (the ledger's `decidedAt`, carried as `rejectedAt` in baseline.json),
+  absent when unknown. `deferred` are the ones with no room (a live entry past the budget, a seed
+  entry past `seed_fill`). It is written whole, atomically and 0600, on every boot (every
+  rejection the nap still holds, not only what that boot purged: a nap can catch a home before the
+  engine read the last report), and no engine's rules claim `.swarm/`, so it is never napped. An
+  engine with an archive deletes there every copy saved before `at` (all of them with no `at`)
+  and may delete the report once read; applying it again must change nothing. A copy saved again
+  after the rejection may stay in the archive; the merge keeps it out of the hot files on every
+  boot regardless. An engine without one (Hermes) ignores the report, as it ignores
+  `rehydrate.json` and `booted.json` beside it. v1 (`purged` a list of hashes, that boot's purges
+  only) is what an older rehydrate wrote.
 - The compiled seed fills only `seed_fill` (default 60%) of the char budget, leaving the agent
   headroom to keep learning.
 - A runtime skill patch is restored only if the repo has not changed that skill since the nap was

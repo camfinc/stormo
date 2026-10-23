@@ -223,10 +223,10 @@ func (s *Store) load() (*state, error) {
 		merge = s.readMerge()
 	}
 	if merge != nil {
-		purged, deferred := st.applyMerge(merge, now)
-		if purged > 0 || deferred > 0 {
+		purged, kept, deferred := st.applyMerge(merge, now)
+		if purged > 0 || kept > 0 || deferred > 0 {
 			write = true
-			s.logf("memory: rehydrate's merge report applied to %s: %d records a reviewer rejected deleted, %d deferred for room archived", RecordsFile, purged, deferred)
+			s.logf("memory: rehydrate's merge report applied to %s: %d records a reviewer rejected deleted, %d saved again since the rejection archived, %d deferred for room archived", RecordsFile, purged, kept, deferred)
 		}
 	}
 	if st.version == RecordsVersion {
