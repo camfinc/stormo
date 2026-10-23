@@ -20,10 +20,12 @@ swift test --package-path apps/macos/StormoKit
 xcodebuild -project apps/macos/Stormo.xcodeproj -scheme Stormo build
 ```
 
-The build phase compiles this checkout's engine (needs `go`) into the app. That copy reports version
-`dev` and has no source tree next to it, so it cannot build a sidecar image: for running agents from
-a local build, keep your dev CLI installed (`~/.local/bin/stormo`), which the app's Auto choice
-prefers. Release builds will bundle the tagged, universal binary instead (`STORMO_BINARY`).
+The build phase compiles this checkout's engine (needs `go`) into the app, stamped with the
+checkout's absolute path (`-ldflags -X …/pkg/version.BuiltFrom=…`). So the bundled copy of a local
+build reports the checkout's git revision (with `-dirty` while it has changes) and builds sidecar
+images from that checkout, like a CLI built there; the checkout must stay where it was built (or set
+`STORMO_SRC`). Release builds bundle the tagged, universal binary instead (`STORMO_BINARY`), which
+pulls its published sidecar image.
 
 ## How it decides things
 
