@@ -217,6 +217,18 @@ func (s *Store) load() (*state, error) {
 		write = true
 		s.logf("memory: %s mended: %d damaged entries repaired, %d repeated ids renamed", RecordsFile, parsed.Repaired, parsed.Renamed)
 	}
+	// rehydrate's merge report: read before reconcile, deleted once RECORDS.md holds its result
+	var merge *mergeReport
+	if st.version == RecordsVersion {
+		merge = s.readMerge()
+	}
+	if merge != nil {
+		purged, deferred := st.applyMerge(merge, now)
+		if purged > 0 || deferred > 0 {
+			write = true
+			s.logf("memory: rehydrate's merge report applied to %s: %d records a reviewer rejected deleted, %d deferred for room archived", RecordsFile, purged, deferred)
+		}
+	}
 	if st.version == RecordsVersion {
 		src := "boot"
 		if missing {
@@ -237,7 +249,7 @@ func (s *Store) load() (*state, error) {
 			}
 		}
 		if rep.Created > 0 || rep.Demoted > 0 || rep.Rewritten > 0 || rep.Buried > 0 {
-			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or an entry a reviewer rejected), %d deleted ones dropped from their hot file (a tombstone: a nap skew, or a crash)",
+			s.logf("memory: hot files reconciled with %s: %d records made from hot entries (%s), %d rewritten as the hot file has them, %d not in their hot file moved to the archive (a nap skew, or a merge with no report), %d deleted ones dropped from their hot file (a tombstone: a nap skew, or a crash)",
 				RecordsFile, rep.Created, src, rep.Rewritten, rep.Demoted, rep.Buried)
 		}
 	} else {
@@ -252,11 +264,18 @@ func (s *Store) load() (*state, error) {
 	}
 	s.st = st
 	st.prints = read
+	written := !write
 	if write {
 		if err := s.write(RecordsFile, []byte(st.format(now))); err != nil {
 			s.logf("memory: could not write %s: %v", RecordsFile, err)
 		} else {
+			written = true
 			st.prints[0] = statPrint(paths[0])
+		}
+	}
+	if merge != nil && written {
+		if err := os.Remove(filepath.Join(s.Home, filepath.FromSlash(MergeFile))); err != nil && !os.IsNotExist(err) {
+			s.logf("memory: could not remove %s: %v: it is applied again when the memory files next change", MergeFile, err)
 		}
 	}
 	for i, t := range targets {

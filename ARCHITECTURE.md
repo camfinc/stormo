@@ -316,6 +316,15 @@ open in WAL mode. Blobs are content-addressed, so an unchanged nap costs one man
 plus the latest nap:
 - Live memory wins over the seed, but entries a reviewer **rejected** are purged (matched by the
   ledger id of their scrubbed text). Review is enforced at runtime, not only in git.
+- What that merge took out of the hot files is written to `.swarm/memory-merge.json` (a contract,
+  v1; `loop.MemoryMerge`), hashes only, never the text: `{"v":1,"memory":{"purged":[…],
+  "deferred":[…]},"user":{…}}`, each the SHA-256 (hex) of `learning.Normalize` of the entry as
+  the hot file had it, unscrubbed; `purged` are the rejected entries, `deferred` the ones with no
+  room (a live entry past the budget, a seed entry past `seed_fill`). It is written afresh,
+  atomically and 0600, on every boot, and no engine's rules claim `.swarm/`, so it is never
+  napped and speaks of that boot only. An engine that keeps its own copy of the memories (an
+  archive) uses it to drop a rejected entry there too and may delete it once read; one that does
+  not (Hermes) ignores it, as it ignores `rehydrate.json` and `booted.json` beside it.
 - The compiled seed fills only `seed_fill` (default 60%) of the char budget, leaving the agent
   headroom to keep learning.
 - A runtime skill patch is restored only if the repo has not changed that skill since the nap was

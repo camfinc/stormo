@@ -30,6 +30,10 @@ func TestBootedFile(t *testing.T) {
 	if skills.BootedFile != loop.BootedPath {
 		t.Errorf("skills.BootedFile = %s, rehydrate writes %s", skills.BootedFile, loop.BootedPath)
 	}
+	// and the memory reads rehydrate's merge report where and as rehydrate writes it
+	if memory.MergeFile != loop.MemoryMergePath || memory.MergeVersion != loop.MemoryMergeVersion {
+		t.Errorf("memory reads %s v%d, rehydrate writes %s v%d", memory.MergeFile, memory.MergeVersion, loop.MemoryMergePath, loop.MemoryMergeVersion)
+	}
 }
 
 // scripted is an OpenAI-compatible endpoint that answers each request with the next step of a
@@ -434,10 +438,9 @@ func TestNapRehydrateDream(t *testing.T) {
 			t.Errorf("re-sighting = %+v", e)
 		}
 	}
-	// 5. A reviewer rejects the user entry: the next boot's merge purges it from USER.md. The
-	// runtime cannot tell that from a nap skew without rehydrate's merge report (not built,
-	// docs/needletail.md §11), so its record stays, moved to the archive: never lost, but a
-	// rejected entry lingers there (the model could find it and pin it again).
+	// 5. A reviewer rejects the user entry: the next boot's merge purges it from USER.md, and
+	// rehydrate's merge report (hashes only) tells the runtime, which deletes its record from the
+	// archive too (tombstoned), so the model cannot find it and pin it again. The other records stay.
 	for _, e := range ledger {
 		if e.Kind == learning.KindUser && strings.Contains(e.Text, "EUR") {
 			e.Status = learning.Rejected
@@ -454,17 +457,31 @@ func TestNapRehydrateDream(t *testing.T) {
 	if body, _ := os.ReadFile(filepath.Join(home3, "memories", "USER.md")); strings.Contains(string(body), "EUR") {
 		t.Fatalf("USER.md = %q", body)
 	}
+	report, err := os.ReadFile(filepath.Join(home3, loop.MemoryMergePath))
+	if err != nil || !strings.Contains(string(report), loop.MemoryMergeHash("The owner wants fares quoted in EUR.")) || strings.Contains(string(report), "EUR") {
+		t.Fatalf("%s = %s %v", loop.MemoryMergePath, report, err)
+	}
 	model.script(textStep("Done."))
 	oneshot(home3, "Hello again.")
 	records3, _ := os.ReadFile(filepath.Join(home3, "memories", "RECORDS.md"))
-	var rejectedRec *memory.Record
-	for _, r := range memory.ParseRecords(string(records3), time.Now()).Recs {
-		if strings.Contains(r.Text, "fares quoted in EUR") {
+	parsed := memory.ParseRecords(string(records3), time.Now())
+	var rejectedRec, fares *memory.Record
+	for _, r := range parsed.Recs {
+		switch {
+		case strings.Contains(r.Text, "fares quoted in EUR"):
 			rejectedRec = r
+		case strings.Contains(r.Text, "fare-lookup skill"):
+			fares = r
 		}
 	}
-	if rejectedRec == nil || rejectedRec.Hot != 0 || !strings.Contains(string(records3), "ZX-4471") {
+	if rejectedRec != nil || fares == nil || fares.Hot != 1 || !strings.Contains(string(records3), "ZX-4471") || strings.Contains(string(records3), "quoted in EUR") {
 		t.Errorf("after the rejection, RECORDS.md:\n%s", records3)
+	}
+	if len(parsed.Tombs) != 1 || parsed.Tombs[0].Target != memory.TargetUser || parsed.Tombs[0].Hash != memory.TextHash("The owner wants fares quoted in EUR.") {
+		t.Errorf("tombstones = %+v", parsed.Tombs)
+	}
+	if _, err := os.Stat(filepath.Join(home3, loop.MemoryMergePath)); !os.IsNotExist(err) {
+		t.Errorf("the merge report was not consumed: %v", err)
 	}
 
 	t.Logf("dream 1: %d new learnings, proposals %v; dream 2: %d re-sighted; fare-lookup usage %v",

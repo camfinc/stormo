@@ -13,9 +13,9 @@ type Reconciled struct {
 	// Rewritten: records whose text the hot file has spelled differently (the same normalized
 	// text): the hot file wins.
 	Rewritten int
-	// Demoted: hot records their hot file no longer has, moved to the archive. Without the
-	// rehydrate merge report (not built: docs/needletail.md §11) a record a reviewer rejected
-	// cannot be told from a nap skew, so neither is deleted.
+	// Demoted: hot records their hot file no longer has, moved to the archive: a nap skew (or a
+	// merge at boot with no report: an older rehydrate). One a reviewer rejected was deleted
+	// before reconcile, by rehydrate's merge report (merge.go).
 	Demoted int
 	// Buried: hot entries no record has whose text a tombstone names (deleted lately): dropped
 	// from their hot file, not made records again.

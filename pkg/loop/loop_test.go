@@ -1,7 +1,10 @@
 package loop
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -286,6 +289,42 @@ func TestLearningLoop(t *testing.T) {
 		}
 		if !strings.Contains(read(t, filepath.Join(home2, "skills/acme-knowledge/references/agent.md")), "Dana prefers") {
 			t.Error("accepted lesson missing from the knowledge skill")
+		}
+		// The merge report names the purged entry by hash alone (an engine keeping its own copy of
+		// the memories drops it there too); Hermes reads none of .swarm/, which no rule naps.
+		var merge MemoryMerge
+		body := read(t, filepath.Join(home2, MemoryMergePath))
+		if err := json.Unmarshal([]byte(body), &merge); err != nil {
+			t.Fatal(err)
+		}
+		phone := "Client John Doe phone +1 415 555 0123 wants morning calls."
+		if merge.V != 1 || !slices.Equal(merge.Memory.Purged, []string{MemoryMergeHash(phone)}) || len(merge.Memory.Deferred) != 0 ||
+			len(merge.User.Purged) != 0 || len(merge.User.Deferred) != 0 || strings.Contains(body, "555") || strings.Contains(body, "John") {
+			t.Errorf("memory-merge.json = %s", body)
+		}
+		if sum := sha256.Sum256([]byte(learning.Normalize(phone))); MemoryMergeHash(phone) != hex.EncodeToString(sum[:]) {
+			t.Errorf("hash = %s", MemoryMergeHash(phone))
+		}
+		if info, err := os.Stat(filepath.Join(home2, MemoryMergePath)); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("memory-merge.json mode: %v %v", info, err)
+		}
+		// apart from the report, rehydrate's own files are what they were
+		entries, _ := os.ReadDir(filepath.Join(home2, ".swarm"))
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		if !slices.Equal(names, []string{"booted.json", "memory-merge.json", "rehydrate.json"}) {
+			t.Errorf(".swarm/ = %v", names)
+		}
+		if r := engine.Classify(MemoryMergePath, eng.Layout().Rules); r != nil {
+			t.Errorf("%s is napped by %s", MemoryMergePath, r.Glob)
+		}
+		// every boot writes it afresh (so an engine never reads a previous boot's)
+		h := filepath.Join(tmp, "home2b")
+		rehydrate(h, filepath.Join(tmp, "baseline2"))
+		if err := json.Unmarshal([]byte(read(t, filepath.Join(h, MemoryMergePath))), &merge); err != nil || merge.V != 1 {
+			t.Errorf("second report: %+v %v", merge, err)
 		}
 	})
 

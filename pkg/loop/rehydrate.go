@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -33,6 +35,47 @@ type RehydrateReport struct {
 	// because the repo changed that script since the nap's instance booted.
 	RestoredScripts []string `json:"restoredScripts"`
 	KeptRepoScripts []string `json:"keptRepoScripts"`
+}
+
+// MemoryMergePath is rehydrate's memory merge report, relative to the home (a contract, v1;
+// ARCHITECTURE.md): which hot entries the merge took out of the hot files, by hash, so an engine
+// that keeps its own copy of the memories (an archive) can drop a rejected one there too. Every
+// rehydrate writes it afresh; an engine may delete it once read. No engine's snapshot rules claim
+// .swarm/, so it is never napped: it speaks of this boot only.
+const MemoryMergePath = ".swarm/memory-merge.json"
+
+// MemoryMergeVersion is the report's format version (MemoryMerge.V).
+const MemoryMergeVersion = 1
+
+// MemoryMerge is the report: per hot file (memory, user), the entries the merge purged (a
+// reviewer rejected them) and deferred (they did not fit the budget: a live entry past it, or a
+// seed entry past the seed fill), each as MemoryMergeHash, in the merge's order. Hashes only:
+// never the text.
+type MemoryMerge struct {
+	V      int              `json:"v"`
+	Memory MemoryMergeLists `json:"memory"`
+	User   MemoryMergeLists `json:"user"`
+}
+
+// MemoryMergeLists are one hot file's purged and deferred entries (never nil).
+type MemoryMergeLists struct {
+	Purged   []string `json:"purged"`
+	Deferred []string `json:"deferred"`
+}
+
+// MemoryMergeHash is an entry's hash in the report: SHA-256, in hex, of learning.Normalize of the
+// entry as the hot file had it (unscrubbed).
+func MemoryMergeHash(entry string) string {
+	sum := sha256.Sum256([]byte(learning.Normalize(entry)))
+	return hex.EncodeToString(sum[:])
+}
+
+func mergeHashes(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, MemoryMergeHash(e))
+	}
+	return out
 }
 
 type liveFile struct {
@@ -240,11 +283,13 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	for _, id := range info.Rejected {
 		rejected[id] = true
 	}
+	merge := MemoryMerge{V: MemoryMergeVersion}
 	for _, m := range []struct {
 		kind  learning.Kind
 		path  string
 		limit int
-	}{{learning.KindMemory, L.Memory.Memory, o.Agent.Learning.MemoryCharLimit}, {learning.KindUser, L.Memory.User, o.Agent.Learning.UserCharLimit}} {
+		lists *MemoryMergeLists
+	}{{learning.KindMemory, L.Memory.Memory, o.Agent.Learning.MemoryCharLimit, &merge.Memory}, {learning.KindUser, L.Memory.User, o.Agent.Learning.UserCharLimit, &merge.User}} {
 		liveEntries := learning.ParseEntries(o.Engine.Memory(), string(live[m.path].body))
 		seed := learning.ParseEntries(o.Engine.Memory(), string(base[m.path]))
 		rejectedText := map[string]bool{}
@@ -257,6 +302,7 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		entries, purged, deferred := learning.MergeHot(o.Engine.Memory(), liveEntries, seed, rejectedText, m.limit, o.Agent.Learning.SeedFill)
 		report.PurgedMemories += len(purged)
 		report.DeferredSeed += len(deferred)
+		m.lists.Purged, m.lists.Deferred = mergeHashes(purged), mergeHashes(deferred)
 		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
@@ -315,6 +361,10 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(o.Home, ".swarm", "rehydrate.json"), rep, 0o644); err != nil {
+		return nil, err
+	}
+	mergeBody, _ := learning.MarshalIndent(merge)
+	if err := writeAtomic(filepath.Join(o.Home, MemoryMergePath), mergeBody, 0o600); err != nil {
 		return nil, err
 	}
 	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running

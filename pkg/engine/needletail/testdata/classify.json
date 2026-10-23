@@ -132,6 +132,16 @@
    "glob": null
   },
   {
+   "path": ".swarm/memory-merge.json",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".swarm/booted.json",
+   "class": null,
+   "glob": null
+  },
+  {
    "path": "scripts/digest.py",
    "class": "learning",
    "glob": "scripts/**"
