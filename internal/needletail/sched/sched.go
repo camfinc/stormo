@@ -721,12 +721,24 @@ func (s *Scheduler) start(id string, now time.Time) {
 		}
 		return
 	}
+	// The run joins the WaitGroup under the lock setStopping takes: once Shutdown has set stopping
+	// it waits on wg, and an Add racing that Wait would be a misuse. A run that lost that race is
+	// settled as interrupted, due again at the next start.
 	s.runMu.Lock()
+	if s.stopping {
+		s.runMu.Unlock()
+		if slot != nil {
+			slot.Release()
+		}
+		claimed = false // finish settles it
+		s.finish(s.runCtx, job, interrupted(""))
+		return
+	}
 	s.running[id] = job.Name()
 	s.lastStart = now
+	s.wg.Add(1)
 	s.runMu.Unlock()
 	claimed = false // the run's finish lets it go (settleRun)
-	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		// A job with a script (a monitor, a pre-run script, a script-only job) runs it under
