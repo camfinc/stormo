@@ -61,7 +61,7 @@ func (g guide) render() string {
 	b.WriteString("- `SOUL.md`: who you are. Read-only; it changes through review.\n" +
 		"- `skills/<category>/<name>/`: your skills (SKILL.md, scripts, `tools/*.luau`, `handlers/*.luau`). Change them with skill_manage, which checks them; the terminal may work in them too.\n" +
 		"- `scripts/`: the scripts your scheduled jobs run. Write one, then name it in cronjob_manage.\n" +
-		"- `memories/`: your memory: `MEMORY.md` and `USER.md` (above) and `RECORDS.md`, every memory as a record. Change it only with the memory tools.\n" +
+		"- `memories/`: your memory: `MEMORY.md` and `USER.md` (above) and `RECORDS.md`, every memory as a record. Change it only with the memory tools, and search the records with memory_search.\n" +
 		"- `cron/jobs.json`: your scheduled jobs. Change them only with cronjob_manage.\n" +
 		"- `sessions/`, `logs/`, `state/`, `.swarm/`, `needletail.yaml`: the runtime's own. Never edit them.\n")
 	if len(g.Shared) > 0 {
@@ -73,7 +73,7 @@ func (g guide) render() string {
 	}
 	if g.Split {
 		b.WriteString("Your terminal commands and job scripts run as their own user: memories/, cron/, sessions/, logs/, state/, .swarm/ " +
-			"and needletail.yaml are out of their reach (memories/ read-only). Use the tools named above for them. Run a script with its " +
+			"and needletail.yaml are out of their reach (memories/ read-only, and RECORDS.md not even readable: memory_search finds records). Use the tools named above for them. Run a script with its " +
 			"interpreter (`bash x.sh`, `python3 x.py`): a file the runtime wrote for you cannot be chmod-ed by your commands.\n")
 	}
 	if g.Jailed {

@@ -162,3 +162,41 @@ func TestPhraseAndSimilarUseTheText(t *testing.T) {
 		t.Errorf("a tag counted as text: %+v", r)
 	}
 }
+
+// The archive is the runtime's alone (0600: every memory, client data included), while the hot
+// files stay readable by the agent's commands (0640, the runtime's group): every write keeps
+// those modes, the migration's and a change's.
+func TestArchiveIsPrivate(t *testing.T) {
+	home := newHome(t, "A hot note.", "The owner wants short answers.")
+	s := newStore(home)
+	modes := func(when string) {
+		t.Helper()
+		for rel, want := range map[string]os.FileMode{RecordsFile: 0o600, "memories/MEMORY.md": 0o640, "memories/USER.md": 0o640} {
+			info, err := os.Stat(filepath.Join(home, filepath.FromSlash(rel)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != want {
+				t.Errorf("%s: %s is %v, want %v", when, rel, info.Mode().Perm(), want)
+			}
+		}
+	}
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(TargetMemory, "Another hot note."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(TargetUser, "The owner reads in Spanish."); err != nil {
+		t.Fatal(err)
+	}
+	modes("after the migration and an add")
+	// an archive left 0640 by an older runtime is written 0600 at its next change
+	if err := os.Chmod(filepath.Join(home, filepath.FromSlash(RecordsFile)), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save(SaveOptions{Text: "An archived fact about the CRM."}); err != nil {
+		t.Fatal(err)
+	}
+	modes("after a save")
+}

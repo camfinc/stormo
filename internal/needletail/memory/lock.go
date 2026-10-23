@@ -123,12 +123,18 @@ func readGen(path string) ([]byte, fprint, error) {
 	return body, fprintOf(&st), nil
 }
 
-// write writes one of the store's files (rel to the home), atomically.
+// write writes one of the store's files (rel to the home), atomically: the hot files 0640
+// (readable by the agent's commands, the runtime's group, as the system prompt shows them anyway),
+// the archive 0600 (the runtime's alone: every memory, client data included; privsep.PrivateFiles).
 func (s *Store) write(rel string, body []byte) error {
 	if beforeWrite != nil {
 		if err := beforeWrite(rel); err != nil {
 			return err
 		}
 	}
-	return fsx.WriteAtomicIn(filepath.Join(s.Home, filepath.FromSlash(rel)), s.tmp(), body, 0o640)
+	perm := os.FileMode(0o640)
+	if rel == RecordsFile {
+		perm = 0o600
+	}
+	return fsx.WriteAtomicIn(filepath.Join(s.Home, filepath.FromSlash(rel)), s.tmp(), body, perm)
 }

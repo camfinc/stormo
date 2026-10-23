@@ -79,12 +79,12 @@ func Prepare(home string, u Users, stateDir string, logf func(string)) error {
 		return &os.PathError{Op: "chmod", Path: home, Err: err}
 	}
 	for _, d := range Private {
-		if err := runtimeDir(root, d, u, privateMode, logf); err != nil {
+		if err := runtimeDir(root, d, u, func(_ string, dir bool, perm uint32) uint32 { return privateMode(dir, perm) }, logf); err != nil {
 			return err
 		}
 	}
 	for _, d := range ReadOnly {
-		if err := runtimeDir(root, d, u, readOnlyMode, logf); err != nil {
+		if err := runtimeDir(root, d, u, readOnlyIn, logf); err != nil {
 			return err
 		}
 	}
@@ -145,10 +145,19 @@ func readOnlyMode(dir bool, perm uint32) uint32 {
 	return perm&0o700 | 0o640
 }
 
+// readOnlyIn is the mode of an entry p in a ReadOnly directory: readOnlyMode, except a regular
+// file PrivateFiles names, which is privateMode.
+func readOnlyIn(p string, dir bool, perm uint32) uint32 {
+	if !dir && slices.Contains(PrivateFiles, p) {
+		return privateMode(dir, perm)
+	}
+	return readOnlyMode(dir, perm)
+}
+
 // runtimeDir makes rel (below the home, its parents first) a directory when missing, moving aside
-// what else holds the name, then gives it and all it holds to the runtime with mode.
-func runtimeDir(root int, rel string, u Users, mode func(bool, uint32) uint32, logf func(string)) error {
-	byPath := func(_ string, dir bool, perm uint32) uint32 { return mode(dir, perm) }
+// what else holds the name, then gives it and all it holds to the runtime with mode (by path
+// below the home).
+func runtimeDir(root int, rel string, u Users, byPath func(p string, dir bool, perm uint32) uint32, logf func(string)) error {
 	dir := root
 	segs := strings.Split(rel, "/")
 	for i, seg := range segs {

@@ -31,7 +31,8 @@ func TestDropAsRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for rel, body := range map[string]string{"cron/jobs.json": `{"jobs":[]}`, "state/needletail/idem.json": "{}", "needletail.yaml": "version: 1\n",
-		".swarm/booted.json": "{}", "memories/MEMORY.md": "a note", "skills/demo/SKILL.md": "---\nname: demo\n---\n", "SOUL.md": "me"} {
+		".swarm/booted.json": "{}", "memories/MEMORY.md": "a note",
+		"memories/RECORDS.md": "<!-- needletail-records v1 -->\n§\nan archived client fact", "state/needletail/memory-usage.json": "{}", "skills/demo/SKILL.md": "---\nname: demo\n---\n", "SOUL.md": "me"} {
 		p := filepath.Join(home, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -58,6 +59,9 @@ func TestDropAsRoot(t *testing.T) {
 		"exec: write .swarm/booted.json: denied",
 		"exec: write memories/MEMORY.md: denied",
 		"exec: read memories/MEMORY.md: ok",
+		"exec: read memories/RECORDS.md: denied",
+		"exec: read state/needletail/memory-usage.json: denied",
+		"exec: list memories/: ok",
 		"exec: replace cron: denied",
 		"exec: read /proc/runtime/environ: denied",
 		"exec: signal the runtime: denied",
@@ -101,6 +105,9 @@ try "write needletail.yaml" 'echo x >> needletail.yaml'
 try "write .swarm/booted.json" 'echo x > .swarm/booted.json'
 try "write memories/MEMORY.md" 'echo x >> memories/MEMORY.md'
 try "read memories/MEMORY.md" 'cat memories/MEMORY.md >/dev/null'
+try "read memories/RECORDS.md" 'cat memories/RECORDS.md >/dev/null'
+try "read state/needletail/memory-usage.json" 'cat state/needletail/memory-usage.json >/dev/null'
+try "list memories/" 'ls memories >/dev/null'
 try "replace cron" 'mv cron cron.old'
 try "read /proc/runtime/environ" 'cat /proc/%d/environ >/dev/null'
 try "signal the runtime" 'kill -0 %d'

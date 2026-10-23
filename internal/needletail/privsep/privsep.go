@@ -4,7 +4,8 @@
 // agent's commands as a second user and to stop them (Drop). The terminal, scheduled scripts
 // and monitors then run as ExecUID with the runtime's group and no capabilities: they can work
 // in the agent's workspace and the shared space, never in cron/, state/, sessions/, logs/,
-// .swarm/, memories/ (read-only) or needletail.yaml, nor read the runtime's /proc.
+// .swarm/, memories/ (the hot files read-only, the archive not even that) or needletail.yaml, nor
+// read the runtime's /proc.
 package privsep
 
 import (
@@ -35,6 +36,10 @@ var (
 	// ReadOnly are the runtime's directories the agent's commands may read (group r-x): the
 	// memory, which is in the system prompt anyway and changes only through the memory tool.
 	ReadOnly = []string{"memories"}
+	// PrivateFiles are the runtime's files inside a ReadOnly directory that stay its user's alone
+	// (0600): the memory archive, every memory with client data in it, which the commands never
+	// read (the memory tools search it within a turn's audience). A missing one is not made.
+	PrivateFiles = []string{"memories/RECORDS.md"}
 	// Files are the runtime's files at the home's root, with their mode: made empty when
 	// missing (SOUL.md; a missing needletail.yaml fails the boot earlier).
 	Files = map[string]uint32{"needletail.yaml": 0o600, "SOUL.md": 0o644}

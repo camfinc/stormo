@@ -3,9 +3,13 @@ package privsep
 import (
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/camfinc/stormo/internal/needletail/memory"
 )
 
 func mode(t *testing.T, p string) fs.FileMode {
@@ -29,7 +33,8 @@ func put(t *testing.T, p, body string, perm fs.FileMode) {
 
 // Prepare's layout, with the test's own uid standing in for both users (only root can give files
 // to others; the Docker check in docs/needletail.md §7 runs it as root): the workspace
-// group-writable, the runtime's directories made and private (memories readable by the group),
+// group-writable, the runtime's directories made and private (the hot memory files readable by
+// the group, the archive not),
 // the home sticky, the root files the runtime's, nothing followed through a symlink, a runtime
 // name that is not a directory moved aside.
 func TestPrepare(t *testing.T) {
@@ -47,6 +52,7 @@ func TestPrepare(t *testing.T) {
 	put(t, filepath.Join(home, "cron", "jobs.json"), "{}", 0o644)
 	put(t, filepath.Join(home, "sessions", "a.jsonl"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "MEMORY.md"), "x", 0o644)
+	put(t, filepath.Join(home, "memories", "USER.md"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "RECORDS.md"), "x", 0o644) // as rehydrate restores it
 	put(t, filepath.Join(home, "needletail.yaml"), "x", 0o644)
 	outside := filepath.Join(t.TempDir(), "outside.txt") // a symlink's target: never changed
@@ -80,7 +86,8 @@ func TestPrepare(t *testing.T) {
 		".needletail-tmp":           fs.ModeDir | 0o700,
 		"memories":                  fs.ModeDir | 0o750,
 		"memories/MEMORY.md":        0o640,
-		"memories/RECORDS.md":       0o640,
+		"memories/RECORDS.md":       0o600, // the archive: the runtime's alone
+		"memories/USER.md":          0o640,
 		"needletail.yaml":           0o600,
 		"SOUL.md":                   0o644,
 		"skills/crm/link":           fs.ModeSymlink | mode(t, filepath.Join(home, "skills", "crm", "link")).Perm(),
@@ -108,6 +115,13 @@ func TestPrepare(t *testing.T) {
 	}
 	if got := mode(t, filepath.Join(home, "cron", "jobs.json")); got != 0o600 {
 		t.Errorf("the link's target changed: %v", got)
+	}
+}
+
+// The file Prepare keeps private in memories/ is the memory's archive.
+func TestPrivateFilesIsTheArchive(t *testing.T) {
+	if !slices.Contains(PrivateFiles, memory.RecordsFile) || !slices.Contains(ReadOnly, path.Dir(memory.RecordsFile)) {
+		t.Errorf("PrivateFiles %v, ReadOnly %v, the archive %s", PrivateFiles, ReadOnly, memory.RecordsFile)
 	}
 }
 
