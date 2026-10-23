@@ -30,6 +30,12 @@ func TestCredentialShapedTextRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Slack's own spellings (fake, built from parts): a bot token, a rotating user token, an app token
+	for _, tok := range []string{"xox" + "b-123456789012-1234567890123-FAKEfakeFAKEfake", "xox" + "e.xoxp-1-123456789012-FAKEfakeFAKE", "xap" + "p-1-A0123456789-FAKEfake"} {
+		if _, err := s.Save(SaveOptions{Text: "The Slack token is " + tok}); !errors.Is(err, ErrSecret) {
+			t.Errorf("save of %s…: %v", tok[:5], err)
+		}
+	}
 	text := "bot token 123456789:AAabcdefghijklmnopqrstuvwxyz0123456789"
 	if _, err := s.Update(Audience{}, r.ID, Change{Text: &text}, false); !errors.Is(err, ErrSecret) {
 		t.Errorf("update: %v", err)

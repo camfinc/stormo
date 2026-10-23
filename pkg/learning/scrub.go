@@ -22,6 +22,11 @@ type Scrubber struct{ rules []scrubRule }
 
 var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
+// SlackTokenPattern is the generic secret rule for Slack's hyphenated tokens (xoxb-…, xoxp-…,
+// xoxa-…, xoxr-…, xoxe-…, xoxe.xoxp-…, xoxc-…, xoxd-…, xoxs-…, xapp-…). The older underscore
+// spelling (xoxb_…) stays in the prefix rule.
+const SlackTokenPattern = `\b(?:(?:xoxe\.)?xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}`
+
 // NewScrubber builds the rules for an instance (stormo.yaml scrub: token_prefixes, rules). The
 // instance's patterns were validated when it loaded.
 func NewScrubber(inst *instance.Instance) *Scrubber {
@@ -32,6 +37,9 @@ func NewScrubber(inst *instance.Instance) *Scrubber {
 	prefixes = append(prefixes, "sk", "pk", "rk", "ghp", "gho", "xox[abpr]")
 	rules := []scrubRule{
 		{kind: "secret", re: regexp.MustCompile(`\b(?:` + strings.Join(prefixes, "|") + `)_[A-Za-z0-9_-]{10,}\b`)},
+		// Slack tokens as Slack spells them: bot, user, workspace, refresh, rotating (xoxe-, xoxe.xoxp-),
+		// browser and legacy session tokens, and app-level tokens (xapp-). Not xoxo- (a word).
+		{kind: "secret", re: regexp.MustCompile(SlackTokenPattern)},
 		{kind: "secret", re: regexp.MustCompile(`\b\d{8,10}:AA[A-Za-z0-9_-]{30,}\b`)}, // Telegram bot token
 		{kind: "secret", re: regexp.MustCompile(`\bBearer\s+[A-Za-z0-9._-]{16,}`)},
 		{kind: "email", re: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)},

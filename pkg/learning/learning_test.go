@@ -67,3 +67,43 @@ func TestScrub(t *testing.T) {
 		t.Errorf("false positive: %q %v", got, f)
 	}
 }
+
+// slackShaped are fake tokens in the shapes Slack issues (bot, user, app-level, workspace, refresh,
+// rotating, browser session, legacy) and the old underscore spelling. Each is built from parts so
+// no whole token sits in the source.
+func slackShaped() []string {
+	digits, fake := "123456789012-1234567890123", "FAKEfakeFAKEfakeFAKEfake"
+	return []string{
+		"xox" + "b-" + digits + "-" + fake,
+		"xox" + "p-" + digits + "-123456789012-" + fake + "0000",
+		"xox" + "a-2-" + digits + "-" + fake,
+		"xox" + "r-" + digits + "-" + fake,
+		"xox" + "e-1-" + digits + "-" + fake,
+		"xox" + "e.xoxp-1-" + digits + "-" + fake,
+		"xox" + "c-" + digits + "-" + fake,
+		"xox" + "s-" + digits + "-" + fake,
+		"xap" + "p-1-A0123456789-" + digits + "-" + fake,
+		"xox" + "b_" + fake, // the old underscore form still matches
+	}
+}
+
+// Slack tokens as Slack spells them (xoxb-…, xoxe.xoxp-…, xapp-…) are secrets to the scrub, whole:
+// nothing of the token is left, and its digits are not taken for a phone or a card.
+func TestScrubSlackTokens(t *testing.T) {
+	inst, err := instance.Load("../../examples/minimal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewScrubber(inst)
+	for _, tok := range slackShaped() {
+		text, findings := s.Scrub("the bot uses " + tok + " today")
+		if text != "the bot uses [SECRET] today" || !slices.Equal(findings, []string{"secret"}) {
+			t.Errorf("%s: %q %v", tok[:5], text, findings)
+		}
+	}
+	for _, plain := range []string{"xoxo-from-the-team", "the xoxb- prefix names a bot token", "xapp-", "maxoxb-abcdefghijklmnop"} {
+		if got, f := s.Scrub(plain); got != plain || len(f) != 0 {
+			t.Errorf("false positive: %q %v", got, f)
+		}
+	}
+}

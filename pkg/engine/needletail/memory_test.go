@@ -90,6 +90,9 @@ func TestRecordsParity(t *testing.T) {
 		"Call +1 415 555 0123", "mail ana@example.com", "card 4111 1111 1111 1111", "token sk_abcdefghijklmnop", "Bearer abcdefghijklmnopqrst",
 		"123456789:AAabcdefghijklmnopqrstuvwxyz0123456", "booking ZX-4471 on 2026-10-20", "no pii at all",
 		"bad \xff byte\u2001\u2001end ", "\u0085next line\u200bzero width", "ÀÉÎ STRASSE ǅ",
+		// Slack tokens as Slack spells them (fake, built from parts), and words that are not
+		"bot " + "xox" + "b-123456789012-1234567890123-FAKEfakeFAKEfake", "rotating " + "xox" + "e.xoxp-1-123456789012-FAKEfakeFAKE",
+		"app " + "xap" + "p-1-A0123456789-1234567890123-FAKEfake", "old " + "xox" + "p_FAKEfakeFAKE", "xoxo-from-the-team",
 	} {
 		if memory.Normalize(s) != learning.Normalize(s) {
 			t.Errorf("Normalize(%q): runtime %q, ledger %q", s, memory.Normalize(s), learning.Normalize(s))
