@@ -37,11 +37,13 @@ func NewScrubber(inst *instance.Instance) *Scrubber {
 	prefixes = append(prefixes, "sk", "pk", "rk", "ghp", "gho", "xox[abpr]")
 	rules := []scrubRule{
 		{kind: "secret", re: regexp.MustCompile(`\b(?:` + strings.Join(prefixes, "|") + `)_[A-Za-z0-9_-]{10,}\b`)},
-		// Slack tokens as Slack spells them: bot, user, workspace, refresh, rotating (xoxe-, xoxe.xoxp-),
-		// browser and legacy session tokens, and app-level tokens (xapp-). Not xoxo- (a word).
-		{kind: "secret", re: regexp.MustCompile(SlackTokenPattern)},
 		{kind: "secret", re: regexp.MustCompile(`\b\d{8,10}:AA[A-Za-z0-9_-]{30,}\b`)}, // Telegram bot token
 		{kind: "secret", re: regexp.MustCompile(`\bBearer\s+[A-Za-z0-9._-]{16,}`)},
+		// Slack tokens as Slack spells them: bot, user, workspace, refresh, rotating (xoxe-, xoxe.xoxp-),
+		// browser and legacy session tokens, and app-level tokens (xapp-). Not xoxo- (a word). After
+		// the rules that came before it, so text they redacted keeps its scrub and its ledger id
+		// ("Bearer xoxb-…" stays one [SECRET]); before email, card and phone, which would take parts.
+		{kind: "secret", re: regexp.MustCompile(SlackTokenPattern)},
 		{kind: "email", re: regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)},
 		{kind: "card", re: regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`)},
 		{kind: "phone", re: regexp.MustCompile(`(?:\+\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b`)},

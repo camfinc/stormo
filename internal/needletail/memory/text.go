@@ -166,10 +166,10 @@ var piiRules = []struct {
 	re   *regexp.Regexp
 }{
 	{"secret", regexp.MustCompile(`\b(?:sk|pk|rk|ghp|gho|xox[abpr])_[A-Za-z0-9_-]{10,}\b`)},
-	// Slack's hyphenated tokens (learning.SlackTokenPattern): xoxb-, xoxp-, xoxe.xoxp-, xapp-, …
-	{"secret", regexp.MustCompile(`\b(?:(?:xoxe\.)?xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}`)},
 	{"secret", regexp.MustCompile(`\b\d{8,10}:AA[A-Za-z0-9_-]{30,}\b`)},
 	{"secret", regexp.MustCompile(`\bBearer\s+[A-Za-z0-9._-]{16,}`)},
+	// Slack's hyphenated tokens (learning.SlackTokenPattern): xoxb-, xoxp-, xoxe.xoxp-, xapp-, …
+	{"secret", regexp.MustCompile(`\b(?:(?:xoxe\.)?xox[abcdeprs]|xapp)-[A-Za-z0-9-]{10,}`)},
 	{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)},
 	{"card", regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`)},
 	{"phone", regexp.MustCompile(`(?:\+\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b`)},

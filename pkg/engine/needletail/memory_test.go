@@ -93,6 +93,8 @@ func TestRecordsParity(t *testing.T) {
 		// Slack tokens as Slack spells them (fake, built from parts), and words that are not
 		"bot " + "xox" + "b-123456789012-1234567890123-FAKEfakeFAKEfake", "rotating " + "xox" + "e.xoxp-1-123456789012-FAKEfakeFAKE",
 		"app " + "xap" + "p-1-A0123456789-1234567890123-FAKEfake", "old " + "xox" + "p_FAKEfakeFAKE", "xoxo-from-the-team",
+		// the rules' order: a Slack token after Bearer, and one as an email's local part (secret, not email)
+		"Authorization: Bearer " + "xox" + "b-123456789012-1234567890123-FAKEfakeFAKEfake", "xox" + "b-123456789012-FAKEfake@example.com",
 	} {
 		if memory.Normalize(s) != learning.Normalize(s) {
 			t.Errorf("Normalize(%q): runtime %q, ledger %q", s, memory.Normalize(s), learning.Normalize(s))
