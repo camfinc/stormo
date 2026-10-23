@@ -151,4 +151,11 @@ public final class CoreSupervisor {
         return core.version != pinned.version
             && CoreState.samePath(core.exe, pinned.exe)
     }
+
+    /// A running core started by another binary than the pinned one (a CLI elsewhere, before Auto
+    /// moved to the app's copy): it keeps running until restarted with the pinned binary.
+    public func runsOtherBinary(than pinned: VersionInfo?) -> Bool {
+        guard let pinned, case .running(let core) = state else { return false }
+        return !CoreState.samePath(core.exe, pinned.exe)
+    }
 }

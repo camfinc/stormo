@@ -108,14 +108,28 @@ final class AppModel {
         return BinaryResolver(bundled: bundled, environment: environment ?? [:])
     }
 
-    /// Probes the binaries and pins Auto's choice the first time an instance is seen.
+    /// Probes the binaries and, for an instance on Auto, pins Auto's choice (on every look, so an
+    /// app update moves it to the new bundled copy). A binary picked in Settings stays.
     func resolveBinary() async {
         let active = instances.active
         candidates = await resolver.candidates(instance: active?.folder)
-        guard let active, active.binary == nil else { return }
-        if let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) {
-            instances.pin(active.root, binary: choice.resolved.path, choice: "auto")
+        guard let active, !active.isRemote else { return }
+        if let choice = BinaryResolver.repin(binary: active.binary, choice: active.binaryChoice, candidates: candidates, runningCoreExe: core.state.info?.exe) {
+            instances.pin(active.root, binary: choice.resolved.path, choice: BinaryResolver.autoPin)
         }
+    }
+
+    /// The active instance follows Auto (no binary picked in Settings).
+    var followsAuto: Bool {
+        guard let choice = instances.active?.binaryChoice else { return true }
+        return choice == BinaryResolver.autoPin
+    }
+
+    /// Back to Auto after a binary was picked in Settings.
+    func useAuto() {
+        guard let active = instances.active,
+              let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) else { return }
+        instances.pin(active.root, binary: choice.resolved.path, choice: BinaryResolver.autoPin)
     }
 
     /// The pinned binary for the active instance, if it is still there and usable.

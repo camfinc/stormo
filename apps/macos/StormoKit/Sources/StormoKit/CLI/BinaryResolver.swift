@@ -99,10 +99,14 @@ public struct BinaryResolver: Sendable {
         return c
     }
 
-    /// Auto's choice (docs/macos-app.md): the binary behind the instance's running core, else an
-    /// installed CLI, else the bundled one.
+    /// Auto's choice: one picked in Settings (custom), else the app's own copy, else the binary
+    /// behind the instance's running core, else an installed CLI (PATH, the usual directories, the
+    /// instance's engine checkout).
     public static func autoChoice(_ candidates: [BinaryCandidate], runningCoreExe: String?) -> BinaryCandidate? {
         let usable = candidates.filter(\.usable)
+        for source in [BinaryCandidate.Source.custom, .bundled] {
+            if let c = usable.first(where: { $0.source == source }) { return c }
+        }
         if let exe = runningCoreExe {
             let real = URL(filePath: exe).resolvingSymlinksInPath().path
             if let c = usable.first(where: { $0.resolved.path == real }) { return c }
@@ -110,6 +114,18 @@ public struct BinaryResolver: Sendable {
         for source in [BinaryCandidate.Source.path, .usual, .vendored] {
             if let c = usable.first(where: { $0.source == source }) { return c }
         }
-        return usable.first(where: { $0.source == .bundled }) ?? usable.first
+        return usable.first
+    }
+
+    /// The pin choice Auto keeps up to date; any other (a binary picked in Settings) stays.
+    public static let autoPin = "auto"
+
+    /// What to pin for an instance now: Auto's choice when the instance follows Auto (no pin yet,
+    /// or pinned "auto") and that choice differs from its pin; nil to keep the pin. Run on every
+    /// launch and every look, so an app update moves an Auto instance to the new copy.
+    public static func repin(binary: String?, choice: String?, candidates: [BinaryCandidate], runningCoreExe: String?) -> BinaryCandidate? {
+        if binary != nil, let choice, choice != autoPin { return nil }
+        guard let c = autoChoice(candidates, runningCoreExe: runningCoreExe), c.resolved.path != binary else { return nil }
+        return c
     }
 }

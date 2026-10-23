@@ -105,8 +105,18 @@ struct CommandLineSettings: View {
             } header: {
                 Text("stormo for \(model.instances.active?.name ?? "this instance")")
             } footer: {
-                Text("The pinned binary runs every command and starts the core, so it also decides the sidecar image agents get on their next start.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    if model.followsAuto {
+                        Text("Auto: Stormo's own copy, which updates with the app; another binary only when it cannot run. Pick one above to keep it.")
+                    } else {
+                        HStack {
+                            Text("Picked here: stays until you change it.")
+                            Button("Back to Auto") { model.useAuto() }
+                        }
+                    }
+                    Text("The pinned binary runs every command and starts the core, so it also decides the sidecar image agents get on their next start.")
+                }
+                .foregroundStyle(.secondary)
             }
             if model.canInstallCommandLineTool {
                 Section {

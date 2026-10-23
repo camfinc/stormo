@@ -21,6 +21,10 @@ struct CoreView: View {
                     Text("This core is an older build of the pinned binary. Restart it to update.")
                         .foregroundStyle(.orange)
                 }
+                if model.core.runsOtherBinary(than: model.pinned?.info), let pinned = model.pinned {
+                    Text("This core was started by another stormo than the pinned one (\(pinned.resolved.path)). Restart it to run the pinned one.")
+                        .foregroundStyle(.secondary)
+                }
                 if case .incompatible = model.core.state {
                     Text("This core is older than the app and cannot be read. Restart it with the pinned stormo.")
                         .foregroundStyle(.orange)

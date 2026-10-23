@@ -31,9 +31,12 @@ pulls its published sidecar image.
 
 - **Which instance:** opened with File › Open Instance… (validated by `stormo instance --json`); one
   is active at a time, since one core runs per machine.
-- **Which binary:** per instance, Auto picks the binary behind the instance's running core, else an
-  installed CLI (PATH, `~/.local/bin`, Homebrew, the instance's own `stormo/bin`), else the one inside
-  the app, and pins it. Settings › Command Line changes it.
+- **Which binary:** per instance, Auto uses the `stormo` inside the app (`Contents/Helpers`), which
+  updates with the app; only when that one cannot run, the binary behind the instance's running
+  core, else an installed CLI (PATH, `~/.local/bin`, Homebrew, the instance's own `stormo/bin`).
+  Auto's pin is re-checked at every launch and every Look again, so an app update moves it. A
+  binary picked in Settings › Command Line stays pinned until Back to Auto. A core started by
+  another binary keeps running until you restart it (the Core view says so).
 - **Which environment:** the login shell's (`$SHELL -ilc`), so docker and aws resolve as in a
   terminal; never `SWARM_TARGET`, and every command gets `--target local`. Remote (ECS) work is not
   in this build.

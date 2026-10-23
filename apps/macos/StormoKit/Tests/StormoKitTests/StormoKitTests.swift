@@ -154,9 +154,57 @@ final class Steps: @unchecked Sendable {
         #expect(found.map(\.source) == [.path, .path, .bundled])  // the vendored file is the PATH symlink's target
         #expect(found[0].info?.version == "v1.2.0" && found[0].usable)
         #expect(found[1].problem != nil)  // API 0
-        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.info?.version == "v1.2.0")
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.info?.version == "v1.3.0")
         #expect(BinaryResolver.autoChoice(found, runningCoreExe: bundled.path)?.source == .bundled)
         #expect(BinaryResolver.autoChoice(found.filter { $0.source == .bundled }, runningCoreExe: nil)?.source == .bundled)
+    }
+
+    /// PATH, the core's binary and the bundled copy, all usable.
+    func fleet(_ s: Scratch, bundledAPI: Int = 1) async throws -> (found: [BinaryCandidate], core: URL, bundled: URL) {
+        let onPath = try fakeStormo(s, "path/stormo", version: "v1.2.0")
+        let core = try fakeStormo(s, "checkout/bin/stormo", version: "v1.1.0")
+        let bundled = try fakeStormo(s, "App.app/Contents/Helpers/stormo", version: "v1.3.0", api: bundledAPI)
+        let resolver = BinaryResolver(bundled: bundled, environment: ["PATH": onPath.deletingLastPathComponent().path], home: s.url)
+        var found = await resolver.candidates(instance: nil)
+        found.append(await resolver.probe(BinaryCandidate(url: core, resolved: core, source: .usual)))
+        return (found, core, bundled)
+    }
+
+    @Test func autoPrefersTheBundledCopy() async throws {
+        let s = try Scratch()
+        let (found, core, _) = try await fleet(s)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.source == .bundled)  // over PATH
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: core.path)?.source == .bundled)  // over the core's
+    }
+
+    @Test func anUnusableBundledCopyFallsBackToTheCoreThenPath() async throws {
+        let s = try Scratch()
+        let (found, core, _) = try await fleet(s, bundledAPI: 0)
+        #expect(found.first { $0.source == .bundled }?.usable == false)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: core.path)?.resolved.path == core.path)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.source == .path)
+    }
+
+    @Test func customWins() async throws {
+        let s = try Scratch()
+        let mine = try fakeStormo(s, "mine/stormo", version: "v0.9.0")
+        let bundled = try fakeStormo(s, "App.app/Contents/Helpers/stormo", version: "v1.3.0")
+        let resolver = BinaryResolver(bundled: bundled, environment: ["PATH": ""], home: s.url)
+        let found = await resolver.candidates(instance: nil, custom: mine)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: bundled.path)?.resolved.path == mine.path)
+    }
+
+    @Test func autoPinsFollowAutoAndChosenOnesStay() async throws {
+        let s = try Scratch()
+        let (found, core, bundled) = try await fleet(s)
+        // An instance Auto pinned to the core's binary before this app (or an update of it) moves.
+        #expect(BinaryResolver.repin(binary: core.path, choice: "auto", candidates: found, runningCoreExe: core.path)?.resolved.path == bundled.path)
+        // A new instance gets Auto's choice; one already on it is left alone.
+        #expect(BinaryResolver.repin(binary: nil, choice: nil, candidates: found, runningCoreExe: nil)?.source == .bundled)
+        #expect(BinaryResolver.repin(binary: bundled.path, choice: "auto", candidates: found, runningCoreExe: nil) == nil)
+        // Picked in Settings: stays, whatever Auto would say.
+        #expect(BinaryResolver.repin(binary: core.path, choice: "custom", candidates: found, runningCoreExe: nil) == nil)
+        #expect(BinaryResolver.repin(binary: core.path, choice: "path", candidates: found, runningCoreExe: nil) == nil)
     }
 }
 
