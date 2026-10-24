@@ -25,6 +25,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/config"
 	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/history"
 	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
@@ -182,12 +183,13 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Check: tools.SecretCheck(red.Redact), Log: logf}
 	dmUser := &atomic.Pointer[func(channel string) string]{}
 	ops := &operators{}
-	mem.Where = audiences(store, func(channel string) string {
+	knownDM := func(channel string) string {
 		if f := dmUser.Load(); f != nil {
 			return (*f)(channel)
 		}
 		return ""
-	}, ops)
+	}
+	mem.Where = audiences(store, knownDM, ops)
 	if err := mem.Open(); err != nil {
 		logf(fmt.Sprintf("memory: %v", err))
 	}
@@ -226,6 +228,9 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	fu := followup.New(followup.Options{Home: cfg.Home, Location: cfg.Location, Log: logf, Redact: red.Redact,
 		Check: tools.SecretCheck(red.Redact), ScanPrompt: sched.ScanPrompt, Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay, Backoff: followUpBackoff})
 	agent.Tools.Add(fu.Tool())
+	// session_search (§4.5): the agent's past conversations, in the turn's audience; indexed at
+	// the first search, then only what was appended since
+	agent.Tools.Add(history.Tool(&history.Index{Dir: cfg.SessionsDir(), Log: logf}, searchable(mem.Where, knownDM, ops)))
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	if lr != nil {
 		lr.FollowUps = fu // follow_up and nt.followup, in the run's conversation
@@ -281,24 +286,62 @@ func audiences(store *sessions.Store, dmUser func(channel string) string, ops *o
 		} else if strings.HasPrefix(session, "slack-") {
 			source = slack.Source
 		}
-		if ops.has(root) {
-			return memory.Audience{Operator: true}
+		return audienceOf(root, source, dmUser, ops)
+	}
+}
+
+// audienceOf is the audience of the conversation whose root and source these are (audiences).
+func audienceOf(root, source string, dmUser func(channel string) string, ops *operators) memory.Audience {
+	if ops.has(root) {
+		return memory.Audience{Operator: true}
+	}
+	if source != slack.Source {
+		return memory.Audience{}
+	}
+	channel, thread, ok := slack.Origin(root)
+	if !ok {
+		return memory.Audience{}
+	}
+	if thread != "" {
+		return memory.Audience{Scope: memory.ChannelScope(channel), Conv: root}
+	}
+	a := memory.Audience{Conv: root}
+	if p := dmUser(channel); p != "" {
+		a.Scope = memory.DMScope(p)
+	}
+	return a
+}
+
+// searchable is session_search's audience (docs/needletail.md §4.5): which past conversations a
+// turn in session may see, by the memory's audiences (the runtime's, never the model's words).
+// The owner's own turn (a oneshot) sees every one. A Slack DM or thread sees the conversations
+// of its scope (this DM's person, this channel's threads) and itself (a DM whose person the
+// gateway has not seen yet: only itself). A turn with no audience (the API's runs, a scheduled
+// run) sees the conversations with none (the API's and the scheduled runs'), never a Slack one.
+// An earlier oneshot's conversation (source cli: the owner's, which may have searched every
+// scope) is only the owner's.
+func searchable(who func(session string) memory.Audience, dmUser func(channel string) string, ops *operators) func(session string) history.Visible {
+	return func(session string) history.Visible {
+		me := who(session)
+		return func(root, source string) bool {
+			if me.Operator {
+				return true
+			}
+			if source == followup.SourceOneshot || ops.has(root) {
+				return false
+			}
+			if _, _, ok := slack.Origin(root); source == slack.Source && !ok {
+				return false // a Slack conversation whose channel cannot be told: no one's but the owner's
+			}
+			a := audienceOf(root, source, dmUser, ops)
+			switch {
+			case me.Scope != "":
+				return a.Scope == me.Scope || a.Conv == me.Conv
+			case me.Conv != "":
+				return a.Conv == me.Conv
+			}
+			return a.Scope == "" && a.Conv == ""
 		}
-		if source != slack.Source {
-			return memory.Audience{}
-		}
-		channel, thread, ok := slack.Origin(root)
-		if !ok {
-			return memory.Audience{}
-		}
-		if thread != "" {
-			return memory.Audience{Scope: memory.ChannelScope(channel), Conv: root}
-		}
-		a := memory.Audience{Conv: root}
-		if p := dmUser(channel); p != "" {
-			a.Scope = memory.DMScope(p)
-		}
-		return a
 	}
 }
 

@@ -277,3 +277,49 @@ func TestMemoryAudiences(t *testing.T) {
 		}
 	}
 }
+
+// session_search's audiences: a DM sees its person's conversations, a channel thread its
+// channel's, a turn with no audience the others with none; the owner's oneshot sees everything,
+// and an earlier oneshot's conversation is the owner's alone.
+func TestSearchableAudiences(t *testing.T) {
+	store, err := sessions.Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []wire.Session{{ID: "slack-D0ANA-dm", Source: "slack"}, {ID: "slack-D0BOB-dm", Source: "slack"}, {ID: "slack-D0NEW-dm", Source: "slack"},
+		{ID: "slack-C0DEV-1.1", Source: "slack"}, {ID: "slack-C0DEV-2.2", Source: "slack"}, {ID: "slack-C0OPS-3.3", Source: "slack"},
+		{ID: "api-1", Source: "api_server"}, {ID: "cron-1", Source: "cron"}, {ID: "oneshot-old", Source: "cli"}, {ID: "oneshot-now", Source: "cli"},
+		{ID: "odd-slack", Source: "slack"}} {
+		if _, err := store.Create(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := &operators{}
+	ops.mark("oneshot-now")
+	dm := func(channel string) string { return map[string]string{"D0ANA": "U0ANA", "D0BOB": "U0BOB"}[channel] }
+	vis := searchable(audiences(store, dm, ops), dm, ops)
+	// odd-slack: a Slack conversation whose root does not name its channel (never made by the
+	// gateway): the owner's alone
+	everything := []string{"slack-D0ANA-dm", "slack-D0BOB-dm", "slack-D0NEW-dm", "slack-C0DEV-1.1", "slack-C0DEV-2.2", "slack-C0OPS-3.3", "api-1", "cron-1", "oneshot-old", "oneshot-now", "odd-slack"}
+	for caller, want := range map[string][]string{
+		"slack-D0ANA-dm":  {"slack-D0ANA-dm"},
+		"slack-D0NEW-dm":  {"slack-D0NEW-dm"},
+		"slack-C0DEV-1.1": {"slack-C0DEV-1.1", "slack-C0DEV-2.2"},
+		"api-1":           {"api-1", "cron-1"},
+		"cron-1":          {"api-1", "cron-1"},
+		"oneshot-old":     {"api-1", "cron-1"},
+		"oneshot-now":     everything,
+	} {
+		v := vis(caller)
+		var got []string
+		for _, root := range everything {
+			h, _ := store.Get(root)
+			if v(root, h.Source) {
+				got = append(got, root)
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s sees %v, want %v", caller, got, want)
+		}
+	}
+}

@@ -148,6 +148,19 @@ about above after again all also am an and any are as at be been before being be
 	return m
 }()
 
+// Tokens is s's index terms (tokens): the archive's tokenizer, for the runtime's other keyword
+// searches (session_search), so they fold and split text as memory_search does.
+func Tokens(s string) []string { return tokens(s) }
+
+// Words is s folded and split with its stop words kept (words): what a phrase is matched against.
+func Words(s string) []string { return words(s) }
+
+// Fold is s lower-cased with diacritics and Latin ligatures folded (fold).
+func Fold(s string) string { return fold(s) }
+
+// IsStop: w (folded) is a stop word, dropped from the index and from queries.
+func IsStop(w string) bool { return stop[w] }
+
 // distinct is the set of xs.
 func distinct(xs []string) map[string]bool {
 	m := make(map[string]bool, len(xs))
@@ -250,6 +263,18 @@ func checkSecret(texts ...string) error {
 		}
 	}
 	return nil
+}
+
+// MaskSecrets replaces what the scrub's secret rules find (an API key, a bot token, a Bearer
+// header, a Slack token) with [SECRET]: for text the runtime shows that it did not check when it
+// was written (a past conversation's rows). Personal data (an email, a phone) is left as it is.
+func MaskSecrets(text string) string {
+	for _, r := range piiRules {
+		if r.kind == "secret" {
+			text = r.re.ReplaceAllString(text, "[SECRET]")
+		}
+	}
+	return text
 }
 
 // CheckSecret refuses text shaped like a credential, by the scrub's secret rules: for the

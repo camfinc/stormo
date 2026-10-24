@@ -146,6 +146,16 @@ func parseQuery(q string) (terms []string, phrases []phrase) {
 	return terms, phrases
 }
 
+// QueryTerms is a query as memory_search reads it: its terms (a trailing * marks a prefix) and its
+// "phrases" (each its folded words joined by spaces), for the runtime's other keyword searches.
+func QueryTerms(q string) (terms, phrases []string) {
+	ts, ps := parseQuery(q)
+	for _, p := range ps {
+		phrases = append(phrases, p.text)
+	}
+	return ts, phrases
+}
+
 func parseSince(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if t, err := time.Parse(time.RFC3339, s); err == nil {

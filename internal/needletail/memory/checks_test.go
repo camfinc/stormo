@@ -200,3 +200,18 @@ func TestArchiveIsPrivate(t *testing.T) {
 	}
 	modes("after a save")
 }
+
+// The exported text layer: the tokenizer the session search shares, and the secret mask.
+func TestExportedText(t *testing.T) {
+	if got := strings.Join(Tokens("La cotización de Ana, para el viaje"), " "); got != "cotizacion ana viaje" {
+		t.Errorf("Tokens = %q", got)
+	}
+	terms, phrases := QueryTerms(`viaje "la cotización" reserv*`)
+	if strings.Join(terms, " ") != "cotizacion viaje reserv*" || strings.Join(phrases, "|") != "la cotizacion" {
+		t.Errorf("QueryTerms = %q %q", terms, phrases)
+	}
+	in := "key sk_live_abcdefghijklmnop and Bearer abcdefghijklmnopqrstu, mail ana@example.com"
+	if got := MaskSecrets(in); got != "key [SECRET] and [SECRET], mail ana@example.com" {
+		t.Errorf("MaskSecrets = %q", got)
+	}
+}

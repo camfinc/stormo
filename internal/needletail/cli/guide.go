@@ -61,9 +61,10 @@ func (g guide) render() string {
 	b.WriteString("- `SOUL.md`: who you are. Read-only; it changes through review.\n" +
 		"- `skills/<category>/<name>/`: your skills (SKILL.md, scripts, `tools/*.luau`, `handlers/*.luau`). Change them with skill_manage, which checks them; the terminal may work in them too.\n" +
 		"- `scripts/`: the scripts your scheduled jobs run. Write one, then name it in cronjob_manage.\n" +
-		"- `memories/`: your memory: `MEMORY.md` and `USER.md` (above) and `RECORDS.md`, every memory as a record. Change it only with the memory tools, and search the records with memory_search.\n" +
+		"- `memories/`: your memory (`MEMORY.md`, `USER.md`, and `RECORDS.md`, the archive): only through the memory tools.\n" +
 		"- `cron/jobs.json`: your scheduled jobs. Change them only with cronjob_manage.\n" +
-		"- `sessions/`, `logs/`, `state/`, `.swarm/`, `needletail.yaml`: the runtime's own. Never edit them.\n")
+		"- `sessions/`, `logs/`, `state/`, `.swarm/`, `needletail.yaml`: the runtime's own. Never edit them. " +
+		"session_search finds your past conversations with the same people.\n")
 	if len(g.Shared) > 0 {
 		fmt.Fprintf(&b, "- `%s`", clipPath(g.Shared[0]))
 		if len(g.Shared) > 1 {
@@ -73,7 +74,7 @@ func (g guide) render() string {
 	}
 	if g.Split {
 		b.WriteString("Your terminal commands and job scripts run as their own user: memories/, cron/, sessions/, logs/, state/, .swarm/ " +
-			"and needletail.yaml are out of their reach (memories/ read-only, and RECORDS.md not even readable: memory_search finds records). Use the tools named above for them. Run a script with its " +
+			"and needletail.yaml are out of their reach (memories/ read-only, RECORDS.md not readable). Use the tools named above for them. Run a script with its " +
 			"interpreter (`bash x.sh`, `python3 x.py`): a file the runtime wrote for you cannot be chmod-ed by your commands.\n")
 	}
 	if g.Jailed {
@@ -83,11 +84,12 @@ func (g guide) render() string {
 	if g.TmpDir != "" {
 		fmt.Fprintf(&b, "Temporary files go to $TMPDIR (`%s`, in your home), never /tmp.\n", clipPath(g.TmpDir))
 	}
+	b.WriteString("A server or long job: terminal background: true, then process_manage.\n")
 	b.WriteString("\n")
 	b.WriteString("## Memory\n" +
 		"MEMORY and USER PROFILE (above) are in every prompt, within their budgets: keep there what you need always (the memory tool). " +
-		"Everything else goes to your archive, by id: memory_manage save (kind fact, preference, procedure, episode or user; tags; " +
-		"importance 1-5; expires for time-bound facts), update, delete, pin (into the always-shown memory), unpin. A save answers " +
+		"Everything else goes to your archive, by id: memory_manage save (kind, tags, importance, expires for time-bound facts), " +
+		"update, delete, pin (always shown), unpin. A save answers " +
 		"exists or similar instead of a duplicate: update that record, or save with force. memory_search finds records: put synonyms " +
 		"and both Spanish and English words in the query. Never save secrets.")
 	if g.Recall {

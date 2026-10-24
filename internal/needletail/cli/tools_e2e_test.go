@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
 	"github.com/camfinc/stormo/pkg/engine"
 	adapter "github.com/camfinc/stormo/pkg/engine/needletail"
 )
@@ -282,4 +285,94 @@ func TestServeBackgroundProcess(t *testing.T) {
 	stop()
 	stopped = true
 	waitPidGone(t, pid3, "shutdown")
+}
+
+// session_search through the real serve and a fake Slack: in Ana's DM, a word she said before
+// the conversation was compacted is found (her conversation's earlier session); a word only Bob
+// said in his own DM is not, and Bob finds his own past, never Ana's.
+func TestServeSessionSearchScopes(t *testing.T) {
+	var mu sync.Mutex
+	var results []string
+	model := &turnScript{context: 2000, next: func(msgs []scriptMsg) (string, any, string) {
+		user, tool := lastUser(msgs)
+		if tool != nil {
+			mu.Lock()
+			results = append(results, tool.text())
+			mu.Unlock()
+			return "", nil, "searched"
+		}
+		lines := strings.Split(strings.TrimSpace(user), "\n")
+		switch lines[len(lines)-1] {
+		case "RECALL zanahoria":
+			return "session_search", map[string]any{"query": "zanahoria"}, ""
+		case "RECALL pepino":
+			return "session_search", map[string]any{"query": "pepino"}, ""
+		}
+		return "", nil, "ok"
+	}}
+	srv := httptest.NewServer(model)
+	defer srv.Close()
+	fake := slacktest.New(t)
+	h := home(t, srv.URL+"/v1", srv.URL+"/v1")
+	cfgPath := filepath.Join(h, "needletail.yaml")
+	cfg, _ := os.ReadFile(cfgPath)
+	if err := os.WriteFile(cfgPath, append(cfg, []byte("channels: [slack]\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setenv(t, h)
+	for k, v := range map[string]string{"SLACK_BOT_TOKEN": slacktest.BotToken, "SLACK_APP_TOKEN": slacktest.AppToken,
+		"SLACK_ALLOWED_USERS": "U0ANA00001,U0BOB00001", "SLACK_HOME_CHANNEL": "C0HOME0001", SlackAPIEnv: fake.API()} {
+		t.Setenv(k, v)
+	}
+	_, _, stop := serveAPI(t)
+	defer stop()
+	fake.WaitConnected(10 * time.Second)
+	posts := 0
+	say := func(channel, user, text string) {
+		t.Helper()
+		posts++
+		fake.Send(fmt.Sprintf("e%d", posts), slacktest.Event{Channel: channel, ChannelType: "im", User: user, Text: text, TS: fmt.Sprintf("1700000%03d.000100", posts)})
+		fake.WaitPosts(posts, 20*time.Second)
+	}
+	last := func() map[string]any {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(results) == 0 {
+			t.Fatal("no session_search result")
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(results[len(results)-1]), &m); err != nil {
+			t.Fatalf("result %q", results[len(results)-1])
+		}
+		return m
+	}
+	say("D0ANADM001", "U0ANA00001", "Our budget word is zanahoria.")
+	say("D0BOBDM001", "U0BOB00001", "My secret words are pepino and zanahoria.")
+	say("D0ANADM001", "U0ANA00001", "Another message, so the first one is compacted away.")
+	say("D0BOBDM001", "U0BOB00001", "Another one from Bob.")
+
+	say("D0ANADM001", "U0ANA00001", "RECALL zanahoria")
+	m := last()
+	t.Logf("Ana's search for zanahoria: %v", m["results"])
+	b, _ := json.Marshal(m)
+	hits, _ := m["results"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["session_id"] != "slack-D0ANADM001-dm" || !strings.Contains(fmt.Sprint(hits[0].(map[string]any)["snippet"]), "budget word is zanahoria") {
+		t.Errorf("Ana's search: %s", b)
+	}
+	if strings.Contains(string(b), "BOB") || strings.Contains(string(b), "pepino") {
+		t.Errorf("Ana's search shows Bob's DM: %s", b)
+	}
+	say("D0ANADM001", "U0ANA00001", "RECALL pepino")
+	if m := last(); m["count"] != float64(0) {
+		t.Errorf("Ana found Bob's word: %v", m)
+	}
+	say("D0BOBDM001", "U0BOB00001", "RECALL zanahoria")
+	m = last()
+	b, _ = json.Marshal(m)
+	hits, _ = m["results"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["session_id"] != "slack-D0BOBDM001-dm" || !strings.Contains(fmt.Sprint(hits[0].(map[string]any)["snippet"]), "secret words are pepino") ||
+		strings.Contains(string(b), "ANADM") || strings.Contains(string(b), "budget") {
+		t.Errorf("Bob's search: %s", b)
+	}
 }
