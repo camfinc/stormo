@@ -246,6 +246,19 @@ actor FakeChat: ChatBackend {
         #expect(store.transcript?.messages.first?.isFollowUp == true)
     }
 
+    @Test func aReadWithTheSameRowsIsNotShown() async throws {
+        let fake = FakeChat([Conversation(id: "api_1")])
+        let store = ChatStore(backend: fake)
+        await fake.append("api_1", ChatMessage(id: "1", role: "user", content: "hi"))
+        await store.selectAgent("ada")
+        let shown = try #require(store.transcript)
+        #expect(!store.apply(shown), "the same rows")
+        var more = shown
+        more.messages.append(ChatMessage(id: "2", role: "user", content: "hola", source: "follow_up"))
+        #expect(store.apply(more) && store.transcript == more)
+        #expect(!store.apply(more))
+    }
+
     @Test func noReadsWhileHiddenOrStopped() async {
         let fake = FakeChat([Conversation(id: "api_1")])
         let store = store(fake)
