@@ -33,8 +33,10 @@ activity.*
   Manager.
 - **A control plane with a face.** `stormo core` serves the office above, one ChatGPT-plan model
   gateway for every local agent, and the fleet's status.
-- **Pluggable engine.** Agents run on [Hermes](https://hermes-agent.nousresearch.com/docs/) today,
-  behind an interface built for more.
+- **Pluggable engine.** Each agent runs on [Hermes](https://hermes-agent.nousresearch.com/docs/) or
+  on needletail, Stormo's own Go runtime whose agents write sandboxed Luau tools
+  ([docs/needletail.md](docs/needletail.md)), behind one interface. The example instance runs
+  needletail.
 
 Stormo is a single Go binary: the CLI you run, the core service, and the sidecar inside every
 agent's task.

@@ -1,9 +1,9 @@
 # Stormo architecture
 
 Stormo is an agent swarm engine. It takes an **instance** (one organisation's agent definitions:
-[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes today,
-swappable), deploys it to AWS ECS, tests it on a bench, and folds what the running agents learn
-back into git through a reviewed nap/dream loop.
+[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes or needletail,
+chosen per agent), deploys it to AWS ECS, tests it on a bench, and folds what the running agents
+learn back into git through a reviewed nap/dream loop.
 
 Engine and instance are separate repos. The engine (this repo) holds no organisation: names,
 AWS target, scrub rules, bridge actions and branding come from the instance's `stormo.yaml`, and
@@ -212,8 +212,8 @@ the actions and channels, and the agent starts anyway; `secrets check` reports t
 of `secrets.local.yaml`** (what `secrets push` sends). `deploy render` lists only present optional
 secrets in the task definition, since a `valueFrom` pointing at a missing JSON key fails the task at
 start. So adding an optional secret on AWS later means `secrets push`, then rebuild and redeploy.
-The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action) and
-`TELEGRAM_BOT_TOKEN` (its Telegram channel).
+The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action); a Hermes agent's
+`TELEGRAM_BOT_TOKEN` gates its Telegram channel the same way.
 
 ## Channels: Slack
 

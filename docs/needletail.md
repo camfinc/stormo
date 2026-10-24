@@ -674,6 +674,8 @@ Every milestone ships as a draft PR behind `engine.kind: needletail`.
 | M7 | **First cutover**: one low-risk agent switches `engine.kind` with a pinned `image_tag`; ECS task definition render; soak. | One week with no regression against its Hermes baseline in architecture review, and the owner's go for the deploy. |
 | M8 | **Later**: approvals with hooks, pairing, Telegram, slash commands, the neutral `ShellTools` and `HomeChannel` PRs, a Hermes→needletail migration doc. | The owner approves moving further agents, one at a time. |
 
+**The example instance on needletail** (2026-10-24, after M6b). `examples/minimal`, and so `stormo new instance --template example`, and the office demo (`examples/office-demo`, whose fake engine answers `/v1/activity`) run needletail: version `0.1.0-dev.2084e89`, `image_tag` `dev-2084e89`, a local build of the runtime at 2084e89 (docs/instances.md, "Engines"). Atlas's `engine/hermes/config.yaml` became `engine/needletail/config.yaml` (its timezone, plus Luau grants and a header secret for the CRM host as a demo); its Telegram channel and Slack slash commands went, as needletail runs neither. The needletail tests and the golden home use the example as it is. Hermes' tests use `pkg/engine/hermes/hermestest`, a copy of the example with its agents laid over as they were on Hermes, and cover the Hermes adapter exactly as before. This is not M7: no deployed agent changed.
+
 ## 10. First PR scope
 
 The first PR is a draft titled **"needletail: engine adapter skeleton (M0)"**, on branch `needletail`. It has no binary, no wasm and no new Go modules.

@@ -1,5 +1,6 @@
-# Example Stormo instance: a made-up organisation (Acme) with two units and three agents. It is the
-# engine's test fixture and the template for a new instance (docs/instances.md). No real ids.
+# Example Stormo instance: a made-up organisation (Acme) with two units and three agents, all on
+# needletail (its image is a local build: docs/instances.md, "Engines"). It is the engine's test
+# fixture and the template for a new instance (docs/instances.md). No real ids.
 name: Acme Swarm
 org: Acme
 slug: acme

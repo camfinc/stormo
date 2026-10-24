@@ -7,7 +7,7 @@ engine checkout serves any number of instances, and an instance can move between
 or engine versions without touching engine code.
 
 [`examples/minimal/`](../examples/minimal) is a complete instance (made-up org "Acme", two units,
-three agents). It is the engine's test fixture and the template for a new one.
+three agents on needletail). It is the engine's test fixture and the template for a new one.
 
 ## Layout
 
@@ -169,12 +169,29 @@ instance: inside a sidecar it is the agent's engine home.
   sign-in the core serves it with (default `chatgpt`). `stormo connections add|remove` edits the list.
 - **Engines.** Agents pick `engine.kind`; what only that engine reads lives in `agents/<id>/engine/<kind>/`
   (format 0: `agents/<id>/<engine>/`). agent.yaml itself is engine-neutral (format 1,
-  docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there.
+  docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there. Two engines, one
+  per agent, mixed freely in an instance:
+  - **needletail** (docs/needletail.md), Stormo's own Go runtime: the example's agents, so an
+    instance made from the example template starts on it, and `stormo new agent` borrows the
+    instance's most common engine, version and tag. Its settings are
+    `engine/needletail/config.yaml` (timezone, Luau grants, Slack listening; the example's atlas
+    shows each). No image is published yet: the example pins `version: 0.1.0-dev.2084e89`,
+    `image_tag: dev-2084e89`, a local build of the runtime at that commit, made from a checkout of
+    the engine before the first `stormo start`:
+    `docker buildx build -f deploy/needletail/Dockerfile --build-arg VERSION=0.1.0-dev.2084e89 -t needletail:dev-2084e89 --load .`
+    (a later commit's build, tagged `dev-<sha>`, with the agents' tags moved to it, works the same).
+  - **Hermes** (`engine.kind: hermes`): the image `nousresearch/hermes-agent`, pinned by
+    `image_tag` (for example `version: 0.21.5`, `image_tag: v2026.9.24`); its settings are
+    `engine/hermes/config.yaml`. Choose it for what needletail does not run yet: Telegram, pairing,
+    Slack slash commands, approvals for dangerous commands, voice, plugins. To move an agent, change its
+    `engine:` block and move what it keeps under `engine/<kind>/` (needletail's `timezone:` is
+    Hermes' `timezone:`); its skills, SOUL, schedules and Slack channel stay as they are.
 
 ## Tests
 
 The engine's suite (`cd stormo && go test ./...`) runs on `examples/minimal` only, so it passes
-without any real instance. An instance checks its own agents two ways, pick either:
+without any real instance (Hermes' tests use `pkg/engine/hermes/hermestest`: a copy of the example
+with its agents laid over on Hermes). An instance checks its own agents two ways, pick either:
 
 - **Black box, any language.** `stormo inspect <agent> [--target aws|local]` prints everything the
   engine computes for an agent as JSON: the manifest as it runs, container env, file and skill
@@ -216,6 +233,9 @@ for ECS, `docker/instance.Dockerfile` adds them as one layer per agent.
 stormo new instance ~/acme --name "Acme Swarm"           # stormo.yaml, the group unit, .gitignore, git init
 stormo new instance ~/demo --name "Demo" --template example   # the Acme example under the new name
 ```
+
+The example's agents run needletail: build its image first (see "Engines" above), or switch an
+agent to Hermes before starting it.
 
 The macOS app does the same from File › New Instance…, in `~/Library/Application Support/Stormo/Instances/`
 by default. By hand, from a checkout of the engine:
