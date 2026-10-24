@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -14,7 +15,7 @@ import (
 func reviewInstance(t *testing.T) *instance.Instance {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "instance")
-	example := "../../examples/minimal"
+	example := hermestest.Instance(t)
 	for _, d := range []string{"units", "bridge", "agents/atlas"} {
 		copyDir(t, filepath.Join(example, d), filepath.Join(root, d))
 	}

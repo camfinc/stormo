@@ -9,6 +9,7 @@ import (
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -16,7 +17,7 @@ import (
 
 func load(t *testing.T, id string) (*instance.Instance, *manifest.Agent) {
 	t.Helper()
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}

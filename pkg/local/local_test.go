@@ -12,6 +12,7 @@ import (
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -35,7 +36,7 @@ func TestPortsAreStable(t *testing.T) {
 }
 
 func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
 }
 
 func TestComposeGivesTheSidecarItsLink(t *testing.T) {
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestComposeGivesTheSidecarItsLink(t *testing.T) {
 // An engine whose Layout asks for it runs its agent on a read-only root; the sidecars and every
 // other engine's agent are unchanged (no read_only key at all).
 func TestComposeReadOnlyRootFollowsTheEngine(t *testing.T) {
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -63,7 +64,7 @@ func copyDir(t *testing.T, src, dst string) {
 func TestLearningLoop(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "instance")
-	example := "../../examples/minimal"
+	example := hermestest.Instance(t)
 	copyDir(t, filepath.Join(example, "units"), filepath.Join(root, "units"))
 	copyDir(t, filepath.Join(example, "agents", "atlas"), filepath.Join(root, "agents", "atlas"))
 	write(t, filepath.Join(root, "stormo.yaml"), read(t, filepath.Join(example, "stormo.yaml")))

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 )
 
@@ -37,15 +38,9 @@ func TestSlashPolicyKeepsOrderAndStripsNonOwners(t *testing.T) {
 }
 
 func TestManifestUsesTheEngineGenerator(t *testing.T) {
-	src, err := instance.Load("../../examples/minimal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Work on a copy so dist/ never lands in the example.
-	dir := t.TempDir()
-	if err := os.CopyFS(dir, os.DirFS(src.Root)); err != nil {
-		t.Fatal(err)
-	}
+	// Hermes drafts the app manifest; atlas (on Hermes) owns the slash commands. A temporary
+	// copy, so dist/ never lands in the example.
+	dir := hermestest.Instance(t)
 	inst, err := instance.Load(dir)
 	if err != nil {
 		t.Fatal(err)
