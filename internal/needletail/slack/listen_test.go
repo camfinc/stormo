@@ -18,16 +18,39 @@ func listenHandlers() *fakeHandlers {
 		case strings.Contains(m.Text, "chatter"):
 			return messaging.Verdict{Action: "silent", Ran: 1, By: "ops__addr"}
 		case strings.Contains(m.Text, "booking"):
-			return messaging.Verdict{Action: "pass", Ran: 1, Context: []string{"[OVERHEARD — absorb as context]"}}
+			return messaging.Verdict{Action: "pass", Ran: 1, Passed: 1, Context: []string{"[OVERHEARD — absorb as context]"}}
 		case strings.Contains(m.Text, "hours"):
 			return messaging.Verdict{Action: "reply", Ran: 1, Text: "We open at 9.", By: "ops__faq"}
 		case strings.Contains(m.Text, "broken"):
 			return messaging.Verdict{Action: "pass", Ran: 1, Skipped: 1}
 		case strings.Contains(m.Text, "none"):
 			return messaging.Verdict{Action: "pass"}
+		case strings.Contains(m.Text, "returns nil"):
+			return messaging.Verdict{Action: "pass", Ran: 1} // a handler that returned nil: the default, no pass
 		}
-		return messaging.Verdict{Action: "pass", Ran: 1}
+		return messaging.Verdict{Action: "pass", Ran: 1, Passed: 1}
 	}}
+}
+
+// A handler that returns nil (or a table with no action) is the default: for an ambient message
+// that is no pass, so a stranger's chatter never becomes a model turn; for a DM or a mention it
+// is the default as always (a turn).
+func TestListenNilIsNoPass(t *testing.T) {
+	h := listenHandlers()
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev} })
+	r.fake.Send("e1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "it returns nil", TS: "1700000800.000100"})
+	r.fake.Send("e2", slacktest.Event{Channel: dev, ChannelType: "channel", User: mallet, Text: "it returns nil too", TS: "1700000800.000200"})
+	r.fake.Send("e3", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "it returns nil in a DM", TS: "1700000800.000300"})
+	r.fake.WaitPosts(1, 5*time.Second)
+	r.quiet(1)
+	for _, ts := range []string{"1700000800.000100", "1700000800.000200"} {
+		if got := r.turns.got(SessionID(dev, ts)); len(got) != 0 {
+			t.Errorf("%s: an ambient message whose handler returned nil got a turn: %q", ts, got)
+		}
+	}
+	if got := r.turns.got(DMSessionID(dm)); len(got) != 1 {
+		t.Errorf("the DM: turns %q", got)
+	}
 }
 
 // A channel the agent listens to: with no handler, an ambient message (no mention, not a thread it

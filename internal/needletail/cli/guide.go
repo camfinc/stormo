@@ -109,7 +109,7 @@ func (g guide) render() string {
 			"defines a function per event:\n" +
 			"```lua\n--[[needletail\nformat: 1\nname: hours\ndescription: Answers opening hours.\nevents: [on_message]\n]]\n" +
 			"function on_message(ev)\n  if string.find(ev.text, \"hours\") then return {action = \"reply\", text = \"We open at 9.\"} end\n" +
-			"  return nil -- pass: you answer\nend\n```\n")
+			"  return \"pass\" -- you answer (nil is no pass when ambient)\nend\n```\n")
 		for _, d := range luau.EventDocs {
 			fmt.Fprintf(&b, "- `%s`: answers %s.\n", d.Event, d.Actions)
 		}

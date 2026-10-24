@@ -263,8 +263,8 @@ const (
 // Verdict is what an event's handlers decided: Action pass, reply or silent (a message, a
 // schedule), allow, rewrite or block (before a send); Text a reply's or the rewritten text;
 // Context the passes' notes for the model; By the handler that decided; Ran how many ran, Skipped
-// how many of those failed and were skipped (an ambient message needs a pass from one that did
-// not).
+// how many of those failed and were skipped, Passed how many answered an explicit pass ("pass" or
+// {action = "pass"}: not nil, nor a table with no action), which an ambient message needs.
 // Failed: a block no handler chose, a before_send handler that failed or could not be loaded
 // (it fails closed); the runtime's own notices go out despite it.
 type Verdict struct {
@@ -275,6 +275,7 @@ type Verdict struct {
 	By      string
 	Ran     int
 	Skipped int
+	Passed  int
 	Failed  bool
 }
 

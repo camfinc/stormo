@@ -242,12 +242,15 @@ func (rt *Runtime) HandlerStatus(ctx context.Context, skillDir string) []skills.
 
 // Decision is one handler's answer, checked against its event: Action is one of the event's
 // actions (pass, reply or silent for a message or a schedule; allow, rewrite or block before a
-// send), Text a reply's or a rewrite's text, Context a pass's note for the model.
+// send), Text a reply's or a rewrite's text, Context a pass's note for the model. Explicit: the
+// handler named its action ("pass", {action = "pass"}); nil, nothing or a table with no action is
+// the event's default, which is no pass for an ambient message (§4.9).
 type Decision struct {
-	Action  string `json:"action"`
-	Text    string `json:"text,omitempty"`
-	Context string `json:"context,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Action   string `json:"action"`
+	Text     string `json:"text,omitempty"`
+	Context  string `json:"context,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Explicit bool   `json:"-"`
 }
 
 // actions are each event's actions; the first is the default (what nil means).
@@ -260,7 +263,7 @@ var actions = map[string][]string{
 
 // ParseDecision reads what a handler returned for event: nil (or nothing) is the default
 // action; anything else is an object with an action of the event's (a string alone is taken as
-// the action).
+// the action). Only a named action is Explicit.
 func ParseDecision(event string, value json.RawMessage) (Decision, error) {
 	allowed := actions[event]
 	if len(allowed) == 0 {
@@ -273,7 +276,7 @@ func ParseDecision(event string, value json.RawMessage) (Decision, error) {
 	var d Decision
 	var s string
 	if json.Unmarshal(value, &s) == nil {
-		d.Action = s
+		d.Action, d.Explicit = s, true
 	} else {
 		var raw map[string]any
 		if err := json.Unmarshal(value, &raw); err != nil {
@@ -303,7 +306,7 @@ func ParseDecision(event string, value json.RawMessage) (Decision, error) {
 		if d.Reason, err = str("reason"); err != nil {
 			return Decision{}, err
 		}
-		if d.Action == "" {
+		if d.Explicit = d.Action != ""; !d.Explicit {
 			d.Action = allowed[0]
 		}
 	}
@@ -395,6 +398,9 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 		}
 		switch d.Action {
 		case "pass":
+			if d.Explicit {
+				v.Passed++
+			}
 			if c := strings.TrimSpace(d.Context); c != "" && len(v.Context) < maxContexts {
 				v.Context = append(v.Context, c)
 			}
@@ -500,7 +506,7 @@ type EventDoc struct {
 // EventDocs are the events, in EventNames' order.
 var EventDocs = []EventDoc{
 	{OnMessage, "a Slack message the agent answers (a DM, or a reply in a thread it is in), before a turn is taken for it; only messages from allowed_users reach it. " +
-		"With slack.listen, also every other message in a channel the agent listens to (ambient: true): then nothing happens unless a handler passes it on (a turn that may stay silent) or replies; " +
+		"With slack.listen, also every other message in a channel the agent listens to (ambient: true): then nothing happens unless a handler answers an explicit pass (\"pass\" or {action = \"pass\"}; nil is no pass there) for a turn that may stay silent, or replies; " +
 		"from a person allowed_users does not list (verified: false) only silent or pass, never a reply",
 		"text, user, user_name, bot, verified, ambient, channel, thread_ts, ts, dm, mentioned, reply, session, thread_context[] {name, text, assistant, parent, unverified}",
 		"pass (optional context: a note for the model, under the message), reply {text} (posted in the conversation, no turn), silent (nothing posted)"},
@@ -519,7 +525,8 @@ func HandlerReference() string {
 	b.WriteString("## Event handlers\n\nA handler is `skills/<skill>/handlers/<name>.luau`: the tool header with `events: [...]` (and, with " +
 		"on_schedule, `jobs: [...]`) instead of `args`, then a function per event, named after it (a global, or a field of the table " +
 		"the chunk returns), called with the event and returning a decision: nil (the default), the action as a string, or " +
-		"`{action = …, text = …, context = …, reason = …}`. Handlers of an event run in order (skill dir, then name) with their " +
+		"`{action = …, text = …, context = …, reason = …}`. Return `\"pass\"` explicitly to hand a message to the model: nil (or a " +
+		"table with no action) passes a message addressed to you, but is no pass for an ambient one. Handlers of an event run in order (skill dir, then name) with their " +
 		"effective caps and the Luau bound; a message's or a schedule's stop at the first reply or silent, before_send's pass the " +
 		"text on through each rewrite and stop at a block. A message's or schedule's handler that fails, times out or answers no " +
 		"valid action is skipped (logged) and the event goes on as if it had passed; a before_send one that fails (or cannot be " +

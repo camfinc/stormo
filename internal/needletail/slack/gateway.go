@@ -868,7 +868,8 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		v := g.o.Handlers.Inbound(g.base, event, in)
 		if j.ambient {
 			// heard, not addressed: only a handler's explicit answer does anything (a handler
-			// that failed is no pass here, or a broken one would turn every message into a turn)
+			// that failed, or returned nil or a table with no action, is no pass here, or a
+			// broken or careless one would turn every message, a stranger's too, into a turn)
 			switch {
 			case v.Action == "reply" && j.verified:
 				if err := g.handlerReply(session, j, v); err != nil {
@@ -876,7 +877,7 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 				}
 			case v.Action == "reply":
 				g.logf("slack: %s: a handler's reply to an unverified message is not posted (%s): its author is not in allowed_users", session, v.By)
-			case v.Action == "pass" && v.Ran > v.Skipped:
+			case v.Action == "pass" && v.Passed > 0:
 				j.notes = v.Context
 				left = append(left, j)
 			}

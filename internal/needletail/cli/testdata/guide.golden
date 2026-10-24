@@ -42,7 +42,7 @@ events: [on_message]
 ]]
 function on_message(ev)
   if string.find(ev.text, "hours") then return {action = "reply", text = "We open at 9."} end
-  return nil -- pass: you answer
+  return "pass" -- you answer (nil is no pass when ambient)
 end
 ```
 - `on_message`: answers pass (optional context: a note for the model, under the message), reply {text} (posted in the conversation, no turn), silent (nothing posted).

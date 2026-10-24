@@ -410,3 +410,24 @@ func TestBeforeSendFailsClosedOnLoad(t *testing.T) {
 		t.Errorf("on_message verdict %+v", v)
 	}
 }
+
+// Only an explicit pass ("pass", {action = "pass"}) counts as one in Verdict.Passed: nil, nothing
+// or a table with no action is the default, which an ambient message does not take as a pass.
+func TestDispatchExplicitPass(t *testing.T) {
+	for body, passed := range map[string]int{
+		`return nil`:                  0,
+		`return`:                      0,
+		`return {}`:                   0,
+		`return {context = "a note"}`: 0,
+		`return "pass"`:               1,
+		`return {action = "pass"}`:    1,
+		`return {action = "pass", context = "x"}`: 1,
+	} {
+		rt, _ := newRuntime(t)
+		skill(t, rt.Home, "a/one", map[string]string{"handlers/h.luau": handler("h", "on_message", "", "function on_message(ev) "+body+" end")})
+		v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil)
+		if v.Action != "pass" || v.Ran != 1 || v.Skipped != 0 || v.Passed != passed {
+			t.Errorf("%s: verdict %+v, want Passed %d", body, v, passed)
+		}
+	}
+}
