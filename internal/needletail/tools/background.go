@@ -676,8 +676,9 @@ func (pr *proc) snapshot(status string) map[string]any {
 	return m
 }
 
-// stdinWait is how long a write may wait for a command that does not read its stdin.
-const stdinWait = 5 * time.Second
+// stdinWait is how long a write may wait for a command that does not read its stdin (a
+// variable for the tests).
+var stdinWait = 5 * time.Second
 
 func (pr *proc) write(data string) (any, error) {
 	if len(data) > maxStdin {

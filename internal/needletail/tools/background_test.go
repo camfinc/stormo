@@ -257,3 +257,24 @@ func TestProcessManageHookArgs(t *testing.T) {
 		t.Errorf("hook args = %s", got)
 	}
 }
+
+// A write to a command that does not read its stdin gives up after stdinWait instead of holding
+// the turn; the process is still there to poll or kill.
+func TestBackgroundStdinDeadline(t *testing.T) {
+	r, env, _ := bgSetup(t)
+	stdinWait = 300 * time.Millisecond
+	t.Cleanup(func() { stdinWait = 5 * time.Second })
+	id, _ := started(t, r, env, "sleep 300")
+	start := time.Now()
+	var m map[string]any
+	failed := false
+	for i := 0; i < 8 && !failed; i++ { // the pipe's buffer takes the first ones (64 KiB or more)
+		m, failed = call(t, r, env, "process_manage", map[string]any{"action": "write", "session_id": id, "data": strings.Repeat("x", maxStdin)})
+	}
+	if !failed || !strings.Contains(fmt.Sprint(m["error"]), "not reading its stdin") || time.Since(start) > 5*time.Second {
+		t.Errorf("write to a command that does not read = %v after %s", m, time.Since(start))
+	}
+	if m, _ := call(t, r, env, "process_manage", map[string]any{"action": "poll", "session_id": id}); m["status"] != "running" {
+		t.Errorf("after the refused write: %v", m)
+	}
+}
