@@ -33,7 +33,7 @@ func setup(t *testing.T) (*Registry, *Env) {
 	env := &Env{
 		Home:           home,
 		Sandbox:        sandbox.Sandbox{Home: home, Shared: []string{group}},
-		CommandTimeout: 5 * time.Second,
+		CommandTimeout: 30 * time.Second, // room for a first exec scanned by the OS under a loaded -race run; timeout tests pass their own
 		Environ: func() []string {
 			return []string{"PATH=" + os.Getenv("PATH"), "HOME=/root", "CRM_API_TOKEN=acme_abcdefgh123"}
 		},
