@@ -67,6 +67,9 @@ func New(inst *instance.Instance) *Needletail {
 			// client data, before the state rule that would claim them
 			{Class: engine.Raw, Glob: "state/needletail/jobs/**"},
 			{Class: engine.Raw, Glob: "state/needletail/monitor/**"},
+			// the pending follow-ups hold what the agent promised to say or do in a conversation:
+			// client data, restored at boot so they survive a restart, never read by the dream
+			{Class: engine.Raw, Glob: "state/needletail/followups.json"},
 			// state: tool state and the runtime's own state
 			{Class: engine.State, Glob: sd + "/**"},
 			{Class: engine.State, Glob: "state/needletail/**"},

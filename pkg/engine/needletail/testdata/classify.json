@@ -108,8 +108,8 @@
   },
   {
    "path": "state/needletail/followups.json",
-   "class": "state",
-   "glob": "state/needletail/**"
+   "class": "raw",
+   "glob": "state/needletail/followups.json"
   },
   {
    "path": "state/needletail/monitor/a1.out",
