@@ -783,3 +783,43 @@ func TestNoLostUpdatesAcrossProcesses(t *testing.T) {
 		t.Errorf("no lock file: %v", err)
 	}
 }
+
+// A wall time a daylight-saving change skips moves forward by the change in every zone (Go's
+// time.Date moves it backward west of UTC: 02:30 in New York would be 01:30, already past); one
+// it repeats is the first of the two, unless the first has passed and the second has not.
+func TestParseAtDSTEverywhere(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mad := madrid(t)
+	lh, err := time.LoadLocation("Australia/Lord_Howe") // a half-hour change
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		loc      *time.Location
+		now      time.Time
+		at, want string
+	}{
+		// spring forward: 02:00 → 03:00
+		{ny, time.Date(2026, 3, 7, 12, 0, 0, 0, ny), "tomorrow 2:30am", "2026-03-08T03:30:00-04:00"},
+		{ny, time.Date(2026, 3, 7, 12, 0, 0, 0, ny), "2026-03-08 02:30", "2026-03-08T03:30:00-04:00"},
+		{ny, time.Date(2026, 3, 8, 1, 0, 0, 0, ny), "2:30am", "2026-03-08T03:30:00-04:00"},
+		{mad, time.Date(2026, 3, 28, 12, 0, 0, 0, mad), "tomorrow 2:30am", "2026-03-29T03:30:00+02:00"},
+		{mad, time.Date(2026, 3, 28, 12, 0, 0, 0, mad), "2026-03-29 02:00", "2026-03-29T03:00:00+02:00"},
+		{lh, time.Date(2026, 10, 3, 12, 0, 0, 0, lh), "tomorrow 2:15am", "2026-10-04T02:45:00+11:00"},
+		// fall back: 03:00 → 02:00 in Madrid, 02:00 → 01:00 in New York
+		{mad, time.Date(2026, 10, 24, 12, 0, 0, 0, mad), "tomorrow 2:30am", "2026-10-25T02:30:00+02:00"},
+		{mad, time.Date(2026, 10, 25, 0, 45, 0, 0, time.UTC), "today 2:30am", "2026-10-25T02:30:00+01:00"}, // 02:45 CEST: the first has passed
+		{mad, time.Date(2026, 10, 25, 0, 45, 0, 0, time.UTC), "2:30am", "2026-10-25T02:30:00+01:00"},
+		{mad, time.Date(2026, 10, 25, 0, 45, 0, 0, time.UTC), "2026-10-25 02:30", "2026-10-25T02:30:00+01:00"},
+		{ny, time.Date(2026, 10, 31, 12, 0, 0, 0, ny), "tomorrow 1:30am", "2026-11-01T01:30:00-04:00"},
+		{ny, time.Date(2026, 11, 1, 5, 40, 0, 0, time.UTC), "1:30am", "2026-11-01T01:30:00-05:00"}, // 01:40 EDT: the first has passed
+	} {
+		got, err := ParseAt(c.at, c.now, c.loc)
+		if err != nil || got.Format(time.RFC3339) != c.want {
+			t.Errorf("%s, %q at %s: %s %v, want %s", c.loc, c.at, c.now.In(c.loc).Format(time.RFC3339), got.Format(time.RFC3339), err, c.want)
+		}
+	}
+}

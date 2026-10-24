@@ -3,6 +3,7 @@ package followup
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,8 +52,9 @@ var (
 // Monday, today when it is Monday and the time is still ahead), "next monday 9:30am" (never
 // today), or a clock alone ("14:00", "9pm": today, or tomorrow once it has passed). Clocks are
 // 9am, 9:30pm, 14:00, 14:00:30, noon and midnight. A wall time a daylight-saving change skips
-// moves forward by the change (02:30 on the day clocks go from 02:00 to 03:00 is 03:30), and one
-// it repeats is the first of the two.
+// moves forward by the change in every zone (02:30 on the day clocks go from 02:00 to 03:00 is
+// 03:30), and one it repeats is the first of the two, unless the first has passed and the second
+// has not (now).
 func ParseAt(s string, now time.Time, loc *time.Location) (time.Time, error) {
 	if loc == nil {
 		loc = time.UTC
@@ -62,8 +64,8 @@ func ParseAt(s string, now time.Time, loc *time.Location) (time.Time, error) {
 		return t, nil
 	}
 	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02 15:04:05", "2006-01-02T15:04", "2006-01-02T15:04:05"} {
-		if t, err := time.ParseInLocation(layout, raw, loc); err == nil {
-			return wall(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), loc), nil
+		if t, err := time.Parse(layout, raw); err == nil { // the components as written (UTC: no zone of its own)
+			return wall(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), loc, now), nil
 		}
 	}
 	words := strings.Fields(strings.ToLower(raw))
@@ -110,25 +112,42 @@ func ParseAt(s string, now time.Time, loc *time.Location) (time.Time, error) {
 	if !ok {
 		return time.Time{}, atError(s)
 	}
-	t := wall(day.Year(), day.Month(), day.Day(), h, m, sec, loc)
+	t := wall(day.Year(), day.Month(), day.Day(), h, m, sec, loc, now)
 	if !t.After(now) && roll > 0 {
-		t = wall(day.Year(), day.Month(), day.Day()+roll, h, m, sec, loc)
+		t = wall(day.Year(), day.Month(), day.Day()+roll, h, m, sec, loc, now)
 	}
 	return t, nil
 }
 
-// wall is a wall-clock time in loc: a time a daylight-saving change skips moves forward by the
-// change (time.Date's normalisation), and one it repeats is the first of the two.
-func wall(y int, mo time.Month, d, h, m, s int, loc *time.Location) time.Time {
+// wall is a wall-clock time in loc (the date normalised, as time.Date does: the 32nd is the next
+// month's 1st). The instants that read as it are those its zone's offsets around it give (an
+// offset 6 hours before, at and 6 hours after time.Date's answer: one change at most in that
+// span). None: a daylight-saving change skips it, and it moves forward by the change, whichever
+// side of UTC the zone is (time.Date leaves the choice unspecified, and moves it backward west of
+// UTC). Two: the change repeats it, and it is the first, unless the first is not after now and the
+// second is (now zero: the first).
+func wall(y int, mo time.Month, d, h, m, s int, loc *time.Location, now time.Time) time.Time {
+	y, mo, d = time.Date(y, mo, d, 0, 0, 0, 0, time.UTC).Date()
 	t := time.Date(y, mo, d, h, m, s, 0, loc)
-	_, after := t.Zone()
-	_, before := t.Add(-6 * time.Hour).Zone()
-	if before > after { // the clocks went back around t: the same wall time came earlier too
-		if e := t.Add(-time.Duration(before-after) * time.Second); e.Hour() == h && e.Minute() == m && e.Second() == s && e.Day() == t.Day() {
-			return e
+	u := time.Date(y, mo, d, h, m, s, 0, time.UTC) // the wall time as if it were UTC
+	var found []time.Time
+	for _, probe := range []time.Time{t.Add(-6 * time.Hour), t, t.Add(6 * time.Hour)} {
+		_, off := probe.Zone()
+		c := u.Add(-time.Duration(off) * time.Second).In(loc)
+		cy, cmo, cd := c.Date()
+		if cy == y && cmo == mo && cd == d && c.Hour() == h && c.Minute() == m && c.Second() == s && !slices.ContainsFunc(found, c.Equal) {
+			found = append(found, c)
 		}
 	}
-	return t
+	slices.SortFunc(found, func(a, b time.Time) int { return a.Compare(b) })
+	switch {
+	case len(found) == 0: // skipped: the offset from before the change, which reads it later by the change
+		_, before := t.Add(-6 * time.Hour).Zone()
+		return u.Add(-time.Duration(before) * time.Second).In(loc)
+	case len(found) > 1 && !now.IsZero() && !found[0].After(now) && found[1].After(now):
+		return found[1]
+	}
+	return found[0]
 }
 
 func atError(s string) error {
