@@ -279,7 +279,8 @@ func TestMemoryAudiences(t *testing.T) {
 }
 
 // session_search's audiences: a DM sees its person's conversations, a channel thread its
-// channel's, a turn with no audience the others with none; the owner's oneshot sees everything,
+// channel's, a scheduled run the scheduled runs', any other turn with no audience (the API's) the
+// API's; the owner's oneshot sees everything,
 // and an earlier oneshot's conversation is the owner's alone.
 func TestSearchableAudiences(t *testing.T) {
 	store, err := sessions.Open(t.TempDir(), nil)
@@ -297,7 +298,7 @@ func TestSearchableAudiences(t *testing.T) {
 	ops := &operators{}
 	ops.mark("oneshot-now")
 	dm := func(channel string) string { return map[string]string{"D0ANA": "U0ANA", "D0BOB": "U0BOB"}[channel] }
-	vis := searchable(audiences(store, dm, ops), dm, ops)
+	vis := searchable(audiences(store, dm, ops), sourceOf(store), dm, ops)
 	// odd-slack: a Slack conversation whose root does not name its channel (never made by the
 	// gateway): the owner's alone
 	everything := []string{"slack-D0ANA-dm", "slack-D0BOB-dm", "slack-D0NEW-dm", "slack-C0DEV-1.1", "slack-C0DEV-2.2", "slack-C0OPS-3.3", "api-1", "cron-1", "oneshot-old", "oneshot-now", "odd-slack"}
@@ -305,9 +306,9 @@ func TestSearchableAudiences(t *testing.T) {
 		"slack-D0ANA-dm":  {"slack-D0ANA-dm"},
 		"slack-D0NEW-dm":  {"slack-D0NEW-dm"},
 		"slack-C0DEV-1.1": {"slack-C0DEV-1.1", "slack-C0DEV-2.2"},
-		"api-1":           {"api-1", "cron-1"},
-		"cron-1":          {"api-1", "cron-1"},
-		"oneshot-old":     {"api-1", "cron-1"},
+		"api-1":           {"api-1"},  // the API's runs see the API's conversations, not the scheduled runs'
+		"cron-1":          {"cron-1"}, // a scheduled run sees the scheduled runs', not the owner's chats or the core's wakes
+		"oneshot-old":     {"api-1"},
 		"oneshot-now":     everything,
 	} {
 		v := vis(caller)

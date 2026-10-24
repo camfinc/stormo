@@ -70,6 +70,7 @@ type Index struct {
 // head is what is known of every session file from its header.
 type head struct {
 	parent, source, created, title string
+	untrusted                      bool // the header's mark (wire.Session.Untrusted)
 	mtime                          time.Time
 }
 
@@ -150,7 +151,7 @@ func (x *Index) refresh() {
 			if !ok {
 				continue // no whole header yet
 			}
-			x.heads[id] = &head{parent: s.Parent, source: s.Source, created: s.Created, title: s.Title, mtime: info.ModTime()}
+			x.heads[id] = &head{parent: s.Parent, source: s.Source, created: s.Created, title: s.Title, untrusted: s.Untrusted, mtime: info.ModTime()}
 		}
 		seen[id] = true
 		files = append(files, file{id, info})
@@ -488,6 +489,18 @@ func (x *Index) root(id string) string {
 		id = h.parent
 	}
 	return id
+}
+
+// untrustedRoots are the conversations (by root) any session of which is marked untrusted (the
+// headers'; x.mu held).
+func (x *Index) untrustedRoots() map[string]bool {
+	out := map[string]bool{}
+	for id, h := range x.heads {
+		if h.untrusted {
+			out[x.root(id)] = true
+		}
+	}
+	return out
 }
 
 // source is a conversation's source (its root's; a compaction's child copies it).

@@ -233,7 +233,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	agent.Tools.Add(fu.Tool())
 	// session_search (§4.5): the agent's past conversations, in the turn's audience; indexed at
 	// the first search, then only what was appended since
-	agent.Tools.Add(history.Tool(&history.Index{Dir: cfg.SessionsDir(), Log: logf}, searchable(mem.Where, knownDM, ops)))
+	agent.Tools.Add(history.Tool(&history.Index{Dir: cfg.SessionsDir(), Log: logf}, searchable(mem.Where, sourceOf(store), knownDM, ops)))
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	if lr != nil {
 		lr.FollowUps = fu // follow_up and nt.followup, in the run's conversation
@@ -315,17 +315,31 @@ func audienceOf(root, source string, dmUser func(channel string) string, ops *op
 	return a
 }
 
+// sourceOf is the source of the conversation a session belongs to (its root's header; "" for a
+// session the store does not know).
+func sourceOf(store *sessions.Store) func(session string) string {
+	return func(session string) string {
+		if r, ok := store.Root(session); ok {
+			h, _ := store.Get(r)
+			return h.Source
+		}
+		return ""
+	}
+}
+
 // searchable is session_search's audience (docs/needletail.md §4.5): which past conversations a
 // turn in session may see, by the memory's audiences (the runtime's, never the model's words).
 // The owner's own turn (a oneshot) sees every one. A Slack DM or thread sees the conversations
 // of its scope (this DM's person, this channel's threads) and itself (a DM whose person the
-// gateway has not seen yet: only itself). A turn with no audience (the API's runs, a scheduled
-// run) sees the conversations with none (the API's and the scheduled runs'), never a Slack one.
+// gateway has not seen yet: only itself). A turn with no audience sees conversations with none of
+// its own kind, never a Slack one: a scheduled run (source cron) the scheduled runs' only, any other
+// (the API's runs: the owner's chat and the core's wakes) the API's, never a scheduled run's.
 // An earlier oneshot's conversation (source cli: the owner's, which may have searched every
-// scope) is only the owner's.
-func searchable(who func(session string) memory.Audience, dmUser func(channel string) string, ops *operators) func(session string) history.Visible {
+// scope) is only the owner's. sourceOf is a session's conversation's source.
+func searchable(who func(session string) memory.Audience, sourceOf func(session string) string, dmUser func(channel string) string, ops *operators) func(session string) history.Visible {
 	return func(session string) history.Visible {
 		me := who(session)
+		cron := sourceOf(session) == followup.SourceCron
 		return func(root, source string) bool {
 			if me.Operator {
 				return true
@@ -343,7 +357,7 @@ func searchable(who func(session string) memory.Audience, dmUser func(channel st
 			case me.Conv != "":
 				return a.Conv == me.Conv
 			}
-			return a.Scope == "" && a.Conv == ""
+			return a.Scope == "" && a.Conv == "" && (source == followup.SourceCron) == cron
 		}
 	}
 }
