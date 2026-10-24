@@ -19,8 +19,10 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/followup"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
+	"github.com/camfinc/stormo/internal/needletail/slack"
 	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
@@ -414,5 +416,118 @@ func TestFollowUpInputByWhom(t *testing.T) {
 	it.By, it.Untrusted = "model", true
 	if err := f.Fire(context.Background(), it); !errors.Is(err, followup.ErrRefused) {
 		t.Errorf("an untrusted prompt fired: %v", err)
+	}
+}
+
+// fakePoster is the Slack gateway as the follow-ups use it.
+type fakePoster struct {
+	mu          sync.Mutex
+	posts       []slack.FollowUpPost
+	checks      int
+	check, post error
+}
+
+func (p *fakePoster) FollowUp(_ context.Context, fp slack.FollowUpPost) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.post != nil {
+		return p.post
+	}
+	p.posts = append(p.posts, fp)
+	return nil
+}
+
+func (p *fakePoster) CheckFollowUp(string, string, []string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.checks++
+	return p.check
+}
+
+// A prompt follow-up whose turn already ran (phase "ran") posts its kept reply, with no turn; one
+// whose asker may no longer talk to the agent is refused before its turn (and before any post).
+func TestFollowUpPromptPhasesAndAccess(t *testing.T) {
+	store, err := sessions.Open(filepath.Join(t.TempDir(), "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dmSession := "slack-D0DMCHAN01-dm"
+	if _, err := store.Create(wire.Session{ID: dmSession, Source: "slack"}); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePoster{}
+	f := &followUps{store: store, logf: func(string) {}, loc: time.UTC} // no API server: a turn would crash
+	f.setSlack(fp)
+	it := followup.Item{ID: "fu1", Kind: followup.KindPrompt, Prompt: "Ask whether Ana answered.", Target: followup.TargetOrigin,
+		Origin: followup.Conversation{Session: dmSession, Source: "slack", Users: []string{"U0ALLOWED1"}, Thread: "1700000000.000100"},
+		Phase:  followup.PhaseRan, Reply: "Did Ana answer?"}
+	if err := f.Fire(context.Background(), it); err != nil {
+		t.Fatal(err)
+	}
+	if len(fp.posts) != 1 || fp.posts[0].Text != "Did Ana answer?" || fp.posts[0].Kind != slack.FollowUpReply || fp.posts[0].Thread != "1700000000.000100" ||
+		fmt.Sprint(fp.posts[0].Users) != "[U0ALLOWED1]" {
+		t.Errorf("posts %+v", fp.posts)
+	}
+	fp.check = fmt.Errorf("%w: U0ALLOWED1 may no longer talk to the agent", messaging.ErrRefused)
+	it.Phase, it.Reply = "", ""
+	if err := f.Fire(context.Background(), it); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("revoked: %v", err)
+	}
+	it.Target = "slack"
+	if err := f.Fire(context.Background(), it); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("revoked, to another target: %v", err)
+	}
+}
+
+// A prompt follow-up in Slack whose reply could not be posted is tried again by posting the
+// same reply: the turn runs once, and the conversation has one [Follow-up …] row.
+func TestServeFollowUpRetryPostsOnly(t *testing.T) {
+	lowerFollowUpMin(t)
+	old := followUpBackoff
+	followUpBackoff = []time.Duration{300 * time.Millisecond, 600 * time.Millisecond}
+	t.Cleanup(func() { followUpBackoff = old })
+	fake := slacktest.New(t)
+	model := &scripted{}
+	srv := httptest.NewServer(model)
+	defer srv.Close()
+	h := home(t, srv.URL+"/v1", srv.URL+"/v1")
+	cfgPath := filepath.Join(h, "needletail.yaml")
+	cfg, _ := os.ReadFile(cfgPath)
+	if err := os.WriteFile(cfgPath, append(cfg, []byte("channels: [slack]\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setenv(t, h)
+	for k, v := range map[string]string{"SLACK_BOT_TOKEN": slacktest.BotToken, "SLACK_APP_TOKEN": slacktest.AppToken,
+		"SLACK_ALLOWED_USERS": "U0ALLOWED1", "SLACK_HOME_CHANNEL": "C0HOME0001", SlackAPIEnv: fake.API()} {
+		t.Setenv(k, v)
+	}
+	model.script(
+		toolStep("s1", "follow_up", map[string]any{"action": "create", "in": "2s", "prompt": "Ask whether Ana answered."}),
+		textStep("Sure, I'll ask."),
+		textStep("Did Ana answer?"), // the follow-up's turn
+	)
+	s := startServe(t)
+	defer s.stop()
+	fake.WaitConnected(10 * time.Second)
+	fake.Send("e1", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "ask me about Ana later", TS: "1700000300.000100"})
+	if posts := fake.WaitPosts(1, 15*time.Second); len(posts) != 1 {
+		t.Fatalf("the DM's reply: %+v", posts)
+	}
+	fake.SetFail("chat.postMessage", "internal_error")
+	for end := time.Now().Add(15 * time.Second); !strings.Contains(s.log(), "failed (attempt 1") && time.Now().Before(end); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	fake.SetFail("chat.postMessage", "")
+	posts := fake.WaitPosts(2, 15*time.Second)
+	if len(posts) != 2 || posts[1].Text != "Did Ana answer?" {
+		t.Fatalf("posts %+v\n%s", posts, s.log())
+	}
+	time.Sleep(300 * time.Millisecond)
+	if model.calls() != 3 {
+		t.Errorf("the follow-up's turn ran again: %d model calls", model.calls())
+	}
+	body, _ := os.ReadFile(filepath.Join(h, "sessions", "slack-D0DMCHAN01-dm.jsonl"))
+	if n := strings.Count(string(body), "[Follow-up "); n != 1 {
+		t.Errorf("%d [Follow-up rows:\n%s", n, body)
 	}
 }

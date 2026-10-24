@@ -215,7 +215,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	agent.Recall = recall.Block
 	// One-time follow-ups (§4.12): in the conversation they are made in, as the runtime knows it.
 	fu := followup.New(followup.Options{Home: cfg.Home, Location: cfg.Location, Log: logf, Redact: red.Redact,
-		Check: tools.SecretCheck(red.Redact), ScanPrompt: sched.ScanPrompt, Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay})
+		Check: tools.SecretCheck(red.Redact), ScanPrompt: sched.ScanPrompt, Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay, Backoff: followUpBackoff})
 	agent.Tools.Add(fu.Tool())
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	if lr != nil {

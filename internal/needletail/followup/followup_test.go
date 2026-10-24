@@ -643,3 +643,107 @@ func TestHandlerFollowUpCaps(t *testing.T) {
 		t.Errorf("the 21st handler-made: %v", err)
 	}
 }
+
+// postFirer stands in for serve's deliverer of a prompt follow-up: a turn (counted), whose reply
+// it records with Ran, then a post that fails while posts fail.
+type postFirer struct {
+	mu        sync.Mutex
+	turns     int
+	fails     int // posts that fail before one goes through
+	posted    []string
+	phases    []string
+	recordErr error
+}
+
+func (p *postFirer) Fire(ctx context.Context, it Item) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.phases = append(p.phases, it.Phase)
+	reply := it.Reply
+	if it.Phase != PhaseRan {
+		p.turns++
+		reply = "Did Ana answer?"
+		p.recordErr = Ran(ctx, reply)
+	}
+	if p.fails > 0 {
+		p.fails--
+		return errors.New("slack is down")
+	}
+	p.posted = append(p.posted, reply)
+	return nil
+}
+
+// A prompt follow-up whose turn ran but whose reply could not be posted is tried again by
+// posting that reply, never by running the turn again (which would add another [Follow-up …]
+// row and answer twice): the turn's reply and the phase "ran" are kept in the file.
+func TestPromptRetryPostsOnly(t *testing.T) {
+	defer func(b []time.Duration) { backoff = b }(backoff)
+	backoff = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}
+	q, home := newQueue(t, func(o *Options) { o.MinDelay = 10 * time.Millisecond })
+	p := &postFirer{fails: 2}
+	q.Start(p)
+	defer q.Shutdown(context.Background())
+	if _, err := q.Create(context.Background(), "chat-1", Spec{In: "0.05s", Prompt: "ask whether Ana answered"}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, 3*time.Second, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.posted) == 1 }) {
+		body, _ := os.ReadFile(filepath.Join(home, File))
+		t.Fatalf("never posted: %+v\n%s", p, body)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.turns != 1 || p.posted[0] != "Did Ana answer?" || p.recordErr != nil || fmt.Sprint(p.phases) != "[ ran ran]" {
+		t.Errorf("turns %d, posted %q, phases %q, recorded %v", p.turns, p.posted, p.phases, p.recordErr)
+	}
+}
+
+// A before_send block or a messaging policy refusal is final: the follow-up fails at once, with
+// no retry (the same message would be refused again).
+func TestRefusalsAreFinal(t *testing.T) {
+	for _, refusal := range []error{fmt.Errorf("%w (ops__filter)", messaging.ErrBlocked), fmt.Errorf("%w: thread x", messaging.ErrRefused), ErrRefused} {
+		r := &recorder{answers: []error{refusal, nil}}
+		q, _ := newQueue(t, func(o *Options) { o.MinDelay = 10 * time.Millisecond })
+		q.Start(r)
+		_, _ = q.Create(context.Background(), "chat-1", Spec{In: "0.02s", Text: "x"})
+		if !waitFor(t, 2*time.Second, func() bool { got, _ := q.List("chat-1", false); return len(got) == 1 && got[0].Status == StatusFailed }) {
+			t.Errorf("%v: not failed at once", refusal)
+		}
+		time.Sleep(50 * time.Millisecond)
+		if r.count() != 1 {
+			t.Errorf("%v: tried %d times", refusal, r.count())
+		}
+		q.Shutdown(context.Background())
+	}
+}
+
+// A follow-up whose conversation stays busy is asked again every few seconds: its "fires" line is
+// logged once, then at most once a minute.
+func TestBusyFiringsLogOnce(t *testing.T) {
+	defer func(r time.Duration) { busyRetry = r }(busyRetry)
+	busyRetry = 10 * time.Millisecond
+	var mu sync.Mutex
+	var logs []string
+	q, _ := newQueue(t, func(o *Options) {
+		o.MinDelay = 10 * time.Millisecond
+		o.Log = func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() }
+	})
+	r := &recorder{answers: make([]error, 30)}
+	for i := range r.answers {
+		r.answers[i] = ErrBusy
+	}
+	q.Start(r)
+	defer q.Shutdown(context.Background())
+	_, _ = q.Create(context.Background(), "chat-1", Spec{In: "0.02s", Text: "x"})
+	waitFor(t, 3*time.Second, func() bool { return r.count() >= 10 })
+	mu.Lock()
+	defer mu.Unlock()
+	fires := 0
+	for _, l := range logs {
+		if strings.Contains(l, " fires (") {
+			fires++
+		}
+	}
+	if fires != 1 {
+		t.Errorf("%d fires lines for %d busy tries", fires, r.count())
+	}
+}

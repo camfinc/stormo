@@ -275,6 +275,7 @@ func (q *Queue) Cancel(session, id string) (Item, error) {
 		return Item{}, err
 	}
 	delete(q.busy, it.ID)
+	delete(q.busyLog, it.ID)
 	q.poke()
 	return it, nil
 }

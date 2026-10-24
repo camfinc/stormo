@@ -10,7 +10,8 @@ import (
 )
 
 // A follow-up in its own Slack conversation is posted there as a reply would be (a thread of a
-// channel the agent is in, a DM even of a person allowed_users does not name, who wrote there);
+// channel the agent is in, a DM even of a person allowed_users does not name, who wrote there
+// under allow_all_users);
 // anywhere else the messaging policy decides as for send_message. before_send sees each first,
 // with the follow-up's kind.
 func TestFollowUp(t *testing.T) {
@@ -20,7 +21,8 @@ func TestFollowUp(t *testing.T) {
 		}
 		return messaging.Verdict{Action: "allow"}
 	}}
-	r := newRig(t, func(o *Options) { o.Handlers = h })
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.AllowAll = true })
+	r.fake.DMUsers["D0STRANGER"] = mallet
 	ctx := context.Background()
 	thread := SessionID(dev, "1700000100.000100")
 	for _, p := range []FollowUpPost{
@@ -66,7 +68,7 @@ func TestFollowUp(t *testing.T) {
 		{"", thread, true}, {"", DMSessionID("D0STRANGER"), true}, {"", "chat-1", false},
 		{"slack", "chat-1", true}, {"slack:" + alice, "", true}, {"slack:" + mallet, thread, false}, {"slack:C0SECRET01", thread, false},
 	} {
-		if err := r.g.CheckFollowUp(c.target, c.origin); (err == nil) != c.ok {
+		if err := r.g.CheckFollowUp(c.target, c.origin, nil); (err == nil) != c.ok {
 			t.Errorf("%q from %q: %v", c.target, c.origin, err)
 		}
 	}
@@ -81,4 +83,35 @@ func TestFollowUpInADMThread(t *testing.T) {
 	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Channel != dm || p[0].Thread != "1700001500.000100" {
 		t.Errorf("post %+v", p[0])
 	}
+}
+
+// Access revoked since a follow-up was made: when it fires (and before a prompt one's turn) the
+// people who asked must still be admitted (allowed_users, allow_all_users), and a DM's person
+// too; otherwise it is refused (messaging.ErrRefused: failed for good), nothing posted.
+func TestFollowUpRevokedAccess(t *testing.T) {
+	r := newRig(t, nil) // allowed_users: alice only
+	r.fake.DMUsers["D0DMCHAN02"] = mallet
+	ctx := context.Background()
+	thread := SessionID(dev, "1700001600.000100")
+	for _, c := range []struct {
+		p  FollowUpPost
+		ok bool
+	}{
+		{FollowUpPost{Origin: DMSessionID("D0DMCHAN02"), Kind: FollowUpMessage, Text: "x"}, false},
+		{FollowUpPost{Origin: DMSessionID("D0DMCHAN02"), Users: []string{mallet}, Kind: FollowUpMessage, Text: "x"}, false},
+		{FollowUpPost{Origin: thread, Users: []string{mallet}, Kind: FollowUpMessage, Text: "x"}, false},
+		{FollowUpPost{Target: "slack", Origin: thread, Users: []string{alice, mallet}, Kind: FollowUpMessage, Text: "x"}, false},
+		{FollowUpPost{Origin: DMSessionID(dm), Users: []string{alice}, Kind: FollowUpMessage, Text: "still allowed"}, true},
+		{FollowUpPost{Origin: thread, Users: []string{alice}, Kind: FollowUpMessage, Text: "still allowed"}, true},
+	} {
+		err := r.g.FollowUp(ctx, c.p)
+		if c.ok && err != nil || !c.ok && !errors.Is(err, messaging.ErrRefused) {
+			t.Errorf("%+v: %v", c.p, err)
+		}
+		cerr := r.g.CheckFollowUp(c.p.Target, c.p.Origin, c.p.Users)
+		if c.ok && cerr != nil || !c.ok && !errors.Is(cerr, messaging.ErrRefused) {
+			t.Errorf("check %+v: %v", c.p, cerr)
+		}
+	}
+	r.quiet(2)
 }

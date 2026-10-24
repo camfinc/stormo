@@ -18,8 +18,12 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
-// followUpMinDelay is the shortest follow-up the agent may schedule (tests lower it).
-var followUpMinDelay = followup.MinDelay
+// followUpMinDelay is the shortest follow-up the agent may schedule (tests lower it), and
+// followUpBackoff the waits after a failed attempt (nil: the queue's; tests shorten them).
+var (
+	followUpMinDelay = followup.MinDelay
+	followUpBackoff  []time.Duration
+)
 
 // followUpOrigin is the conversation a session belongs to, from the runtime's own records (as
 // the memory's audiences): its root and source (a Slack session its handlers see before its turn
@@ -54,7 +58,7 @@ func followUpOrigin(store *sessions.Store, where func(session string) memory.Aud
 // followUpPoster is the Slack gateway as the follow-ups use it.
 type followUpPoster interface {
 	FollowUp(ctx context.Context, p slack.FollowUpPost) error
-	CheckFollowUp(target, origin string) error
+	CheckFollowUp(target, origin string, users []string) error
 }
 
 // followUps delivers due follow-ups (followup.Firer) in serve: a message to its conversation (an
@@ -112,7 +116,7 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 		if p == nil {
 			return errNoSlack
 		}
-		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Kind: slack.FollowUpMessage, Text: it.Text})
+		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text})
 	}
 	release, err := f.srv.Hold(it.Origin.Session)
 	if err != nil {
@@ -125,7 +129,7 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 		if p == nil {
 			return errNoSlack
 		}
-		if err := p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Kind: slack.FollowUpMessage, Text: it.Text}); err != nil {
+		if err := p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text}); err != nil {
 			return err
 		}
 		if ok {
@@ -154,7 +158,9 @@ func (f *followUps) appendReply(tip, text string) error {
 // prompt runs a prompt follow-up's turn in its conversation, in the scheduled runs' lane (so it
 // never starves chat), and delivers its reply as the conversation's replies are: an API
 // conversation's is in its transcript already, a Slack one's is posted in its thread or DM; a
-// [SILENT] reply posts nothing. With another target the reply goes there.
+// [SILENT] reply posts nothing. With another target the reply goes there. Before the turn, a
+// reply bound for Slack must still be allowed (who asked still admitted, the policy); once the
+// turn ran its reply is kept (followup.Ran), so an attempt after a failed post only posts it.
 func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 	if it.Untrusted {
 		// made by a run on overheard input, which may schedule only a text (never written so by
@@ -165,6 +171,9 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 	if root == "" {
 		return followup.ErrGone
 	}
+	if it.Phase == followup.PhaseRan {
+		return f.deliver(ctx, it, it.Reply) // its turn ran: post the reply it kept, never the turn again
+	}
 	if _, ok := f.store.Root(root); !ok && it.Origin.Source != slack.Source {
 		return followup.ErrGone // a deleted API conversation is not made again
 	}
@@ -172,6 +181,9 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 		if h, _ := f.store.Get(tip); h.EndReason != "" {
 			return followup.ErrGone // ended (a oneshot's, once the command exited): no turn continues it
 		}
+	}
+	if err := f.mayPost(it); err != nil {
+		return err // refused (access revoked, the policy) before the turn, or Slack is off
 	}
 	slot, err := f.srv.ReserveJob(root, wire.Session{Source: it.Origin.Source, Title: "Slack thread"})
 	if err != nil {
@@ -187,21 +199,52 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 		f.logf(fmt.Sprintf("follow-up %s: the turn answered [SILENT]; nothing posted", it.ID))
 		return nil
 	}
-	switch {
-	case it.Target != followup.TargetOrigin:
-		p := f.poster()
-		if p == nil {
-			return errNoSlack
-		}
-		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: root, Kind: slack.FollowUpMessage, Text: text})
-	case it.Origin.Source == slack.Source:
-		p := f.poster()
-		if p == nil {
-			return errNoSlack
-		}
-		return p.FollowUp(ctx, slack.FollowUpPost{Origin: root, Thread: it.Origin.Thread, Kind: slack.FollowUpReply, Text: text})
+	if !f.toSlack(it) {
+		return nil // the turn's reply is the conversation's last row
 	}
-	return nil // the turn's reply is the conversation's last row
+	if err := followup.Ran(ctx, text); err != nil {
+		f.logf(fmt.Sprintf("follow-up %s: its reply could not be kept for a retry (a failed post would run the turn again): %v", it.ID, err))
+	}
+	return f.deliver(ctx, it, text)
+}
+
+// toSlack: the follow-up's reply or text is posted in Slack (another target, or its own Slack
+// conversation), not only kept in an API conversation's transcript.
+func (f *followUps) toSlack(it followup.Item) bool {
+	return it.Target != followup.TargetOrigin || it.Origin.Source == slack.Source
+}
+
+// mayPost is whether a reply bound for Slack may still go: who asked still admitted and the
+// target within the policy (the gateway's CheckFollowUp), checked before a prompt's turn.
+func (f *followUps) mayPost(it followup.Item) error {
+	if !f.toSlack(it) {
+		return nil
+	}
+	p := f.poster()
+	if p == nil {
+		return errNoSlack
+	}
+	target := ""
+	if it.Target != followup.TargetOrigin {
+		target = it.Target
+	}
+	return p.CheckFollowUp(target, it.Origin.Session, it.Origin.Users)
+}
+
+// deliver posts a prompt follow-up's reply: to its target, or in its Slack thread or DM (the DM
+// thread it was asked in) as a reply.
+func (f *followUps) deliver(ctx context.Context, it followup.Item, text string) error {
+	if !f.toSlack(it) {
+		return nil
+	}
+	p := f.poster()
+	if p == nil {
+		return errNoSlack
+	}
+	if it.Target != followup.TargetOrigin {
+		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: text})
+	}
+	return p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpReply, Text: text})
 }
 
 // input is a prompt follow-up's turn input: what it is (the agent's own, not a new message from
@@ -246,6 +289,6 @@ func followUpCheck(p followUpPoster) func(target string, origin followup.Convers
 		if target == followup.TargetOrigin {
 			target = ""
 		}
-		return p.CheckFollowUp(target, origin.Session)
+		return p.CheckFollowUp(target, origin.Session, origin.Users)
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 // Kinds of follow-ups.
@@ -134,7 +135,14 @@ type Item struct {
 	// Late: it was due while the runtime was down, and fired at the next boot.
 	Late     bool   `json:"late,omitempty"`
 	FailedAt string `json:"failed_at,omitempty"`
+	// Phase is PhaseRan once a prompt follow-up's turn ran and Reply holds what it answered, to
+	// be posted: a retry posts Reply, never running the turn again.
+	Phase string `json:"phase,omitempty"`
+	Reply string `json:"reply,omitempty"`
 }
+
+// PhaseRan: a prompt follow-up's turn ran; its reply waits to be posted.
+const PhaseRan = "ran"
 
 type file struct {
 	V     int    `json:"v"`
@@ -201,6 +209,8 @@ type Options struct {
 	Origin func(session string) Conversation
 	// MinDelay overrides MinDelay (tests only; 0: MinDelay).
 	MinDelay time.Duration
+	// Backoff overrides the waits after a failed attempt (tests only; nil: 30 s, then 2 min).
+	Backoff []time.Duration
 }
 
 // Queue is the agent's follow-ups: created by the tool and Luau, fired by its timer once Start
@@ -216,6 +226,7 @@ type Queue struct {
 	readOnly error // a file this runtime cannot write (a newer version, damaged)
 	firing   map[string]bool
 	busy     map[string]time.Time // when a follow-up first found its conversation busy
+	busyLog  map[string]time.Time // when a busy follow-up's firing was last logged
 	firer    Firer
 	check    func(target string, origin Conversation) error
 	stopping bool
@@ -242,7 +253,7 @@ func New(o Options) *Queue {
 		o.MinDelay = MinDelay
 	}
 	q := &Queue{o: o, path: filepath.Join(o.Home, filepath.FromSlash(File)), tmp: filepath.Join(o.Home, fsx.TmpDir),
-		firing: map[string]bool{}, busy: map[string]time.Time{}, kick: make(chan struct{}, 1)}
+		firing: map[string]bool{}, busy: map[string]time.Time{}, busyLog: map[string]time.Time{}, kick: make(chan struct{}, 1)}
 	q.runCtx, q.cancel = context.WithCancel(context.Background())
 	return q
 }
@@ -466,8 +477,16 @@ func (q *Queue) dispatch() time.Duration {
 			continue // the next firing's end pokes the loop
 		}
 		q.firing[it.ID] = true
+		// a busy conversation is asked again every few seconds: its firing is logged the first
+		// time, then at most once a minute
+		quiet := false
+		if _, busy := q.busy[it.ID]; busy {
+			if quiet = now.Sub(q.busyLog[it.ID]) < time.Minute; !quiet {
+				q.busyLog[it.ID] = now
+			}
+		}
 		q.wg.Add(1)
-		go q.fire(it)
+		go q.fire(it, quiet)
 	}
 	return max(wait, 10*time.Millisecond)
 }
@@ -481,14 +500,19 @@ func Firing(ctx context.Context) string {
 	return s
 }
 
-func (q *Queue) fire(it Item) {
+func (q *Queue) fire(it Item, quiet bool) {
 	defer q.wg.Done()
-	ctx := context.WithValue(q.runCtx, firingKey{}, it.ID)
+	ctx := context.WithValue(context.WithValue(q.runCtx, firingKey{}, it.ID), queueKey{}, q)
 	late := ""
 	if it.Late {
 		late = ", late"
 	}
-	q.logf("follow-up %s fires (%s to %s, conversation %s, attempt %d%s)", it.ID, it.Kind, it.Target, orNone(it.Origin.Session), it.Attempts+1, late)
+	if it.Phase == PhaseRan {
+		late += ", its turn ran: posting its reply"
+	}
+	if !quiet {
+		q.logf("follow-up %s fires (%s to %s, conversation %s, attempt %d%s)", it.ID, it.Kind, it.Target, orNone(it.Origin.Session), it.Attempts+1, late)
+	}
 	err := func() (err error) {
 		defer func() {
 			if p := recover(); p != nil {
@@ -528,6 +552,7 @@ func (q *Queue) settle(fired Item, err error) {
 	case err == nil:
 		q.items = append(q.items[:i], q.items[i+1:]...)
 		delete(q.busy, fired.ID)
+		delete(q.busyLog, fired.ID)
 		q.logf("follow-up %s delivered (%s, %s late)", fired.ID, fired.Kind, now.Sub(fired.DueAt()).Round(time.Second))
 	case q.stopping || errors.Is(err, ErrInterrupted) || errors.Is(err, context.Canceled) && q.runCtx.Err() != nil:
 		q.logf("follow-up %s interrupted by the shutdown: it fires at the next boot", fired.ID)
@@ -539,13 +564,18 @@ func (q *Queue) settle(fired Item, err error) {
 			err = fmt.Errorf("the conversation (or the scheduled runs' lane) was busy for %s", busyFor)
 		}
 		delete(q.busy, fired.ID)
+		delete(q.busyLog, fired.ID)
 		it.Attempts++
 		it.LastError = clip(q.o.Redact(err.Error()), 300)
-		if it.Attempts >= MaxAttempts || errors.Is(err, ErrGone) || errors.Is(err, ErrRefused) {
+		if it.Attempts >= MaxAttempts || final(err) {
 			it.Status, it.FailedAt, it.NextTry = StatusFailed, stamp(now), ""
 			q.logf("follow-up %s failed after %d attempts, dropped (kept for list): %s", fired.ID, it.Attempts, it.LastError)
 		} else {
-			wait := backoff[min(it.Attempts, len(backoff))-1]
+			waits := backoff
+			if len(q.o.Backoff) > 0 {
+				waits = q.o.Backoff
+			}
+			wait := waits[min(it.Attempts, len(waits))-1]
 			it.NextTry = stamp(now.Add(wait))
 			q.logf("follow-up %s failed (attempt %d of %d), tried again in %s: %s", fired.ID, it.Attempts, MaxAttempts, wait, it.LastError)
 		}
@@ -555,11 +585,19 @@ func (q *Queue) settle(fired Item, err error) {
 	}
 }
 
+// final: an error trying again cannot mend: the conversation is gone, the delivery was refused
+// (the follow-up's own refusal, a before_send block, the messaging policy, an author no longer
+// admitted). The follow-up fails at once.
+func final(err error) bool {
+	return errors.Is(err, ErrGone) || errors.Is(err, ErrRefused) || errors.Is(err, messaging.ErrBlocked) || errors.Is(err, messaging.ErrRefused)
+}
+
 // busySince is when the follow-up first found its conversation busy in this run (callers hold mu).
 func (q *Queue) busySince(id string, now time.Time) time.Time {
 	t, ok := q.busy[id]
 	if !ok {
 		q.busy[id], t = now, now
+		q.busyLog[id] = now // its firing was just logged
 		q.logf("follow-up %s: its conversation is busy; asked again every %s", id, busyRetry)
 	}
 	return t
@@ -599,4 +637,28 @@ func clip(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+type queueKey struct{}
+
+// Ran records, from inside Fire, that the firing prompt follow-up's turn ran and what it answered
+// (the reply its delivery posts): the next attempt, should the post fail, posts it rather than
+// running the turn again. Outside a firing it does nothing.
+func Ran(ctx context.Context, reply string) error {
+	q, _ := ctx.Value(queueKey{}).(*Queue)
+	id := Firing(ctx)
+	if q == nil || id == "" {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := q.load(); err != nil {
+		return err
+	}
+	i := q.find(id)
+	if i < 0 {
+		return ErrNotFound
+	}
+	q.items[i].Phase, q.items[i].Reply = PhaseRan, reply
+	return q.save()
 }
