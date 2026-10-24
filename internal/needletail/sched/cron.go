@@ -269,8 +269,9 @@ var (
 		"saturday": "6", "sat": "6"}
 )
 
-// ErrOneShot is a one-time schedule ("in 30m", a timestamp): jobs here recur.
-var ErrOneShot = errors.New(`one-time schedules ("in 30m", a timestamp) are not supported: use an interval ("30m", "every 2h") or a cron expression`)
+// ErrOneShot is a one-time schedule ("in 30m", a timestamp): jobs here recur; something done
+// once later is a follow-up (the follow_up tool).
+var ErrOneShot = errors.New(`one-time schedules ("in 30m", a timestamp) are not jobs: for something once, later, use follow_up (in "30m", at "tomorrow 9am"); a job recurs: an interval ("30m", "every 2h") or a cron expression`)
 
 // ParseSchedule reads a schedule as Hermes' cronjob tool takes it: an interval ("30m", "2h",
 // "1d", "every 2h", "every hour"), a day and time ("every monday 9am", "weekdays at 9am",

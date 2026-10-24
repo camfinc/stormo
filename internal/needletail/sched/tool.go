@@ -28,7 +28,7 @@ const toolSchema = `{"type":"object","properties":{
 "action":{"type":"string","description":"One of: create, list, update, pause, resume, remove, run. create needs schedule, and prompt unless no_agent."},
 "job_id":{"type":"string","description":"Required for update, pause, resume, remove and run."},
 "prompt":{"type":"string","description":"create/update: the job's whole, self-contained prompt (paired with any skills as the task), at most 8 KB."},
-"schedule":{"type":"string","description":"Required for create. A recurring interval ('30m', 'every 2h', 'every hour'), a day and time ('every monday 9am', 'weekdays at 9am', 'every day at 14:00') or a 5-field cron expression ('0 9 * * 1-5'). One-time schedules are not supported; nothing runs more often than every 5 minutes."},
+"schedule":{"type":"string","description":"Required for create. A recurring interval ('30m', 'every 2h', 'every hour'), a day and time ('every monday 9am', 'weekdays at 9am', 'every day at 14:00') or a 5-field cron expression ('0 9 * * 1-5'). One-time schedules are not jobs (follow_up does something once, later); nothing runs more often than every 5 minutes."},
 "name":{"type":"string","description":"Optional human-friendly name."},
 "repeat":{"type":"integer","description":"Optional number of runs, after which the job completes. Omit for forever."},
 "deliver":{"type":"string","description":"Where the output is posted. Omit for the chat the job was made from (else the home channel); 'local' (record only), 'slack' (the home channel), 'slack:<channel>' or 'slack:<channel>:<thread>'. Comma-combine targets. On update, '' resets."},
@@ -129,7 +129,7 @@ func (s *Scheduler) checkEvery(sch wire.JobSchedule) error {
 		}
 	}
 	if gap < MinEvery {
-		return fmt.Errorf("schedule %q runs every %s: jobs run at most every %s", orDefault(sch.Display, sch.Expr), gap, MinEvery)
+		return fmt.Errorf("schedule %q runs every %s: jobs run at most every %s (for something once, sooner, use %s)", orDefault(sch.Display, sch.Expr), gap, MinEvery, FollowUpTool)
 	}
 	return nil
 }

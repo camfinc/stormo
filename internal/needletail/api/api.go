@@ -287,6 +287,36 @@ func (s *Server) release(root string, job bool) {
 	s.wg.Done()
 }
 
+// Hold takes session's conversation for a moment, outside both lanes: no turn starts in it until
+// release, and none is running in it now (a follow-up's message appended to its transcript must
+// never land between a turn's tool calls and their results). It counts as no turn (the caps, the
+// activity). Errors: ErrSessionBusy (a turn runs in it), ErrClosing.
+func (s *Server) Hold(session string) (release func(), err error) {
+	root := session
+	if r, ok := s.store.Root(session); ok {
+		root = r
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.closing:
+		return nil, ErrClosing
+	case s.busy[root]:
+		return nil, ErrSessionBusy
+	}
+	s.busy[root] = true
+	s.wg.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.busy, root)
+			s.mu.Unlock()
+			s.wg.Done()
+		})
+	}, nil
+}
+
 // Turn runs one turn on session, creating it (with create's title and source) when it does not
 // exist. It is the scheduler every caller goes through: the API, and later the gateway and cron.
 func (s *Server) Turn(ctx context.Context, session, input string, create wire.Session, opts loop.Options) (*loop.Result, error) {

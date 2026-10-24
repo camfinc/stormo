@@ -782,3 +782,17 @@ func TestMemoryToolsets(t *testing.T) {
 		}
 	}
 }
+
+// A scheduled run is never offered follow_up: it has no conversation to come back to, even when
+// its list names the tool.
+func TestNoFollowUpsInScheduledRuns(t *testing.T) {
+	all := []string{"follow_up", "memory", "terminal"}
+	for _, enabled := range [][]string{nil, {"all"}, {"follow_up", "terminal"}} {
+		if got := ExpandToolsets(enabled, all); slices.Contains(got, FollowUpTool) {
+			t.Errorf("%v: %v", enabled, got)
+		}
+	}
+	if !strings.Contains(ErrOneShot.Error(), "follow_up") {
+		t.Errorf("the one-time refusal does not point at follow_up: %v", ErrOneShot)
+	}
+}

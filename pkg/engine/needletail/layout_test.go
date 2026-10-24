@@ -61,7 +61,9 @@ func TestClassify(t *testing.T) {
 		// a monitor's output and a run's reply are client data
 		"state/needletail/monitor/j.out": engine.Raw, "state/needletail/jobs/j/t.md": engine.Raw,
 		// the memory archive holds client data; its counters are ids and numbers only
-		"memories/RECORDS.md": engine.Raw, "state/needletail/memory-usage.json": engine.State, "state/needletail/memory.lock": engine.State} {
+		"memories/RECORDS.md": engine.Raw, "state/needletail/memory-usage.json": engine.State, "state/needletail/memory.lock": engine.State,
+		// the pending follow-ups survive a restart, and never reach git or the dream
+		"state/needletail/followups.json": engine.State} {
 		if r := engine.Classify(p, rules); r == nil || r.Class != class {
 			t.Errorf("%s: want %s, got %v", p, class, r)
 		}

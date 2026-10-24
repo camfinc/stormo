@@ -557,3 +557,53 @@ func TestAPICannotClaimARuntimeConversation(t *testing.T) {
 	}
 	s.Shutdown(ctx)
 }
+
+// Hold keeps a conversation to itself outside both lanes (a follow-up's message appended to its
+// transcript): no turn starts in it meanwhile, it takes no turn slot, and a running turn or the
+// shutdown refuses it.
+func TestHold(t *testing.T) {
+	s, _, _ := newServer(t, t.TempDir())
+	release, err := s.Hold("chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reserve("chat-1", wire.Session{Source: SourceAPI}); !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("a turn in a held conversation: %v", err)
+	}
+	if _, err := s.Hold("chat-1"); !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("held twice: %v", err)
+	}
+	// no lane: both chat turns and the jobs' are still free
+	c1, err1 := s.Reserve("chat-2", wire.Session{Source: SourceAPI})
+	c2, err2 := s.Reserve("chat-3", wire.Session{Source: SourceAPI})
+	j, err3 := s.ReserveJob("cron-j1-20261024T090000", wire.Session{Source: "cron"})
+	if err1 != nil || err2 != nil || err3 != nil {
+		t.Fatalf("lanes taken by a hold: %v %v %v", err1, err2, err3)
+	}
+	if _, err := s.Hold("chat-2"); !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("a hold on a conversation running a turn: %v", err)
+	}
+	c1.Release()
+	c2.Release()
+	j.Release()
+	release()
+	release() // once
+	r, err := s.Reserve("chat-1", wire.Session{Source: SourceAPI})
+	if err != nil {
+		t.Fatalf("after the hold: %v", err)
+	}
+	r.Release()
+	done := make(chan struct{})
+	held, _ := s.Hold("chat-4")
+	go func() { s.Shutdown(context.Background()); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("Shutdown did not wait for the hold")
+	case <-time.After(50 * time.Millisecond):
+	}
+	held()
+	<-done
+	if _, err := s.Hold("chat-5"); !errors.Is(err, ErrClosing) {
+		t.Errorf("a hold after the shutdown began: %v", err)
+	}
+}

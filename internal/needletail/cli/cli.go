@@ -23,6 +23,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/config"
+	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/llm"
@@ -95,14 +96,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 // runtime is everything a turn needs, built once per process.
 type runtime struct {
-	cfg    *config.Config
-	sec    *secrets.Secrets
-	red    *secrets.Redactor
-	store  *sessions.Store
-	agent  *loop.Agent
-	sched  *sched.Scheduler
-	luau   *luau.Runtime // nil when the Luau engine could not start
-	logger *log.Logger
+	cfg   *config.Config
+	sec   *secrets.Secrets
+	red   *secrets.Redactor
+	store *sessions.Store
+	agent *loop.Agent
+	sched *sched.Scheduler
+	// followUps are the agent's one-time follow-ups (followup): its tool works in every command;
+	// serve fires them
+	followUps *followup.Queue
+	luau      *luau.Runtime // nil when the Luau engine could not start
+	logger    *log.Logger
 	// guide is the system prompt's guide section (guide.go), rendered at boot and again once
 	// the Slack gateway runs
 	guide     guide
@@ -220,7 +224,11 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
+	// One-time follow-ups (§4.12): in the conversation they are made in, as the runtime knows it.
+	fu := followup.New(followup.Options{Home: cfg.Home, Location: cfg.Location, Log: logf, Redact: red.Redact,
+		Check: tools.SecretCheck(red.Redact), Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay})
+	agent.Tools.Add(fu.Tool())
+	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
@@ -430,7 +438,7 @@ const SlackAPIEnv = "NEEDLETAIL_SLACK_API_URL"
 
 // startSlack is the Slack gateway (§4.9), when needletail.yaml names the channel and both tokens
 // are there; nil otherwise. Its settings are the channel's, in Hermes' SLACK_* env.
-func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
+func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 	if !slices.Contains(rt.cfg.Channels, "slack") {
 		return nil
 	}
@@ -476,6 +484,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	rt.setGuide()
 	rt.sched.SetDeliverer(gw)
 	rt.sched.SetTargetCheck(gw.CheckTarget)
+	fu.setSlack(gw) // the follow-ups' Slack posts, under the same policy
+	rt.followUps.SetTargetCheck(followUpCheck(gw))
 	if rt.luau != nil {
 		rt.luau.Messenger = gw // Luau's send_message, under the same policy
 	}
@@ -552,10 +562,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	rt.sched.SetTurns(reservations{srv})
-	gw = startSlack(rt, srv)
+	fu := newFollowUps(rt, srv)
+	gw = startSlack(rt, srv, fu)
 	ticks, stopTicks := context.WithCancel(context.Background())
 	defer stopTicks()
 	rt.sched.Start(ticks)
+	rt.followUps.Start(fu) // what fell due while the agent was down fires now, marked late
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: rt.logger}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
@@ -567,7 +579,8 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	rt.logger.Printf("shutting down")
-	stopTicks() // no job starts from here on
+	stopTicks()         // no job starts from here on
+	rt.followUps.Stop() // nor a follow-up
 	if gw != nil {
 		gw.BeginShutdown() // no Slack message starts a turn; new events are left for Slack to resend
 	}
@@ -579,6 +592,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	cancel()
 	jctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	rt.sched.Shutdown(jctx) // and script-only jobs get a few seconds more (deliveries included)
+	cancel()
+	fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rt.followUps.Shutdown(fctx) // a follow-up's post under way finishes (its turn drained above)
 	cancel()
 	if gw != nil {
 		gctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
