@@ -143,8 +143,8 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 
 func (f *followUps) appendReply(tip, text string) error {
 	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Content: text}); err != nil {
-		if errors.Is(err, sessions.ErrNotFound) {
-			return followup.ErrGone
+		if errors.Is(err, sessions.ErrNotFound) || errors.Is(err, sessions.ErrEnded) {
+			return followup.ErrGone // deleted, or ended (a oneshot's, once the command exited)
 		}
 		return err
 	}
@@ -162,6 +162,11 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 	}
 	if _, ok := f.store.Root(root); !ok && it.Origin.Source != slack.Source {
 		return followup.ErrGone // a deleted API conversation is not made again
+	}
+	if tip, ok := f.store.Tip(root); ok {
+		if h, _ := f.store.Get(tip); h.EndReason != "" {
+			return followup.ErrGone // ended (a oneshot's, once the command exited): no turn continues it
+		}
 	}
 	slot, err := f.srv.ReserveJob(root, wire.Session{Source: it.Origin.Source, Title: "Slack thread"})
 	if err != nil {
