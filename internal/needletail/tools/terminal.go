@@ -27,7 +27,7 @@ func terminalTool() Tool {
 	return Tool{
 		Name: "terminal",
 		Description: "Run a shell command with bash in the agent's home (the working directory). " +
-			"Use it for scripts, git, curl, python3 and anything the file tools do not cover. " +
+			"Use it for scripts, git, curl, jq, python3 and anything the file tools do not cover. " +
 			"Output (stdout and stderr together) is capped; long-running commands are killed at the timeout. " +
 			"A process left running in the background (cmd &) keeps running after the command returns; its later output is not captured. " +
 			"To run a skill's scripts, pass skill: SKILL_DIR is then set to its directory (use \"$SKILL_DIR\"/scripts/…).",

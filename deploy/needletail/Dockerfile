@@ -1,5 +1,6 @@
 # Needletail: the in-container agent runtime (docs/needletail.md). One static Go binary
-# (CGO_ENABLED=0) on Alpine with the tools skill scripts use from the terminal (bash, python3, git).
+# (CGO_ENABLED=0) on Alpine with the tools skill scripts use from the terminal (bash, python3, git,
+# curl, jq).
 #
 # The Go stage runs on the build machine and cross-compiles for each target platform, so a
 # multi-arch build needs no emulation. Build from the repository root:
@@ -24,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -o /out/needletail ./cmd/needletail
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
-RUN apk add --no-cache bash python3 git ca-certificates \
+RUN apk add --no-cache bash python3 git ca-certificates curl jq \
     && mkdir -p /opt/data \
     && chown 10000:10000 /opt/data
 COPY --from=build /out/needletail /usr/local/bin/needletail

@@ -73,13 +73,13 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 |---|---|
 | `serve` | The default entrypoint. |
 | `oneshot -q <prompt> --format stream-json` | Bench mode. |
-| `healthcheck` | GETs `localhost:8642/health`, so the image needs no curl. |
+| `healthcheck` | GETs `localhost:8642/health` itself (no curl needed for the health check). |
 | `luau check <file>` | Validates the header and compiles only (a file under `tools/` needs a tool's header, one under `handlers/` a handler's, any other a script's). |
 | `luau reference` | Prints the generated reference of the functions scripts get (§5.3) and of the events handlers get (§5.5). |
 
 **Image** (`deploy/needletail/Dockerfile`)
 - Multi-stage. The builder is `golang:1.26.2-alpine` pinned by its multi-arch index digest; it cross-compiles `CGO_ENABLED=0 go build ./cmd/needletail` on the build platform for amd64 and arm64. Its context is only `go.mod`, `go.sum`, `cmd/needletail` and `internal/needletail` (`Dockerfile.dockerignore`), so the build fetches no module besides `go.yaml.in/yaml/v3`, `github.com/gorilla/websocket`, `github.com/tetratelabs/wazero` and wazero's `golang.org/x/sys`. `luau.wasm` is committed, so the image needs no C toolchain.
-- The final stage is `alpine:3.22` pinned by digest, with `bash`, `python3`, `git` and `ca-certificates`. Existing skill scripts are bash and python, so the `terminal` tool needs them.
+- The final stage is `alpine:3.22` pinned by digest, with `bash`, `python3`, `git`, `curl`, `jq` and `ca-certificates` (Alpine's packages, unpinned within the pinned base: `apk add --no-cache`). Existing skill scripts are bash and python, and call HTTP APIs with curl and read JSON with jq, so the `terminal` tool needs them; they run like every other command, jailed and as the exec user (§7). Nothing else: no compiler, no package manager cache, no setuid or setgid file (checked after adding curl and jq, §7).
 - No `USER`: the container starts as root and the runtime splits itself (§7): it lays the home out, then runs as 10000:10000 (`shared.PosixUID`, `wire.RuntimeUID`) keeping only `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL`, and starts what the agent executes as 10001:10000 (`wire.ExecUID`). `AGENT_HOME=/opt/data` (made and owned by 10000 in the image), a `HEALTHCHECK` running `needletail healthcheck` (an HTTP GET; it never boots a runtime).
 - `ENTRYPOINT ["/usr/local/bin/needletail"]`, `CMD ["serve"]`. The bench runs `<image> needletail oneshot …` (`BenchArgv`), so the binary drops a first argument equal to its own name.
 - Built locally as `needletail:<tag>`; where it is published is open (§11). `Image()` builds `<repo>:<image_tag or v+version>` and returns an error for an empty tag or `latest`.
