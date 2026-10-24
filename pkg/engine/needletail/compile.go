@@ -22,6 +22,10 @@ import (
 
 var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
+// listenRe is a channel slack.listen may name: a public or private channel's (or a group DM's) id;
+// DMs are always answered.
+var listenRe = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
+
 // agentConfig is engine/needletail/config.yaml.
 type agentConfig struct {
 	// Timezone is the agent's wall clock (an IANA zone, as Hermes' config.yaml timezone).
@@ -37,6 +41,10 @@ type agentConfig struct {
 		// Broadcast lets send_message ping @channel, @here, @everyone and user groups when a
 		// call asks for it (needletail.yaml slack.broadcast).
 		Broadcast bool `yaml:"broadcast"`
+		// Listen are the channels the agent listens to (needletail.yaml slack.listen): channel
+		// ids, or "*" alone for every channel the bot is in. Every other message there reaches
+		// the agent's on_message handlers only (docs/needletail.md §4.9).
+		Listen []string `yaml:"listen"`
 	} `yaml:"slack"`
 	Schedules struct {
 		// Turns is how many scheduled runs may hold a turn at once (needletail.yaml
@@ -92,6 +100,11 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: http_secrets entries need host, header and an env var name", ConfigFile)
 		}
 	}
+	for _, ch := range c.Slack.Listen {
+		if ch == "*" && len(c.Slack.Listen) > 1 || ch != "*" && !listenRe.MatchString(ch) {
+			return nil, fmt.Errorf("%s: slack.listen is [\"*\"] (every channel the bot is in) or a list of channel ids (C…, G…), not %q", ConfigFile, ch)
+		}
+	}
 	if c.Schedules.Turns < 0 || c.Schedules.Turns > maxScheduleTurns {
 		return nil, fmt.Errorf("%s: schedules.turns %d must be 1 to %d (0 or unset: the runtime's 1)", ConfigFile, c.Schedules.Turns, maxScheduleTurns)
 	}
@@ -140,8 +153,8 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	}
 	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
 	c.Timezone = ac.Timezone
-	if ac.Slack.Broadcast {
-		c.Slack = &wire.SlackConfig{Broadcast: true}
+	if ac.Slack.Broadcast || len(ac.Slack.Listen) > 0 {
+		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen}
 	}
 	c.Schedules.Turns = ac.Schedules.Turns
 	for _, s := range a.Schedules {

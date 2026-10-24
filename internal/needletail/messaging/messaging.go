@@ -199,9 +199,14 @@ func GrantMatches(pattern, target string) bool {
 // calls; the policy above still decides every target, after a handler.
 
 // Inbound is a message the agent is sent, as on_message and on_mention handlers see it. Only a
-// message the gateway answers reaches a handler: its author passed allowed_users (Verified is
-// always true) and it is not a duplicate. The thread's earlier messages, when the turn would carry
-// them, are in ThreadContext, each flagged Unverified when its author is not in allowed_users.
+// message the gateway answers, or hears in a channel it listens to (needletail.yaml slack.listen),
+// reaches a handler, and never a duplicate. Ambient: it was heard only because the agent listens
+// to the channel (no mention, not a thread the agent is in): it reaches on_message alone, and
+// nothing follows unless a handler passes it on or replies. Verified: its author passed
+// allowed_users (always, but for an ambient message from a person it does not list: such a
+// message can be silenced or passed on as overheard, never replied to). The thread's earlier
+// messages, when the turn would carry them, are in ThreadContext (never for an ambient message),
+// each flagged Unverified when its author is not in allowed_users.
 type Inbound struct {
 	Platform  string `json:"platform"`
 	Session   string `json:"session"`
@@ -215,6 +220,7 @@ type Inbound struct {
 	UserName  string `json:"user_name"`
 	Bot       bool   `json:"bot"`
 	Verified  bool   `json:"verified"`
+	Ambient   bool   `json:"ambient"`
 	// Text has the agent's own mention removed and other mentions as @Name.
 	Text          string        `json:"text"`
 	ThreadContext []ContextLine `json:"thread_context,omitempty"`
@@ -256,7 +262,9 @@ const (
 
 // Verdict is what an event's handlers decided: Action pass, reply or silent (a message, a
 // schedule), allow, rewrite or block (before a send); Text a reply's or the rewritten text;
-// Context the passes' notes for the model; By the handler that decided; Ran how many ran.
+// Context the passes' notes for the model; By the handler that decided; Ran how many ran, Skipped
+// how many of those failed and were skipped (an ambient message needs a pass from one that did
+// not).
 // Failed: a block no handler chose, a before_send handler that failed or could not be loaded
 // (it fails closed); the runtime's own notices go out despite it.
 type Verdict struct {
@@ -266,6 +274,7 @@ type Verdict struct {
 	Reason  string
 	By      string
 	Ran     int
+	Skipped int
 	Failed  bool
 }
 

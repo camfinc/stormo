@@ -301,3 +301,34 @@ func TestSlackAndSchedulesRender(t *testing.T) {
 		}
 	}
 }
+
+// engine/needletail/config.yaml's slack.listen (channel ids, or "*" alone for every channel the
+// bot is in) reaches needletail.yaml; a DM, a name, "*" beside ids or a bare true is refused.
+func TestSlackListenRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	for body, want := range map[string]string{"slack:\n  listen: ['*']\n": "*", "slack:\n  listen: [C0123456789, G0123456789]\n": "C0123456789,G0123456789"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0o644)
+		ac, err := readAgentConfig(dir)
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+		if c.Slack == nil || c.Slack.Broadcast || strings.Join(c.Slack.Listen, ",") != want {
+			t.Errorf("%q: slack %+v", body, c.Slack)
+		}
+		raw, _ := yaml.Marshal(c)
+		if !strings.Contains(string(raw), "listen:") || strings.Contains(string(raw), "broadcast") {
+			t.Errorf("needletail.yaml:\n%s", raw)
+		}
+	}
+	for _, bad := range []string{"slack:\n  listen: true\n", "slack:\n  listen: [general]\n", "slack:\n  listen: [D0123456789]\n",
+		"slack:\n  listen: ['*', C0123456789]\n", "slack:\n  listen: [c0123456789]\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

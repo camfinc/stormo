@@ -390,6 +390,7 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 				return rt.failClosed(v, hf, event, err.Error())
 			}
 			rt.logf("handler %s (%s) skipped: %v", hf.Name, event, err)
+			v.Skipped++
 			continue
 		}
 		switch d.Action {
@@ -498,8 +499,10 @@ type EventDoc struct {
 
 // EventDocs are the events, in EventNames' order.
 var EventDocs = []EventDoc{
-	{OnMessage, "a Slack message the agent answers (a DM, or a reply in a thread it is in), before a turn is taken for it; only messages from allowed_users reach it",
-		"text, user, user_name, bot, verified, channel, thread_ts, ts, dm, mentioned, reply, session, thread_context[] {name, text, assistant, parent, unverified}",
+	{OnMessage, "a Slack message the agent answers (a DM, or a reply in a thread it is in), before a turn is taken for it; only messages from allowed_users reach it. " +
+		"With slack.listen, also every other message in a channel the agent listens to (ambient: true): then nothing happens unless a handler passes it on (a turn that may stay silent) or replies; " +
+		"from a person allowed_users does not list (verified: false) only silent or pass, never a reply",
+		"text, user, user_name, bot, verified, ambient, channel, thread_ts, ts, dm, mentioned, reply, session, thread_context[] {name, text, assistant, parent, unverified}",
 		"pass (optional context: a note for the model, under the message), reply {text} (posted in the conversation, no turn), silent (nothing posted)"},
 	{OnMention, "the same, for a message that mentions the agent (instead of on_message)", "as on_message", "as on_message"},
 	{OnSchedule, "a scheduled job's run, after its monitor and pre-run script, before its turn; only for the jobs the header's jobs: names (id, name or \"*\")",

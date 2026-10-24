@@ -464,6 +464,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		Redact:       rt.red.Redact,
 		Log:          func(s string) { rt.logger.Println(s) },
 		Handlers:     handlers,
+		Listen:       slackListen(rt.cfg.Slack),
 	})
 	if err != nil {
 		rt.logger.Printf("slack: %v: the gateway is off", err)
@@ -482,6 +483,14 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	rt.dmUsers.Store(&known) // the memory's DM audiences
 	gw.Start()
 	return gw
+}
+
+// slackListen are the channels the agent listens to (needletail.yaml slack.listen).
+func slackListen(c *wire.SlackConfig) []string {
+	if c == nil {
+		return nil
+	}
+	return c.Listen
 }
 
 // slackChannels are the channels the agent has Slack conversations in (send_message's targets).

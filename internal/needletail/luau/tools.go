@@ -430,7 +430,7 @@ func SampleEvent(event string) map[string]any {
 	case OnMessage, OnMention:
 		return map[string]any{"platform": "slack", "session": "slack-C0123456789-1700000000.000100", "channel": "C0123456789",
 			"thread_ts": "1700000000.000100", "ts": "1700000000.000200", "dm": false, "mentioned": event == OnMention, "reply": true,
-			"user": "U0123456789", "user_name": "Ana", "bot": false, "verified": true, "text": "what is the status of the report?"}
+			"user": "U0123456789", "user_name": "Ana", "bot": false, "verified": true, "ambient": false, "text": "what is the status of the report?"}
 	case OnSchedule:
 		return map[string]any{"job": map[string]any{"id": "a1b2c3d4e5f6", "name": "daily report", "schedule": "every day at 09:00",
 			"prompt": "Write the daily report.", "skills": []any{}, "deliver": "origin", "repo": false},

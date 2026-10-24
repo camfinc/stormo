@@ -264,6 +264,11 @@ type SlackConfig struct {
 	// Broadcast lets a send_message call that asks for it (broadcast: true) ping a crowd:
 	// @channel, @here, @everyone and user groups. Without it every such token is escaped.
 	Broadcast bool `json:"broadcast,omitempty" yaml:"broadcast,omitempty"`
+	// Listen are the channels the agent listens to: channel ids, or "*" for every public or
+	// private channel the bot is in. Every message there that the agent would not answer (no
+	// mention, not a thread it is in) is ambient: it reaches the on_message handlers only, and
+	// a turn follows only when one passes it on.
+	Listen []string `json:"listen,omitempty" yaml:"listen,omitempty"`
 }
 
 // SchedulesConfig is what the runtime is told about the agent's scheduled jobs.
