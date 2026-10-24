@@ -316,7 +316,16 @@ type Input struct {
 	// Thread is the DM thread the reply goes to ("" for the DM itself, and in a channel, whose
 	// session is its thread).
 	Thread string
+	// Context are the authors of the thread's earlier messages the run was given (user ids, or
+	// bot ids for a bot with none); ContextUnverified: one of them is not in allowed_users.
+	Context           []string
+	ContextUnverified bool
 }
+
+// Untrusted is whether the run handles content the agent must not obey: an author allowed_users
+// does not list, overheard input, or unverified thread context. Such a run, and every later run in
+// the conversation it marks (wire.Session.Untrusted), defers no work (docs/needletail.md §7).
+func (in Input) Untrusted() bool { return !in.Verified || in.Ambient || in.ContextUnverified }
 
 type inputKey struct{}
 

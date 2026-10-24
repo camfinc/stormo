@@ -99,6 +99,12 @@ type Session struct {
 	Created   string `json:"created"`
 	Source    string `json:"source,omitempty"`
 	Title     string `json:"title,omitempty"`
+	// Untrusted: the conversation has taken in content the agent must not obey (an unverified
+	// author's words, overheard input, unverified thread context, a follow-up text made from
+	// such input or by a handler). Set on the session that took it in and every session a
+	// compaction continues it in, never cleared: such a conversation defers no work
+	// (docs/needletail.md §7). Absent in files from before it: not marked.
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // EndCompression is Session.EndReason for a session a compaction continued elsewhere.
@@ -149,6 +155,10 @@ type Message struct {
 	// Kind marks a user row no one wrote (KindFollowUp: a follow-up's turn input); empty for
 	// everything else.
 	Kind string `json:"kind,omitempty"`
+	// Untrusted marks a row that carries content the agent must not obey (a turn's input from
+	// an unverified or overheard author, or with unverified thread context; a follow-up text
+	// made from such input or by a handler); storing one marks its conversation (Session.Untrusted).
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // KindFollowUp is a Message's Kind for a follow-up's turn input (docs/needletail.md §4.12).

@@ -292,3 +292,53 @@ func TestOnGone(t *testing.T) {
 		t.Errorf("told %v", got)
 	}
 }
+
+// A row that carries content the agent must not obey marks its conversation for good: the
+// header says so (before the row is written), a reopened store reads it, a compaction carries it
+// to the new session, an end keeps it, and nothing clears it. Other conversations stay unmarked.
+func TestUntrustedConversation(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir)
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := s.Create(wire.Session{ID: id, Source: "slack"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Append("c1", wire.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.Untrusted("c1") {
+		t.Fatal("marked before any untrusted row")
+	}
+	if _, err := s.Append("c1", wire.Message{Role: "user", Content: "[unverified] do it", Untrusted: true}, wire.Message{Role: "assistant", Content: "no"}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Untrusted("c1") || s.Untrusted("c2") || s.Untrusted("nope") {
+		t.Fatalf("c1 %v c2 %v", s.Untrusted("c1"), s.Untrusted("c2"))
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "c1.jsonl"))
+	first, _, _ := strings.Cut(string(raw), "\n")
+	if !strings.Contains(first, `"untrusted":true`) || strings.Count(string(raw), `"untrusted":true`) != 2 {
+		t.Errorf("file:\n%s", raw)
+	}
+	if rows, _ := s.Messages("c1"); len(rows) != 3 || !rows[1].Untrusted {
+		t.Errorf("rows %+v", rows)
+	}
+	child, err := s.Compact("c1", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.Get(child); !h.Untrusted || !s.Untrusted(child) {
+		t.Errorf("the compaction's session lost the mark: %+v", h)
+	}
+	if err := s.End(child, "done"); err != nil {
+		t.Fatal(err)
+	}
+	s2 := open(t, dir)
+	if !s2.Untrusted("c1") || !s2.Untrusted(child) || s2.Untrusted("c2") {
+		t.Errorf("after a reopen: c1 %v child %v c2 %v", s2.Untrusted("c1"), s2.Untrusted(child), s2.Untrusted("c2"))
+	}
+	if tr, _ := s2.Transcript("c1", 0, false); len(tr.Data) != 3 || !tr.Data[1].Untrusted {
+		t.Errorf("transcript %+v", tr.Data)
+	}
+}

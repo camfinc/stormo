@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -170,6 +171,9 @@ func repair(path string) {
 }
 
 func (m *meta) observe(r wire.Message) {
+	if r.Untrusted {
+		m.Untrusted = true // a row written before its header's mark (a crash between): marked all the same
+	}
 	if r.Role != "system" {
 		m.visible++
 	}
@@ -326,6 +330,24 @@ func (s *Store) Tip(id string) (string, bool) {
 	return l[len(l)-1], true
 }
 
+// Untrusted is whether the conversation id belongs to has taken in content the agent must not
+// obey (any session of its lineage marked, wire.Session.Untrusted). Never cleared: the owner
+// starts a fresh conversation (a new thread, a new API conversation) to defer work again.
+func (s *Store) Untrusted(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lineage(id)
+	if !ok {
+		return false
+	}
+	for _, sid := range l {
+		if s.metas[sid].Untrusted {
+			return true
+		}
+	}
+	return false
+}
+
 // Messages is one session's rows, as stored (summary and carried rows included): what the model
 // sees when the session resumes.
 func (s *Store) Messages(id string) ([]wire.Message, error) {
@@ -350,6 +372,13 @@ func (s *Store) Append(id string, rows ...wire.Message) ([]wire.Message, error) 
 	}
 	if m.EndReason != "" {
 		return nil, ErrEnded
+	}
+	if !m.Untrusted && slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted }) {
+		// the header is marked before the row is written: a conversation never holds an
+		// untrusted row it does not know of (fails closed: no mark, no row)
+		if err := s.rewriteHeader(m, func(h *wire.Session) { h.Untrusted = true }); err != nil {
+			return nil, err
+		}
 	}
 	return s.append(m, rows, false)
 }
@@ -433,12 +462,18 @@ func (s *Store) end(id, reason string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	raw, err := os.ReadFile(s.path(id))
+	return s.rewriteHeader(m, func(h *wire.Session) { h.EndReason = reason })
+}
+
+// rewriteHeader changes a session's header (atomically: the file is written again whole through
+// the home's temp dir) and its meta; s.mu is held, so no row is appended meanwhile.
+func (s *Store) rewriteHeader(m *meta, change func(*wire.Session)) error {
+	raw, err := os.ReadFile(s.path(m.ID))
 	if err != nil {
 		return err
 	}
 	h := m.Session
-	h.EndReason = reason
+	change(&h)
 	line, _ := json.Marshal(h)
 	rest := raw
 	if i := bytes.IndexByte(raw, '\n'); i >= 0 {
@@ -446,7 +481,7 @@ func (s *Store) end(id, reason string) error {
 	} else {
 		rest = nil
 	}
-	if err := fsx.WriteAtomicIn(s.path(id), s.tmp, append(append(line, '\n'), rest...), 0o600); err != nil {
+	if err := fsx.WriteAtomicIn(s.path(m.ID), s.tmp, append(append(line, '\n'), rest...), 0o600); err != nil {
 		return err
 	}
 	m.Session = h
@@ -465,7 +500,7 @@ func (s *Store) Compact(id, summary string, carry []wire.Message) (string, error
 	if m.child != "" || m.EndReason != "" {
 		return "", ErrEnded
 	}
-	child, err := s.create(wire.Session{Parent: id, Source: m.Source, Title: m.Title})
+	child, err := s.create(wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted})
 	if err != nil {
 		return "", err
 	}

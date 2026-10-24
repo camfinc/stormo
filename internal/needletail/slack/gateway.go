@@ -893,7 +893,7 @@ func (g *Gateway) batch(session string, jobs []job) {
 		fetch(left[0])
 	}
 	if input := g.input(left, lines); input != "" {
-		g.turn(session, left, input)
+		g.turn(session, left, lines, input)
 	}
 }
 
@@ -929,7 +929,9 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			in.ThreadContext, contextGiven = lines, true // the first message addressed to the agent
 		}
 		var v messaging.Verdict
-		hctx := messaging.WithInput(g.base, inputOf([]job{j})) // what the handler acts on, for a follow-up it makes
+		// what the handler acts on (its message, and the thread context it is given), for what it
+		// does on its own later (a follow-up)
+		hctx := messaging.WithInput(g.base, inputOf([]job{j}, in.ThreadContext))
 		if j.ambient {
 			// at most AmbientHandlers at once: a busy channel cannot run a Luau instance per message
 			select {
@@ -1128,7 +1130,7 @@ const busyNote = "I'm busy with other work right now and could not get to this m
 // (logged, with the tools the turn used). A batch with a direct message (a DM or a mention) is
 // always answered: a [SILENT] first or last line is dropped and the rest posted; a reply that is
 // nothing else posts nothing and is logged, its 👀 removed.
-func (g *Gateway) turn(session string, jobs []job, input string) {
+func (g *Gateway) turn(session string, jobs []job, lines []messaging.ContextLine, input string) {
 	ctx := g.base
 	j := jobs[len(jobs)-1]
 	direct, overheard := false, true
@@ -1167,7 +1169,7 @@ func (g *Gateway) turn(session string, jobs []job, input string) {
 	g.running[root] = state
 	g.mu.Unlock()
 	used := &toolNames{}
-	res, err := g.runTurn(slot, root, j, inputOf(jobs), input, used)
+	res, err := g.runTurn(slot, root, j, inputOf(jobs, lines), input, used)
 	g.mu.Lock()
 	noReply := state.noReply
 	g.mu.Unlock()
@@ -1218,7 +1220,8 @@ func (g *Gateway) turn(session string, jobs []job, input string) {
 
 // runTurn runs the turn in slot and gives the slot back, with the conversation's running state
 // and its status line, however the turn ends (a panic too: the worker recovers it). used hears
-// the tools the turn calls; in is what the turn handles, on its context.
+// the tools the turn calls; in is what the turn handles, on its context: when the agent may not
+// obey it (in.Untrusted), the input is stored marked, which marks the conversation for good.
 func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, input string, used *toolNames) (*loop.Result, error) {
 	defer func() {
 		slot.Release()
@@ -1228,13 +1231,23 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, inp
 		g.status(j.channel, orDefault(j.thread, j.ts), "")
 	}()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	return slot.Turn(messaging.WithInput(g.base, in), input, loop.Options{Observer: used})
+	return slot.Turn(messaging.WithInput(g.base, in), input, loop.Options{Observer: used, Untrusted: in.Untrusted()})
 }
 
-// inputOf is what a run handling jobs acts on (messaging.Input): verified when every author is,
-// ambient when any of it was overheard, its authors, and the DM thread the reply goes to.
-func inputOf(jobs []job) messaging.Input {
+// inputOf is what a run handling jobs, given the thread context lines, acts on (messaging.Input):
+// verified when every author is, ambient when any of it was overheard, its authors, the DM thread
+// the reply goes to, and the context's authors and whether one of them is unverified.
+func inputOf(jobs []job, lines []messaging.ContextLine) messaging.Input {
 	in := messaging.Input{Verified: true, Users: []string{}}
+	for _, l := range lines {
+		if l.Assistant {
+			continue
+		}
+		in.ContextUnverified = in.ContextUnverified || l.Unverified
+		if l.User != "" && !slices.Contains(in.Context, l.User) {
+			in.Context = append(in.Context, l.User)
+		}
+	}
 	for _, j := range jobs {
 		in.Verified = in.Verified && j.verified
 		in.Ambient = in.Ambient || j.ambient
