@@ -3,7 +3,9 @@
 // The example instance (examples/minimal) runs needletail; this lays the agents it had on Hermes
 // over a copy of it: their agent.yaml files and atlas's engine/hermes/config.yaml, under
 // instance/agents. Everything else (units, skills, souls, personas, bridge, stormo.yaml) is the
-// example's own, so the two never drift apart. Only tests import it.
+// example's own. The agent.yaml files are copies: a change to an example agent that is not about
+// its engine goes into them too (TestOnlyTheEngineDiffersFromTheExample fails until it does).
+// Only tests import it.
 package hermestest
 
 import (
