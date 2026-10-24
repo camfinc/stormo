@@ -50,6 +50,46 @@ public struct ChatProblem: Equatable, Sendable {
     }
 }
 
+/// When the open conversation is read again with no turn of the app's in flight (a follow-up the
+/// agent set itself, a turn from elsewhere): soon after it last changed, less often the longer it
+/// stays the same.
+public struct RefreshSchedule: Equatable, Sendable {
+    public var fastest: Duration
+    public var slowest: Duration
+    /// The wait before the next read.
+    public private(set) var delay: Duration
+
+    public init(fastest: Duration, slowest: Duration) {
+        self.fastest = fastest
+        self.slowest = max(slowest, fastest)
+        delay = fastest
+    }
+
+    /// A read found the conversation changed (back to the fastest) or the same (half as long again).
+    public mutating func record(changed: Bool) {
+        delay = changed ? fastest : min(delay * 1.5, slowest)
+    }
+
+    /// Something says the conversation may move (opened, a turn just ended): read it soon.
+    public mutating func reset() { delay = fastest }
+
+    /// Whether a read is due `since` the last one; a nudge (the agent did something) waits only the
+    /// fastest interval, so a busy agent is read at most that often.
+    public func isDue(since: Duration, nudged: Bool) -> Bool {
+        since >= (nudged ? fastest : delay)
+    }
+}
+
+extension Transcript {
+    /// The same rows as `other`, as far as a re-read can tell cheaply: the session, the
+    /// compaction, the number of rows and the last one. Rows are only appended, so this is what
+    /// moves when anything does.
+    public func sameRows(as other: Transcript) -> Bool {
+        tip == other.tip && compacted == other.compacted && messages.count == other.messages.count
+            && messages.last == other.messages.last
+    }
+}
+
 /// A turn on its way: the message shows at once, the reply when the agent has finished.
 public struct PendingTurn: Equatable, Sendable {
     public var agent: String
@@ -82,6 +122,18 @@ public final class ChatStore {
     public var progressInterval: Duration = .seconds(2.5)
 
     @ObservationIgnored private var sendTask: Task<Void, Never>?
+
+    /// How often the open conversation is read again while nothing of the app's is in flight
+    /// (RefreshSchedule): the fastest right after a change, backing off to the slowest.
+    public var refreshInterval: (fastest: Duration, slowest: Duration) = (.seconds(5), .seconds(30))
+    /// The chat is on screen in a window someone can see (set by the view).
+    @ObservationIgnored public var isVisible = false
+    /// The open agent runs (from the fleet, observe(_:)).
+    @ObservationIgnored public private(set) var agentRunning = false
+    /// The agent did something since the last read (from the fleet, observe(_:)).
+    @ObservationIgnored private(set) var nudged = false
+    @ObservationIgnored private var activityMark: String?
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
 
     public init(backend: (any ChatBackend)? = nil) {
         self.backend = backend
@@ -128,17 +180,19 @@ public final class ChatStore {
         }
     }
 
-    public func refreshList() async {
+    /// Reads the agent's conversations; a quiet read (the background refresh) shows no progress
+    /// and keeps a failure to itself.
+    public func refreshList(quiet: Bool = false) async {
         guard let backend, let agent else { return }
-        loadingList = true
-        defer { loadingList = false }
+        if !quiet { loadingList = true }
+        defer { if !quiet { loadingList = false } }
         do {
             let list = try await backend.conversations(agent)
             guard agent == self.agent else { return }
-            conversations = list
-            problem = nil
+            if list != conversations { conversations = list }
+            if !quiet { problem = nil }
         } catch {
-            guard agent == self.agent else { return }
+            guard agent == self.agent, !quiet else { return }
             problem = ChatProblem(error)
         }
     }
@@ -153,24 +207,113 @@ public final class ChatStore {
         await reloadTranscript(id)
     }
 
-    private func reloadTranscript(_ id: String) async {
-        guard let backend, let agent else { return }
+    /// Reads the open conversation again; true when what is shown changed. Unchanged rows are
+    /// left as they are, so nothing on screen is drawn again. A quiet read (the background
+    /// refresh) keeps a failure to itself, but for a conversation cleared elsewhere.
+    @discardableResult
+    private func reloadTranscript(_ id: String, quiet: Bool = false) async -> Bool {
+        guard let backend, let agent else { return false }
         do {
             let t = try await backend.transcript(agent, id)
-            guard agent == self.agent, selection == id else { return }
-            transcript = t
+            guard agent == self.agent, selection == id else { return false }
             if problem?.kind == .starting { problem = nil }
+            return apply(t)
         } catch {
-            guard agent == self.agent, selection == id else { return }
+            guard agent == self.agent, selection == id else { return false }
             let p = ChatProblem(error)
             if p.kind == .notFound {
                 // Cleared elsewhere.
                 conversations.removeAll { $0.id == id }
                 selection = nil
-            } else {
+                transcript = nil
+                return true
+            } else if !quiet {
                 problem = p
             }
+            return false
         }
+    }
+
+    /// Shows a transcript read again, unless it has the rows already shown.
+    func apply(_ t: Transcript) -> Bool {
+        if let shown = transcript, shown.id == t.id, shown.sameRows(as: t) { return false }
+        transcript = t
+        return true
+    }
+
+    // MARK: Refresh
+
+    /// Keeps the open conversation current while the chat is on screen: a follow-up the agent set
+    /// itself, or a turn from elsewhere, is appended later. Reads only while the window is visible,
+    /// the agent runs and no turn of the app's is in flight (that one reads its own progress), less
+    /// often while nothing changes; a change also refreshes the list. Runs until stopRefreshing().
+    public func startRefreshing() {
+        guard refreshTask == nil else { return }
+        let (fastest, slowest) = refreshInterval
+        let slice = min(fastest, .seconds(1))
+        refreshTask = Task { [weak self] in
+            var schedule = RefreshSchedule(fastest: fastest, slowest: slowest)
+            var last = ContinuousClock.now
+            var watched: String?
+            var wasSending = false
+            while !Task.isCancelled {
+                try? await Task.sleep(for: slice)
+                guard !Task.isCancelled, let self else { return }
+                let key = self.agent.map { "\($0)/\(self.selection ?? "")" }
+                if key != watched {
+                    // Another conversation: it was just read when opened.
+                    watched = key
+                    schedule.reset()
+                    last = .now
+                    continue
+                }
+                if self.isSending {
+                    wasSending = true
+                    continue
+                }
+                if wasSending {
+                    // The turn just ended and read the conversation; it may have set a follow-up.
+                    wasSending = false
+                    schedule.reset()
+                    last = .now
+                    continue
+                }
+                guard schedule.isDue(since: .now - last, nudged: self.nudged), let id = self.selection else { continue }
+                self.nudged = false
+                guard self.canRefresh else { continue }
+                last = .now
+                let changed = await self.reloadTranscript(id, quiet: true)
+                last = .now
+                schedule.record(changed: changed)
+                if changed { await self.refreshList(quiet: true) }
+            }
+        }
+    }
+
+    public func stopRefreshing() {
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
+    /// Whether a background read may run now.
+    var canRefresh: Bool {
+        guard isVisible, agentRunning, backend != nil, agent != nil, selection != nil, !loadingTranscript, !isSending else { return false }
+        return problem?.kind != .notRunning && problem?.kind != .starting
+    }
+
+    /// What the fleet (polled anyway) says about the open agent: whether it runs, and whether it did
+    /// something since it was last seen (its office timeline moved, or its last activity), which
+    /// makes a read due sooner. A hint only: the schedule reads the conversation without it.
+    public func observe(_ fleetAgent: FleetAgent?) {
+        guard let a = fleetAgent, a.id == agent else {
+            agentRunning = false
+            activityMark = nil
+            return
+        }
+        agentRunning = a.state == "running"
+        let mark = "\(a.id)|\(a.office?.seq ?? -1)|\(a.office?.working ?? false)|\(a.activity?.lastActive ?? "")"
+        if let old = activityMark, old != mark { nudged = true }
+        activityMark = mark
     }
 
     /// Sends a message in the open conversation, starting one when none is open.

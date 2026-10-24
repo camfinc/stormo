@@ -1,3 +1,4 @@
+import AppKit
 import StormoKit
 import SwiftUI
 
@@ -220,7 +221,16 @@ private struct TranscriptPane: View {
         }
         .background(.background)
         .onChange(of: store.selection) { composing = true }
+        // A follow-up the agent set itself, or a turn from elsewhere, lands in the open
+        // conversation later: re-read it while it is on screen (ChatStore.startRefreshing).
+        .background(WindowVisibility { store.isVisible = $0 })
+        .onAppear { store.startRefreshing() }
+        .onDisappear { store.stopRefreshing() }
+        .onChange(of: openAgent, initial: true) { store.observe(openAgent) }
     }
+
+    /// The fleet's row for the open agent (polled every 2.5 s anyway).
+    private var openAgent: FleetAgent? { model.chat.agent.flatMap { model.fleet.agent($0) } }
 
     private func header(_ store: ChatStore) -> some View {
         HStack(spacing: 8) {
@@ -512,5 +522,43 @@ private struct ProblemBanner: View {
         guard problem.kind == .starting else { return problem.message }
         let name = agent.flatMap { model.fleet.agent($0)?.name } ?? "The agent"
         return "\(name) is still starting up. The chat connects on its own as soon as it's ready."
+    }
+}
+
+/// Reports whether the window holding it can be seen: not minimized, hidden, on another Space or
+/// fully covered (its occlusion state).
+private struct WindowVisibility: NSViewRepresentable {
+    let changed: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Watcher { Watcher(changed: changed) }
+
+    func updateNSView(_ view: Watcher, context: Context) { view.changed = changed }
+
+    final class Watcher: NSView {
+        var changed: (Bool) -> Void
+
+        init(changed: @escaping (Bool) -> Void) {
+            self.changed = changed
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        // A selector observer is dropped when the view goes; a move to another window drops it here.
+        override func viewWillMove(toWindow next: NSWindow?) {
+            super.viewWillMove(toWindow: next)
+            if let window { NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: window) }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window {
+                NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            }
+            occlusionChanged()
+        }
+
+        @objc private func occlusionChanged() { changed(window?.occlusionState.contains(.visible) ?? false) }
     }
 }

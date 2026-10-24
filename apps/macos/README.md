@@ -47,6 +47,11 @@ pulls its published sidecar image.
 - **Which environment:** the login shell's (`$SHELL -ilc`), so docker and aws resolve as in a
   terminal; never `SWARM_TARGET`, and every command gets `--target local`. Remote (ECS) work is not
   in this build.
+- **The open conversation:** re-read (`stormo conversations <agent> <id>`) while the Chat window
+  can be seen and the agent runs, so a follow-up the agent set itself appears without reopening:
+  5 s after it last changed, backing off to 30 s while nothing does, sooner when the fleet shows the
+  agent doing something; never while a turn of the app's is in flight (that one reads its own
+  progress). Unchanged rows are not drawn again.
 - **The core:** started and stopped only with `stormo core up` / `core down`, so the CLI and the app
   see the same core; quitting the app leaves it running.
 

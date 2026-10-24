@@ -67,7 +67,13 @@ actor FakeChat: ChatBackend {
         for c in list { sessions[c.id] = Transcript(agent: "ada", id: c.id, tip: c.id, compacted: false, messages: []) }
     }
 
+    /// Transcript reads so far.
+    var reads = 0
+
     func stop() { running = false }
+
+    /// A row the agent's runtime adds on its own (a follow-up coming due).
+    func append(_ id: String, _ m: ChatMessage) { sessions[id]?.messages.append(m) }
 
     private func check() throws {
         if !running { throw CLIError(code: "not_running", message: "ada: not running locally", status: 1, stderr: "") }
@@ -77,6 +83,7 @@ actor FakeChat: ChatBackend {
 
     func transcript(_ agent: String, _ id: String) async throws -> Transcript {
         try check()
+        reads += 1
         guard let t = sessions[id] else { throw CLIError(code: "not_found", message: "", status: 1, stderr: "") }
         return t
     }
@@ -159,5 +166,126 @@ actor FakeChat: ChatBackend {
         #expect(store.selection == nil && store.conversations.map(\.id) == ["b", "s"])
         await store.clearAll()
         #expect(store.conversations.map(\.id) == ["s"])
+    }
+}
+
+@Suite struct RefreshScheduleTests {
+    @Test func backsOffWhileNothingChanges() {
+        var s = RefreshSchedule(fastest: .seconds(5), slowest: .seconds(30))
+        #expect(s.delay == .seconds(5))
+        var delays: [Duration] = []
+        for _ in 0..<6 {
+            s.record(changed: false)
+            delays.append(s.delay)
+        }
+        #expect(delays == [.seconds(7.5), .seconds(11.25), .seconds(16.875), .seconds(25.3125), .seconds(30), .seconds(30)])
+        s.record(changed: true)
+        #expect(s.delay == .seconds(5))
+        s.record(changed: false)
+        s.reset()
+        #expect(s.delay == .seconds(5))
+    }
+
+    @Test func aNudgeWaitsOnlyTheFastest() {
+        var s = RefreshSchedule(fastest: .seconds(5), slowest: .seconds(30))
+        for _ in 0..<5 { s.record(changed: false) }
+        #expect(!s.isDue(since: .seconds(6), nudged: false))
+        #expect(s.isDue(since: .seconds(6), nudged: true))
+        #expect(!s.isDue(since: .seconds(2), nudged: true))
+        #expect(s.isDue(since: .seconds(30), nudged: false))
+    }
+
+    @Test func sameRows() {
+        let rows = [ChatMessage(id: "1", role: "user", content: "a"), ChatMessage(id: "2", role: "assistant", content: "b")]
+        let t = Transcript(agent: "ada", id: "c", tip: "c", compacted: false, messages: rows)
+        #expect(t.sameRows(as: t))
+        var more = t
+        more.messages.append(ChatMessage(id: "3", role: "user", content: "hola", source: "follow_up"))
+        #expect(!t.sameRows(as: more))
+        var moved = t
+        moved.tip = "c2"
+        #expect(!t.sameRows(as: moved))
+        var compacted = t
+        compacted.compacted = true
+        #expect(!t.sameRows(as: compacted))
+    }
+}
+
+@MainActor @Suite struct ChatRefreshTests {
+    func store(_ fake: FakeChat) -> ChatStore {
+        let store = ChatStore(backend: fake)
+        store.refreshInterval = (.milliseconds(20), .milliseconds(40))
+        store.isVisible = true
+        return store
+    }
+
+    func running(_ id: String = "ada", seq: Int = 1) -> FleetAgent {
+        FleetAgent(id: id, name: id, unit: "u", state: "running",
+                   office: OfficeState(activity: "idle", phase: "", start: 0, end: nil, from: nil, slot: 0, label: "", working: false, seq: seq))
+    }
+
+    func wait(_ until: () async -> Bool) async {
+        for _ in 0..<200 where !(await until()) { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    @Test func aFollowUpAppearsWithoutReopening() async {
+        let fake = FakeChat([Conversation(id: "api_1")])
+        let store = store(fake)
+        await store.selectAgent("ada")
+        store.observe(running())
+        store.startRefreshing()
+        defer { store.stopRefreshing() }
+        let before = store.transcript
+        try? await Task.sleep(for: .milliseconds(120))
+        #expect(store.transcript == before, "nothing changed, nothing replaced")
+
+        await fake.append("api_1", ChatMessage(id: "9", role: "user", content: "Say hola", source: "follow_up"))
+        await fake.append("api_1", ChatMessage(id: "10", role: "assistant", content: "hola"))
+        await wait { store.transcript?.messages.count == 2 }
+        #expect(store.transcript?.messages.map(\.content) == ["Say hola", "hola"])
+        #expect(store.transcript?.messages.first?.isFollowUp == true)
+    }
+
+    @Test func noReadsWhileHiddenOrStopped() async {
+        let fake = FakeChat([Conversation(id: "api_1")])
+        let store = store(fake)
+        await store.selectAgent("ada")
+        store.isVisible = false
+        store.observe(running())
+        store.startRefreshing()
+        defer { store.stopRefreshing() }
+        let opened = await fake.reads
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await fake.reads == opened, "hidden")
+
+        store.isVisible = true
+        store.observe(FleetAgent(id: "ada", name: "ada", unit: "u", state: "stopped"))
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await fake.reads == opened, "the agent is not running")
+
+        store.observe(running())
+        await wait { await fake.reads > opened }
+        #expect(await fake.reads > opened)
+
+        store.stopRefreshing()
+        try? await Task.sleep(for: .milliseconds(30))
+        let stopped = await fake.reads
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await fake.reads == stopped, "stopped")
+    }
+
+    @Test func theFleetNudgesOnlyWhenTheAgentMoves() async {
+        let store = ChatStore(backend: FakeChat())
+        store.observe(running())
+        #expect(!store.agentRunning && !store.nudged, "not the open agent")
+        await store.selectAgent("ada")
+        store.observe(running(seq: 1))
+        #expect(store.agentRunning && !store.nudged, "the first look is not a change")
+        store.observe(running(seq: 1))
+        #expect(!store.nudged)
+        store.observe(running(seq: 2))
+        #expect(store.nudged)
+        store.observe(running("bob"))
+        #expect(!store.agentRunning)
     }
 }
