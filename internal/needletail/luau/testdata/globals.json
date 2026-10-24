@@ -338,6 +338,90 @@
       }
     },
     {
+      "name": "kv.get",
+      "global": "kv_get",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "grant": "kv:read",
+      "wire": {
+        "name": "kv.get",
+        "global": "kv_get",
+        "params": [
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "kv.set",
+      "global": "kv_set",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "type": "any"
+        },
+        {
+          "name": "ttl_seconds",
+          "type": "number",
+          "optional": true
+        }
+      ],
+      "grant": "kv:write",
+      "write": true,
+      "wire": {
+        "name": "kv.set",
+        "global": "kv_set",
+        "params": [
+          "key",
+          "value",
+          "ttl_seconds"
+        ]
+      }
+    },
+    {
+      "name": "kv.delete",
+      "global": "kv_delete",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "grant": "kv:write",
+      "write": true,
+      "wire": {
+        "name": "kv.delete",
+        "global": "kv_delete",
+        "params": [
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "hash.sha256",
+      "global": "sha256",
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "wire": {
+        "name": "hash.sha256",
+        "global": "sha256",
+        "params": [
+          "text"
+        ]
+      }
+    },
+    {
       "name": "json.encode",
       "global": "json_encode",
       "params": [
@@ -423,6 +507,9 @@
     "ipairs",
     "json_decode",
     "json_encode",
+    "kv_delete",
+    "kv_get",
+    "kv_set",
     "list_files",
     "lock",
     "log",
@@ -446,6 +533,7 @@
     "select",
     "send_message",
     "setmetatable",
+    "sha256",
     "stat_file",
     "string",
     "table",
@@ -472,12 +560,18 @@
     "fs.stat",
     "fs.unlock",
     "fs.write",
+    "hash",
+    "hash.sha256",
     "http",
     "http.request",
     "json",
     "json.decode",
     "json.encode",
     "json.null",
+    "kv",
+    "kv.delete",
+    "kv.get",
+    "kv.set",
     "log",
     "memory",
     "memory.delete",

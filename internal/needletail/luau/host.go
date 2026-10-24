@@ -84,6 +84,7 @@ type Runtime struct {
 	auditMu sync.Mutex
 	maskMu  sync.Mutex
 	mask    secretMasker
+	kv      kvStore // the agent's key-value store (kv.go)
 }
 
 func (rt *Runtime) redact(s string) string {

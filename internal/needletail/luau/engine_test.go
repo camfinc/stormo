@@ -183,8 +183,8 @@ func TestHostRefusalIsAnError(t *testing.T) {
 
 func TestGlobals(t *testing.T) {
 	// Frozen: scripts agents write call these names (the tool format is a contract, §8).
-	frozen := []string{"append_file", "core_call", "delete_memory", "http_request", "json_decode", "json_encode", "list_files", "lock", "log", "now",
-		"read_file", "read_memory", "remove_file", "save_memory", "search_memory", "send_message", "stat_file", "unlock", "update_memory", "write_file"}
+	frozen := []string{"append_file", "core_call", "delete_memory", "http_request", "json_decode", "json_encode", "kv_delete", "kv_get", "kv_set", "list_files", "lock", "log", "now",
+		"read_file", "read_memory", "remove_file", "save_memory", "search_memory", "send_message", "sha256", "stat_file", "unlock", "update_memory", "write_file"}
 	var got []string
 	for _, b := range Bindings() {
 		if b.Global != "" {

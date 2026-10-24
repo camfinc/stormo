@@ -102,6 +102,11 @@
    "glob": "state/needletail/**"
   },
   {
+   "path": "state/needletail/kv.json",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
    "path": "state/needletail/monitor/a1.out",
    "class": "raw",
    "glob": "state/needletail/monitor/**"

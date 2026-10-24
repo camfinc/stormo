@@ -64,6 +64,10 @@ A call needs a cap the header's `caps:` declares and you are granted (your grant
 - `update_memory(id, fields)` → {id, kind, tags, imp, updated, …, text}; needs memory:write
 - `delete_memory(id)` → {deleted = id}; needs memory:write
 - `send_message(target, text)` → {platform, chat_id, message_id, home}; needs message:<target>
+- `kv_get(key)` → any; needs kv:read
+- `kv_set(key, value, ttl_seconds?)` → nil; needs kv:write
+- `kv_delete(key)` → boolean; needs kv:write
+- `sha256(text)` → string
 - `json_encode(value)` → string
 - `json_decode(text)` → any
 - `log(level, msg)` → nil
