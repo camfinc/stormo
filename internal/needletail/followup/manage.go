@@ -132,11 +132,11 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 		}
 	}
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if err := q.load(); err != nil {
+	unlock, err := q.lock()
+	if err != nil {
 		return Item{}, err
 	}
+	defer unlock()
 	mine, all, handlers, here := 0, 0, 0, 0
 	for _, x := range q.items {
 		if x.Status != StatusPending {
@@ -256,11 +256,11 @@ func (q *Queue) Cancel(session, id string) (Item, error) {
 	if q.o.Origin != nil && session != "" {
 		from = q.o.Origin(session)
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if err := q.load(); err != nil {
+	unlock, err := q.lock()
+	if err != nil {
 		return Item{}, err
 	}
+	defer unlock()
 	i := q.find(strings.TrimSpace(id))
 	if i < 0 || !from.Operator && q.items[i].Origin.Session != from.Session {
 		return Item{}, ErrNotFound

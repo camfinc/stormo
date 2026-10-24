@@ -67,9 +67,10 @@ const (
 	MaxText = 4 << 10
 	// MaxAttempts is how many times a failing follow-up is tried before it is kept as failed.
 	MaxAttempts = 3
-	// File is the queue's file in the home; Version its "v".
-	File    = "state/needletail/followups.json"
-	Version = 1
+	// File is the queue's file in the home; Version its "v"; LockFile its interprocess lock.
+	File     = "state/needletail/followups.json"
+	LockFile = "state/needletail/followups.lock"
+	Version  = 1
 )
 
 // Internal bounds.
@@ -219,17 +220,23 @@ type Queue struct {
 	o         Options
 	path, tmp string
 
-	mu       sync.Mutex
-	items    []Item
-	gen      string
-	loaded   bool
-	readOnly error // a file this runtime cannot write (a newer version, damaged)
-	firing   map[string]bool
-	busy     map[string]time.Time // when a follow-up first found its conversation busy
-	busyLog  map[string]time.Time // when a busy follow-up's firing was last logged
-	firer    Firer
-	check    func(target string, origin Conversation) error
-	stopping bool
+	mu         sync.Mutex
+	items      []Item
+	gen        string
+	loaded     bool
+	readOnly   error    // a file this runtime cannot write (a newer version, damaged)
+	lk         *os.File // LockFile, open once taken
+	lockWarned bool
+	firing     map[string]bool
+	busy       map[string]time.Time // when a follow-up first found its conversation busy
+	busyLog    map[string]time.Time // when a busy follow-up's firing was last logged
+	firer      Firer
+	check      func(target string, origin Conversation) error
+	stopping   bool
+
+	// beforeSave, when set, runs in save before the file is written (tests: another process
+	// changing it meanwhile)
+	beforeSave func()
 
 	kick   chan struct{}
 	wg     sync.WaitGroup // the loop and the firings
@@ -332,6 +339,9 @@ func (q *Queue) save() error {
 	if err != nil {
 		return err
 	}
+	if q.beforeSave != nil {
+		q.beforeSave()
+	}
 	if err := fsx.WriteAtomicIn(q.path, q.tmp, append(body, '\n'), 0o600); err != nil {
 		return err
 	}
@@ -401,8 +411,12 @@ func (q *Queue) newID(now time.Time) string {
 func (q *Queue) Start(firer Firer) {
 	q.mu.Lock()
 	q.firer = firer
-	if err := q.load(); err != nil {
+	q.mu.Unlock()
+	unlock, err := q.lock()
+	if err != nil {
 		q.logf("follow-ups: %v: none will fire", err)
+		q.mu.Lock()
+		unlock = q.mu.Unlock
 	}
 	now := q.o.Now()
 	late := 0
@@ -418,7 +432,7 @@ func (q *Queue) Start(firer Firer) {
 		}
 		q.logf("follow-ups: %d fell due while the agent was down; they fire now, marked late", late)
 	}
-	q.mu.Unlock()
+	unlock()
 	ctx, stop := context.WithCancel(context.Background())
 	q.stop = stop
 	q.wg.Add(1)
@@ -535,13 +549,16 @@ func orNone(s string) string {
 // settle records how a firing went: delivered (removed), interrupted (left as it was), busy
 // (asked again shortly), failed (retried with backoff, then kept as failed).
 func (q *Queue) settle(fired Item, err error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	delete(q.firing, fired.ID)
-	if lerr := q.load(); lerr != nil {
+	unlock, lerr := q.lock()
+	if lerr != nil {
+		q.mu.Lock()
+		delete(q.firing, fired.ID)
+		q.mu.Unlock()
 		q.logf("follow-up %s: %v", fired.ID, lerr)
 		return
 	}
+	defer unlock()
+	delete(q.firing, fired.ID)
 	i := q.find(fired.ID)
 	if i < 0 {
 		return // removed meanwhile (another process)
@@ -650,11 +667,11 @@ func Ran(ctx context.Context, reply string) error {
 	if q == nil || id == "" {
 		return nil
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if err := q.load(); err != nil {
+	unlock, err := q.lock()
+	if err != nil {
 		return err
 	}
+	defer unlock()
 	i := q.find(id)
 	if i < 0 {
 		return ErrNotFound

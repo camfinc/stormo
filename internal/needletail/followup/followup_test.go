@@ -747,3 +747,39 @@ func TestBusyFiringsLogOnce(t *testing.T) {
 		t.Errorf("%d fires lines for %d busy tries", fires, r.count())
 	}
 }
+
+// Two processes on one home (serve and a oneshot) never lose each other's changes: each holds
+// the queue's lock file from reading the file to writing it back, so a save made from a stale
+// read cannot bring back a follow-up the other just delivered or cancelled.
+func TestNoLostUpdatesAcrossProcesses(t *testing.T) {
+	ctx := context.Background()
+	q1, home := newQueue(t)
+	q2, _ := newQueue(t, func(o *Options) { o.Home = home })
+	x, err := q1.Create(ctx, "chat-1", Spec{In: "1h", Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := q2.List("chat-1", false); len(got) != 1 {
+		t.Fatalf("q2 sees %+v", got)
+	}
+	done := make(chan error, 1)
+	q1.beforeSave = func() { // between q1's read and its write, q2 cancels x
+		q1.beforeSave = nil
+		go func() { _, err := q2.Cancel("op-1", x.ID); done <- err }()
+		time.Sleep(150 * time.Millisecond)
+	}
+	if _, err := q1.Create(ctx, "chat-1", Spec{In: "2h", Text: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	q3, _ := newQueue(t, func(o *Options) { o.Home = home })
+	got, _ := q3.List("op-1", true)
+	if len(got) != 1 || got[0].Text != "y" {
+		t.Errorf("the file holds %+v, want y alone (x cancelled)", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, LockFile)); err != nil {
+		t.Errorf("no lock file: %v", err)
+	}
+}

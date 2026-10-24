@@ -112,6 +112,11 @@
    "glob": "state/needletail/followups.json"
   },
   {
+   "path": "state/needletail/followups.lock",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
    "path": "state/needletail/monitor/a1.out",
    "class": "raw",
    "glob": "state/needletail/monitor/**"
