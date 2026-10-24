@@ -29,13 +29,15 @@ func terminalTool() Tool {
 		Description: "Run a shell command with bash in the agent's home (the working directory). " +
 			"Use it for scripts, git, curl, jq, python3 and anything the file tools do not cover. " +
 			"Output (stdout and stderr together) is capped; long-running commands are killed at the timeout. " +
-			"A process left running in the background (cmd &) keeps running after the command returns; its later output is not captured. " +
+			"For a server, a watcher or a long job, pass background: true: it starts and returns a session_id at once; " +
+			"follow it with process_manage (poll, wait, log, write, kill). A process left running by a normal command (cmd &) is not tracked: its later output is lost. " +
 			"To run a skill's scripts, pass skill: SKILL_DIR is then set to its directory (use \"$SKILL_DIR\"/scripts/…).",
 		Schema: schema(`{"type":"object","properties":{
 "command":{"type":"string","description":"The bash command to run."},
 "timeout":{"type":"integer","description":"Seconds before the command is killed (default: the agent's command timeout)."},
 "workdir":{"type":"string","description":"Directory to run in, inside the home or shared space (default: the home)."},
-"skill":{"type":"string","description":"The skill this command runs from (its name or directory): sets SKILL_DIR."}},
+"skill":{"type":"string","description":"The skill this command runs from (its name or directory): sets SKILL_DIR."},
+"background":{"type":"boolean","description":"Start it in the background and return its session_id at once (timeout does not apply; it runs until it exits, is killed or reaches its lifetime)."}},
 "required":["command"]}`),
 		Run: runTerminal,
 	}
@@ -46,6 +48,8 @@ type terminalArgs struct {
 	Timeout int    `json:"timeout"`
 	Workdir string `json:"workdir"`
 	Skill   string `json:"skill"`
+	// Background starts the command in the background (background.go).
+	Background bool `json:"background"`
 }
 
 type terminalResult struct {
@@ -86,6 +90,9 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	skillDir, err := fromSkill(env, a)
 	if err != nil {
 		return nil, err
+	}
+	if a.Background {
+		return startBackground(env, a, dir, skillDir)
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

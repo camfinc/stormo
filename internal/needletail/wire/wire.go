@@ -317,6 +317,10 @@ type Limits struct {
 	// LuauTimeout bounds a Luau tool the model calls (a schedule's .luau script has
 	// ScriptTimeout); a tool's header may only lower it.
 	LuauTimeout int `json:"luau_timeout,omitempty" yaml:"luau_timeout,omitempty"`
+	// BackgroundLifetime bounds a background process (terminal background: true): it is killed
+	// this long after it started (0: the runtime's 2 h). An image older than the key refuses a
+	// needletail.yaml that has it.
+	BackgroundLifetime int `json:"background_lifetime,omitempty" yaml:"background_lifetime,omitempty"`
 }
 
 // CoreConfig is the swarm core, set only when the agent runs on it.

@@ -128,6 +128,11 @@ func (c *Config) Endpoints() []wire.Endpoint {
 	return append([]wire.Endpoint{c.Model.Primary}, c.Model.Fallbacks...)
 }
 
+// BackgroundLifetime is how long a background process may run (0: the runtime's default).
+func (c *Config) BackgroundLifetime() time.Duration {
+	return time.Duration(c.Limits.BackgroundLifetime) * time.Second
+}
+
 // CommandTimeout is one terminal command's default bound.
 func (c *Config) CommandTimeout() time.Duration {
 	return time.Duration(c.Limits.CommandTimeout) * time.Second

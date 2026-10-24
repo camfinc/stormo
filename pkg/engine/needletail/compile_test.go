@@ -247,6 +247,33 @@ func TestLuauTimeoutRender(t *testing.T) {
 	}
 }
 
+// limits.background_lifetime (seconds) bounds the background processes: needletail.yaml's
+// limits.background_lifetime, left out when unset.
+func TestBackgroundLifetimeRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("limits:\n  background_lifetime: 3600\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	if c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac); c.Limits.BackgroundLifetime != 3600 {
+		t.Errorf("limits = %+v", c.Limits)
+	}
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{})
+	if body, _ := yaml.Marshal(c); c.Limits.BackgroundLifetime != 0 || strings.Contains(string(body), "background_lifetime") {
+		t.Errorf("unset: %+v", c.Limits)
+	}
+	for _, bad := range []string{"-1", "86401", "2h"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("limits:\n  background_lifetime: "+bad+"\n"), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("limits.background_lifetime %s accepted", bad)
+		}
+	}
+}
+
 func TestTimezoneRender(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)

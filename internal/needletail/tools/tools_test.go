@@ -186,7 +186,7 @@ func TestMemoryAndErrors(t *testing.T) {
 	if out, failed := panicky.Call(context.Background(), env, "boom", ""); !failed || !strings.Contains(out, "crashed") {
 		t.Errorf("panic = %s", out)
 	}
-	if names := r.Names(); !slices.Equal(names, []string{"memory", "memory_manage", "memory_search", "patch", "read_file", "search_files", "skill_manage", "skill_view", "skills_list", "terminal", "write_file"}) {
+	if names := r.Names(); !slices.Equal(names, []string{"memory", "memory_manage", "memory_search", "patch", "process_manage", "read_file", "search_files", "skill_manage", "skill_view", "skills_list", "terminal", "write_file"}) {
 		t.Errorf("names = %v", names)
 	}
 	if f := r.Filter([]string{"terminal", "ghost"}); len(f) != 1 || f[0].Name != "terminal" {

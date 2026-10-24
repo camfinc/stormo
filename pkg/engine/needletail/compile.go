@@ -51,6 +51,11 @@ type agentConfig struct {
 		// schedules.turns; the runtime's 1 when 0).
 		Turns int `yaml:"turns"`
 	} `yaml:"schedules"`
+	Limits struct {
+		// BackgroundLifetime is how long a background process (terminal background: true) may
+		// run, in seconds (needletail.yaml limits.background_lifetime; the runtime's 2 h when 0).
+		BackgroundLifetime int `yaml:"background_lifetime"`
+	} `yaml:"limits"`
 	Memory struct {
 		// Recall is the per-turn recall from the memory archive (needletail.yaml memory.recall;
 		// omitted when unset: on for user turns, off for scheduled runs).
@@ -70,6 +75,10 @@ const maxScheduleTurns = 4
 
 // maxLuauTimeout is the longest luau.timeout (a tool header's own longest, luau.MaxTimeout).
 const maxLuauTimeout = 600
+
+// maxBackgroundLifetime is the longest limits.background_lifetime (the runtime's
+// tools.MaxLifetime), in seconds.
+const maxBackgroundLifetime = 24 * 3600
 
 func readAgentConfig(dir string) (*agentConfig, error) {
 	c := &agentConfig{}
@@ -116,6 +125,9 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: memory.recall.budget %d must be %d to %d UTF-16 units (0 or unset: the runtime's 1200)", ConfigFile, r.Budget, minRecallBudget, maxRecallBudget)
 		}
 	}
+	if l := c.Limits.BackgroundLifetime; l < 0 || l > maxBackgroundLifetime {
+		return nil, fmt.Errorf("%s: limits.background_lifetime %d must be seconds, 1 to %d (0 or unset: the runtime's 7200, 2 h)", ConfigFile, l, maxBackgroundLifetime)
+	}
 	if c.Luau.Timeout < 0 || c.Luau.Timeout > maxLuauTimeout {
 		return nil, fmt.Errorf("%s: luau.timeout %d must be seconds, 1 to %d (0 or unset: the runtime's 30)", ConfigFile, c.Luau.Timeout, maxLuauTimeout)
 	}
@@ -134,7 +146,8 @@ func onCore(a *manifest.Agent, target manifest.Target) bool {
 func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.Target, core manifest.CoreEndpoints, ac *agentConfig) wire.Config {
 	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
 	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
-		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout},
+		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout,
+			BackgroundLifetime: ac.Limits.BackgroundLifetime},
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit, Recall: ac.Memory.Recall}}
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}

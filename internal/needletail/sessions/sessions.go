@@ -75,6 +75,27 @@ type Store struct {
 
 	mu    sync.Mutex
 	metas map[string]*meta
+	// gone are told when a conversation ends for good or is deleted (OnGone)
+	gone []func(root, reason string)
+}
+
+// Reasons OnGone's functions are given besides an End's own reason.
+const GoneDeleted = "deleted"
+
+// OnGone registers f, told (outside the store's lock) when a conversation is deleted
+// (DeleteLineage: reason GoneDeleted) or one of its sessions ends for good (End, with its reason:
+// a scheduled run's cron_complete, a oneshot's): no turn will come back to it. A compaction's end
+// is not one (the conversation goes on in its child). root is the conversation's root.
+func (s *Store) OnGone(f func(root, reason string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gone = append(s.gone, f)
+}
+
+func (s *Store) tell(root, reason string, fs []func(root, reason string)) {
+	for _, f := range fs {
+		f(root, reason)
+	}
 }
 
 // Open reads every session file in dir (created when missing). redact masks secrets in every row
@@ -390,11 +411,21 @@ func (s *Store) Sync(id string) error {
 	return s.writeIndex()
 }
 
-// End closes a session with a reason, rewriting its header atomically.
+// End closes a session with a reason, rewriting its header atomically; OnGone's functions are
+// told.
 func (s *Store) End(id, reason string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.end(id, reason)
+	err := s.end(id, reason)
+	root := id
+	if l, ok := s.lineage(id); ok {
+		root = l[0]
+	}
+	gone := s.gone
+	s.mu.Unlock()
+	if err == nil {
+		s.tell(root, reason, gone)
+	}
+	return err
 }
 
 func (s *Store) end(id, reason string) error {
@@ -588,23 +619,34 @@ func (s *Store) Transcript(id string, limit int, latest bool) (wire.Transcript, 
 	return t, nil
 }
 
-// DeleteLineage removes every session of the conversation id belongs to.
+// DeleteLineage removes every session of the conversation id belongs to; OnGone's functions are
+// told.
 func (s *Store) DeleteLineage(id string) (int, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	l, ok := s.lineage(id)
 	if !ok {
+		s.mu.Unlock()
 		return 0, ErrNotFound
 	}
+	gone := s.gone
 	n := 0
+	var err error
 	for _, sid := range l {
-		if err := os.Remove(s.path(sid)); err != nil && !os.IsNotExist(err) {
-			return n, err
+		if rerr := os.Remove(s.path(sid)); rerr != nil && !os.IsNotExist(rerr) {
+			err = rerr
+			break
 		}
 		delete(s.metas, sid)
 		n++
 	}
-	return n, s.writeIndex()
+	if err == nil {
+		err = s.writeIndex()
+	}
+	s.mu.Unlock()
+	if n > 0 {
+		s.tell(l[0], GoneDeleted, gone)
+	}
+	return n, err
 }
 
 // writeIndex replaces sessions/index.json: every conversation's summary.

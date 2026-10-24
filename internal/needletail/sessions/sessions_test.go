@@ -260,3 +260,35 @@ func TestRewritesUseTheUnclaimedTempDir(t *testing.T) {
 		t.Error("index.json was written without the temp dir")
 	}
 }
+
+// OnGone hears a conversation leave: a session ended for good (under its root, a compaction's
+// child too) and a deleted lineage; a compaction itself is no end.
+func TestOnGone(t *testing.T) {
+	s := open(t, t.TempDir())
+	var got []string
+	s.OnGone(func(root, reason string) { got = append(got, root+":"+reason) })
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := s.Create(wire.Session{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child, err := s.Compact("c1", "summary", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a compaction told %v", got)
+	}
+	if err := s.End(child, "cron_complete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteLineage("c2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteLineage("missing"); err == nil {
+		t.Error("deleted a missing conversation")
+	}
+	if strings.Join(got, ",") != "c1:cron_complete,c2:deleted" {
+		t.Errorf("told %v", got)
+	}
+}

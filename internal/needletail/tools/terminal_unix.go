@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -23,4 +24,21 @@ func start(cmd *exec.Cmd, agent *User) {
 		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// killGroup signals the process group led by pid: SIGKILL when hard, else SIGTERM.
+func killGroup(pid int, hard bool) error {
+	sig := syscall.SIGTERM
+	if hard {
+		sig = syscall.SIGKILL
+	}
+	return syscall.Kill(-pid, sig)
+}
+
+// signalOf names the signal that ended a process ("" when it exited).
+func signalOf(ps *os.ProcessState) string {
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return ws.Signal().String()
+	}
+	return ""
 }

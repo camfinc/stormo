@@ -55,6 +55,12 @@ type Env struct {
 	// TmpDir, when set, is the agent's commands' temporary directory (TMPDIR, TMP and TEMP), in
 	// the home: /tmp is outside the jail, and not writable with a read-only root filesystem.
 	TmpDir string
+	// Processes is the agent's background processes (terminal background: true and
+	// process_manage); nil: none can start.
+	Processes *Processes
+	// Conversation is the conversation (its root session) a session belongs to, which owns the
+	// background processes its turns start; nil or "": the session itself.
+	Conversation func(session string) string
 }
 
 // User is a uid and gid a command runs as.
@@ -140,7 +146,7 @@ func (r *Registry) Taken(group, name string) bool {
 // Builtins are the built-in tools.
 func Builtins() []Tool {
 	return []Tool{terminalTool(), readFileTool(), writeFileTool(), patchTool(), searchFilesTool(), memoryTool(),
-		memorySearchTool(), memoryManageTool(), skillsListTool(), skillViewTool(), skillManageTool()}
+		memorySearchTool(), memoryManageTool(), skillsListTool(), skillViewTool(), skillManageTool(), processTool()}
 }
 
 // Names is the tools' names, sorted.

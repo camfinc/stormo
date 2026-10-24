@@ -18,13 +18,13 @@ const FollowUpTool = "follow_up"
 // uses, with the tools each stands for here. A toolset with no tool here (web, browser,
 // code_execution, vision, …) offers nothing; a tool's own name stands for itself.
 var toolsets = map[string][]string{
-	"terminal":  {"terminal"},
+	"terminal":  {"terminal", "process_manage"},
 	"file":      {"read_file", "write_file", "patch", "search_files"},
 	"skills":    {"skills_list", "skill_view", "skill_manage"},
 	"memory":    {"memory", "memory_search"},
 	"cronjob":   {CronJobTool},
 	"messaging": {messaging.SendTool},
-	"debugging": {"terminal", "read_file", "write_file", "patch", "search_files"},
+	"debugging": {"terminal", "process_manage", "read_file", "write_file", "patch", "search_files"},
 }
 
 // neverInCron are tools a scheduled run is never offered, as in Hermes: scheduling (a job that

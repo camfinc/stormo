@@ -202,6 +202,15 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		LongestSecret:  red.Longest,
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
+	// Background processes (terminal background: true): the conversation's (its root), killed
+	// when it is deleted or ends for good, at their lifetime, and at shutdown.
+	procs := &tools.Processes{Lifetime: cfg.BackgroundLifetime(), Log: logf}
+	env.Processes = procs
+	env.Conversation = func(session string) string {
+		root, _ := store.Root(session)
+		return root
+	}
+	store.OnGone(procs.EndConversation)
 	if split.Exec != nil {
 		env.Agent = &tools.User{UID: uint32(split.Exec.ExecUID), GID: uint32(split.Exec.RuntimeGID)}
 		// /tmp is outside the jail and, with a read-only root filesystem, not writable
@@ -610,6 +619,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		gw.Shutdown(gctx) // the drained turns' replies are posted, then the socket closes
 		cancel()
 	}
+	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rt.agent.Env.Processes.Shutdown(pctx) // the background processes go with the runtime
+	cancel()
 	rt.agent.Env.Memory.Flush() // the memory's use counts
 	return 0
 }
@@ -660,6 +672,9 @@ func oneshot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		_ = rt.store.End(res.Session, "oneshot")
 	}
+	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rt.agent.Env.Processes.Shutdown(pctx) // nothing comes back to poll them
+	cancel()
 	rt.agent.Env.Memory.Flush()
 	return oneshotResult(stdout, stderr, *format, res, err)
 }
