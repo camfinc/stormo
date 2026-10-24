@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/slack"
@@ -290,5 +293,29 @@ func followUpCheck(p followUpPoster) func(target string, origin followup.Convers
 			target = ""
 		}
 		return p.CheckFollowUp(target, origin.Session, origin.Users)
+	}
+}
+
+// oneshotFollowUpCheck is the messaging policy for a follow-up's target as a oneshot knows it,
+// with no gateway (only serve runs one): the home channel (SLACK_HOME_CHANNEL), the DMs of the
+// people allowed_users names by id, and the channels and threads the agent has conversations in
+// (its Slack sessions); a DM channel (D…), whose person only Slack can tell, is refused. serve
+// checks the target again, with the gateway, when the follow-up fires.
+func oneshotFollowUpCheck(store *sessions.Store) func(target string, origin followup.Conversation) error {
+	users := slices.DeleteFunc(slackAllowedUsers(), func(u string) bool { return u == "*" })
+	policy := messaging.Policy{Home: os.Getenv("SLACK_HOME_CHANNEL"), AllowedUsers: users, Engaged: func(channel, thread string) bool {
+		if thread != "" {
+			_, ok := store.Root(slack.SessionID(channel, thread))
+			return ok
+		}
+		return slices.Contains(slackChannels(store), channel)
+	}}
+	return func(target string, _ followup.Conversation) error {
+		t, err := messaging.Parse(target)
+		if err != nil {
+			return err
+		}
+		_, err = policy.Check(t, false)
+		return err
 	}
 }

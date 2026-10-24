@@ -23,8 +23,12 @@ type Spec struct {
 }
 
 // SourceCron is a scheduled run's sessions' source (sched.SourceCron, pinned by a test): no
-// conversation to follow up in.
-const SourceCron = "cron"
+// conversation to follow up in. SourceOneshot is a oneshot's (the owner's command line), whose
+// conversation ends when the command exits.
+const (
+	SourceCron    = "cron"
+	SourceOneshot = "cli"
+)
 
 // conversational: from is a conversation a follow-up can come back to.
 func conversational(from Conversation) bool { return from.Session != "" && from.Source != SourceCron }
@@ -86,8 +90,14 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 	q.mu.Lock()
 	check := q.check
 	q.mu.Unlock()
+	if it.Kind == KindPrompt && from.Source == SourceOneshot {
+		return Item{}, errors.New("this is a oneshot, whose conversation ends when the command exits: a prompt follow-up (a turn in it later) cannot be made here; use text with a target")
+	}
 	switch {
 	case target == "" || strings.EqualFold(target, TargetOrigin):
+		if from.Source == SourceOneshot {
+			return Item{}, errors.New("this is a oneshot, whose conversation ends when the command exits: a follow-up made here needs a target ('slack', 'slack:<channel>[:<thread_ts>]', 'slack:<user>'), which the next serve delivers")
+		}
 		if !conversational(from) {
 			return Item{}, errors.New("this run has no conversation to follow up in (a scheduled run, a script): give a target ('slack', 'slack:<channel>[:<thread_ts>]', 'slack:<user>')")
 		}
@@ -106,6 +116,9 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 			return Item{}, err
 		}
 		if check == nil {
+			if from.Source == SourceOneshot {
+				return Item{}, errors.New("follow-ups are unavailable in this oneshot: its conversation ends with the command, and the agent has no Slack channel to name as a target")
+			}
 			return Item{}, errors.New("no messaging gateway runs here (Slack is off): a follow-up can only come back to this conversation")
 		}
 		if err := check(t.String(), from); err != nil {

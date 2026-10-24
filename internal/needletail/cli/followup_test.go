@@ -531,3 +531,71 @@ func TestServeFollowUpRetryPostsOnly(t *testing.T) {
 		t.Errorf("%d [Follow-up rows:\n%s", n, body)
 	}
 }
+
+// A oneshot's conversation ends when the command exits: a follow-up made there back to it is
+// refused at once with a clear message (it used to be queued and then fail as gone), and one with
+// a target is checked against the messaging policy as far as it can be known without the gateway
+// (the home channel, allowed_users' DMs, the conversations the agent has), or refused as
+// unavailable when the agent has no Slack channel.
+func TestOneshotFollowUps(t *testing.T) {
+	for _, withSlack := range []bool{false, true} {
+		t.Run(fmt.Sprint("slack=", withSlack), func(t *testing.T) {
+			model := &scripted{}
+			srv := httptest.NewServer(model)
+			defer srv.Close()
+			h := home(t, srv.URL+"/v1", srv.URL+"/v1")
+			if withSlack {
+				cfgPath := filepath.Join(h, "needletail.yaml")
+				cfg, _ := os.ReadFile(cfgPath)
+				if err := os.WriteFile(cfgPath, append(cfg, []byte("channels: [slack]\n")...), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setenv(t, h)
+			t.Setenv("SLACK_ALLOWED_USERS", "U0ALLOWED1,*")
+			t.Setenv("SLACK_HOME_CHANNEL", "C0HOME0001")
+			var all []string
+			for _, steps := range [][]string{{
+				toolStep("o1", "follow_up", map[string]any{"action": "create", "in": "1h", "text": "back here"}),
+				toolStep("o2", "follow_up", map[string]any{"action": "create", "in": "1h", "prompt": "check back"}),
+				toolStep("o3", "follow_up", map[string]any{"action": "create", "in": "1h", "text": "to the home channel", "target": "slack"}),
+				textStep("done"),
+			}, {
+				toolStep("o4", "follow_up", map[string]any{"action": "create", "in": "1h", "text": "to Ana", "target": "slack:U0ALLOWED1"}),
+				toolStep("o5", "follow_up", map[string]any{"action": "create", "in": "1h", "text": "elsewhere", "target": "slack:C0SECRET01"}),
+				textStep("done"),
+			}} {
+				model.script(steps...)
+				var stdout, stderr bytes.Buffer
+				if code := Run(context.Background(), []string{"oneshot", "-q", "remind them"}, &stdout, &stderr); code != 0 {
+					t.Fatalf("exit %d: %s %s", code, stdout.String(), stderr.String())
+				}
+				model.mu.Lock()
+				all = append(all, model.seen...) // each request's newest message: the tools' results
+				model.mu.Unlock()
+				setenv(t, h) // the run took its secrets out of the process' env
+			}
+			last := strings.Join(all, "\n")
+			if n := strings.Count(last, "a oneshot"); n < 2 {
+				t.Errorf("the origin follow-ups were not refused as a oneshot's (%d):\n%s", n, last)
+			}
+			body, _ := os.ReadFile(filepath.Join(h, "state", "needletail", "followups.json"))
+			if withSlack {
+				if !strings.Contains(string(body), `"to the home channel"`) || !strings.Contains(string(body), `"to Ana"`) ||
+					strings.Contains(string(body), "elsewhere") || strings.Contains(string(body), "back here") {
+					t.Errorf("queued %s", body)
+				}
+				if !strings.Contains(last, "not a channel you have a conversation in") {
+					t.Errorf("C0SECRET01 not refused by the policy:\n%s", last)
+				}
+			} else {
+				if strings.Contains(string(body), `"text"`) {
+					t.Errorf("queued without Slack: %s", body)
+				}
+				if !strings.Contains(last, "unavailable") {
+					t.Errorf("no unavailable:\n%s", last)
+				}
+			}
+		})
+	}
+}

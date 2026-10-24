@@ -450,12 +450,7 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 		rt.logger.Printf("slack: the agent has a Slack channel but %s or %s is missing: the gateway is off", secrets.SlackBot, secrets.SlackApp)
 		return nil
 	}
-	users := []string{}
-	for _, u := range strings.Split(os.Getenv("SLACK_ALLOWED_USERS"), ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			users = append(users, u)
-		}
-	}
+	users := slackAllowedUsers()
 	store := rt.store
 	var handlers messaging.Handlers // the agent's on_message, on_mention and before_send (§5.5)
 	if rt.luau != nil {
@@ -496,6 +491,17 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 	rt.dmUsers.Store(&known) // the memory's DM audiences
 	gw.Start()
 	return gw
+}
+
+// slackAllowedUsers is SLACK_ALLOWED_USERS, as a list.
+func slackAllowedUsers() []string {
+	users := []string{}
+	for _, u := range strings.Split(os.Getenv("SLACK_ALLOWED_USERS"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			users = append(users, u)
+		}
+	}
+	return users
 }
 
 // slackListen are the channels the agent listens to (needletail.yaml slack.listen).
@@ -636,11 +642,16 @@ func oneshot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return oneshotResult(stdout, stderr, *format, nil, err)
 	}
-	h, err := rt.store.Create(wire.Session{ID: "oneshot-" + sessions.NewID(), Source: "cli"})
+	h, err := rt.store.Create(wire.Session{ID: "oneshot-" + sessions.NewID(), Source: followup.SourceOneshot})
 	if err != nil {
 		return oneshotResult(stdout, stderr, *format, nil, err)
 	}
 	rt.operators.mark(h.ID) // the owner's own turn: every scope (§4.6)
+	if slices.Contains(rt.cfg.Channels, "slack") {
+		// no gateway runs here: a follow-up's target meets the policy as far as it is known
+		// without one, and serve checks it again when it fires
+		rt.followUps.SetTargetCheck(oneshotFollowUpCheck(rt.store))
+	}
 	opts := loop.Options{}
 	if *format == "stream-json" {
 		opts.Observer = streamJSON{json.NewEncoder(stdout)}
