@@ -103,8 +103,8 @@
   },
   {
    "path": "state/needletail/kv.json",
-   "class": "state",
-   "glob": "state/needletail/**"
+   "class": "raw",
+   "glob": "state/needletail/kv.json"
   },
   {
    "path": "state/needletail/followups.json",

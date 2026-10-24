@@ -20,12 +20,15 @@ import (
 
 // The key-value store (docs/needletail.md §5.3): kv_get (kv:read), kv_set and kv_delete (kv:write).
 // One store per agent, in the runtime's private state (state/needletail/kv.json, 0600: the agent's
-// commands cannot read it), napped as State, so it survives restarts and is never harvested into
-// git or the dream. It holds what tools and handlers need to remember between runs (a dedupe hash,
-// a counter, a cursor): it is unscoped (every tool and handler of the agent sees every key), so it
-// is no place for client text. Bounded: kvMaxKeys keys of at most KVMaxKey bytes, values of at
-// most KVMaxValue bytes as JSON, KVMaxBytes in all, a ttl of at most KVMaxTTL; expired entries are
-// pruned at every call and dropped from the file at the next write.
+// commands cannot read it), napped as Raw (a handler can keep message text there, however much the
+// docs say not to: restored verbatim, never read by the dream), so it survives restarts and is
+// never harvested into git. It holds what tools and handlers need to remember between runs (a
+// dedupe hash, a counter, a cursor): it is unscoped (every tool and handler of the agent sees every
+// key), so it is no place for client text. Bounded: kvMaxKeys keys of at most KVMaxKey bytes,
+// values of at most KVMaxValue bytes as JSON, KVMaxBytes in all (keys and values as the file holds
+// them), a ttl of at most KVMaxTTL; expired entries are pruned at every call and dropped from the
+// file at the next write. A file that cannot be loaded leaves the store read-only, failing every
+// call, until it is fixed: it is never taken for an empty store and written over.
 
 // Bounds of the store.
 const (
@@ -39,8 +42,18 @@ const (
 	kvVersion = 1
 )
 
-// kvMaxKeys is how many keys the store holds (a var for tests).
-var kvMaxKeys = 2000
+// kvKeysCap is how many keys the store holds; kvMaxKeys the same, a var for tests to lower.
+const kvKeysCap = 2000
+
+var kvMaxKeys = kvKeysCap
+
+// kvFileMax is the largest file the store reads: every key and value (KVMaxBytes, as the file
+// holds them), the JSON around each of kvKeysCap entries (kvEntryJSON), and a margin. What the
+// store writes always fits it.
+const (
+	kvEntryJSON = 48 // `,"<key>":{"value":<value>,"expires":<20 digits>}` around a key and a value
+	kvFileMax   = KVMaxBytes + kvKeysCap*kvEntryJSON + 4<<10
+)
 
 // kvEntry is one key's value and, when it expires, when (Unix seconds).
 type kvEntry struct {
@@ -64,6 +77,9 @@ type kvStore struct {
 	loaded  bool
 	gen     string // the file's size and mtime when last read or written
 	entries map[string]kvEntry
+	// err: the file of generation gen could not be loaded (damaged, another version, too big):
+	// every call fails with it, and nothing is written, until the file changes
+	err error
 }
 
 func fileGen(p string) string {
@@ -74,31 +90,44 @@ func fileGen(p string) string {
 	return fmt.Sprintf("%d/%d", st.ModTime().UnixNano(), st.Size())
 }
 
-// load reads the file when it changed since it was last read or written (callers hold mu).
+// load reads the file when it changed since it was last read or written (callers hold mu). The
+// entries and the generation are taken only from a file that loaded whole; one that does not
+// (damaged, another version, over kvFileMax) is remembered with its error, which every call then
+// answers, and nothing writes over it until it changes. A read that failed (I/O) is tried again
+// at the next call.
 func (s *kvStore) load(home string) error {
 	p := filepath.Join(home, filepath.FromSlash(KVFile))
 	gen := fileGen(p)
 	if s.loaded && gen == s.gen {
-		return nil
+		return s.err
 	}
-	s.entries, s.gen, s.loaded = map[string]kvEntry{}, gen, true
 	if gen == "" {
+		s.entries, s.gen, s.loaded, s.err = map[string]kvEntry{}, gen, true, nil
 		return nil
 	}
-	body, err := fsx.ReadFileBelow(home, KVFile, KVMaxBytes*2+(64<<10))
-	if err != nil {
+	refuse := func(err error) error {
+		s.entries, s.gen, s.loaded, s.err = nil, gen, true, err
 		return err
+	}
+	body, err := fsx.ReadFileBelow(home, KVFile, kvFileMax)
+	switch {
+	case errors.Is(err, fsx.ErrTooBig):
+		return refuse(fmt.Errorf("the store's file is over %d bytes: it is left as it is, and the store is read-only until it is fixed", kvFileMax))
+	case err != nil:
+		s.entries, s.loaded = nil, false
+		return fmt.Errorf("the store's file could not be read: %v", err)
 	}
 	var f kvFile
 	if err := json.Unmarshal(body, &f); err != nil {
-		return errors.New("the store's file is damaged")
+		return refuse(errors.New("the store's file is damaged: it is left as it is, and the store is read-only until it is fixed"))
 	}
 	if f.V != kvVersion {
-		return errors.New("the store's file is of another version")
+		return refuse(fmt.Errorf("the store's file is version %d, this runtime reads %d: it is left as it is", f.V, kvVersion))
 	}
-	if f.Entries != nil {
-		s.entries = f.Entries
+	if f.Entries == nil {
+		f.Entries = map[string]kvEntry{}
 	}
+	s.entries, s.gen, s.loaded, s.err = f.Entries, gen, true, nil
 	return nil
 }
 
@@ -111,9 +140,30 @@ func (s *kvStore) prune(now time.Time) {
 	}
 }
 
+// kvEncode is v as the store writes it: JSON with no HTML escaping (a '<' stays one byte), no
+// trailing newline.
+func kvEncode(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+}
+
+// kvKeySize is the bytes a key takes in the file (quoted and escaped as kvEncode writes it).
+func kvKeySize(key string) int {
+	b, _ := kvEncode(key)
+	return len(b)
+}
+
 // save writes the store whole through the home's temp dir (callers hold mu).
 func (s *kvStore) save(home string) error {
-	body, err := json.Marshal(kvFile{V: kvVersion, Entries: s.entries})
+	if s.err != nil {
+		return s.err
+	}
+	body, err := kvEncode(kvFile{V: kvVersion, Entries: s.entries})
 	if err != nil {
 		return err
 	}
@@ -125,11 +175,11 @@ func (s *kvStore) save(home string) error {
 	return nil
 }
 
-// size is the bytes of every key and value (callers hold mu).
+// size is the bytes of every key and value as the file holds them (callers hold mu).
 func (s *kvStore) size() int {
 	n := 0
 	for k, e := range s.entries {
-		n += len(k) + len(e.Value)
+		n += kvKeySize(k) + len(e.Value)
 	}
 	return n
 }
@@ -209,6 +259,13 @@ func kvSet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if len(value) == 0 || string(value) == "null" {
 		return nil, errf("bad_args", "kv_set needs a value (kv_delete removes a key)")
 	}
+	// the value as the file will hold it (compact, written with no HTML escaping), which the
+	// bounds measure
+	if v, err := kvEncode(json.RawMessage(value)); err == nil {
+		value = v
+	} else {
+		return nil, errf("bad_args", "kv_set: the value is not JSON: %v", err)
+	}
 	if len(value) > KVMaxValue {
 		return nil, errf("too_large", "kv_set: a value is at most %d bytes as JSON (this one is %d)", KVMaxValue, len(value))
 	}
@@ -237,9 +294,9 @@ func kvSet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if !had && len(st.entries) >= kvMaxKeys {
 		return nil, errf("full", "kv_set: the store holds %d keys, its most; kv_delete some or give them a ttl", kvMaxKeys)
 	}
-	size := st.size() + len(key) + len(value)
+	size := st.size() + kvKeySize(key) + len(value)
 	if had {
-		size -= len(key) + len(old.Value)
+		size -= kvKeySize(key) + len(old.Value)
 	}
 	if size > KVMaxBytes {
 		return nil, errf("full", "kv_set: the store would hold over %d bytes; kv_delete some or give them a ttl", KVMaxBytes)

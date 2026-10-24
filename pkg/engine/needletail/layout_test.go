@@ -63,7 +63,9 @@ func TestClassify(t *testing.T) {
 		// the memory archive holds client data; its counters are ids and numbers only
 		"memories/RECORDS.md": engine.Raw, "state/needletail/memory-usage.json": engine.State, "state/needletail/memory.lock": engine.State,
 		// the pending follow-ups survive a restart; what they say is client data, never the dream's
-		"state/needletail/followups.json": engine.Raw, "state/needletail/followups.lock": engine.State} {
+		"state/needletail/followups.json": engine.Raw, "state/needletail/followups.lock": engine.State,
+		// Luau's key-value store: a handler can keep message text there
+		"state/needletail/kv.json": engine.Raw} {
 		if r := engine.Classify(p, rules); r == nil || r.Class != class {
 			t.Errorf("%s: want %s, got %v", p, class, r)
 		}

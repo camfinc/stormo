@@ -108,3 +108,78 @@ func mustJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// A store file that cannot be loaded (damaged, another version, too big) is never taken for an
+// empty store: every call answers the error, and nothing is written over the file, until the
+// file is fixed (or replaced), when the store works again.
+func TestKVLoadFailureIsSticky(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rt.Grants = append(rt.Grants, kvRW...)
+	p := filepath.Join(rt.Home, "state", "needletail", "kv.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"v":1,"entries":{"a":{"value":1}`, `{"v":2,"entries":{}}`, `{"v":1,"entries":{"a":{"value":1}}}` + strings.Repeat(" ", 5<<20)} {
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ { // the second call too: the failure is not forgotten
+			fails(t, rt, kvRW, `kv_set("b", 2)`, "error")
+			fails(t, rt, kvRW, `return kv_delete("a")`, "error")
+			fails(t, rt, kvRW, `return kv_get("a")`, "error")
+		}
+		if got, _ := os.ReadFile(p); string(got) != body {
+			t.Fatalf("the file was written over: %.80s", got)
+		}
+	}
+	if err := os.WriteFile(p, []byte(`{"v":1,"entries":{"a":{"value":1}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := exec(t, rt, kvRW, `kv_set("b", 2) return {kv_get("a"), kv_get("b")}`)
+	wantValue(t, res, `[1, 2]`)
+}
+
+// The store's size is what its file holds: keys and values as they are written (no HTML escaping,
+// so a '<' is one byte, not six), and the file it writes always loads again (the read bound
+// covers the write bound).
+func TestKVSizeIsTheFilesSize(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rt.Grants = append(rt.Grants, kvRW...)
+	res, _ := exec(t, rt, kvRW, `
+		local v = string.rep("<", 16000)
+		for i = 1, 60 do kv_set("k<" .. i, v) end
+		return #kv_get("k<1")`)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	wantValue(t, res, `16000`)
+	p := filepath.Join(rt.Home, "state", "needletail", "kv.json")
+	st, err := os.Stat(p)
+	if err != nil || st.Size() > 60*16100 {
+		t.Fatalf("kv.json is %d bytes for 60 values of 16000 '<' (%v)", st.Size(), err)
+	}
+	rt2, _ := newRuntime(t)
+	rt2.Home, rt2.Grants = rt.Home, rt.Grants
+	res, _ = exec(t, rt2, kvRW, `return #kv_get("k<60")`)
+	if res.Err != nil {
+		t.Fatalf("another runtime cannot load the file: %v", res.Err)
+	}
+	wantValue(t, res, `16000`)
+	// a store filled to its bound with such values loads again
+	res, _ = exec(t, rt2, kvRW, `
+		local v = string.rep("<", 16000)
+		local n = 60
+		while pcall(kv_set, "more" .. n, v) do n = n + 1 end
+		return n`)
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if st, _ = os.Stat(p); st.Size() > KVMaxBytes+64<<10 {
+		t.Errorf("a full store's file is %d bytes, over %d and its margin", st.Size(), KVMaxBytes)
+	}
+	rt3, _ := newRuntime(t)
+	rt3.Home, rt3.Grants = rt.Home, rt.Grants
+	if res, _ = exec(t, rt3, kvRW, `return #kv_get("k<1")`); res.Err != nil {
+		t.Errorf("a full store's file does not load: %v", res.Err)
+	}
+}
