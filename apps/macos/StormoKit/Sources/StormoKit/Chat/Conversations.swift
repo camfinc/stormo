@@ -50,6 +50,7 @@ public struct ConversationsResult: Codable, Sendable, Equatable {
 
 /// One visible transcript row.
 public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
+    /// The engine's row id; a row without one gets a stable one from its transcript (Transcript).
     public var id: String
     public var role: String
     public var kind: String
@@ -57,11 +58,15 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
     public var at: String?
     public var tools: [String]?
     public var tool: String?
+    /// Who wrote a user row when it was not the person: `follow_up` (docs/api.md). Nil otherwise.
+    public var source: String?
 
-    enum CodingKeys: String, CodingKey { case id, role, kind, content, at, tools, tool }
+    enum CodingKeys: String, CodingKey { case id, role, kind, content, at, tools, tool, source }
 
-    public init(id: String, role: String, kind: String = "text", content: String, at: String? = nil, tools: [String]? = nil, tool: String? = nil) {
+    public init(id: String, role: String, kind: String = "text", content: String, at: String? = nil, tools: [String]? = nil, tool: String? = nil,
+                source: String? = nil) {
         self.id = id; self.role = role; self.kind = kind; self.content = content; self.at = at; self.tools = tools; self.tool = tool
+        self.source = source
     }
 
     public init(from decoder: any Decoder) throws {
@@ -72,11 +77,15 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
         at = try c.decodeIfPresent(String.self, forKey: .at)
         tools = try c.decodeIfPresent([String].self, forKey: .tools)
         tool = try c.decodeIfPresent(String.self, forKey: .tool)
-        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        // Empty until its transcript names it (Transcript.init(from:)).
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
     }
 
     public var isTool: Bool { kind == "tool" }
     public var isUser: Bool { role == "user" }
+    /// The input of a turn the agent's own follow-up started: written by its runtime, not the owner.
+    public var isFollowUp: Bool { isUser && source == "follow_up" }
     public var date: Date? { at.flatMap(Date.init(chatTime:)) }
 }
 
@@ -89,6 +98,42 @@ public struct Transcript: Codable, Sendable, Equatable {
     /// Older turns were folded into a summary by the engine's automatic compaction.
     public var compacted: Bool
     public var messages: [ChatMessage]
+
+    public init(agent: String, id: String, tip: String, compacted: Bool, messages: [ChatMessage]) {
+        self.agent = agent; self.id = id; self.tip = tip; self.compacted = compacted; self.messages = messages
+    }
+
+    enum CodingKeys: String, CodingKey { case agent, id, tip, compacted, messages }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try c.decode(String.self, forKey: .agent)
+        id = try c.decode(String.self, forKey: .id)
+        tip = try c.decode(String.self, forKey: .tip)
+        compacted = try c.decodeIfPresent(Bool.self, forKey: .compacted) ?? false
+        messages = Self.namingRows(try c.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? [])
+    }
+
+    /// Gives a row the engine sent without an id one that stays the same on every read: the id of
+    /// the row before it with an offset ("82+1"), so the window of the latest rows can slide and
+    /// the next read of an unchanged transcript is equal to this one.
+    static func namingRows(_ rows: [ChatMessage]) -> [ChatMessage] {
+        var rows = rows
+        var anchor = "start"
+        var offset = 0
+        var seen = Set<String>()
+        for i in rows.indices {
+            if rows[i].id.isEmpty || seen.contains(rows[i].id) {
+                offset += 1
+                rows[i].id = "\(anchor)+\(offset)"
+            } else {
+                anchor = rows[i].id
+                offset = 0
+            }
+            seen.insert(rows[i].id)
+        }
+        return rows
+    }
 }
 
 /// `chat`.

@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -33,6 +35,60 @@ type RehydrateReport struct {
 	// because the repo changed that script since the nap's instance booted.
 	RestoredScripts []string `json:"restoredScripts"`
 	KeptRepoScripts []string `json:"keptRepoScripts"`
+}
+
+// MemoryMergePath is rehydrate's memory merge report, relative to the home (a contract, v2;
+// ARCHITECTURE.md): the entries a reviewer rejected that the boot's nap holds, by hash, so an
+// engine that keeps its own copy of the memories (an archive) can drop them there too, and the
+// hot entries the merge deferred for room. Every rehydrate writes it afresh and whole (every
+// rejection the nap still holds, not only what this boot purged: a nap taken before the engine
+// read the last report must not lose one); an engine may delete it once read. No engine's snapshot
+// rules claim .swarm/, so it is never napped.
+const MemoryMergePath = ".swarm/memory-merge.json"
+
+// MemoryMergeVersion is the report's format version (MemoryMerge.V). v1's purged was a list of
+// hashes, the entries this boot's merge purged.
+const MemoryMergeVersion = 2
+
+// MemoryMerge is the report, per hot file (memory, user). Purged are the entries a reviewer
+// rejected that the nap holds: the live hot entries the merge purged, in the merge's order, then
+// the engine's archived ones (engine.MemoryArchive), each once. Deferred are the entries that did
+// not fit the budget (a live entry past it, or a seed entry past the seed fill), in the merge's
+// order. Hashes only (MemoryMergeHash): never the text.
+type MemoryMerge struct {
+	V      int              `json:"v"`
+	Memory MemoryMergeLists `json:"memory"`
+	User   MemoryMergeLists `json:"user"`
+}
+
+// MemoryMergeLists are one hot file's rejected and deferred entries (never nil).
+type MemoryMergeLists struct {
+	Purged   []MemoryMergeRejection `json:"purged"`
+	Deferred []string               `json:"deferred"`
+}
+
+// MemoryMergeRejection is a rejected entry: its hash, and when the reviewer rejected it (the ledger
+// entry's decidedAt, build.Info.RejectedAt; empty when unknown). An engine deletes the copies saved
+// before that time, and all of them when it is empty; one saved again after the rejection is the
+// owner's or the agent's on purpose, and stays out of the hot files only.
+type MemoryMergeRejection struct {
+	Hash string `json:"hash"`
+	At   string `json:"at,omitempty"`
+}
+
+// MemoryMergeHash is an entry's hash in the report: SHA-256, in hex, of learning.Normalize of the
+// entry as the hot file (or the archive) had it (unscrubbed).
+func MemoryMergeHash(entry string) string {
+	sum := sha256.Sum256([]byte(learning.Normalize(entry)))
+	return hex.EncodeToString(sum[:])
+}
+
+func mergeHashes(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, MemoryMergeHash(e))
+	}
+	return out
 }
 
 type liveFile struct {
@@ -235,28 +291,60 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		}
 	}
 
-	// 3. Hot memory: live wins, rejected purged, seed fills headroom.
+	// 3. Hot memory: live wins, rejected purged, seed fills headroom. The report names every
+	// rejected entry the nap holds, the engine's archive included.
 	rejected := map[string]bool{}
 	for _, id := range info.Rejected {
 		rejected[id] = true
 	}
+	var archived []engine.ArchivedMemory
+	if a, ok := o.Engine.(engine.MemoryArchive); ok && len(rejected) > 0 {
+		archived = a.ArchivedMemories(func(p string) []byte { return live[p].body })
+	}
+	merge := MemoryMerge{V: MemoryMergeVersion}
 	for _, m := range []struct {
 		kind  learning.Kind
 		path  string
 		limit int
-	}{{learning.KindMemory, L.Memory.Memory, o.Agent.Learning.MemoryCharLimit}, {learning.KindUser, L.Memory.User, o.Agent.Learning.UserCharLimit}} {
+		lists *MemoryMergeLists
+	}{{learning.KindMemory, L.Memory.Memory, o.Agent.Learning.MemoryCharLimit, &merge.Memory}, {learning.KindUser, L.Memory.User, o.Agent.Learning.UserCharLimit, &merge.User}} {
 		liveEntries := learning.ParseEntries(o.Engine.Memory(), string(live[m.path].body))
 		seed := learning.ParseEntries(o.Engine.Memory(), string(base[m.path]))
 		rejectedText := map[string]bool{}
-		for _, e := range liveEntries {
+		rejectedID := func(e string) (string, bool) {
 			text, _ := o.Scrubber.Scrub(e)
-			if rejected[learning.LearningID(m.kind, text)] {
+			id := learning.LearningID(m.kind, text)
+			return id, rejected[id]
+		}
+		ids := map[string]string{} // normalized rejected text → its ledger id
+		for _, e := range liveEntries {
+			if id, ok := rejectedID(e); ok {
 				rejectedText[learning.Normalize(e)] = true
+				ids[learning.Normalize(e)] = id
 			}
 		}
 		entries, purged, deferred := learning.MergeHot(o.Engine.Memory(), liveEntries, seed, rejectedText, m.limit, o.Agent.Learning.SeedFill)
 		report.PurgedMemories += len(purged)
 		report.DeferredSeed += len(deferred)
+		m.lists.Purged, m.lists.Deferred = []MemoryMergeRejection{}, mergeHashes(deferred)
+		named := map[string]bool{}
+		name := func(e, id string) {
+			if h := MemoryMergeHash(e); !named[h] {
+				named[h] = true
+				m.lists.Purged = append(m.lists.Purged, MemoryMergeRejection{Hash: h, At: info.RejectedAt[id]})
+			}
+		}
+		for _, e := range purged {
+			name(e, ids[learning.Normalize(e)])
+		}
+		for _, a := range archived {
+			if a.Target != string(m.kind) || named[MemoryMergeHash(a.Text)] {
+				continue
+			}
+			if id, ok := rejectedID(a.Text); ok {
+				name(a.Text, id)
+			}
+		}
 		out[m.path] = []byte(o.Engine.Memory().File(entries))
 	}
 
@@ -315,6 +403,10 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(o.Home, ".swarm", "rehydrate.json"), rep, 0o644); err != nil {
+		return nil, err
+	}
+	mergeBody, _ := learning.MarshalIndent(merge)
+	if err := writeAtomic(filepath.Join(o.Home, MemoryMergePath), mergeBody, 0o600); err != nil {
 		return nil, err
 	}
 	// What this instance booted from, for its naps: the baseline dir can be rebuilt under a running

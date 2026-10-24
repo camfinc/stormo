@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/shared"
 )
 
@@ -46,6 +47,9 @@ const (
 
 // ShellTools are the tool calls that may write files without naming them (terminal attribution).
 var ShellTools = []string{"terminal", "execute_code", "process"}
+
+// ReadTools name a path without changing it: their calls claim no change.
+var ReadTools = []string{"read_file", "search_files"}
 
 // Lock is a lock as agents and the owner see it.
 type Lock struct {
@@ -129,6 +133,9 @@ func NewWorkdir(o WorkdirOptions) *Workdir {
 	w := &Workdir{o: o, claims: map[string][]claim{}, downAt: map[string]int64{}}
 	if o.Monitor != nil {
 		o.Monitor.OnToolDone(func(e ToolEvent) {
+			if slices.Contains(ReadTools, e.Tool) {
+				return
+			}
 			if key, ok := w.keyOf(e.Path); ok {
 				w.claim(key, e.Agent, "tool:"+e.Tool, e.At)
 			}
@@ -787,10 +794,22 @@ func (w *Workdir) Note(agent, p, action string) error {
 	return err
 }
 
+// claim records that agent changed key at at. An agent's claims for one key within claimWindow are
+// one change (a file tool's hook and the fs_note after it, in either order), so the newer
+// replaces the older, keeping the tool's name over "note": a spare would credit the next
+// writer's change to this agent.
 func (w *Workdir) claim(key, agent, how string, at int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.claims[key] = append(w.claims[key], claim{agent, how, at})
+	cs := slices.DeleteFunc(w.claims[key], func(c claim) bool {
+		d := c.at - at
+		same := c.agent == agent && d > -claimWindow.Milliseconds() && d < claimWindow.Milliseconds()
+		if same && how == "note" && strings.HasPrefix(c.how, "tool:") {
+			how = c.how
+		}
+		return same
+	})
+	w.claims[key] = append(cs, claim{agent, how, at})
 }
 
 // takeClaim is the claim for a change of key at mtime, removing it.
@@ -809,7 +828,9 @@ func (w *Workdir) takeClaim(key string, mtime int64) (claim, bool) {
 }
 
 // shellAt is the one agent with access to layer that had a shell tool call running at ms, if
-// exactly one did (the activity timeline holds the calls; delivery lag allowed for).
+// exactly one did (the activity timeline holds the calls; delivery lag allowed for). The timeline
+// keeps each engine's own event name: Hermes' pre/post_tool_call, or Stormo's kind names
+// (engine.ToolStart, engine.ToolDone) for an engine that uses them.
 func (w *Workdir) shellAt(layer string, ms int64) string {
 	if w.o.Monitor == nil {
 		return ""
@@ -842,9 +863,10 @@ func (w *Workdir) shellAt(layer string, ms int64) string {
 			s = &span{start: -1, end: -1}
 			calls[k] = s
 		}
-		if event == "pre_tool_call" {
+		switch event {
+		case "pre_tool_call", string(engine.ToolStart):
 			s.start = at
-		} else if event == "post_tool_call" {
+		case "post_tool_call", string(engine.ToolDone):
 			s.end = at
 		}
 	}

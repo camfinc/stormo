@@ -1,9 +1,9 @@
 # Stormo architecture
 
 Stormo is an agent swarm engine. It takes an **instance** (one organisation's agent definitions:
-[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes today,
-swappable), deploys it to AWS ECS, tests it on a bench, and folds what the running agents learn
-back into git through a reviewed nap/dream loop.
+[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes or needletail,
+chosen per agent), deploys it to AWS ECS, tests it on a bench, and folds what the running agents
+learn back into git through a reviewed nap/dream loop.
 
 Engine and instance are separate repos. The engine (this repo) holds no organisation: names,
 AWS target, scrub rules, bridge actions and branding come from the instance's `stormo.yaml`, and
@@ -212,8 +212,8 @@ the actions and channels, and the agent starts anyway; `secrets check` reports t
 of `secrets.local.yaml`** (what `secrets push` sends). `deploy render` lists only present optional
 secrets in the task definition, since a `valueFrom` pointing at a missing JSON key fails the task at
 start. So adding an optional secret on AWS later means `secrets push`, then rebuild and redeploy.
-The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action) and
-`TELEGRAM_BOT_TOKEN` (its Telegram channel).
+The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action); a Hermes agent's
+`TELEGRAM_BOT_TOKEN` gates its Telegram channel the same way.
 
 ## Channels: Slack
 
@@ -316,6 +316,23 @@ open in WAL mode. Blobs are content-addressed, so an unchanged nap costs one man
 plus the latest nap:
 - Live memory wins over the seed, but entries a reviewer **rejected** are purged (matched by the
   ledger id of their scrubbed text). Review is enforced at runtime, not only in git.
+- What a reviewer rejected is written to `.swarm/memory-merge.json` (a contract, v2;
+  `loop.MemoryMerge`), hashes only, never the text: `{"v":2,"memory":{"purged":[{"hash":…,
+  "at":…}],"deferred":[…]},"user":{…}}`. Each hash is the SHA-256 (hex) of `learning.Normalize` of
+  the entry as the agent saved it, unscrubbed. `purged` is every entry a reviewer rejected that the
+  nap holds: the hot entries the merge purged, then the entries of the engine's own archive, if it
+  keeps one (`engine.MemoryArchive`), matched the same way (ledger id of the scrubbed text); `at`
+  is when it was rejected (the ledger's `decidedAt`, carried as `rejectedAt` in baseline.json),
+  absent when unknown. `deferred` are the ones with no room (a live entry past the budget, a seed
+  entry past `seed_fill`). It is written whole, atomically and 0600, on every boot (every
+  rejection the nap still holds, not only what that boot purged: a nap can catch a home before the
+  engine read the last report), and no engine's rules claim `.swarm/`, so it is never napped. An
+  engine with an archive deletes there every copy saved before `at` (all of them with no `at`)
+  and may delete the report once read; applying it again must change nothing. A copy saved again
+  after the rejection may stay in the archive; the merge keeps it out of the hot files on every
+  boot regardless. An engine without one (Hermes) ignores the report, as it ignores
+  `rehydrate.json` and `booted.json` beside it. v1 (`purged` a list of hashes, that boot's purges
+  only) is what an older rehydrate wrote.
 - The compiled seed fills only `seed_fill` (default 60%) of the char budget, leaving the agent
   headroom to keep learning.
 - A runtime skill patch is restored only if the repo has not changed that skill since the nap was

@@ -330,6 +330,18 @@
    "class": null,
    "glob": null,
    "sqlite": false
+  },
+  {
+   "path": ".swarm/memory-merge.json",
+   "class": null,
+   "glob": null,
+   "sqlite": false
+  },
+  {
+   "path": ".swarm/rehydrate.json",
+   "class": null,
+   "glob": null,
+   "sqlite": false
   }
  ]
 }

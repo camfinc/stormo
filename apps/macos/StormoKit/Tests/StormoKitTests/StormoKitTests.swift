@@ -154,9 +154,164 @@ final class Steps: @unchecked Sendable {
         #expect(found.map(\.source) == [.path, .path, .bundled])  // the vendored file is the PATH symlink's target
         #expect(found[0].info?.version == "v1.2.0" && found[0].usable)
         #expect(found[1].problem != nil)  // API 0
-        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.info?.version == "v1.2.0")
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.info?.version == "v1.3.0")
         #expect(BinaryResolver.autoChoice(found, runningCoreExe: bundled.path)?.source == .bundled)
         #expect(BinaryResolver.autoChoice(found.filter { $0.source == .bundled }, runningCoreExe: nil)?.source == .bundled)
+    }
+
+    /// PATH, the core's binary and the bundled copy, all usable.
+    func fleet(_ s: Scratch, bundledAPI: Int = 1) async throws -> (found: [BinaryCandidate], core: URL, bundled: URL) {
+        let onPath = try fakeStormo(s, "path/stormo", version: "v1.2.0")
+        let core = try fakeStormo(s, "checkout/bin/stormo", version: "v1.1.0")
+        let bundled = try fakeStormo(s, "App.app/Contents/Helpers/stormo", version: "v1.3.0", api: bundledAPI)
+        let resolver = BinaryResolver(bundled: bundled, environment: ["PATH": onPath.deletingLastPathComponent().path], home: s.url)
+        var found = await resolver.candidates(instance: nil)
+        found.append(await resolver.probe(BinaryCandidate(url: core, resolved: core, source: .usual)))
+        return (found, core, bundled)
+    }
+
+    @Test func autoPrefersTheBundledCopy() async throws {
+        let s = try Scratch()
+        let (found, core, _) = try await fleet(s)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.source == .bundled)  // over PATH
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: core.path)?.source == .bundled)  // over the core's
+    }
+
+    @Test func anUnusableBundledCopyFallsBackToTheCoreThenPath() async throws {
+        let s = try Scratch()
+        let (found, core, _) = try await fleet(s, bundledAPI: 0)
+        #expect(found.first { $0.source == .bundled }?.usable == false)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: core.path)?.resolved.path == core.path)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: nil)?.source == .path)
+    }
+
+    @Test func customWins() async throws {
+        let s = try Scratch()
+        let mine = try fakeStormo(s, "mine/stormo", version: "v0.9.0")
+        let bundled = try fakeStormo(s, "App.app/Contents/Helpers/stormo", version: "v1.3.0")
+        let resolver = BinaryResolver(bundled: bundled, environment: ["PATH": ""], home: s.url)
+        let found = await resolver.candidates(instance: nil, custom: mine)
+        #expect(BinaryResolver.autoChoice(found, runningCoreExe: bundled.path)?.resolved.path == mine.path)
+    }
+
+    @Test func autoPinsFollowAutoAndChosenOnesStay() async throws {
+        let s = try Scratch()
+        let (found, core, bundled) = try await fleet(s)
+        // An instance Auto pinned to the core's binary before this app (or an update of it) moves.
+        #expect(BinaryResolver.repin(binary: core.path, choice: "auto", candidates: found, runningCoreExe: core.path)?.resolved.path == bundled.path)
+        // A new instance gets Auto's choice; one already on it is left alone.
+        #expect(BinaryResolver.repin(binary: nil, choice: nil, candidates: found, runningCoreExe: nil)?.source == .bundled)
+        #expect(BinaryResolver.repin(binary: bundled.path, choice: "auto", candidates: found, runningCoreExe: nil) == nil)
+        // Picked in Settings: stays, whatever Auto would say.
+        #expect(BinaryResolver.repin(binary: core.path, choice: "custom", candidates: found, runningCoreExe: nil) == nil)
+        #expect(BinaryResolver.repin(binary: core.path, choice: "path", candidates: found, runningCoreExe: nil) == nil)
+    }
+}
+
+/// ~/.local/bin/stormo, in a scratch home: never the real one.
+@Suite struct TerminalLink {
+    struct Home {
+        let s: Scratch
+        let bin: URL
+        let link: CommandLineLink
+        init() throws {
+            s = try Scratch()
+            bin = s.url.appending(path: "home/.local/bin")
+            let bundled = try fakeStormo(s, "Applications/Stormo.app/Contents/Helpers/stormo", version: "v1.3.0")
+            link = CommandLineLink(link: bin.appending(path: "stormo"), bundled: bundled)
+        }
+        func symlink(to target: String) throws {
+            try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: link.link.path, withDestinationPath: target)
+        }
+        var target: String? { try? FileManager.default.destinationOfSymbolicLink(atPath: link.link.path) }
+    }
+
+    @Test func absentIsCreatedWithItsDirectory() throws {
+        let h = try Home()
+        #expect(h.link.state() == .absent)
+        #expect(h.link.reconcile() == .created)
+        #expect(h.target == h.link.bundled.path)
+        #expect(h.link.state() == .current)
+        #expect(h.link.reconcile() == .unchanged)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: h.bin.path) == ["stormo"])  // no temp link left
+    }
+
+    @Test func anOlderAppsLinkFollowsThisApp() throws {
+        let h = try Home()
+        let old = try fakeStormo(h.s, "Downloads/Stormo 2.app/Contents/Helpers/stormo", version: "v1.0.0")
+        try h.symlink(to: old.path)
+        #expect(h.link.state() == .appCopy(target: old.path))
+        #expect(h.link.reconcile() == .retargeted(from: old.path))
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aBrokenLinkToAGoneAppIsRetargeted() throws {
+        let h = try Home()
+        let gone = h.s.url.appending(path: "Trash/Stormo.app/Contents/Helpers/stormo").path
+        try h.symlink(to: gone)
+        #expect(h.link.state() == .appCopy(target: gone))
+        #expect(h.link.reconcile() == .retargeted(from: gone))
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aUsersLinkIsLeftUntilAsked() throws {
+        let h = try Home()
+        let dev = try fakeStormo(h.s, "src/stormo/bin/stormo", version: "abc123")
+        try h.symlink(to: dev.path)
+        let state = CommandLineLink.State.userLink(target: dev.path, broken: false)
+        #expect(h.link.state() == state)
+        #expect(h.link.reconcile() == .left(state))
+        #expect(h.target == dev.path)
+        try h.link.install()  // what "Use Stormo's copy in the terminal" does after confirming
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func aBrokenUserLinkIsLeft() throws {
+        let h = try Home()
+        try h.symlink(to: "../../src/gone/stormo")
+        let target = h.bin.appending(path: "../../src/gone/stormo").standardizedFileURL.path
+        #expect(h.link.state() == .userLink(target: target, broken: true))
+        #expect(h.link.reconcile() == .left(.userLink(target: target, broken: true)))
+        #expect(h.target == "../../src/gone/stormo")
+    }
+
+    @Test func aRegularFileIsLeftUntilAsked() throws {
+        let h = try Home()
+        try h.s.script("home/.local/bin/stormo", "echo homebrew")
+        #expect(h.link.state() == .file)
+        #expect(h.link.reconcile() == .left(.file))
+        #expect(h.target == nil)
+        try h.link.install()
+        #expect(h.target == h.link.bundled.path)
+    }
+
+    @Test func anUnwritableDirectoryFailsWithoutChanges() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.bin, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: h.bin.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: h.bin.path) }
+        guard case .failed = h.link.reconcile() else { Issue.record("expected a failure"); return }
+        #expect(h.link.state() == .absent)
+    }
+
+    @Test func translocatedAppsLinkNothing() throws {
+        let h = try Home()
+        let moved = CommandLineLink(link: h.link.link, bundled: URL(filePath: "/private/var/folders/xy/AppTranslocation/ABC/d/Stormo.app/Contents/Helpers/stormo"))
+        #expect(moved.reconcile() == .skipped)
+        #expect(moved.state() == .absent)
+    }
+
+    @Test func appHelpersAndPath() {
+        #expect(CommandLineLink.isAppHelper("/Applications/Stormo.app/Contents/Helpers/stormo"))
+        #expect(CommandLineLink.isAppHelper("/Users/x/dd/Build/Products/Debug/Stormo Beta.app/Contents/Helpers/stormo"))
+        #expect(!CommandLineLink.isAppHelper("/Users/x/src/stormo/bin/stormo"))
+        #expect(!CommandLineLink.isAppHelper("/Applications/Stormo.app/Contents/Helpers/swarm"))
+        #expect(!CommandLineLink.isAppHelper("/opt/homebrew/bin/stormo"))
+        let link = CommandLineLink(link: URL(filePath: "/Users/x/.local/bin/stormo"), bundled: URL(filePath: "/Applications/Stormo.app/Contents/Helpers/stormo"))
+        #expect(link.directoryIsOnPath(["PATH": "/usr/bin:/Users/x/.local/bin/"]))
+        #expect(link.directoryIsOnPath(["PATH": "~/.local/bin:/usr/bin", "HOME": "/Users/x"]))
+        #expect(!link.directoryIsOnPath(["PATH": "/usr/bin:/opt/homebrew/bin", "HOME": "/Users/x"]))
     }
 }
 

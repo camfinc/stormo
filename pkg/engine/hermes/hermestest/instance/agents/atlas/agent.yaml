@@ -1,0 +1,85 @@
+# Atlas: deals & operations for Acme Sales. Exercises every manifest feature the engine supports.
+format: 1
+id: atlas
+name: Atlas
+unit: sales
+role: Deals & operations. Internal back-office by default.
+
+persona:
+  path: personas/atlas
+
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+
+model:
+  name: openai/gpt-6-luna    # the cloud model
+  provider: openrouter
+  local:
+    via: core
+    name: gpt-5.6-luna       # the core's catalog name for it
+
+channels:
+  - kind: slack
+    allow_bots: mentions
+    slash_commands: true
+    allowed_users: [U0000000001]
+    home_channel: C0000000001
+  # Telegram runs only when TELEGRAM_BOT_TOKEN has a value (optional_secrets below).
+  - kind: telegram
+    # allowed_users: [123456789]
+
+secrets:
+  - APIFY_API_TOKEN
+  - ELEVENLABS_API_KEY
+  - API_SERVER_KEY
+
+# Good to have: locally the core's ChatGPT route serves the model (OpenRouter is its fallback), and
+# people can reach Atlas in chat without Slack.
+optional_secrets:
+  - name: OPENROUTER_API_KEY
+  - name: SLACK_BOT_TOKEN
+  - name: SLACK_APP_TOKEN
+  - name: CRM_API_TOKEN
+    skills:
+      - crm/crm-api
+      - crm/crm-documents-api
+      - crm/crm-quote-api
+      - crm/hourly_deal_monitor
+    actions:
+      - sales.crm.deals.list
+  - name: TELEGRAM_BOT_TOKEN
+
+actions:
+  - sales.crm.deals.list
+
+schedules:
+  - id: a1b2c3d4e5f6
+    name: Stale deals - daily
+    cron: 0 9 * * 1-5
+    enabled: false
+    prompt: List deals with no activity in 7 days and post them.
+    skills: [crm-api]
+    tools: [terminal, skills]
+    deliver: slack
+
+state:
+  - name: news-radar
+    env: NEWS_RADAR_HOME
+
+memory:
+  agent: 2200
+  user: 1375
+
+learning:
+  seed_fill: 0.6
+  nap_interval_seconds: 900
+  auto_review: true      # the core's review may approve its proposals on its own (false: all go to a person)
+
+deploy:
+  launch: fargate
+  registry: ghcr
+  cpu: 1024
+  memory: 3072
+  ephemeral_storage_gib: 30

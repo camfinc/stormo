@@ -1,3 +1,4 @@
+format: 1
 id: pixel
 name: Pixel
 unit: product
@@ -5,7 +6,8 @@ role: Product design
 persona:
   path: personas/pixel
 engine:
-  kind: hermes
-  version: 0.21.5
-  image_tag: v2026.9.24
-  model: openai/gpt-6-luna
+  kind: needletail
+  version: 0.1.0-dev.2084e89
+  image_tag: dev-2084e89
+model:
+  name: openai/gpt-6-luna

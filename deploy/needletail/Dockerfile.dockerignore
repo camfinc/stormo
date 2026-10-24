@@ -1,0 +1,8 @@
+# Build context for deploy/needletail/Dockerfile: only what the binary is built from.
+*
+!go.mod
+!go.sum
+!cmd/needletail
+!internal/needletail
+internal/needletail/**/*_test.go
+internal/needletail/**/testdata

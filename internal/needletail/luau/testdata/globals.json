@@ -1,0 +1,638 @@
+{
+  "bindings": [
+    {
+      "name": "fs.read",
+      "global": "read_file",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.read:home | fs.read:shared",
+      "wire": {
+        "name": "fs.read",
+        "global": "read_file",
+        "params": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs.write",
+      "global": "write_file",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "content",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.write:home[/glob] | fs.write:shared",
+      "write": true,
+      "wire": {
+        "name": "fs.write",
+        "global": "write_file",
+        "params": [
+          "path",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "fs.append",
+      "global": "append_file",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "content",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.write:home[/glob] | fs.write:shared",
+      "write": true,
+      "wire": {
+        "name": "fs.append",
+        "global": "append_file",
+        "params": [
+          "path",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "fs.list",
+      "global": "list_files",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.read:home | fs.read:shared",
+      "wire": {
+        "name": "fs.list",
+        "global": "list_files",
+        "params": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs.stat",
+      "global": "stat_file",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.read:home | fs.read:shared",
+      "wire": {
+        "name": "fs.stat",
+        "global": "stat_file",
+        "params": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs.remove",
+      "global": "remove_file",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.write:home[/glob]",
+      "write": true,
+      "wire": {
+        "name": "fs.remove",
+        "global": "remove_file",
+        "params": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs.lock",
+      "global": "lock",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        },
+        {
+          "name": "minutes",
+          "type": "number",
+          "optional": true
+        }
+      ],
+      "grant": "fs.write:shared",
+      "write": true,
+      "wire": {
+        "name": "fs.lock",
+        "global": "lock",
+        "params": [
+          "path",
+          "minutes"
+        ]
+      }
+    },
+    {
+      "name": "fs.unlock",
+      "global": "unlock",
+      "params": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "grant": "fs.write:shared",
+      "write": true,
+      "wire": {
+        "name": "fs.unlock",
+        "global": "unlock",
+        "params": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "http.request",
+      "global": "http_request",
+      "params": [
+        {
+          "name": "request",
+          "type": "table"
+        }
+      ],
+      "spread": true,
+      "grant": "http:\u003chost\u003e",
+      "write": true,
+      "wire": {
+        "name": "http.request",
+        "global": "http_request",
+        "params": [
+          "request"
+        ],
+        "spread": true
+      }
+    },
+    {
+      "name": "core.call",
+      "global": "core_call",
+      "params": [
+        {
+          "name": "tool",
+          "type": "string"
+        },
+        {
+          "name": "args",
+          "type": "table",
+          "optional": true
+        }
+      ],
+      "grant": "core:\u003ctool\u003e (core:msg_* by default on a core)",
+      "write": true,
+      "wire": {
+        "name": "core.call",
+        "global": "core_call",
+        "params": [
+          "tool",
+          "args"
+        ]
+      }
+    },
+    {
+      "name": "memory.read",
+      "global": "read_memory",
+      "params": [],
+      "grant": "fs.read:home",
+      "wire": {
+        "name": "memory.read",
+        "global": "read_memory"
+      }
+    },
+    {
+      "name": "memory.search",
+      "global": "search_memory",
+      "params": [
+        {
+          "name": "query",
+          "type": "string"
+        },
+        {
+          "name": "opts",
+          "type": "table",
+          "optional": true
+        }
+      ],
+      "grant": "memory:read",
+      "wire": {
+        "name": "memory.search",
+        "global": "search_memory",
+        "params": [
+          "query",
+          "opts"
+        ]
+      }
+    },
+    {
+      "name": "memory.save",
+      "global": "save_memory",
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "opts",
+          "type": "table",
+          "optional": true
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.save",
+        "global": "save_memory",
+        "params": [
+          "text",
+          "opts"
+        ]
+      }
+    },
+    {
+      "name": "memory.update",
+      "global": "update_memory",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "fields",
+          "type": "table"
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.update",
+        "global": "update_memory",
+        "params": [
+          "id",
+          "fields"
+        ]
+      }
+    },
+    {
+      "name": "memory.delete",
+      "global": "delete_memory",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        }
+      ],
+      "grant": "memory:write",
+      "write": true,
+      "wire": {
+        "name": "memory.delete",
+        "global": "delete_memory",
+        "params": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "message.send",
+      "global": "send_message",
+      "params": [
+        {
+          "name": "target",
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "grant": "message:\u003ctarget\u003e",
+      "write": true,
+      "wire": {
+        "name": "message.send",
+        "global": "send_message",
+        "params": [
+          "target",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "kv.get",
+      "global": "kv_get",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "grant": "kv:read",
+      "wire": {
+        "name": "kv.get",
+        "global": "kv_get",
+        "params": [
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "kv.set",
+      "global": "kv_set",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "type": "any"
+        },
+        {
+          "name": "ttl_seconds",
+          "type": "number",
+          "optional": true
+        }
+      ],
+      "grant": "kv:write",
+      "write": true,
+      "wire": {
+        "name": "kv.set",
+        "global": "kv_set",
+        "params": [
+          "key",
+          "value",
+          "ttl_seconds"
+        ]
+      }
+    },
+    {
+      "name": "kv.delete",
+      "global": "kv_delete",
+      "params": [
+        {
+          "name": "key",
+          "type": "string"
+        }
+      ],
+      "grant": "kv:write",
+      "write": true,
+      "wire": {
+        "name": "kv.delete",
+        "global": "kv_delete",
+        "params": [
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "followup.create",
+      "global": "follow_up",
+      "params": [
+        {
+          "name": "spec",
+          "type": "table"
+        }
+      ],
+      "spread": true,
+      "grant": "followup:write",
+      "write": true,
+      "wire": {
+        "name": "followup.create",
+        "global": "follow_up",
+        "params": [
+          "spec"
+        ],
+        "spread": true
+      }
+    },
+    {
+      "name": "followup.list",
+      "params": [],
+      "grant": "followup:read",
+      "wire": {
+        "name": "followup.list"
+      }
+    },
+    {
+      "name": "followup.cancel",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        }
+      ],
+      "grant": "followup:write",
+      "write": true,
+      "wire": {
+        "name": "followup.cancel",
+        "params": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "hash.sha256",
+      "global": "sha256",
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "wire": {
+        "name": "hash.sha256",
+        "global": "sha256",
+        "params": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "json.encode",
+      "global": "json_encode",
+      "params": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "local": true,
+      "wire": {
+        "name": "json.encode",
+        "global": "json_encode",
+        "params": [
+          "value"
+        ],
+        "local": true
+      }
+    },
+    {
+      "name": "json.decode",
+      "global": "json_decode",
+      "params": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "local": true,
+      "wire": {
+        "name": "json.decode",
+        "global": "json_decode",
+        "params": [
+          "text"
+        ],
+        "local": true
+      }
+    },
+    {
+      "name": "log",
+      "global": "log",
+      "params": [
+        {
+          "name": "level",
+          "type": "string"
+        },
+        {
+          "name": "msg",
+          "type": "string"
+        }
+      ],
+      "wire": {
+        "name": "log",
+        "global": "log",
+        "params": [
+          "level",
+          "msg"
+        ]
+      }
+    },
+    {
+      "name": "time.now",
+      "global": "now",
+      "params": [],
+      "wire": {
+        "name": "time.now",
+        "global": "now"
+      }
+    }
+  ],
+  "globals": [
+    "_G",
+    "_VERSION",
+    "append_file",
+    "assert",
+    "bit32",
+    "buffer",
+    "collectgarbage",
+    "core_call",
+    "delete_memory",
+    "error",
+    "follow_up",
+    "getmetatable",
+    "http_request",
+    "ipairs",
+    "json_decode",
+    "json_encode",
+    "kv_delete",
+    "kv_get",
+    "kv_set",
+    "list_files",
+    "lock",
+    "log",
+    "math",
+    "next",
+    "now",
+    "nt",
+    "os",
+    "pairs",
+    "pcall",
+    "print",
+    "rawequal",
+    "rawget",
+    "rawlen",
+    "rawset",
+    "read_file",
+    "read_memory",
+    "remove_file",
+    "save_memory",
+    "search_memory",
+    "select",
+    "send_message",
+    "setmetatable",
+    "sha256",
+    "stat_file",
+    "string",
+    "table",
+    "tonumber",
+    "tostring",
+    "type",
+    "typeof",
+    "unlock",
+    "unpack",
+    "update_memory",
+    "utf8",
+    "write_file",
+    "xpcall"
+  ],
+  "nt": [
+    "core",
+    "core.call",
+    "followup",
+    "followup.cancel",
+    "followup.create",
+    "followup.list",
+    "fs",
+    "fs.append",
+    "fs.list",
+    "fs.lock",
+    "fs.read",
+    "fs.remove",
+    "fs.stat",
+    "fs.unlock",
+    "fs.write",
+    "hash",
+    "hash.sha256",
+    "http",
+    "http.request",
+    "json",
+    "json.decode",
+    "json.encode",
+    "json.null",
+    "kv",
+    "kv.delete",
+    "kv.get",
+    "kv.set",
+    "log",
+    "memory",
+    "memory.delete",
+    "memory.read",
+    "memory.save",
+    "memory.search",
+    "memory.update",
+    "message",
+    "message.send",
+    "time",
+    "time.now"
+  ]
+}

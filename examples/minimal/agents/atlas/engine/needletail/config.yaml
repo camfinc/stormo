@@ -1,0 +1,20 @@
+# What only needletail reads (docs/needletail.md §4.1); agent.yaml stays engine-neutral.
+timezone: America/New_York      # the agent's wall clock: its schedules' cron and the time it is told
+
+luau:
+  # What Atlas's Luau tools may use besides its home (and the core's msg_* tools on the core).
+  # The CRM token never reaches a script: the runtime adds it as a header to requests to that host.
+  grants: [http:crm.example.com, fs.read:shared]
+  http_secrets:
+    - host: crm.example.com
+      env: CRM_API_TOKEN
+      header: Authorization
+      template: "Bearer {value}"
+  # timeout: 30                 # seconds a Luau tool the model calls may run (1 to 600)
+
+# slack:
+#   broadcast: true             # send_message may ping @channel, @here and user groups when it asks to
+#   listen: [C0000000001]       # channels whose every message reaches on_message handlers; off by default
+
+# schedules:
+#   turns: 2                    # scheduled runs that may hold a turn at once (1 to 4; unset: 1)

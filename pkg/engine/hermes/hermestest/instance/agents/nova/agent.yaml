@@ -1,0 +1,23 @@
+# Nova: onboarding for Acme Support. The second unit, so unit isolation has something to isolate.
+format: 1
+id: nova
+name: Nova
+unit: support
+role: Customer onboarding.
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+model:
+  name: openai/gpt-6-luna
+  local:
+    via: core
+    name: gpt-5.6-luna
+channels:
+  - kind: slack
+secrets:
+  - API_SERVER_KEY
+optional_secrets:
+  - name: OPENROUTER_API_KEY
+  - name: SLACK_BOT_TOKEN
+  - name: SLACK_APP_TOKEN

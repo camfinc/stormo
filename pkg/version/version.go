@@ -1,5 +1,6 @@
 // Package version names the engine build: a release tag set at link time, or, for a build from a
-// source checkout, that checkout's git revision ("-dirty" with local changes), or "dev".
+// source checkout, that checkout's git revision ("-dirty" with local changes), or "dev" when the
+// checkout cannot be found.
 package version
 
 import (
@@ -12,6 +13,11 @@ import (
 
 // Version is set by release builds: -ldflags "-X github.com/camfinc/stormo/pkg/version.Version=v0.1.0".
 var Version = ""
+
+// BuiltFrom is the engine checkout a source build was compiled from, set at link time by builds
+// that place the binary away from the checkout (the macOS app's Contents/Helpers):
+// -ldflags "-X github.com/camfinc/stormo/pkg/version.BuiltFrom=/abs/path/to/stormo".
+var BuiltFrom = ""
 
 // API versions what other programs read from this binary: the core's HTTP API and the CLI's --json
 // output (docs/api.md). Bump it on a breaking change; added fields do not bump it.
@@ -65,22 +71,31 @@ func Exe() string {
 	return exe
 }
 
-// Source finds the engine's source checkout: STORMO_SRC, or the nearest directory above the binary
-// holding the engine's go.mod. "" for an installed release.
+// Source finds the engine's source checkout: STORMO_SRC, else the nearest directory above the
+// binary holding the engine's go.mod, else BuiltFrom while it still holds it. "" for an installed
+// release.
 func Source() string {
 	if s := os.Getenv("STORMO_SRC"); s != "" {
 		return s
 	}
-	exe := Exe()
-	if exe == "" {
-		return ""
-	}
-	for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
-		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.Contains(string(b), "module github.com/camfinc/stormo\n") {
-			return dir
-		}
-		if filepath.Dir(dir) == dir {
-			return ""
+	if exe := Exe(); exe != "" {
+		for dir := filepath.Dir(exe); ; dir = filepath.Dir(dir) {
+			if isEngine(dir) {
+				return dir
+			}
+			if filepath.Dir(dir) == dir {
+				break
+			}
 		}
 	}
+	if BuiltFrom != "" && isEngine(BuiltFrom) {
+		return BuiltFrom
+	}
+	return ""
+}
+
+// isEngine reports whether dir holds the engine's go.mod.
+func isEngine(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	return err == nil && strings.Contains(string(b), "module github.com/camfinc/stormo\n")
 }

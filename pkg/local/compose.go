@@ -73,6 +73,7 @@ type service struct {
 	Tmpfs       []string          `yaml:"tmpfs,omitempty"`
 	SecurityOpt []string          `yaml:"security_opt,omitempty"`
 	CapDrop     []string          `yaml:"cap_drop,omitempty"`
+	ReadOnly    bool              `yaml:"read_only,omitempty"`
 }
 
 // hardening applies to every container of an agent. Engine images may boot as root and drop to
@@ -164,6 +165,8 @@ func Render(a *manifest.Agent, eng engine.Engine, p Paths, port, napInterval int
 		Restart:     "unless-stopped",
 		SecurityOpt: securityOpt,
 		CapDrop:     capDrop,
+		// an engine that writes only to its mounts runs on a read-only root (engine.Layout)
+		ReadOnly: eng.Layout().ReadOnlyRoot,
 	}
 	if a.Engine.Local != nil && a.Engine.Local.Via == "core" {
 		// OrbStack / Docker Desktop resolve host.docker.internal already; plain Docker Engine needs this.

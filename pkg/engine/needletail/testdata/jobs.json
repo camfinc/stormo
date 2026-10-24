@@ -1,0 +1,16 @@
+{
+  "jobs": [
+    {"id":"a1b2c3d4e5f6","name":"Stale deals - daily","prompt":"stale prompt","skills":["crm-api"],"skill":"crm-api","model":null,"provider":null,
+     "base_url":null,"script":null,"no_agent":false,"monitor_script":null,"monitor_url":null,"monitor_state":null,"context_from":null,
+     "schedule":{"kind":"cron","expr":"0 8 * * 1-5","display":"0 8 * * 1-5"},"schedule_display":"0 8 * * 1-5","repeat":{"times":null,"completed":4},
+     "enabled":true,"state":"scheduled","paused_at":null,"paused_reason":null,"created_at":"2026-10-01T00:00:00Z",
+     "next_run_at":"2026-10-13T09:00:00Z","last_run_at":"2026-10-12T09:00:00Z","last_status":"error","last_error":"exit 1",
+     "last_delivery_error":null,"deliver":"slack","origin":null,"enabled_toolsets":["terminal"],"workdir":null,"failure_deliver":null,"failure_streak":2,"running":true},
+    {"id":"agentmade01","name":"Agent's own","prompt":"Ping <me>","skills":[],"skill":null,"model":null,"provider":null,
+     "base_url":null,"script":null,"no_agent":false,"monitor_script":null,"monitor_url":null,"monitor_state":null,"context_from":null,
+     "schedule":{"kind":"interval","minutes":60,"display":"every 60m"},"schedule_display":"every 60m","repeat":{"times":3,"completed":1},
+     "enabled":true,"state":"scheduled","paused_at":null,"paused_reason":null,"created_at":"2026-10-11T00:00:00Z",
+     "next_run_at":"2026-10-12T10:00:00Z","last_run_at":"2026-10-12T09:00:00Z","last_status":"silent","last_error":null,
+     "last_delivery_error":null,"deliver":null,"origin":null,"enabled_toolsets":null,"workdir":null,"failure_deliver":null,"running":false}
+  ]
+}

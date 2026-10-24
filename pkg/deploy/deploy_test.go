@@ -7,14 +7,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
+	"github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 func load(t *testing.T, id string) (*instance.Instance, *manifest.Agent) {
 	t.Helper()
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,5 +208,25 @@ func TestLinkedTaskDefGivesTheSidecarItsLinkOnly(t *testing.T) {
 	}
 	if !found {
 		t.Error("the agent has no core key on ECS")
+	}
+}
+
+// An engine whose Layout asks for it runs its agent container on a read-only root; the sidecars
+// and every other engine's container are unchanged (the field is left out of the JSON).
+func TestReadOnlyRootFollowsTheEngine(t *testing.T) {
+	inst, a := load(t, "atlas")
+	for _, c := range []struct {
+		eng  engine.Engine
+		want bool
+	}{{hermes.New(inst), false}, {needletail.New(inst), true}} {
+		td := RenderTaskDef(a, c.eng, efsTarget(inst))
+		cs := containers(td)
+		if cs["agent"].ReadonlyRootFilesystem != c.want || cs["nap"].ReadonlyRootFilesystem || cs["rehydrate"].ReadonlyRootFilesystem {
+			t.Errorf("%s: agent read-only root %v, want %v (sidecars never)", c.eng.Kind(), cs["agent"].ReadonlyRootFilesystem, c.want)
+		}
+		b, _ := json.Marshal(td)
+		if n := strings.Count(string(b), `"readonlyRootFilesystem"`); n != map[bool]int{true: 1, false: 0}[c.want] {
+			t.Errorf("%s: readonlyRootFilesystem appears %d times", c.eng.Kind(), n)
+		}
 	}
 }

@@ -8,16 +8,19 @@ import (
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
 )
 
 var registry = map[string]func(*instance.Instance) engine.Engine{
-	"hermes": func(i *instance.Instance) engine.Engine { return hermes.New(i) },
+	"hermes":     func(i *instance.Instance) engine.Engine { return hermes.New(i) },
+	"needletail": func(i *instance.Instance) engine.Engine { return needletail.New(i) },
 }
 
 // runtimes are the engines' runtimes without an instance (the core's hook ingest, secrets).
 var runtimes = map[string]func() engine.Runtime{
-	"hermes": hermes.NewRuntime,
+	"hermes":     hermes.NewRuntime,
+	"needletail": needletail.NewRuntime,
 }
 
 // Runtime is how Stormo talks to a running agent of engine kind.

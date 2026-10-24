@@ -11,6 +11,8 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,7 +116,20 @@ func (a *Agent) Relay() http.Handler {
 	})
 }
 
-var keptHeaders = []string{"Content-Type", "Authorization", "Accept", "X-Hermes-Signature-256", "X-Hermes-Event", "X-Hermes-Delivery", "Mcp-Protocol-Version"}
+var keptHeaders = []string{"Content-Type", "Authorization", "Accept", "Mcp-Protocol-Version"}
+
+// hookHeader is an engine's own hook header, whatever the engine is called:
+// X-<Engine>-Signature[-…], X-<Engine>-Event or X-<Engine>-Delivery. The core verifies a hook with
+// the signature header its engine's runtime names (engine.Runtime.HookSignature), so the relay
+// passes every engine's on, not only one engine's.
+var hookHeader = regexp.MustCompile(`^X-[A-Za-z0-9]+-(Signature(-[A-Za-z0-9]+)*|Event|Delivery)$`)
+
+// maxHookHeader bounds one hook header's value (a signature is under a hundred bytes);
+// maxHookHeaders how many are passed on (an engine sends three or so).
+const (
+	maxHookHeader  = 512
+	maxHookHeaders = 8
+)
 
 func headersOf(r *http.Request) map[string]string {
 	h := map[string]string{}
@@ -122,6 +137,26 @@ func headersOf(r *http.Request) map[string]string {
 		if v := r.Header.Get(k); v != "" {
 			h[k] = v
 		}
+	}
+	hooks := []string{}
+	for k, vs := range r.Header {
+		if len(vs) > 0 && vs[0] != "" && len(vs[0]) <= maxHookHeader && hookHeader.MatchString(k) {
+			hooks = append(hooks, k)
+		}
+	}
+	// Signatures first (the core needs one to verify), then by name, so the cut is stable.
+	slices.SortFunc(hooks, func(a, b string) int {
+		sa, sb := strings.Contains(a, "-Signature"), strings.Contains(b, "-Signature")
+		if sa != sb {
+			if sa {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	for _, k := range hooks[:min(len(hooks), maxHookHeaders)] {
+		h[k] = r.Header.Get(k)
 	}
 	return h
 }

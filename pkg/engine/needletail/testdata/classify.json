@@ -1,0 +1,205 @@
+{
+ "stateDir": "acme-state",
+ "cases": [
+  {
+   "path": "memories/MEMORY.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/USER.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/RECORDS.md",
+   "class": "raw",
+   "glob": "memories/RECORDS.md"
+  },
+  {
+   "path": "memories/.RECORDS.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "memories/OTHER.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/.usage.json",
+   "class": "learning",
+   "glob": "skills/.usage.json"
+  },
+  {
+   "path": "skills/.hidden/x",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/crm/crm-api/.SKILL.md.tmp-123",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": ".needletail-tmp/.SKILL.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/crm/crm-api/SKILL.md",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm/lookup/tools/lookup_fare.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm/lookup/handlers/on_message.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/jobs.json",
+   "class": "learning",
+   "glob": "cron/jobs.json"
+  },
+  {
+   "path": "sessions/index.json",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "sessions/cron-a1-20261012T090000.jsonl",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "logs/audit/slack-C1-1.jsonl",
+   "class": "raw",
+   "glob": "logs/audit/**"
+  },
+  {
+   "path": "logs/needletail.log",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "acme-state/news-radar/seen.json",
+   "class": "state",
+   "glob": "acme-state/**"
+  },
+  {
+   "path": "state/needletail/idem.json",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "state/needletail/kv.json",
+   "class": "raw",
+   "glob": "state/needletail/kv.json"
+  },
+  {
+   "path": "state/needletail/followups.json",
+   "class": "raw",
+   "glob": "state/needletail/followups.json"
+  },
+  {
+   "path": "state/needletail/followups.lock",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "state/needletail/monitor/a1.out",
+   "class": "raw",
+   "glob": "state/needletail/monitor/**"
+  },
+  {
+   "path": "state/needletail/jobs/a1/20261012T090000.000.md",
+   "class": "raw",
+   "glob": "state/needletail/jobs/**"
+  },
+  {
+   "path": ".needletail-tmp/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "needletail.yaml",
+   "class": "learning",
+   "glob": "needletail.yaml"
+  },
+  {
+   "path": "SOUL.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".swarm/memory-merge.json",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".swarm/booted.json",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/digest.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/lib/helper.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/accounts.json",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/__pycache__/digest.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/__pycache__/helper.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/helper.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.cache",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.venv/bin/python",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/node_modules/x/index.js",
+   "class": null,
+   "glob": null
+  }
+ ]
+}

@@ -4,10 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
+	"go.yaml.in/yaml/v3"
+
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
+	"github.com/camfinc/stormo/pkg/engine/needletail"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
@@ -30,7 +36,7 @@ func TestPortsAreStable(t *testing.T) {
 }
 
 func TestComposeMountsTheInstanceAndTheLocalBaseline(t *testing.T) {
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +120,7 @@ func TestPortsSkipOtherInstancesAndBusyPorts(t *testing.T) {
 }
 
 func TestComposeGivesTheSidecarItsLink(t *testing.T) {
-	inst, err := instance.Load("../../examples/minimal")
+	inst, err := instance.Load(hermestest.Instance(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,5 +150,35 @@ func TestComposeGivesTheSidecarItsLink(t *testing.T) {
 	p.LinkEnvFile = ""
 	if nap := Render(a, hermes.New(inst), p, 18642, 120, "x").Services["nap"]; len(nap.EnvFile) != 0 || nap.Environment["SWARM_CORE_URL"] != "" {
 		t.Errorf("link off: %+v", nap)
+	}
+}
+
+// An engine whose Layout asks for it runs its agent on a read-only root; the sidecars and every
+// other engine's agent are unchanged (no read_only key at all).
+func TestComposeReadOnlyRootFollowsTheEngine(t *testing.T) {
+	inst, err := instance.Load(hermestest.Instance(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := manifest.Load(inst.Root, "atlas", inst.Names.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Paths{Root: inst.Root, BaselineDir: "/x/b", EnvFile: "/x/e", StoreDir: "/x/s", SharedDir: "/x/sh"}
+	for _, c := range []struct {
+		eng  engine.Engine
+		want bool
+	}{{hermes.New(inst), false}, {needletail.New(inst), true}} {
+		spec := Render(a, c.eng, p, 18642, 120, "stormo-sidecar:test")
+		if spec.Services["agent"].ReadOnly != c.want || spec.Services["nap"].ReadOnly || spec.Services["rehydrate"].ReadOnly {
+			t.Errorf("%s: agent read_only %v, want %v (sidecars never)", c.eng.Kind(), spec.Services["agent"].ReadOnly, c.want)
+		}
+		b, err := yaml.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(b), "read_only: true"); n != map[bool]int{true: 1, false: 0}[c.want] || strings.Contains(string(b), "read_only: false") {
+			t.Errorf("%s: compose:\n%s", c.eng.Kind(), b)
+		}
 	}
 }
