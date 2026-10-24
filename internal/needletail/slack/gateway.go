@@ -456,10 +456,12 @@ func (g *Gateway) route(ev Message) bool {
 }
 
 // listens is whether the agent listens to a channel (Options.Listen): named, or "*" for every
-// public or private channel (a group DM only when named).
+// channel Slack says is a public or private one (channel_type channel or group). An event that
+// carries no channel_type (an app_mention twin) is heard only in a channel listen names, so "*"
+// never takes in a group DM (mpim) through it.
 func (g *Gateway) listens(channel, channelType string) bool {
 	for _, c := range g.o.Listen {
-		if c == channel || c == "*" && channelType != "mpim" {
+		if c == channel || c == "*" && (channelType == "channel" || channelType == "group") {
 			return true
 		}
 	}
@@ -814,6 +816,7 @@ func (g *Gateway) batch(session string, jobs []job) {
 		}
 	}()
 	var lines []messaging.ContextLine
+	fetched := false
 	fetch := func(first job) {
 		// a reply in a thread the agent has no session in: the thread's earlier messages (once,
 		// for the handlers and the turn)
@@ -821,15 +824,22 @@ func (g *Gateway) batch(session string, jobs []job) {
 		for _, j := range jobs {
 			skip[j.ts] = true
 		}
-		lines = g.threadLines(first.channel, first.threadTS, skip)
+		lines, fetched = g.threadLines(first.channel, first.threadTS, skip), true
 	}
-	if first := jobs[0]; first.reply && !first.ambient && !g.o.Exists(session) {
-		fetch(first)
+	// the first message addressed to the agent (an ambient one before it does not count: its
+	// handlers do not get the thread, a Slack call for every message heard)
+	for _, j := range jobs {
+		if !j.ambient {
+			if j.reply && !g.o.Exists(session) {
+				fetch(j)
+			}
+			break
+		}
 	}
 	left := g.dispatch(session, jobs, lines)
-	if len(left) > 0 && lines == nil && left[0].ambient && left[0].reply && !g.o.Exists(session) {
-		// an ambient message's handlers do not get the thread (a Slack call for every message
-		// heard); the turn a handler passed it on to does
+	if len(left) > 0 && !fetched && left[0].reply && !g.o.Exists(session) {
+		// the turn gets the thread whatever came first in the batch: an ambient message a
+		// handler passed on, or a direct one behind an ambient one its handler silenced
 		fetch(left[0])
 	}
 	if input := g.input(left, lines); input != "" {
@@ -854,7 +864,8 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		return left
 	}
 	left := jobs[:0:0]
-	for i, j := range jobs {
+	contextGiven := false
+	for _, j := range jobs {
 		_, name, text := g.parts(j.ev, j.bot)
 		event := "on_message"
 		if j.mentioned && !j.ambient {
@@ -862,8 +873,8 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		}
 		in := messaging.Inbound{Platform: "slack", Session: session, Channel: j.channel, ThreadTS: j.threadTS, TS: j.ts, DM: j.dm,
 			Mentioned: j.mentioned, Reply: j.reply, User: j.ev.User, UserName: name, Bot: j.bot, Verified: j.verified, Ambient: j.ambient, Text: text}
-		if i == 0 && !j.ambient {
-			in.ThreadContext = lines
+		if !j.ambient && !contextGiven {
+			in.ThreadContext, contextGiven = lines, true // the first message addressed to the agent
 		}
 		v := g.o.Handlers.Inbound(g.base, event, in)
 		if j.ambient {

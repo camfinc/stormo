@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -270,5 +271,69 @@ func TestListenBusyIsQuiet(t *testing.T) {
 	r.quiet(0)
 	if !r.logged("no turn") {
 		t.Errorf("logs %q", r.logs)
+	}
+}
+
+// Under listen ["*"] a channel is listened to only when Slack says it is a channel or a private
+// one: an app_mention twin carries no channel_type, so with none only a channel named in listen
+// is heard. A stranger's mention in a group DM (or anywhere unnamed) through its app_mention twin
+// reaches no handler.
+func TestListenEveryChannelNeedsItsType(t *testing.T) {
+	h := listenHandlers()
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{"*", "C0NAMED001"} })
+	mention := "<@" + slacktest.BotUser + "> chatter"
+	r.fake.Send("m1", slacktest.Event{Type: "app_mention", Channel: "G0GROUPDM1", User: mallet, Text: mention, TS: "1700000900.000100"})
+	r.fake.Send("m2", slacktest.Event{Type: "app_mention", Channel: dev, User: mallet, Text: mention, TS: "1700000900.000200"})
+	r.fake.Send("m3", slacktest.Event{Type: "app_mention", Channel: "C0NAMED001", User: mallet, Text: mention, TS: "1700000900.000300"})
+	r.fake.Send("m4", slacktest.Event{Channel: dev, ChannelType: "channel", User: mallet, Text: mention, TS: "1700000900.000400"})
+	r.quiet(0)
+	_, seen, _ := h.seen()
+	var got []string
+	for _, m := range seen {
+		got = append(got, m.Channel+"/"+m.TS)
+	}
+	slices.Sort(got)
+	if want := []string{dev + "/1700000900.000400", "C0NAMED001/1700000900.000300"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("heard %v, want %v", got, want)
+	}
+}
+
+// A direct reply batched behind an ambient message its handler silenced still gets the thread's
+// earlier messages, for its handlers and its turn, when the thread has no session yet.
+func TestDirectReplyBehindAmbientGetsThreadContext(t *testing.T) {
+	const thread = "1700001000.000100"
+	release := make(chan struct{})
+	h := listenHandlers()
+	in := h.in
+	h.in = func(event string, m messaging.Inbound) messaging.Verdict {
+		if strings.Contains(m.Text, "hold on") {
+			<-release
+			return messaging.Verdict{Action: "silent", Ran: 1}
+		}
+		return in(event, m)
+	}
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev} })
+	r.fake.Replies[dev+":"+thread] = []map[string]any{
+		{"user": alice, "text": "the parent of it all", "ts": thread},
+		{"user": alice, "text": "hold on", "ts": "1700001000.000200"},
+		{"user": alice, "text": "just chatter", "ts": "1700001000.000300"},
+		{"user": alice, "text": "<@" + slacktest.BotUser + "> what do you think?", "ts": "1700001000.000400"},
+	}
+	r.fake.Send("t1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "hold on", TS: "1700001000.000200", ThreadTS: thread})
+	for i := 0; i < 100 && len(func() []messaging.Inbound { _, s, _ := h.seen(); return s }()) == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.fake.Send("t2", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "just chatter", TS: "1700001000.000300", ThreadTS: thread})
+	r.fake.Send("t3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> what do you think?", TS: "1700001000.000400", ThreadTS: thread})
+	time.Sleep(100 * time.Millisecond) // both queued behind the held one, in one batch
+	close(release)
+	r.fake.WaitPosts(1, 5*time.Second)
+	got := r.turns.got(SessionID(dev, thread))
+	if len(got) != 1 || !strings.Contains(got[0], "[Thread context") || !strings.Contains(got[0], "the parent of it all") {
+		t.Errorf("the direct reply's turn has no thread context: %q", got)
+	}
+	_, seen, _ := h.seen()
+	if last := seen[len(seen)-1]; !last.Mentioned || len(last.ThreadContext) == 0 {
+		t.Errorf("the mention's handler got no thread context: %+v", last)
 	}
 }
