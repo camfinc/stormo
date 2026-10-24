@@ -715,7 +715,7 @@ func TestReviewReadsTheRuntimesFile(t *testing.T) {
 	_ = r.s.mutate(func(f *File) (bool, error) { f.Find(collect).Set("deliver", "telegram"); return true, nil })
 	r.fixture("collect.py", "collected", 0)
 	r.tick()
-	made, err := r.s.manage(cronArgs{Action: "create", Schedule: ptr("every 45m"), Prompt: ptr("Ping the pipeline.")}, nil)
+	made, err := r.s.manage(cronArgs{Action: "create", Schedule: ptr("every 45m"), Prompt: ptr("Ping the pipeline.")}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

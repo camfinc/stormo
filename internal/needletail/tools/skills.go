@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 )
 
@@ -149,10 +150,15 @@ func noSecrets(env *Env, texts ...string) error {
 	return nil
 }
 
-func runSkillManage(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
+func runSkillManage(ctx context.Context, env *Env, raw json.RawMessage) (any, error) {
 	var a manageArgs
 	if err := decode(raw, &a); err != nil {
 		return nil, err
+	}
+	if why := UntrustedWhy(ctx, env); why != "" {
+		// a skill's SKILL.md is loaded later as instructions (a job's skills, skill_view), its
+		// tools and handlers run later: none of it changes on words the agent may not obey
+		return nil, messaging.Deferred("a change to your skills", why)
 	}
 	lib, err := skillsOf(env)
 	if err != nil {

@@ -73,6 +73,13 @@ func TestGuideGolden(t *testing.T) {
 			t.Errorf("the jailed guide lacks %q", want)
 		}
 	}
+	// a conversation with untrusted input schedules nothing, and the guide says why, with or
+	// without Luau and Slack
+	for _, g := range []string{got, min} {
+		if !strings.Contains(g, "words you may not obey") || !strings.Contains(g, "can schedule no prompt, job or skill change") {
+			t.Errorf("the guide does not say what an untrusted conversation cannot schedule:\n%s", g)
+		}
+	}
 	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's
 	if !strings.Contains(got, "30 s for tools and the other handlers (luau_timeout)") || !strings.Contains(got, "900 s for on_schedule handlers and .luau job scripts (script_timeout)") {
 		t.Error("the guide does not tell luau_timeout from script_timeout")

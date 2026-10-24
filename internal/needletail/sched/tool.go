@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -86,7 +87,14 @@ func (s *Scheduler) Tool(origin func(session string) json.RawMessage) tools.Tool
 			if origin != nil && env != nil {
 				from = origin(env.Session)
 			}
-			return s.manage(a, from)
+			// a run that may not obey what it handles, or a conversation that took such words in,
+			// makes no job and changes no job's content: the job would run them later as the
+			// agent's own (docs/needletail.md §7)
+			why := messaging.UntrustedWhy(ctx)
+			if why == "" && env != nil && env.Untrusted != nil {
+				why = env.Untrusted(ctx, env.Session)
+			}
+			return s.manage(a, from, why)
 		}}
 }
 
@@ -174,7 +182,7 @@ func view(j *Job) jobView {
 	return v
 }
 
-func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
+func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string) (any, error) {
 	action := strings.ToLower(strings.TrimSpace(a.Action))
 	switch action {
 	case "list":
@@ -193,8 +201,14 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage) (any, error) {
 		}
 		return map[string]any{"jobs": out, "count": len(out)}, err
 	case "create":
+		if untrusted != "" {
+			return nil, messaging.Deferred("a scheduled job", untrusted)
+		}
 		return s.create(a, origin)
 	case "update", "pause", "resume", "remove", "run":
+		if fields := repoFixed(a); action == "update" && untrusted != "" && len(fields) > 0 {
+			return nil, messaging.Deferred("a change to a job's "+strings.Join(fields, ", "), untrusted+" (its schedule, repeat and targets can change, and it can be paused, resumed, run and removed)")
+		}
 	case "":
 		return nil, errors.New("action is required: create, list, update, pause, resume, remove or run")
 	default:

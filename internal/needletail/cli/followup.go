@@ -43,7 +43,7 @@ func followUpOrigin(store *sessions.Store, where func(session string) memory.Aud
 		} else if strings.HasPrefix(session, "slack-") {
 			source = slack.Source
 		}
-		c := followup.Conversation{Session: root, Source: source}
+		c := followup.Conversation{Session: root, Source: source, Untrusted: store.Untrusted(session)}
 		if where != nil {
 			a := where(session)
 			c.Operator = a.Operator
@@ -55,6 +55,21 @@ func followUpOrigin(store *sessions.Store, where func(session string) memory.Aud
 			}
 		}
 		return c
+	}
+}
+
+// untrustedRun is why a call in session may defer no work (tools.Env.Untrusted): its run acts on
+// words the agent may not obey (messaging.UntrustedWhy), or its conversation has taken some in
+// (the session store's mark), whoever wrote this turn.
+func untrustedRun(store *sessions.Store) func(ctx context.Context, session string) string {
+	return func(ctx context.Context, session string) string {
+		if why := messaging.UntrustedWhy(ctx); why != "" {
+			return why
+		}
+		if session != "" && store.Untrusted(session) {
+			return messaging.UntrustedConversation
+		}
+		return ""
 	}
 }
 
@@ -136,7 +151,7 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 			return err
 		}
 		if ok {
-			if err := f.appendReply(tip, it.Text); err != nil {
+			if err := f.appendReply(tip, it.Text, untrustedText(it)); err != nil {
 				f.logf(fmt.Sprintf("follow-up %s: posted, but not kept in the conversation: %v", it.ID, err))
 			}
 		}
@@ -145,11 +160,17 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 	if !ok {
 		return followup.ErrGone
 	}
-	return f.appendReply(tip, it.Text)
+	return f.appendReply(tip, it.Text, untrustedText(it))
 }
 
-func (f *followUps) appendReply(tip, text string) error {
-	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Content: text}); err != nil {
+// untrustedText: a message follow-up's text came from words the agent may not obey (made by a run
+// on such input, or in a conversation that took some in) or from its handler's: the row it leaves
+// in its conversation is kept marked, which marks the conversation, so the next turn and
+// session_search know where it came from.
+func untrustedText(it followup.Item) bool { return it.Untrusted || it.ByHandler() }
+
+func (f *followUps) appendReply(tip, text string, untrusted bool) error {
+	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Content: text, Untrusted: untrusted}); err != nil {
 		if errors.Is(err, sessions.ErrNotFound) || errors.Is(err, sessions.ErrEnded) {
 			return followup.ErrGone // deleted, or ended (a oneshot's, once the command exited)
 		}
@@ -193,7 +214,8 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 		return busy(err)
 	}
 	defer slot.Release()
-	res, err := slot.Turn(ctx, f.input(it), loop.Options{InputKind: wire.KindFollowUp})
+	// a handler's prompt came from a message it handled: its input is stored marked
+	res, err := slot.Turn(ctx, f.input(it), loop.Options{InputKind: wire.KindFollowUp, Untrusted: it.ByHandler()})
 	if err != nil {
 		return err
 	}

@@ -19,9 +19,22 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 )
+
+// UntrustedWhy is why a call may defer no work ("" when it may): its run's context
+// (messaging.UntrustedWhy), else env's Untrusted for its session.
+func UntrustedWhy(ctx context.Context, env *Env) string {
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return why
+	}
+	if env != nil && env.Untrusted != nil {
+		return env.Untrusted(ctx, env.Session)
+	}
+	return ""
+}
 
 // Env is what a tool call may use.
 type Env struct {
@@ -43,6 +56,10 @@ type Env struct {
 	SharedWrite func(ctx context.Context, path string)
 	// Session is the calling session's id.
 	Session string
+	// Untrusted, when set, says why a call in session may defer no work ("" when it may): the
+	// run acts on words the agent may not obey, or its conversation has taken some in
+	// (docs/needletail.md §7). nil: only the run's own context decides (messaging.UntrustedWhy).
+	Untrusted func(ctx context.Context, session string) string
 	// Touched, set per call by the loop, is told the /shared paths a tool wrote another way than
 	// the file tools (a Luau tool through the core), so its tool_done hook names them.
 	Touched func(path string)

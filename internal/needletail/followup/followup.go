@@ -109,6 +109,9 @@ type Conversation struct {
 	// them), whose admission is checked again when it fires.
 	Users    []string `json:"users,omitempty"`
 	Operator bool     `json:"-"`
+	// Untrusted: the conversation has taken in words the agent may not obey (the session
+	// store's mark, read when a follow-up is made, never kept in the file).
+	Untrusted bool `json:"-"`
 }
 
 // Item is one follow-up as followups.json v1 keeps it.

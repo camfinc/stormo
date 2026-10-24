@@ -202,6 +202,9 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Skills:         &skills.Library{Home: cfg.Home, Generated: cfg.Skills.Generated, Check: tools.SecretCheck(red.Redact)},
 		Redact:         red.Redact,
 		LongestSecret:  red.Longest,
+		// a run that may not obey what it handles, or a conversation that took such words in,
+		// defers no work (docs/needletail.md §7)
+		Untrusted: untrustedRun(store),
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
 	// Background processes (terminal background: true): the conversation's (its root), killed

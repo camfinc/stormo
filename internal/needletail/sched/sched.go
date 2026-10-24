@@ -551,6 +551,18 @@ func (s *Scheduler) trusted(j *Job) bool {
 	return !agentMade(j) || slices.Contains(s.o.RepoJobs, j.ID())
 }
 
+// runContext is the context a run of j runs in: marked (messaging.WithUntrusted) for a job of the
+// agent's own whose file says untrusted, so nothing in its run (an on_schedule handler, a script,
+// the turn) defers work. No job is made so today (a run or conversation that may not obey what it
+// took in makes none); a job without the key, as every job made before it, is trusted as before,
+// and a repo job always is.
+func (s *Scheduler) runContext(j *Job) context.Context {
+	if !s.trusted(j) && j.Bool("untrusted") {
+		return messaging.WithUntrusted(s.runCtx, "this scheduled run's job was made from words you may not obey")
+	}
+	return s.runCtx
+}
+
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
 func (s *Scheduler) Start(ctx context.Context) {
 	if err := s.Boot(); err != nil {
@@ -756,7 +768,7 @@ func (s *Scheduler) start(id string, now time.Time) {
 				return
 			}
 		}
-		o := s.execute(s.runCtx, job, &slot, session, release, cached)
+		o := s.execute(s.runContext(job), job, &slot, session, release, cached)
 		release()
 		if slot != nil {
 			slot.Release()

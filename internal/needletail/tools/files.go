@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 )
 
@@ -59,19 +60,33 @@ func under(rel string, names []string) bool {
 	return false
 }
 
-// writable resolves p for a write: inside the sandbox and not a protected runtime file.
-func writable(env *Env, p string) (string, error) {
+// writable resolves p for a write: inside the sandbox and not a protected runtime file, and not
+// what the runtime runs later as the agent's own (skills/, scripts/) when the call may defer no
+// work (UntrustedWhy).
+func writable(ctx context.Context, env *Env, p string) (string, error) {
 	real, err := env.Sandbox.Resolve(p)
 	if err != nil {
 		return "", err
 	}
 	if rel, ok := env.Sandbox.HomeRel(real); ok && isProtected(rel) {
 		return "", fmt.Errorf("%s is the runtime's own file and cannot be written with the file tools", rel)
+	} else if ok && runLater(rel) {
+		if why := UntrustedWhy(ctx, env); why != "" {
+			return "", messaging.Deferred("a write to "+rel+" (skills and job scripts run later)", why)
+		}
 	}
 	if info, err := os.Stat(real); err == nil && info.IsDir() {
 		return "", fmt.Errorf("%s is a directory", env.Sandbox.Display(real))
 	}
 	return real, nil
+}
+
+// runLater: rel (slash-separated, relative to the home) is in skills/ or scripts/, which the
+// runtime loads or runs later as the agent's own (a job's skills, Luau tools and handlers, job
+// scripts). Compared case-folded, as isProtected does.
+func runLater(rel string) bool {
+	first, _, _ := strings.Cut(rel, "/")
+	return strings.EqualFold(first, "skills") || strings.EqualFold(first, "scripts")
 }
 
 // openRead opens a resolved path for reading: a regular file only (a FIFO would block the call,
@@ -319,7 +334,7 @@ func writeFileTool() Tool {
 			if a.Content == nil {
 				return nil, errors.New("content is required (use an empty string for an empty file)")
 			}
-			real, err := writable(env, a.Path)
+			real, err := writable(ctx, env, a.Path)
 			if err != nil {
 				return nil, err
 			}
@@ -362,7 +377,7 @@ func patchTool() Tool {
 			if a.Old == "" {
 				return nil, errors.New("old_string is empty: use write_file to create a file")
 			}
-			real, err := writable(env, a.Path)
+			real, err := writable(ctx, env, a.Path)
 			if err != nil {
 				return nil, err
 			}
