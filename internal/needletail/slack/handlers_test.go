@@ -19,14 +19,17 @@ type fakeHandlers struct {
 	mu       sync.Mutex
 	events   []string
 	inbound  []messaging.Inbound
+	runs     []messaging.Input // the Input on each Inbound's context
 	outgoing []messaging.Outgoing
 	in       func(event string, m messaging.Inbound) messaging.Verdict
 	out      func(o messaging.Outgoing) messaging.Verdict
 }
 
-func (f *fakeHandlers) Inbound(_ context.Context, event string, m messaging.Inbound) messaging.Verdict {
+func (f *fakeHandlers) Inbound(ctx context.Context, event string, m messaging.Inbound) messaging.Verdict {
 	f.mu.Lock()
 	f.events, f.inbound = append(f.events, event), append(f.inbound, m)
+	run, _ := messaging.InputOf(ctx)
+	f.runs = append(f.runs, run)
 	in := f.in
 	f.mu.Unlock()
 	if in == nil {

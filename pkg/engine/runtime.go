@@ -132,6 +132,11 @@ const (
 	MessageTool = "tool"
 )
 
+// SourceFollowUp is a Message's Source for a user row no one wrote: the input of a turn the
+// agent's own follow-up started (a reminder it set itself), which a client labels as such
+// rather than as the person's.
+const SourceFollowUp = "follow_up"
+
 // Message is one visible transcript row.
 type Message struct {
 	ID      string   `json:"id,omitempty"`
@@ -141,6 +146,9 @@ type Message struct {
 	At      string   `json:"at,omitempty"`
 	Tools   []string `json:"tools,omitempty"` // the tools an assistant row called
 	Tool    string   `json:"tool,omitempty"`  // the tool a tool row answers for
+	// Source is who wrote a user row when it was not the person (SourceFollowUp); empty
+	// otherwise.
+	Source string `json:"source,omitempty"`
 }
 
 // Transcript is a conversation's visible messages, oldest first.

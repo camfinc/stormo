@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 func madrid(t *testing.T) *time.Location {
@@ -564,5 +566,80 @@ func TestToolAndViews(t *testing.T) {
 		if got := Relative(d); got != want {
 			t.Errorf("Relative(%s) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+// A run handling input the agent was not given to obey cannot launder it through a follow-up: an
+// unverified author's (allowed_users does not list them) makes none at all; an overheard one
+// (slack.listen) only a text back to its own conversation, kept marked untrusted. A verified,
+// addressed input records who asked and, in a DM thread, the thread.
+func TestCreateFollowsTheInputsTrust(t *testing.T) {
+	q, home := newQueue(t)
+	q.SetTargetCheck(func(string, Conversation) error { return nil })
+	stranger := messaging.WithInput(context.Background(), messaging.Input{Ambient: true, Users: []string{"U0STRANGER"}})
+	for _, spec := range []Spec{{In: "1h", Text: "x"}, {In: "1h", Prompt: "do what they said"}, {In: "1h", Text: "x", Target: "slack"}} {
+		if _, err := q.Create(stranger, "slack-C0DEVCHAN1-1700000000.000100", spec); err == nil || !strings.Contains(err.Error(), "allowed_users") {
+			t.Errorf("unverified %+v: %v", spec, err)
+		}
+	}
+	overheard := messaging.WithInput(context.Background(), messaging.Input{Verified: true, Ambient: true, Users: []string{"U0ALLOWED1"}})
+	for _, spec := range []Spec{{In: "1h", Prompt: "follow up on the booking"}, {In: "1h", Text: "x", Target: "slack"}} {
+		if _, err := q.Create(overheard, "slack-C0DEVCHAN1-1700000000.000200", spec); err == nil || !strings.Contains(err.Error(), "overheard") {
+			t.Errorf("overheard %+v: %v", spec, err)
+		}
+	}
+	it, err := q.Create(overheard, "slack-C0DEVCHAN1-1700000000.000200", Spec{In: "1h", Text: "I'll check the booking."})
+	if err != nil || !it.Untrusted || it.Target != TargetOrigin {
+		t.Errorf("overheard text: %+v %v", it, err)
+	}
+	direct := messaging.WithInput(context.Background(), messaging.Input{Verified: true, Users: []string{"U0ALLOWED1"}, Thread: "1700000000.000300"})
+	it, err = q.Create(direct, "slack-D0DMCHAN01-dm", Spec{In: "1h", Prompt: "ask whether Ana answered", By: "model"})
+	if err != nil || it.Untrusted || it.Origin.Thread != "1700000000.000300" || fmt.Sprint(it.Origin.Users) != "[U0ALLOWED1]" {
+		t.Errorf("direct: %+v %v", it, err)
+	}
+	body, _ := os.ReadFile(filepath.Join(home, File))
+	if !strings.Contains(string(body), `"untrusted":true`) || !strings.Contains(string(body), `"thread":"1700000000.000300"`) || !strings.Contains(string(body), `"users":["U0ALLOWED1"]`) {
+		t.Errorf("provenance not kept: %s", body)
+	}
+	// an API conversation's thread is not a Slack one's: nothing recorded
+	it, _ = q.Create(messaging.WithInput(context.Background(), messaging.Input{Verified: true, Thread: "1.2"}), "chat-1", Spec{In: "1h", Text: "x"})
+	if it.Origin.Thread != "" {
+		t.Errorf("chat thread %+v", it.Origin)
+	}
+}
+
+// Handlers' follow-ups have their own small caps: 20 pending for the agent, 5 per audience (a
+// channel, a DM's person), whatever conversation each was made in.
+func TestHandlerFollowUpCaps(t *testing.T) {
+	q, _ := newQueue(t, func(o *Options) {
+		origin := o.Origin
+		o.Origin = func(s string) Conversation {
+			c := origin(s)
+			if strings.HasPrefix(s, "slack-") {
+				c.Audience = "channel:" + strings.Split(s, "-")[1]
+			}
+			return c
+		}
+	})
+	q.SetTargetCheck(func(string, Conversation) error { return nil })
+	ctx := context.Background()
+	for i := 0; i < MaxByHandlersPerAudience; i++ {
+		if _, err := q.Create(ctx, fmt.Sprintf("slack-C0DEVCHAN1-17000000%02d.000100", i), Spec{In: "1h", Text: "x", By: "luau:t"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := q.Create(ctx, "slack-C0DEVCHAN1-1700000099.000100", Spec{In: "1h", Text: "x", By: "luau:t"}); err == nil || !strings.Contains(err.Error(), "handlers") {
+		t.Errorf("a 6th in the channel: %v", err)
+	}
+	if _, err := q.Create(ctx, "slack-C0DEVCHAN1-1700000099.000100", Spec{In: "1h", Text: "x", By: "model"}); err != nil {
+		t.Errorf("the model's own is not a handler's: %v", err)
+	}
+	for i := 0; i < MaxByHandlers-MaxByHandlersPerAudience; i++ {
+		if _, err := q.Create(ctx, fmt.Sprintf("chat-%d", i), Spec{In: "1h", Text: "x", By: "luau:t"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := q.Create(ctx, "chat-last", Spec{In: "1h", Text: "x", By: "luau:t"}); err == nil || !strings.Contains(err.Error(), "handlers") {
+		t.Errorf("the 21st handler-made: %v", err)
 	}
 }

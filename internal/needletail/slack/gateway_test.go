@@ -36,7 +36,8 @@ type fakeTurns struct {
 	busy     int
 	sessions map[string]wire.Session
 	inputs   map[string][]string
-	hold     chan struct{} // when set, turns wait for it
+	runs     map[string][]messaging.Input // the Input on each turn's context
+	hold     chan struct{}                // when set, turns wait for it
 	started  chan string
 	// during, when set, runs in each turn: the tool calls the model would make (their names go to
 	// the turn's observer)
@@ -48,7 +49,7 @@ type fakeTurns struct {
 }
 
 func newTurns() *fakeTurns {
-	return &fakeTurns{sessions: map[string]wire.Session{}, inputs: map[string][]string{}, started: make(chan string, 64)}
+	return &fakeTurns{sessions: map[string]wire.Session{}, inputs: map[string][]string{}, runs: map[string][]messaging.Input{}, started: make(chan string, 64)}
 }
 
 func (f *fakeTurns) Reserve(session string, create wire.Session) (Slot, error) {
@@ -92,6 +93,8 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*
 	s.f.mu.Lock()
 	hold := s.f.hold
 	s.f.inputs[s.session] = append(s.f.inputs[s.session], input)
+	run, _ := messaging.InputOf(ctx)
+	s.f.runs[s.session] = append(s.f.runs[s.session], run)
 	during := s.f.during
 	s.f.mu.Unlock()
 	if hold != nil {

@@ -116,13 +116,28 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 	if it.Kind == KindPrompt && !conversational(from) {
 		return Item{}, errors.New("a prompt follow-up is a turn in the conversation it was made in, and this run has none: use text with a target")
 	}
+	if in, ok := messaging.InputOf(ctx); ok {
+		// the run handles a platform message: a follow-up acts later on its word, so it may do
+		// no more than that message may make the agent do now
+		switch {
+		case !in.Verified:
+			return Item{}, errors.New("this run handles a message from someone allowed_users does not list, who may not instruct you: nothing from it may schedule a follow-up")
+		case in.Ambient && (it.Kind == KindPrompt || it.Target != TargetOrigin):
+			return Item{}, errors.New("this run handles a message overheard in a channel you listen to, not addressed to you: a follow-up from it can only be a text back to this conversation (no prompt, no other target)")
+		}
+		it.Untrusted = in.Ambient
+		it.Origin.Users = append([]string(nil), in.Users...)
+		if from.Source == "slack" {
+			it.Origin.Thread = in.Thread
+		}
+	}
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if err := q.load(); err != nil {
 		return Item{}, err
 	}
-	mine, all := 0, 0
+	mine, all, handlers, here := 0, 0, 0, 0
 	for _, x := range q.items {
 		if x.Status != StatusPending {
 			continue
@@ -131,12 +146,22 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 		if x.Origin.Session == from.Session {
 			mine++
 		}
+		if byHandler(x) {
+			handlers++
+			if audienceKey(x.Origin) == audienceKey(from) {
+				here++
+			}
+		}
 	}
 	switch {
 	case mine >= MaxPerConversation:
 		return Item{}, fmt.Errorf("this conversation has %d pending follow-ups, its most: cancel one (follow_up list shows them)", mine)
 	case all >= MaxPerAgent:
 		return Item{}, fmt.Errorf("you have %d pending follow-ups, your most: cancel some", all)
+	case byHandler(it) && handlers >= MaxByHandlers:
+		return Item{}, fmt.Errorf("your Luau handlers and tools have %d pending follow-ups, their most: cancel some", handlers)
+	case byHandler(it) && here >= MaxByHandlersPerAudience:
+		return Item{}, fmt.Errorf("your Luau handlers and tools have %d pending follow-ups for %s, their most there: cancel some", here, audienceKey(from))
 	}
 	it.ID = q.newID(now)
 	q.items = append(q.items, it)
@@ -146,6 +171,23 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 	}
 	q.poke()
 	return it, nil
+}
+
+// byHandler: made by the agent's Luau (a handler or a tool), not the model's own follow_up.
+func byHandler(it Item) bool { return strings.HasPrefix(it.By, "luau:") }
+
+// audienceKey is who a conversation's follow-ups are for: its memory audience (a channel, a DM's
+// person), else its Slack channel (slack-<channel>-…), else the conversation itself.
+func audienceKey(c Conversation) string {
+	if c.Audience != "" {
+		return c.Audience
+	}
+	if rest, ok := strings.CutPrefix(c.Session, "slack-"); ok {
+		if channel, _, _ := strings.Cut(rest, "-"); channel != "" {
+			return "channel:" + channel
+		}
+	}
+	return c.Session
 }
 
 // when is spec's due time: In (a delay) or At (a time on the agent's wall clock), within

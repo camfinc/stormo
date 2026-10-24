@@ -58,6 +58,10 @@ const (
 	// MaxPerConversation and MaxPerAgent bound the pending follow-ups.
 	MaxPerConversation = 20
 	MaxPerAgent        = 200
+	// MaxByHandlers and MaxByHandlersPerAudience bound the pending follow-ups the agent's Luau
+	// handlers and tools made (By luau:…): a handler runs on every message, in every thread.
+	MaxByHandlers            = 20
+	MaxByHandlersPerAudience = 5
 	// MaxText bounds a text or a prompt (bytes).
 	MaxText = 4 << 10
 	// MaxAttempts is how many times a failing follow-up is tried before it is kept as failed.
@@ -96,7 +100,13 @@ type Conversation struct {
 	Session  string `json:"session,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Audience string `json:"audience,omitempty"`
-	Operator bool   `json:"-"`
+	// Thread is the DM thread it was asked in (a Slack DM's conversation is the whole DM: its
+	// follow-up is posted back in that thread).
+	Thread string `json:"thread,omitempty"`
+	// Users are who asked: the authors of the message the run handled (as the gateway heard
+	// them), whose admission is checked again when it fires.
+	Users    []string `json:"users,omitempty"`
+	Operator bool     `json:"-"`
 }
 
 // Item is one follow-up as followups.json v1 keeps it.
@@ -112,7 +122,10 @@ type Item struct {
 	// Target is TargetOrigin or a target in send_message's grammar.
 	Target string `json:"target"`
 	// By is who made it: "model" (the follow_up tool) or "luau:<tool>".
-	By        string `json:"by,omitempty"`
+	By string `json:"by,omitempty"`
+	// Untrusted: made by a run handling input overheard in a channel the agent listens to (only
+	// a text back to its own conversation can be).
+	Untrusted bool   `json:"untrusted,omitempty"`
 	Status    string `json:"status"`
 	Attempts  int    `json:"attempts"`
 	LastError string `json:"last_error,omitempty"`
@@ -156,6 +169,9 @@ var (
 	ErrInterrupted = errors.New("interrupted: the runtime is stopping")
 	// ErrGone: its conversation no longer exists; kept as failed at once.
 	ErrGone = errors.New("the conversation it belongs to no longer exists")
+	// ErrRefused: the follow-up may not be delivered (what made it may not, now or ever); kept
+	// as failed at once.
+	ErrRefused = errors.New("refused")
 )
 
 // Errors of the queue.
@@ -525,7 +541,7 @@ func (q *Queue) settle(fired Item, err error) {
 		delete(q.busy, fired.ID)
 		it.Attempts++
 		it.LastError = clip(q.o.Redact(err.Error()), 300)
-		if it.Attempts >= MaxAttempts || errors.Is(err, ErrGone) {
+		if it.Attempts >= MaxAttempts || errors.Is(err, ErrGone) || errors.Is(err, ErrRefused) {
 			it.Status, it.FailedAt, it.NextTry = StatusFailed, stamp(now), ""
 			q.logf("follow-up %s failed after %d attempts, dropped (kept for list): %s", fired.ID, it.Attempts, it.LastError)
 		} else {

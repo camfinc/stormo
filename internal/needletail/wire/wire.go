@@ -146,7 +146,13 @@ type Message struct {
 	// ToolName is the tool a tool message answers for (transcripts only; files pair by id).
 	ToolName string `json:"tool_name,omitempty"`
 	At       string `json:"at,omitempty"`
+	// Kind marks a user row no one wrote (KindFollowUp: a follow-up's turn input); empty for
+	// everything else.
+	Kind string `json:"kind,omitempty"`
 }
+
+// KindFollowUp is a Message's Kind for a follow-up's turn input (docs/needletail.md §4.12).
+const KindFollowUp = "follow_up"
 
 // Transcript is GET /v1/sessions/{id}/messages: the conversation's messages, oldest first,
 // following its compactions; SessionID is its live tip.

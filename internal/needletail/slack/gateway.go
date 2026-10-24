@@ -927,6 +927,7 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			in.ThreadContext, contextGiven = lines, true // the first message addressed to the agent
 		}
 		var v messaging.Verdict
+		hctx := messaging.WithInput(g.base, inputOf([]job{j})) // what the handler acts on, for a follow-up it makes
 		if j.ambient {
 			// at most AmbientHandlers at once: a busy channel cannot run a Luau instance per message
 			select {
@@ -934,10 +935,10 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			case <-g.base.Done():
 				continue
 			}
-			v = g.o.Handlers.Inbound(g.base, event, in)
+			v = g.o.Handlers.Inbound(hctx, event, in)
 			<-g.handlers
 		} else {
-			v = g.o.Handlers.Inbound(g.base, event, in)
+			v = g.o.Handlers.Inbound(hctx, event, in)
 		}
 		if j.ambient {
 			// heard, not addressed: only a handler's explicit answer does anything (a handler
@@ -1162,7 +1163,7 @@ func (g *Gateway) turn(session string, jobs []job, input string) {
 	g.running[root] = state
 	g.mu.Unlock()
 	used := &toolNames{}
-	res, err := g.runTurn(slot, root, j, input, used)
+	res, err := g.runTurn(slot, root, j, inputOf(jobs), input, used)
 	g.mu.Lock()
 	noReply := state.noReply
 	g.mu.Unlock()
@@ -1213,8 +1214,8 @@ func (g *Gateway) turn(session string, jobs []job, input string) {
 
 // runTurn runs the turn in slot and gives the slot back, with the conversation's running state
 // and its status line, however the turn ends (a panic too: the worker recovers it). used hears
-// the tools the turn calls.
-func (g *Gateway) runTurn(slot Slot, root string, j job, input string, used *toolNames) (*loop.Result, error) {
+// the tools the turn calls; in is what the turn handles, on its context.
+func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, input string, used *toolNames) (*loop.Result, error) {
 	defer func() {
 		slot.Release()
 		g.mu.Lock()
@@ -1223,7 +1224,24 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, input string, used *too
 		g.status(j.channel, orDefault(j.thread, j.ts), "")
 	}()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	return slot.Turn(g.base, input, loop.Options{Observer: used})
+	return slot.Turn(messaging.WithInput(g.base, in), input, loop.Options{Observer: used})
+}
+
+// inputOf is what a run handling jobs acts on (messaging.Input): verified when every author is,
+// ambient when any of it was overheard, its authors, and the DM thread the reply goes to.
+func inputOf(jobs []job) messaging.Input {
+	in := messaging.Input{Verified: true, Users: []string{}}
+	for _, j := range jobs {
+		in.Verified = in.Verified && j.verified
+		in.Ambient = in.Ambient || j.ambient
+		if who := orDefault(j.ev.User, j.ev.BotID); who != "" && !slices.Contains(in.Users, who) {
+			in.Users = append(in.Users, who)
+		}
+		if j.dm {
+			in.Thread = j.thread
+		}
+	}
+	return in
 }
 
 // toolNames is a turn's observer that keeps the names of the tools it called, for the log.

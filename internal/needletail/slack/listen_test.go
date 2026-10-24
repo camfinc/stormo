@@ -464,3 +464,36 @@ func TestListenBotLoopGuard(t *testing.T) {
 		t.Errorf("a person's reply in the thread: %q", last)
 	}
 }
+
+// The gateway puts what a run handles on its context (messaging.Input), for what the run does on
+// its own later (a follow-up): who wrote it, whether every author is verified, whether any of it
+// was overheard, and a DM thread's ts.
+func TestRunsCarryTheirInput(t *testing.T) {
+	h := listenHandlers()
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev} })
+	r.fake.Send("e1", slacktest.Event{Channel: dev, ChannelType: "channel", User: mallet, Text: "the booking", TS: "1700001400.000100"})
+	r.fake.WaitPosts(1, 5*time.Second)
+	r.fake.Send("e2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "about that", TS: "1700001400.000300", ThreadTS: "1700001400.000200"})
+	r.fake.WaitPosts(2, 5*time.Second)
+	r.fake.Send("e3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "the booking moved", TS: "1700001400.000400"})
+	r.fake.WaitPosts(3, 5*time.Second)
+	want := map[string]messaging.Input{
+		SessionID(dev, "1700001400.000100"): {Ambient: true, Users: []string{mallet}},
+		DMSessionID(dm):                     {Verified: true, Users: []string{alice}, Thread: "1700001400.000200"},
+		SessionID(dev, "1700001400.000400"): {Verified: true, Ambient: true, Users: []string{alice}},
+	}
+	for session, in := range want {
+		r.turns.mu.Lock()
+		got := r.turns.runs[session]
+		r.turns.mu.Unlock()
+		if len(got) != 1 || fmt.Sprintf("%+v", got[0]) != fmt.Sprintf("%+v", in) {
+			t.Errorf("%s: turn input %+v, want %+v", session, got, in)
+		}
+	}
+	h.mu.Lock()
+	runs := append([]messaging.Input(nil), h.runs...)
+	h.mu.Unlock()
+	if len(runs) != 3 || runs[0].Verified || !runs[0].Ambient || runs[1].Thread != "1700001400.000200" || !runs[1].Verified {
+		t.Errorf("handler runs %+v", runs)
+	}
+}

@@ -177,3 +177,14 @@ func TestConversations(t *testing.T) {
 		t.Errorf("500: %v", err)
 	}
 }
+
+// A follow-up's turn input is a user row no one wrote: the adapter marks it (Source), so a
+// client labels it rather than showing it as the owner's message.
+func TestFollowUpRowsAreMarked(t *testing.T) {
+	if m, ok := message(wire.Message{Role: "user", Content: "[Follow-up fu1 …]\nx", Kind: wire.KindFollowUp}); !ok || m.Source != engine.SourceFollowUp || m.Role != "user" {
+		t.Errorf("follow-up row %+v", m)
+	}
+	if m, _ := message(wire.Message{Role: "user", Content: "hello"}); m.Source != "" {
+		t.Errorf("a person's row %+v", m)
+	}
+}

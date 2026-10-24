@@ -70,3 +70,33 @@ func TestFollowUpBindings(t *testing.T) {
 		t.Errorf("before_send: %s", out)
 	}
 }
+
+// A message handler's follow_up runs on the message's word (the Input the gateway puts on its
+// context): from a person allowed_users does not list, none; from an overheard one, only a text.
+func TestFollowUpFromAHandlerFollowsItsInput(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rt.Grants = append(rt.Grants, fuRW...)
+	rt.FollowUps = followup.New(followup.Options{Home: rt.Home, Origin: func(s string) followup.Conversation {
+		return followup.Conversation{Session: s, Source: "api_server"}
+	}})
+	skill(t, rt.Home, "a/one", map[string]string{"handlers/h.luau": handler("h", "on_message", "caps: [followup:write]\n", `
+function on_message(ev)
+  local ok, e = pcall(follow_up, {delay = "1h", [ev.what] = "check the booking"})
+  return {action = "pass", context = ok and "made" or tostring(e)}
+end`)})
+	for _, c := range []struct {
+		in         messaging.Input
+		what, want string
+	}{
+		{messaging.Input{Ambient: true}, "text", "allowed_users"},
+		{messaging.Input{Verified: true, Ambient: true}, "prompt", "overheard"},
+		{messaging.Input{Verified: true, Ambient: true}, "text", "made"},
+		{messaging.Input{Verified: true}, "prompt", "made"},
+	} {
+		ctx := messaging.WithInput(context.Background(), c.in)
+		v := rt.Dispatch(ctx, OnMessage, "chat-1", map[string]any{"text": "hi", "what": c.what}, nil)
+		if len(v.Context) != 1 || !strings.Contains(v.Context[0], c.want) {
+			t.Errorf("%+v %s: %+v, want %q", c.in, c.what, v, c.want)
+		}
+	}
+}

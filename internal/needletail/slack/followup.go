@@ -26,6 +26,8 @@ type FollowUpPost struct {
 	// Kind is FollowUpMessage or FollowUpReply.
 	Kind string
 	Text string
+	// Thread is the DM thread it was asked in, where it is posted back ("" for the DM itself).
+	Thread string
 }
 
 // FollowUp posts a follow-up: the agent's before_send handlers first, then the messaging policy.
@@ -40,6 +42,9 @@ func (g *Gateway) FollowUp(ctx context.Context, p FollowUpPost) error {
 		channel, thread, ok := Origin(p.Origin)
 		if !ok {
 			return fmt.Errorf("%s is not a Slack conversation", p.Origin)
+		}
+		if thread == "" {
+			thread = p.Thread // a DM: the thread it was asked in
 		}
 		target := messaging.Target{Platform: "slack", Channel: channel, Thread: thread}
 		text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: p.Kind, Session: p.Origin, Text: p.Text}, target)

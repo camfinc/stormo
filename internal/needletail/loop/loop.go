@@ -109,6 +109,9 @@ type Options struct {
 	Observer Observer
 	// Job: a scheduled run (memory recall is off for those unless memory.recall.jobs).
 	Job bool
+	// InputKind marks the turn's input row (wire.Message.Kind): wire.KindFollowUp for a
+	// follow-up's turn, which no one wrote; "" for a person's message.
+	InputKind string
 }
 
 // Result is a finished turn.
@@ -185,7 +188,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		history = append(history, stored...)
 		a.logf("session=%s: %d tool calls of an interrupted turn answered as interrupted", tip, len(calls))
 	}
-	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input})
+	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input, Kind: opts.InputKind})
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
@@ -68,5 +69,16 @@ func TestFollowUp(t *testing.T) {
 		if err := r.g.CheckFollowUp(c.target, c.origin); (err == nil) != c.ok {
 			t.Errorf("%q from %q: %v", c.target, c.origin, err)
 		}
+	}
+}
+
+// A follow-up asked in a DM thread is posted back in that thread.
+func TestFollowUpInADMThread(t *testing.T) {
+	r := newRig(t, nil)
+	if err := r.g.FollowUp(context.Background(), FollowUpPost{Origin: DMSessionID(dm), Thread: "1700001500.000100", Kind: FollowUpMessage, Text: "Reminder: call Ana."}); err != nil {
+		t.Fatal(err)
+	}
+	if p := r.fake.WaitPosts(1, 5*time.Second); p[0].Channel != dm || p[0].Thread != "1700001500.000100" {
+		t.Errorf("post %+v", p[0])
 	}
 }

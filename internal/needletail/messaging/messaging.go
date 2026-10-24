@@ -300,3 +300,33 @@ func HandlerEvent(ctx context.Context) string {
 	s, _ := ctx.Value(handlerKey{}).(string)
 	return s
 }
+
+// Input is what a run handles, as the gateway heard it (never the model's words): it is on the
+// context of a message's handlers and of the turn that answers a batch of messages, so what the
+// run does on its own later (a follow-up, §4.12) knows on whose word it acts. A run with no
+// Input (the API's, a oneshot's, a scheduled one) handles no platform message.
+type Input struct {
+	// Verified: every author passed allowed_users.
+	Verified bool
+	// Ambient: some of it was overheard in a channel the agent listens to (slack.listen), not
+	// addressed to it.
+	Ambient bool
+	// Users are its authors (user ids, or bot ids for a bot with none).
+	Users []string
+	// Thread is the DM thread the reply goes to ("" for the DM itself, and in a channel, whose
+	// session is its thread).
+	Thread string
+}
+
+type inputKey struct{}
+
+// WithInput marks ctx as a run handling in.
+func WithInput(ctx context.Context, in Input) context.Context {
+	return context.WithValue(ctx, inputKey{}, in)
+}
+
+// InputOf is the input the run ctx belongs to handles; false outside a platform message's run.
+func InputOf(ctx context.Context) (Input, bool) {
+	in, ok := ctx.Value(inputKey{}).(Input)
+	return in, ok
+}

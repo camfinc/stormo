@@ -109,6 +109,9 @@ func message(m wire.Message) (engine.Message, bool) {
 		return engine.Message{}, false
 	}
 	msg := engine.Message{Role: m.Role, Kind: engine.MessageText, Content: strings.TrimSpace(m.Content), At: m.At}
+	if m.Role == "user" && m.Kind == wire.KindFollowUp {
+		msg.Source = engine.SourceFollowUp // the agent's own follow-up started this turn: no one wrote it
+	}
 	for _, tc := range m.ToolCalls {
 		if tc.Name != "" {
 			msg.Tools = append(msg.Tools, tc.Name)
