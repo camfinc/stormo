@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -36,7 +37,7 @@ import (
 
 // What each agent is up to: busy on a turn (and from where), on a scheduled job, or idle for a while.
 type mood struct {
-	busy   string // session source while working: slack, telegram, api_server; "" when not
+	busy   string // session source while working: slack, api_server; "" when not
 	job    string // a scheduled job running right now
 	idle   time.Duration
 	attend bool // a platform that needs attention
@@ -88,8 +89,8 @@ func main() {
 	c.Close()
 }
 
-// fakeEngine answers the engine API calls the core makes (/health/detailed, /api/sessions,
-// /api/jobs) per agent, from its mood.
+// fakeEngine answers the engine API call the core makes per agent (needletail's GET /v1/activity),
+// from its mood.
 func fakeEngine(inst *instance.Instance) core.ActivityFetch {
 	ports := map[string]string{}
 	for _, id := range manifest.AgentIDs(inst.Root) {
@@ -98,6 +99,9 @@ func fakeEngine(inst *instance.Instance) core.ActivityFetch {
 		}
 	}
 	return func(_ context.Context, url string, _ http.Header) (*http.Response, error) {
+		if !strings.Contains(url, "/v1/activity") {
+			return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader("{}")), Header: http.Header{}}, nil
+		}
 		id := ""
 		for k, v := range ports {
 			if strings.Contains(url, k) {
@@ -106,41 +110,19 @@ func fakeEngine(inst *instance.Instance) core.ActivityFetch {
 		}
 		m := moods[id]
 		now := time.Now()
-		var body any
-		switch {
-		case strings.Contains(url, "/health/detailed"):
-			active := 0
-			if m.busy != "" {
-				active = 1
-			}
-			body = map[string]any{
-				"active_agents": active, "gateway_busy": m.busy != "",
-				"platforms": map[string]any{"slack": map[string]any{"state": "connected", "needs_attention": m.attend}},
-			}
-		case strings.Contains(url, "/api/sessions"):
-			last, source := now.Add(-m.idle), m.busy
-			if source == "" {
-				source = "slack"
-			}
-			if m.job != "" {
-				last, source = now.Add(-time.Minute), "cron"
-			}
-			body = map[string]any{"data": []any{map[string]any{"source": source, "last_active": float64(last.UnixMilli()) / 1000}}}
-		case strings.Contains(url, "/api/jobs"):
-			jobs := []any{}
-			if m.job != "" {
-				// An hourly job that started a minute ago and last finished two hours ago is running.
-				jobs = append(jobs, map[string]any{
-					"id": id + "-job", "name": m.job, "enabled": true,
-					"schedule":    map[string]any{"kind": "interval", "minutes": 60},
-					"next_run_at": loop.IsoMillis(now.Add(59 * time.Minute)), "last_run_at": loop.IsoMillis(now.Add(-2 * time.Hour)),
-				})
-			}
-			body = map[string]any{"jobs": jobs}
-		default:
-			return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader("{}")), Header: http.Header{}}, nil
+		a := wire.Activity{RunningJobs: []string{}, Source: m.busy, LastActive: now.Add(-m.idle).Format(time.RFC3339Nano),
+			Platforms: map[string]wire.Platform{"slack": {State: "connected", NeedsAttention: m.attend}}}
+		if m.busy != "" {
+			a.ActiveTurns, a.Busy = 1, true
+		} else {
+			a.Source = "slack"
 		}
-		b, _ := json.Marshal(body)
+		if m.job != "" {
+			// An hourly job that started a minute ago; the one before finished two hours ago.
+			a.Source, a.LastActive = "cron", now.Add(-time.Minute).Format(time.RFC3339Nano)
+			a.RunningJobs, a.LastJobAt = []string{m.job}, now.Add(-2*time.Hour).Format(time.RFC3339Nano)
+		}
+		b, _ := json.Marshal(a)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(b)), Header: http.Header{"Content-Type": {"application/json"}}}, nil
 	}
 }
@@ -156,10 +138,10 @@ func napRounds(inst *instance.Instance) {
 		files := []loop.NapFile{
 			{Path: "memories/MEMORY.md", Class: engine.Learning, Sha256: fmt.Sprintf("m%d", i), Size: 1},
 			{Path: "skills/notes/SKILL.md", Class: engine.Learning, Sha256: fmt.Sprintf("s%d", i/3), Size: 1},
-			{Path: "state.db", Class: engine.Raw, Sha256: fmt.Sprintf("r%d", i), Size: 1},
+			{Path: "sessions/demo.jsonl", Class: engine.Raw, Sha256: fmt.Sprintf("r%d", i), Size: 1},
 		}
 		n := loop.Nap{ID: strings.NewReplacer("-", "", ":", "", ".", "").Replace(loop.IsoMillis(now)) + fmt.Sprintf("-demo%d", i), Agent: id,
-			Engine: "hermes", Instance: "demo", TakenAt: loop.IsoMillis(now), Reason: "interval", Files: files}
+			Engine: "needletail", Instance: "demo", TakenAt: loop.IsoMillis(now), Reason: "interval", Files: files}
 		body, _ := learning.MarshalIndent(n)
 		_ = store.Put(loop.NapKey(id, n.ID), body)
 		ptr, _ := learning.MarshalCompact(map[string]string{"nap": n.ID})
