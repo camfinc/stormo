@@ -791,7 +791,7 @@ func (g *Gateway) enqueue(session string, j job) int {
 		return queueFull
 	}
 	w := g.workers[session]
-	if share := max(1, g.o.MaxQueued/2); j.ambient && (g.ambient >= share || w != nil && w.pendingAmbient >= max(1, g.o.MaxPending/2)) {
+	if share := max(1, g.o.MaxQueued/2); j.ambient && (g.ambient >= share || w != nil && w.pendingAmbient+w.inflightAmbient >= max(1, g.o.MaxPending/2)) {
 		g.dropped++
 		if now := time.Now(); now.Sub(g.droppedAt) >= time.Minute {
 			g.logf("slack: ambient messages fill their share of the queue (%d): %d heard in listened channels dropped, unanswered", share, g.dropped)
@@ -907,7 +907,9 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 	if g.o.Handlers == nil {
 		left := jobs[:0:0]
 		for _, j := range jobs {
-			if !j.ambient { // never queued without handlers; nothing hears it
+			// an ambient message is never queued without handlers (nothing hears it); the
+			// bot-loop guard holds all the same
+			if !j.ambient && g.botTurn(j) {
 				left = append(left, j)
 			}
 		}
@@ -935,8 +937,10 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			case <-g.base.Done():
 				continue
 			}
-			v = g.o.Handlers.Inbound(hctx, event, in)
-			<-g.handlers
+			func() {
+				defer func() { <-g.handlers }() // a handler that panics gives its slot back too
+				v = g.o.Handlers.Inbound(hctx, event, in)
+			}()
 		} else {
 			v = g.o.Handlers.Inbound(hctx, event, in)
 		}
