@@ -350,6 +350,8 @@ private struct MessageRow: View {
     var body: some View {
         if message.isTool {
             tool
+        } else if message.isFollowUp {
+            followUp
         } else if message.isUser {
             HStack {
                 Spacer(minLength: 60)
@@ -366,6 +368,26 @@ private struct MessageRow: View {
             }
             .padding(.trailing, 60)
         }
+    }
+
+    /// A follow-up the agent set itself coming due: its runtime wrote this input, not the owner.
+    private var followUp: some View {
+        VStack(spacing: 3) {
+            Label("Follow-up", systemImage: "clock.arrow.circlepath")
+                .font(.caption.weight(.medium))
+            Text(markdown)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 40)
+        .help(followUpHelp)
+    }
+
+    private var followUpHelp: String {
+        let when = message.date.map { " at \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
+        return "A follow-up \(agentName) scheduled for itself came due\(when). This is the reminder it left, not a message from you."
     }
 
     /// A tool call (the assistant asking) or its output, folded to one line.

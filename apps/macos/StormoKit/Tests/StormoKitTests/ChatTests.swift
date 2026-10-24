@@ -12,6 +12,25 @@ import Testing
         #expect(t.messages[0].date != nil && t.messages[0].isUser)
     }
 
+    @Test func followUpRows() throws {
+        let line = #"{"event":"result","data":{"agent":"sofia","id":"api_1","tip":"api_1","compacted":false,"messages":[{"id":"1","role":"user","kind":"text","content":"Say hola in 10 s"},{"id":"2","role":"assistant","kind":"text","content":"Will do"},{"id":"3","role":"user","kind":"text","content":"Say hola","source":"follow_up"},{"id":"4","role":"user","kind":"text","content":"x","source":"something_new"},{"id":"5","role":"assistant","kind":"text","content":"hola","source":"follow_up"}]}}"#
+        let rows = try #require(try CLIEvent(line: line)?.decode(Transcript.self)).messages
+        #expect(!rows[0].isFollowUp && rows[0].isUser && rows[0].source == nil)
+        #expect(rows[2].isFollowUp && rows[2].isUser && rows[2].source == "follow_up")
+        // An unknown source is the owner's row, as before; only a user row can be a follow-up.
+        #expect(rows[3].isUser && !rows[3].isFollowUp)
+        #expect(!rows[4].isFollowUp)
+    }
+
+    @Test func rowsWithoutIDsStayTheSameAcrossReads() throws {
+        let line = #"{"event":"result","data":{"agent":"sofia","id":"api_1","tip":"api_1","compacted":false,"messages":[{"role":"user","kind":"text","content":"a"},{"id":"82","role":"user","kind":"text","content":"Hi"},{"role":"assistant","kind":"tool","content":"","tools":["web_search"]},{"role":"tool","kind":"tool","content":"r","tool":"web_search"},{"id":"83","role":"assistant","kind":"text","content":"OK"},{"id":"83","role":"assistant","kind":"text","content":"again"}]}}"#
+        let a = try #require(try CLIEvent(line: line)?.decode(Transcript.self))
+        let b = try #require(try CLIEvent(line: line)?.decode(Transcript.self))
+        #expect(a == b)
+        #expect(a.messages.map(\.id) == ["start+1", "82", "82+1", "82+2", "83", "83+1"])
+        #expect(Set(a.messages.map(\.id)).count == a.messages.count)
+    }
+
     @Test func conversationsFromCLI() throws {
         let line = #"{"event":"result","data":{"agent":"sofia","conversations":[{"id":"a","title":"Plan","source":"api_server","lastActive":"2026-10-09T19:12:55Z","messages":4,"ended":false,"compacted":true},{"id":"b","source":"cron","preview":"Daily report","messages":6,"ended":true}]}}"#
         let list = try #require(try CLIEvent(line: line)?.decode(ConversationsResult.self)).conversations
