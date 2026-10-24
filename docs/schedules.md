@@ -294,7 +294,14 @@ does. (Started without the split, or on Hermes, the terminal can still edit `cro
 - **Users.** Scripts and monitors run as the agent's user, apart from the runtime (§5).
 
 - One-time schedules (`in 30m`, a timestamp) are refused: agent.yaml has no form for them, so the
-  dream could not propose them.
+  dream could not propose them. Something done once, later, is a **follow-up**, not a job
+  (docs/needletail.md §4.12): the `follow_up` tool (and Luau's `follow_up`) sends a text or takes a
+  turn once, 5 seconds to 30 days ahead, in the conversation it was asked in (or another target the
+  messaging policy allows). Follow-ups are not in `cron/jobs.json`, never reach review, are kept in
+  the runtime's private `state/needletail/followups.json` (so a pending one survives a restart; one
+  missed while the agent was down fires at the next boot) and are never offered to a scheduled run,
+  which has no conversation to come back to. The refusal points the agent at `follow_up`, and so
+  does the 5-minute floor (§7). A prompt follow-up's turn takes the scheduled runs' lane (§2).
 - `model` and `provider` are recorded but not applied: every job runs on the agent's model (logged
   once per job).
 - Not implemented: `monitor_url`, `context_from` and `continuity`, `workdir`, the per-job notepad,
