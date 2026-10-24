@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
-// ToolName is the model's tool (sched never offers it to a scheduled run).
-const ToolName = sched.FollowUpTool
+// ToolName is the model's tool (sched.FollowUpTool, which sched never offers to a scheduled run;
+// pinned by a test).
+const ToolName = "follow_up"
 
 const toolDescription = `Do or say something once, later, in this conversation: "say hola in 10 seconds", "remind me tomorrow at 9", "check back on the quote in 2 hours".
 

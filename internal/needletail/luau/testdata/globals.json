@@ -405,6 +405,52 @@
       }
     },
     {
+      "name": "followup.create",
+      "global": "follow_up",
+      "params": [
+        {
+          "name": "spec",
+          "type": "table"
+        }
+      ],
+      "spread": true,
+      "grant": "followup:write",
+      "write": true,
+      "wire": {
+        "name": "followup.create",
+        "global": "follow_up",
+        "params": [
+          "spec"
+        ],
+        "spread": true
+      }
+    },
+    {
+      "name": "followup.list",
+      "params": [],
+      "grant": "followup:read",
+      "wire": {
+        "name": "followup.list"
+      }
+    },
+    {
+      "name": "followup.cancel",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        }
+      ],
+      "grant": "followup:write",
+      "write": true,
+      "wire": {
+        "name": "followup.cancel",
+        "params": [
+          "id"
+        ]
+      }
+    },
+    {
       "name": "hash.sha256",
       "global": "sha256",
       "params": [
@@ -502,6 +548,7 @@
     "core_call",
     "delete_memory",
     "error",
+    "follow_up",
     "getmetatable",
     "http_request",
     "ipairs",
@@ -551,6 +598,10 @@
   "nt": [
     "core",
     "core.call",
+    "followup",
+    "followup.cancel",
+    "followup.create",
+    "followup.list",
     "fs",
     "fs.append",
     "fs.list",

@@ -2,7 +2,8 @@
 // send, or a turn to take, once, later ("say hola in 10 seconds", "remind me tomorrow at 9").
 // Recurring work is a scheduled job (sched); a follow-up is not a job: agent.yaml has no form for
 // it, it is never proposed for review, and it lives in the runtime's private state
-// (state/needletail/followups.json, 0600, napped as State) so a pending one survives a restart.
+// (state/needletail/followups.json, 0600; napped as Raw, since what it says is client data, and
+// restored at boot) so a pending one survives a restart.
 //
 // A follow-up belongs to the conversation it was made in, as the runtime knows it (the session's
 // root, source and memory audience: never the model's words) and, unless it names another target
@@ -177,6 +178,9 @@ type Options struct {
 	Redact func(string) string
 	// Check refuses a text holding a secret value the runtime knows (tools.SecretCheck).
 	Check func(string) error
+	// ScanPrompt is the scan a scheduled job's prompt meets (sched.ScanPrompt): a prompt it
+	// blocks is refused, with its reason ("" passes).
+	ScanPrompt func(prompt string) string
 	// Origin is the conversation a session belongs to, from the runtime's own records.
 	Origin func(session string) Conversation
 	// MinDelay overrides MinDelay (tests only; 0: MinDelay).

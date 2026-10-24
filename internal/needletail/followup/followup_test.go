@@ -197,6 +197,12 @@ func TestCreateBounds(t *testing.T) {
 func TestCreateRefusesSecretsAndInjection(t *testing.T) {
 	known := errors.New("that is a secret value the runtime knows")
 	q, _ := newQueue(t, func(o *Options) {
+		o.ScanPrompt = func(p string) string {
+			if strings.Contains(p, "$API_TOKEN") || strings.ContainsRune(p, '\u200b') {
+				return "blocked by the scan"
+			}
+			return ""
+		}
 		o.Check = func(s string) error {
 			if strings.Contains(s, "hunter2-value") {
 				return known

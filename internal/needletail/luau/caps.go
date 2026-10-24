@@ -9,8 +9,8 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
-// Cap is one capability (wire.Capability): Kind fs.read, fs.write, http, core, message, memory
-// or kv, and its Arg (home, shared, home/<glob>, a host or *.suffix, a tool or prefix*, a
+// Cap is one capability (wire.Capability): Kind fs.read, fs.write, http, core, message, memory,
+// kv or followup, and its Arg (home, shared, home/<glob>, a host or *.suffix, a tool or prefix*, a
 // send_message target or <prefix>:*, read or write).
 type Cap struct{ Kind, Arg string }
 
@@ -20,7 +20,7 @@ func (c Cap) String() string { return c.Kind + ":" + c.Arg }
 func ParseCap(s string) (Cap, error) {
 	s = strings.TrimSpace(s)
 	if !wire.Capability.MatchString(s) {
-		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>, message:<target>, memory:read, memory:write, kv:read, kv:write)", s)
+		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>, message:<target>, memory:read, memory:write, kv:read, kv:write, followup:read, followup:write)", s)
 	}
 	kind, arg, _ := strings.Cut(s, ":")
 	return Cap{Kind: kind, Arg: arg}, nil
@@ -128,6 +128,13 @@ func (c Caps) Memory(op string) bool {
 // other.
 func (c Caps) KV(op string) bool {
 	return c.allow("kv", func(a string) bool { return a == op })
+}
+
+// FollowUp: the one-time follow-ups' op, read (nt.followup.list) or write (follow_up,
+// nt.followup.cancel). Neither implies the other; a follow-up to another target than the run's
+// conversation needs that target's message: cap besides.
+func (c Caps) FollowUp(op string) bool {
+	return c.allow("followup", func(a string) bool { return a == op })
 }
 
 // Core: calling the core's tool.

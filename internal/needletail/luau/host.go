@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
@@ -60,6 +61,8 @@ type Runtime struct {
 	Core     CoreCaller
 	CoreURLs []string
 	Memory   *memory.Store
+	// FollowUps are the agent's one-time follow-ups (follow_up, nt.followup; nil: unavailable).
+	FollowUps *followup.Queue
 	// Messenger sends send_message's messages under the runtime's messaging policy (the Slack
 	// gateway; nil: none runs, and send_message is unavailable).
 	Messenger messaging.Messenger

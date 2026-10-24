@@ -213,7 +213,14 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	recall := recaller(cfg.Memory.Recall, mem, store, logf)
 	agent.Recall = recall.Block
+	// One-time follow-ups (§4.12): in the conversation they are made in, as the runtime knows it.
+	fu := followup.New(followup.Options{Home: cfg.Home, Location: cfg.Location, Log: logf, Redact: red.Redact,
+		Check: tools.SecretCheck(red.Redact), ScanPrompt: sched.ScanPrompt, Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay})
+	agent.Tools.Add(fu.Tool())
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
+	if lr != nil {
+		lr.FollowUps = fu // follow_up and nt.followup, in the run's conversation
+	}
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
 	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
@@ -224,10 +231,6 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	s := sched.New(opts)
 	agent.Tools.Add(s.Tool(origin(store)))
-	// One-time follow-ups (§4.12): in the conversation they are made in, as the runtime knows it.
-	fu := followup.New(followup.Options{Home: cfg.Home, Location: cfg.Location, Log: logf, Redact: red.Redact,
-		Check: tools.SecretCheck(red.Redact), Origin: followUpOrigin(store, mem.Where), MinDelay: followUpMinDelay})
-	agent.Tools.Add(fu.Tool())
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,

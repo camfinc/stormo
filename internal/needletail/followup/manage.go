@@ -10,7 +10,6 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
-	"github.com/camfinc/stormo/internal/needletail/sched"
 )
 
 // Spec is a follow-up to create: when (In, a delay, or At, a time), what (Text, sent as it is, or
@@ -23,11 +22,12 @@ type Spec struct {
 	By           string
 }
 
-// sourceCron is a scheduled run's sessions' source: no conversation to follow up in.
-const sourceCron = sched.SourceCron
+// SourceCron is a scheduled run's sessions' source (sched.SourceCron, pinned by a test): no
+// conversation to follow up in.
+const SourceCron = "cron"
 
 // conversational: from is a conversation a follow-up can come back to.
-func conversational(from Conversation) bool { return from.Session != "" && from.Source != sourceCron }
+func conversational(from Conversation) bool { return from.Session != "" && from.Source != SourceCron }
 
 // Create checks spec and queues it for the conversation session belongs to.
 func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, error) {
@@ -69,8 +69,10 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 		if err := memory.CheckInjection(prompt); err != nil {
 			return Item{}, errors.New("the prompt reads as instructions to override your rules or reveal secrets: write what to do plainly")
 		}
-		if why := sched.ScanPrompt(prompt); why != "" {
-			return Item{}, errors.New(why)
+		if q.o.ScanPrompt != nil {
+			if why := q.o.ScanPrompt(prompt); why != "" {
+				return Item{}, errors.New(why)
+			}
 		}
 	}
 	now := q.o.Now()

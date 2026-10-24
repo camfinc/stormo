@@ -30,6 +30,8 @@ type Binding struct {
 	Local bool
 	// Write: the call changes something or reaches out (refused by luau_test's dry run).
 	Write bool
+	// Fields are a Spread binding's table fields as the compact reference shows them.
+	Fields string
 
 	run func(ctx context.Context, c *Call, in json.RawMessage) (any, error)
 }
@@ -77,7 +79,7 @@ func Bindings() []Binding {
 			Grant: "fs.write:shared", Example: `lock("/shared/group/plan.md", 10)`, Write: true, run: fsLock},
 		{Name: "fs.unlock", Global: "unlock", Params: []Param{path}, Returns: "table: the core's answer",
 			Doc: "Releases your lock on a shared-space path (fs_unlock).", Grant: "fs.write:shared", Example: `unlock("/shared/group/plan.md")`, Write: true, run: fsUnlock},
-		{Name: "http.request", Global: "http_request", Spread: true,
+		{Name: "http.request", Global: "http_request", Spread: true, Fields: "method, url, headers, body, timeout_ms",
 			Params:  []Param{{Name: "request", Type: "table", Doc: "{method = \"GET\", url = \"https://…\", headers = {…}, body = \"…\", timeout_ms = 10000}"}},
 			Returns: "{status, headers, body}",
 			Doc: "An HTTPS request to a granted host (exact, or *.suffix). Internal addresses are refused, redirects (at most 3) are checked again, " +
@@ -131,6 +133,19 @@ func Bindings() []Binding {
 			Grant: "kv:write", Example: `kv_set("seen:" .. key, true, 12 * 3600)`, Write: true, run: kvSet},
 		{Name: "kv.delete", Global: "kv_delete", Params: []Param{{Name: "key", Type: "string"}}, Returns: "boolean: whether the key was there",
 			Doc: "Removes a key of the store.", Grant: "kv:write", Example: `kv_delete("cursor")`, Write: true, run: kvDelete},
+		{Name: "followup.create", Global: "follow_up", Spread: true, Fields: "delay|at, text|prompt, target?",
+			Params:  []Param{{Name: "spec", Type: "table", Doc: `{delay = "10m" (the tool's in, a Luau keyword) or at = "tomorrow 9am", text = "…" (sent as it is) or prompt = "…" (a turn then), target = "slack:<channel>" (optional)}`}},
+			Returns: "{id, kind, due, due_local, target}: due on the agent's clock",
+			Doc: "Schedules a one-time follow-up in the run's conversation (a message handler's, a tool's turn), as the follow_up tool does: " +
+				"a text sent as it is, or a prompt the agent takes a turn on, 5 seconds to 30 days ahead. Another target (send_message's grammar) " +
+				"needs its message: cap besides and meets the messaging policy; a run with no conversation (a schedule's script) needs one, and cannot use a prompt. " +
+				"Secrets are refused; a before_send handler cannot schedule.",
+			Grant: "followup:write", Example: `follow_up{delay = "2h", text = "Did the quote arrive?"}`, Write: true, run: followUpCreate},
+		{Name: "followup.list", Returns: "{ {id, kind, due, due_local, status, …} }: the run's conversation's, soonest first, with target, text, prompt, attempts, last_error and late",
+			Doc: "Lists the run's conversation's follow-ups, pending and failed.", Grant: "followup:read",
+			Example: `for _, f in nt.followup.list() do log("info", f.id .. " " .. f.due_local) end`, run: followUpList},
+		{Name: "followup.cancel", Params: []Param{{Name: "id", Type: "string"}}, Returns: "{cancelled = id}",
+			Doc: "Cancels one of the run's conversation's follow-ups.", Grant: "followup:write", Example: `nt.followup.cancel(id)`, Write: true, run: followUpCancel},
 		{Name: "hash.sha256", Global: "sha256", Params: []Param{{Name: "text", Type: "string"}}, Returns: "string: 64 lowercase hex digits",
 			Doc: "The SHA-256 of a string (its UTF-8 bytes), in hex: a key for a text without keeping the text.", Example: `local h = sha256(text)`, run: hashSHA256},
 		{Name: "json.encode", Global: "json_encode", Params: []Param{{Name: "value", Type: "any"}}, Returns: "string",
@@ -220,7 +235,7 @@ func CompactReference() string {
 		}
 		call := name + "(" + strings.Join(args, ", ") + ")"
 		if b.Spread {
-			call = name + "{method, url, headers, body, timeout_ms}"
+			call = name + "{" + b.Fields + "}"
 		}
 		ret, _, _ := strings.Cut(b.Returns, " (")
 		ret, _, _ = strings.Cut(ret, ": ")

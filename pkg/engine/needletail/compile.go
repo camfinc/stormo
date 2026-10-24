@@ -92,7 +92,7 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	}
 	for _, g := range c.Luau.Grants {
 		if !wire.Capability.MatchString(g) {
-			return nil, fmt.Errorf("%s: luau grant %q is not a capability (fs.read:home, fs.write:home[/glob], fs.*:shared, http:<host>, core:<tool>, message:<target>, memory:read|write, kv:read|write)", ConfigFile, g)
+			return nil, fmt.Errorf("%s: luau grant %q is not a capability (fs.read:home, fs.write:home[/glob], fs.*:shared, http:<host>, core:<tool>, message:<target>, memory:read|write, kv:read|write, followup:read|write)", ConfigFile, g)
 		}
 	}
 	for _, s := range c.Luau.HTTPSecrets {
