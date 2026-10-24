@@ -10,6 +10,10 @@ import (
 // CronJobTool is the scheduling tool's name (Hermes': its toolset is "cronjob").
 const CronJobTool = "cronjob_manage"
 
+// FollowUpTool is the one-time follow-ups' tool (package followup): a scheduled run has no
+// conversation to come back to.
+const FollowUpTool = "follow_up"
+
 // toolsets are Hermes' toolset names a job's enabled_toolsets (agent.yaml's schedules.tools)
 // uses, with the tools each stands for here. A toolset with no tool here (web, browser,
 // code_execution, vision, …) offers nothing; a tool's own name stands for itself.
@@ -24,9 +28,9 @@ var toolsets = map[string][]string{
 }
 
 // neverInCron are tools a scheduled run is never offered, as in Hermes: scheduling (a job that
-// makes jobs loops) and messaging (the run's reply is what gets delivered; no_reply has no
-// conversation to stay out of).
-var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool}
+// makes jobs loops), messaging (the run's reply is what gets delivered; no_reply has no
+// conversation to stay out of) and follow-ups (no conversation to come back to).
+var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool, FollowUpTool}
 
 // onlyByName are tools a scheduled run gets only when its list names them: memory_manage
 // changes the memory archive, and a job's fixed prompt has no new knowledge to file unless its

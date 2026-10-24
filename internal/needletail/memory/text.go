@@ -252,6 +252,14 @@ func checkSecret(texts ...string) error {
 	return nil
 }
 
+// CheckSecret refuses text shaped like a credential, by the scrub's secret rules: for the
+// runtime's other stores (the follow-ups), besides the secret values it knows.
+func CheckSecret(texts ...string) error { return checkSecret(texts...) }
+
+// CheckInjection is the injection heuristic, for other text that will reach the model as an
+// instruction (a follow-up's prompt).
+func CheckInjection(text string) error { return checkHot(text) }
+
 // checkHot is the injection heuristic for text that becomes hot (in every system prompt).
 func checkHot(text string) error {
 	if injection.MatchString(text) {
