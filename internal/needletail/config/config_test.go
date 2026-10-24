@@ -26,8 +26,11 @@ func TestLoadGoldenHome(t *testing.T) {
 	if c.Port != 9000 || c.SharedDir != "/shared" || len(c.SharedRoots()) != 2 || c.SharedRoots()[1] != "/shared/sales" {
 		t.Errorf("env = %d %s %v", c.Port, c.SharedDir, c.SharedRoots())
 	}
-	if len(c.Endpoints()) != 1 || len(c.Luau.Grants) != 2 {
-		t.Errorf("endpoints %v grants %v", c.Endpoints(), c.Luau.Grants)
+	// The example's engine/needletail/config.yaml: its grants after the two the adapter always
+	// gives, the CRM token as a header, its wall clock.
+	if len(c.Endpoints()) != 1 || strings.Join(c.Luau.Grants, ",") != "fs.read:home,fs.write:home,http:crm.example.com,fs.read:shared" ||
+		len(c.Luau.HTTPSecrets) != 1 || c.Luau.HTTPSecrets[0].Env != "CRM_API_TOKEN" || c.Timezone != "America/New_York" {
+		t.Errorf("endpoints %v grants %v http_secrets %+v timezone %q", c.Endpoints(), c.Luau.Grants, c.Luau.HTTPSecrets, c.Timezone)
 	}
 	if c.Slack != nil || len(c.Schedules.Repo) != 1 || c.Schedules.Turns != 0 {
 		t.Errorf("slack %+v schedules %+v", c.Slack, c.Schedules)

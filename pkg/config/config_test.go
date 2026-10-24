@@ -174,10 +174,10 @@ func TestApplyKeepsTheFileAsWritten(t *testing.T) {
 		{"null deletes", `{"learning":{"seed_fill":null}}`, []string{"-  seed_fill: 0.6"}},
 		{"a list loses one item", `{"secrets":["ELEVENLABS_API_KEY","API_SERVER_KEY"]}`,
 			[]string{"-  - APIFY_API_TOKEN"}},
-		{"a flow list stays flow", `{"channels":[{"kind":"slack","allow_bots":"mentions","slash_commands":true,"allowed_users":["U0000000001","U0000000002"],"home_channel":"C0000000001"},{"kind":"telegram"}]}`,
+		{"a flow list stays flow", `{"channels":[{"kind":"slack","allow_bots":"mentions","allowed_users":["U0000000001","U0000000002"],"home_channel":"C0000000001"}]}`,
 			[]string{"-    allowed_users: [U0000000001]", "+    allowed_users: [U0000000001, U0000000002]"}},
-		{"a key leaves a list item", `{"channels":[{"kind":"slack","allow_bots":"mentions","allowed_users":["U0000000001"],"home_channel":"C0000000001"},{"kind":"telegram"}]}`,
-			[]string{"-    slash_commands: true"}},
+		{"a key leaves a list item", `{"channels":[{"kind":"slack","allowed_users":["U0000000001"],"home_channel":"C0000000001"}]}`,
+			[]string{"-    allow_bots: mentions"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

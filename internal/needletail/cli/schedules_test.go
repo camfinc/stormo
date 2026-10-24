@@ -80,8 +80,7 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	_ = os.RemoveAll(filepath.Join(root, "agents", "atlas", "learnings"))
 	manifestPath := filepath.Join(root, "agents", "atlas", "agent.yaml")
 	raw, _ := os.ReadFile(manifestPath)
-	m := strings.Replace(string(raw), "  kind: hermes\n  version: 0.21.5\n  image_tag: v2026.9.24\n", "  kind: needletail\n  version: 0.1.0\n  image_tag: v0.1.0\n", 1)
-	m = strings.Replace(m, "  provider: openrouter\n", "  provider: stub\n", 1)
+	m := strings.Replace(string(raw), "  provider: openrouter\n", "  provider: stub\n", 1)
 	if err := os.WriteFile(manifestPath, []byte(m), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -5,9 +5,9 @@ name: Scout
 unit: sales
 role: Nudges the team when a lead waits too long.
 engine:
-  kind: hermes
-  version: 0.21.5
-  image_tag: v2026.9.24
+  kind: needletail
+  version: 0.1.0-dev.2084e89
+  image_tag: dev-2084e89
 model:
   name: openai/gpt-6-luna
   local:

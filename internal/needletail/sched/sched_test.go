@@ -64,11 +64,6 @@ func buildHome(t *testing.T) string {
 		t.Fatal("agent.yaml has no schedules block before state")
 	}
 	m = m[:start+1] + string(fixture) + m[end:]
-	old := "  kind: hermes\n  version: 0.21.5\n  image_tag: v2026.9.24\n"
-	if !strings.Contains(m, old) {
-		t.Fatal("agent.yaml engine block moved")
-	}
-	m = strings.Replace(m, old, "  kind: needletail\n  version: 0.1.0\n  image_tag: v0.1.0\n", 1)
 	if err := os.WriteFile(filepath.Join(agentDir, "agent.yaml"), []byte(m), 0o644); err != nil {
 		t.Fatal(err)
 	}

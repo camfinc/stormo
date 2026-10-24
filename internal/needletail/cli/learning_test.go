@@ -144,16 +144,11 @@ func newLearningWorld(t *testing.T) *learningWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := string(raw)
-	for old, repl := range map[string]string{
-		"  kind: hermes\n  version: 0.21.5\n  image_tag: v2026.9.24\n": "  kind: needletail\n  version: 0.1.0\n  image_tag: v0.1.0\n",
-		"  provider: openrouter\n":                                     "  provider: stub\n",
-	} {
-		if !strings.Contains(m, old) {
-			t.Fatalf("agent.yaml has no %q", old)
-		}
-		m = strings.Replace(m, old, repl, 1)
+	const provider = "  provider: openrouter\n"
+	if !strings.Contains(string(raw), provider) {
+		t.Fatalf("agent.yaml has no %q", provider)
 	}
+	m := strings.Replace(string(raw), provider, "  provider: stub\n", 1)
 	if err := os.WriteFile(manifestPath, []byte(m), 0o644); err != nil {
 		t.Fatal(err)
 	}
