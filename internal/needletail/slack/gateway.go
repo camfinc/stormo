@@ -109,6 +109,13 @@ type Options struct {
 	// message there (no mention, not a thread the agent is in) is ambient: it reaches the
 	// on_message handlers alone, and nothing happens unless one passes it on or replies.
 	Listen []string
+	// AmbientHandlers is how many ambient messages' handlers run at once (default 4); ambient
+	// messages hold at most half of MaxQueued (and of a conversation's MaxPending): past it one
+	// is acked and dropped, since no one is owed an answer.
+	AmbientHandlers int
+	// BotTurns is the bot-loop guard (default 5): under Listen with allow_bots all, how many of a
+	// bot's messages that do not mention the agent reach a turn per listened thread per hour.
+	BotTurns int
 }
 
 // Gateway is the agent's Slack app: it hears messages over Socket Mode, runs a turn per thread
@@ -119,24 +126,29 @@ type Gateway struct {
 	id   Identity
 	sock *socket
 
-	mu       sync.Mutex
-	state    string
-	since    time.Time
-	closing  bool
-	workers  map[string]*worker
-	users    map[string]string // user id → display name
-	dmUsers  map[string]string // DM channel → its person (the messaging policy)
-	warned   map[string]bool
-	queued   int    // messages in the workers, waiting or in the turn running (MaxQueued)
-	seen     *tsSet // events handled (channel:ts), against Slack's retries and message+app_mention
-	threads  *tsSet // threads the agent posted in or was mentioned in (channel:thread_ts)
-	ready    chan struct{}
-	wg       sync.WaitGroup
-	notes    sync.WaitGroup        // the ❌ on messages a shutdown leaves unhandled
-	running  map[string]*turnState // conversation root → the turn running in it
-	base     context.Context
-	cancel   context.CancelFunc
-	statusOn atomic.Bool
+	mu        sync.Mutex
+	state     string
+	since     time.Time
+	closing   bool
+	workers   map[string]*worker
+	users     map[string]string // user id → display name
+	dmUsers   map[string]string // DM channel → its person (the messaging policy)
+	warned    map[string]bool
+	queued    int // messages in the workers, waiting or in the turn running (MaxQueued)
+	ambient   int // of those, ambient ones (at most half of MaxQueued)
+	dropped   int // ambient messages dropped since the last log line about it
+	droppedAt time.Time
+	handlers  chan struct{}          // ambient messages' handler runs (AmbientHandlers)
+	botTurns  map[string][]time.Time // listened thread → when a bot's message reached a turn there (BotTurns)
+	seen      *tsSet                 // events handled (channel:ts), against Slack's retries and message+app_mention
+	threads   *tsSet                 // threads the agent posted in or was mentioned in (channel:thread_ts)
+	ready     chan struct{}
+	wg        sync.WaitGroup
+	notes     sync.WaitGroup        // the ❌ on messages a shutdown leaves unhandled
+	running   map[string]*turnState // conversation root → the turn running in it
+	base      context.Context
+	cancel    context.CancelFunc
+	statusOn  atomic.Bool
 }
 
 // job is one message for a conversation's worker, routed but not yet prepared: the worker reads
@@ -150,9 +162,9 @@ type job struct {
 	dm, mentioned       bool
 	// ambient: heard only because the agent listens to the channel (Options.Listen); verified:
 	// its author passed allowed_users (false only for an ambient message from a person it does
-	// not list)
-	ambient, verified bool
-	notes             []string // what the agent's handlers passed on to the model about it
+	// not list); listened: in a channel the agent listens to (ambient or not)
+	ambient, verified, listened bool
+	notes                       []string // what the agent's handlers passed on to the model about it
 }
 
 // worker is a conversation's queue: the messages waiting for its next turn, and how many the
@@ -160,6 +172,8 @@ type job struct {
 type worker struct {
 	pending  []job
 	inflight int
+	// pendingAmbient and inflightAmbient are the ambient ones among them
+	pendingAmbient, inflightAmbient int
 }
 
 // turnState is a running turn as no_reply sees it: whether the agent was addressed directly (a DM
@@ -202,11 +216,18 @@ func New(o Options) (*Gateway, error) {
 	if o.MaxQueued <= 0 {
 		o.MaxQueued = 512
 	}
+	if o.AmbientHandlers <= 0 {
+		o.AmbientHandlers = 4
+	}
+	if o.BotTurns <= 0 {
+		o.BotTurns = 5
+	}
 	if o.Dialer == nil {
 		o.Dialer = &websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
 	}
 	g := &Gateway{o: o, state: "disconnected", since: time.Now(), workers: map[string]*worker{}, users: map[string]string{}, dmUsers: map[string]string{}, running: map[string]*turnState{},
-		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{})}
+		warned: map[string]bool{}, seen: newTSSet(2000), threads: newTSSet(5000), ready: make(chan struct{}),
+		handlers: make(chan struct{}, o.AmbientHandlers), botTurns: map[string][]time.Time{}}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
 	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
@@ -283,7 +304,8 @@ func (g *Gateway) BeginShutdown() {
 	dropped := []job{}
 	for _, w := range g.workers {
 		dropped = append(dropped, w.pending...)
-		w.pending = nil
+		g.ambient -= w.pendingAmbient
+		w.pending, w.pendingAmbient = nil, 0
 	}
 	g.queued -= len(dropped) // the batches whose turns run still count until they return
 	g.mu.Unlock()
@@ -444,9 +466,13 @@ func (g *Gateway) route(ev Message) bool {
 		return true // nothing but the agent's own mention
 	}
 	j := job{ev: ev, channel: ev.Channel, thread: post, ts: ev.TS, threadTS: thread, bot: bot, reply: reply, react: !ambient && (dm || mentioned),
-		dm: dm, mentioned: mentioned, ambient: ambient, verified: verified}
-	if !g.enqueue(session, j) {
+		dm: dm, mentioned: mentioned, ambient: ambient, verified: verified, listened: listened}
+	switch g.enqueue(session, j) {
+	case queueFull:
 		return false
+	case queueDropped:
+		g.seen.add(ev.Channel + ":" + ev.TS) // acked: no one is owed an answer, nor a retry
+		return true
 	}
 	g.seen.add(ev.Channel + ":" + ev.TS)
 	if mentioned && !ambient {
@@ -745,30 +771,52 @@ func threadContext(lines []messaging.ContextLine) string {
 	return head + "\n" + strings.Join(out, "\n") + "\n[End of thread context]\n\n"
 }
 
+// What enqueue did with a message.
+const (
+	queued       = iota
+	queueFull    // closing, or full: left unacked for Slack to send again
+	queueDropped // an ambient message past its share: acked and dropped
+)
+
 // enqueue queues the message in its conversation's worker: one turn at a time per
 // conversation, and messages that arrive while a turn runs are merged into the next one (Hermes
-// queues follow-ups). False when the gateway is closing or the queue is full (MaxPending waiting
-// in the conversation, MaxQueued in all: waiting, or carried by a turn that has not returned).
-func (g *Gateway) enqueue(session string, j job) bool {
+// queues follow-ups). queueFull when the gateway is closing or the queue is full (MaxPending
+// waiting in the conversation, MaxQueued in all: waiting, or carried by a turn that has not
+// returned). Ambient messages hold at most half of each: past their share one is dropped (no one
+// is owed an answer; logged at most once a minute), so the DMs and mentions always have room.
+func (g *Gateway) enqueue(session string, j job) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closing {
-		return false
+		return queueFull
 	}
 	w := g.workers[session]
+	if share := max(1, g.o.MaxQueued/2); j.ambient && (g.ambient >= share || w != nil && w.pendingAmbient >= max(1, g.o.MaxPending/2)) {
+		g.dropped++
+		if now := time.Now(); now.Sub(g.droppedAt) >= time.Minute {
+			g.logf("slack: ambient messages fill their share of the queue (%d): %d heard in listened channels dropped, unanswered", share, g.dropped)
+			g.droppedAt, g.dropped = now, 0
+		}
+		return queueDropped
+	}
 	if g.queued >= g.o.MaxQueued || w != nil && len(w.pending) >= g.o.MaxPending {
 		g.logf("slack: %s: the queue is full; the message is left for Slack to send again", session)
-		return false
+		return queueFull
 	}
 	g.queued++
-	if w != nil {
-		w.pending = append(w.pending, j)
-		return true
+	if j.ambient {
+		g.ambient++
 	}
-	w = &worker{pending: []job{j}}
-	g.workers[session] = w
-	go g.work(session, w)
-	return true
+	if w == nil {
+		w = &worker{}
+		g.workers[session] = w
+		go g.work(session, w)
+	}
+	w.pending = append(w.pending, j)
+	if j.ambient {
+		w.pendingAmbient++
+	}
+	return queued
 }
 
 func (g *Gateway) work(session string, w *worker) {
@@ -779,6 +827,7 @@ func (g *Gateway) work(session string, w *worker) {
 			g.logf("slack: %s: the worker crashed: %v", session, p)
 			g.mu.Lock()
 			g.queued -= len(w.pending) + w.inflight
+			g.ambient -= w.pendingAmbient + w.inflightAmbient
 			delete(g.workers, session)
 			g.mu.Unlock()
 		}
@@ -786,7 +835,8 @@ func (g *Gateway) work(session string, w *worker) {
 	for {
 		g.mu.Lock()
 		g.queued -= w.inflight // the last batch's turn returned
-		w.inflight = 0
+		g.ambient -= w.inflightAmbient
+		w.inflight, w.inflightAmbient = 0, 0
 		if len(w.pending) == 0 || g.closing {
 			delete(g.workers, session)
 			g.mu.Unlock()
@@ -794,7 +844,7 @@ func (g *Gateway) work(session string, w *worker) {
 		}
 		jobs := w.pending
 		w.pending = nil
-		w.inflight = len(jobs)
+		w.inflight, w.inflightAmbient, w.pendingAmbient = len(jobs), w.pendingAmbient, 0
 		g.mu.Unlock()
 		g.batch(session, jobs)
 	}
@@ -876,7 +926,19 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		if !j.ambient && !contextGiven {
 			in.ThreadContext, contextGiven = lines, true // the first message addressed to the agent
 		}
-		v := g.o.Handlers.Inbound(g.base, event, in)
+		var v messaging.Verdict
+		if j.ambient {
+			// at most AmbientHandlers at once: a busy channel cannot run a Luau instance per message
+			select {
+			case g.handlers <- struct{}{}:
+			case <-g.base.Done():
+				continue
+			}
+			v = g.o.Handlers.Inbound(g.base, event, in)
+			<-g.handlers
+		} else {
+			v = g.o.Handlers.Inbound(g.base, event, in)
+		}
 		if j.ambient {
 			// heard, not addressed: only a handler's explicit answer does anything (a handler
 			// that failed, or returned nil or a table with no action, is no pass here, or a
@@ -888,7 +950,7 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 				}
 			case v.Action == "reply":
 				g.logf("slack: %s: a handler's reply to an unverified message is not posted (%s): its author is not in allowed_users", session, v.By)
-			case v.Action == "pass" && v.Passed > 0:
+			case v.Action == "pass" && v.Passed > 0 && g.botTurn(j):
 				j.notes = v.Context
 				left = append(left, j)
 			}
@@ -904,11 +966,46 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 				g.logf("slack: %s: the agent's handler %s chose not to answer a direct message; nothing posted", session, v.By)
 			}
 		default:
-			j.notes = v.Context
-			left = append(left, j)
+			if g.botTurn(j) {
+				j.notes = v.Context
+				left = append(left, j)
+			}
 		}
 	}
 	return left
+}
+
+// botTurn is the bot-loop guard: a bot's message in a channel the agent listens to that does not
+// mention it (ambient, or a reply in a thread a pass made the agent's) reaches a turn at most
+// BotTurns times per thread per hour; past it the message is dropped (logged once per thread and
+// hour). Anything else always may.
+func (g *Gateway) botTurn(j job) bool {
+	if !j.bot || !j.listened || j.mentioned || j.dm {
+		return true
+	}
+	key := j.channel + ":" + j.threadTS
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.botTurns) > 1000 {
+		g.botTurns = map[string][]time.Time{}
+	}
+	recent := g.botTurns[key][:0]
+	for _, at := range g.botTurns[key] {
+		if now.Sub(at) < time.Hour {
+			recent = append(recent, at)
+		}
+	}
+	if len(recent) >= g.o.BotTurns {
+		g.botTurns[key] = recent
+		if hour := now.Truncate(time.Hour).Format(time.RFC3339); !g.warned["botloop:"+key+hour] {
+			g.warned["botloop:"+key+hour] = true
+			g.logf("slack: bot-loop guard: a bot's messages reached %d turns in %s this hour; its next ones there are dropped", g.o.BotTurns, key)
+		}
+		return false
+	}
+	g.botTurns[key] = append(recent, now)
+	return true
 }
 
 // handlerReply posts a handler's reply in the conversation of the message it answers. A DM is

@@ -1,8 +1,10 @@
 package slack
 
 import (
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,5 +337,130 @@ func TestDirectReplyBehindAmbientGetsThreadContext(t *testing.T) {
 	_, seen, _ := h.seen()
 	if last := seen[len(seen)-1]; !last.Mentioned || len(last.ThreadContext) == 0 {
 		t.Errorf("the mention's handler got no thread context: %+v", last)
+	}
+}
+
+// holdHandlers wraps listenHandlers: an ambient message saying "hold" waits for release, and
+// how many handlers run at once is kept.
+type holdHandlers struct {
+	*fakeHandlers
+	release       chan struct{}
+	mu            sync.Mutex
+	running, most int
+}
+
+func newHoldHandlers() *holdHandlers {
+	h := &holdHandlers{fakeHandlers: listenHandlers(), release: make(chan struct{})}
+	in := h.in
+	h.in = func(event string, m messaging.Inbound) messaging.Verdict {
+		if m.Ambient && strings.Contains(m.Text, "hold") {
+			h.mu.Lock()
+			h.running++
+			h.most = max(h.most, h.running)
+			h.mu.Unlock()
+			<-h.release
+			h.mu.Lock()
+			h.running--
+			h.mu.Unlock()
+			return messaging.Verdict{Action: "silent", Ran: 1}
+		}
+		return in(event, m)
+	}
+	return h
+}
+
+func (h *holdHandlers) peak() (running, most int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.running, h.most
+}
+
+// Ambient messages have their own share of the gateway's queue (at most half of MaxQueued): past
+// it one is acked and dropped (no one is owed an answer; logged), never left for Slack to send
+// again, and DMs and mentions are still queued and answered while ambient handlers hold theirs.
+func TestListenAmbientShare(t *testing.T) {
+	h := newHoldHandlers()
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev}; o.MaxQueued = 4 })
+	defer close(h.release)
+	for i := 1; i <= 4; i++ {
+		r.fake.Send(fmt.Sprintf("a%d", i), slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "hold this", TS: fmt.Sprintf("1700001100.00010%d", i)})
+	}
+	time.Sleep(100 * time.Millisecond)
+	if acks := r.fake.Acks(); len(acks) != 4 {
+		t.Errorf("acks %v: an ambient message past its share is acked and dropped", acks)
+	}
+	if !r.logged("ambient") {
+		t.Errorf("no log for the dropped ambient messages: %q", r.logs)
+	}
+	r.fake.Send("d1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "are you there?", TS: "1700001100.000200"})
+	r.fake.Send("d2", slacktest.Event{Type: "app_mention", Channel: home, ChannelType: "channel", User: alice, Text: "<@" + slacktest.BotUser + "> status", TS: "1700001100.000300"})
+	p := r.fake.WaitPosts(2, 5*time.Second)
+	if len(p) != 2 {
+		t.Fatalf("direct messages starved behind ambient ones: %+v", p)
+	}
+	if _, most := h.peak(); most != 2 {
+		t.Errorf("%d ambient handlers ran, want the 2 queued", most)
+	}
+}
+
+// At most AmbientHandlers (default 4) ambient messages' handlers run at once.
+func TestListenAmbientHandlersBounded(t *testing.T) {
+	h := newHoldHandlers()
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev} })
+	for i := 1; i <= 7; i++ {
+		r.fake.Send(fmt.Sprintf("a%d", i), slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "hold this", TS: fmt.Sprintf("1700001200.00010%d", i)})
+	}
+	time.Sleep(200 * time.Millisecond)
+	if running, _ := h.peak(); running != 4 {
+		t.Errorf("%d ambient handlers running at once, want 4", running)
+	}
+	close(h.release)
+	for i := 0; i < 100; i++ {
+		if _, seen, _ := h.seen(); len(seen) == 7 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, seen, _ := h.seen(); len(seen) != 7 {
+		t.Errorf("handled %d of 7", len(seen))
+	}
+	if _, most := h.peak(); most != 4 {
+		t.Errorf("at most %d at once, want 4", most)
+	}
+}
+
+// The bot-loop guard: under listen with allow_bots all, a bot's messages in a listened channel
+// that do not mention the agent reach a turn at most BotTurns times per thread per hour (the
+// first pass makes the thread one the agent is in; its replies then count as well).
+func TestListenBotLoopGuard(t *testing.T) {
+	const peerUser, thread = "U0PEERBOT1", "1700001300.000100"
+	h := listenHandlers()
+	r := newRig(t, func(o *Options) {
+		o.Handlers, o.Listen, o.AllowBots, o.BotTurns = h, []string{dev}, "all", 3
+		o.AllowedUsers = append(o.AllowedUsers, peerUser)
+	})
+	r.fake.Send("b0", slacktest.Event{Channel: dev, ChannelType: "channel", User: peerUser, BotID: peer, Text: "booking alert 0", TS: thread})
+	r.fake.WaitPosts(1, 5*time.Second)
+	for i := 1; i <= 5; i++ {
+		r.fake.Send(fmt.Sprintf("b%d", i), slacktest.Event{Channel: dev, ChannelType: "channel", User: peerUser, BotID: peer, Text: fmt.Sprintf("booking alert %d", i), TS: fmt.Sprintf("1700001300.00020%d", i), ThreadTS: thread})
+		time.Sleep(60 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	n := 0
+	for _, in := range r.turns.got(SessionID(dev, thread)) {
+		n += strings.Count(in, "booking alert")
+	}
+	if n != 3 {
+		t.Errorf("%d bot messages reached a turn in the thread, want 3: %q", n, r.turns.got(SessionID(dev, thread)))
+	}
+	if !r.logged("bot-loop guard") {
+		t.Errorf("logs %q", r.logs)
+	}
+	// a person in the same thread is not held back
+	r.fake.Send("p1", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "booking for me too", TS: "1700001300.000300", ThreadTS: thread})
+	time.Sleep(200 * time.Millisecond)
+	last := r.turns.got(SessionID(dev, thread))
+	if len(last) == 0 || !strings.Contains(last[len(last)-1], "booking for me too") {
+		t.Errorf("a person's reply in the thread: %q", last)
 	}
 }
