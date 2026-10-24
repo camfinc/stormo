@@ -206,7 +206,7 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 		return nil // the turn's reply is the conversation's last row
 	}
 	if err := followup.Ran(ctx, text); err != nil {
-		f.logf(fmt.Sprintf("follow-up %s: its reply could not be kept for a retry (a failed post would run the turn again): %v", it.ID, err))
+		f.logf(fmt.Sprintf("follow-up %s: its reply is kept in memory only, not yet in the file (a restart before it is posted would run the turn again): %v", it.ID, err))
 	}
 	return f.deliver(ctx, it, text)
 }

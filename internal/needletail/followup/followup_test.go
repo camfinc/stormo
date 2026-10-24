@@ -653,6 +653,7 @@ type postFirer struct {
 	posted    []string
 	phases    []string
 	recordErr error
+	beforeRan func() // when set, runs before Ran (once)
 }
 
 func (p *postFirer) Fire(ctx context.Context, it Item) error {
@@ -663,6 +664,10 @@ func (p *postFirer) Fire(ctx context.Context, it Item) error {
 	if it.Phase != PhaseRan {
 		p.turns++
 		reply = "Did Ana answer?"
+		if p.beforeRan != nil {
+			p.beforeRan()
+			p.beforeRan = nil
+		}
 		p.recordErr = Ran(ctx, reply)
 	}
 	if p.fails > 0 {
@@ -693,6 +698,34 @@ func TestPromptRetryPostsOnly(t *testing.T) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.turns != 1 || p.posted[0] != "Did Ana answer?" || p.recordErr != nil || fmt.Sprint(p.phases) != "[ ran ran]" {
+		t.Errorf("turns %d, posted %q, phases %q, recorded %v", p.turns, p.posted, p.phases, p.recordErr)
+	}
+}
+
+// A prompt follow-up whose turn ran but whose reply could not be kept in the file (Ran's save
+// failed) and whose post failed is tried again from the reply the queue kept in memory: the turn
+// never runs again, and the next save writes the checkpoint it missed.
+func TestPromptRetryAfterAFailedCheckpoint(t *testing.T) {
+	defer func(b []time.Duration) { backoff = b }(backoff)
+	backoff = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond}
+	q, home := newQueue(t, func(o *Options) { o.MinDelay = 10 * time.Millisecond })
+	p := &postFirer{fails: 1, beforeRan: func() {
+		q.mu.Lock()
+		q.beforeSave = func() error { q.beforeSave = nil; return errors.New("disk full") }
+		q.mu.Unlock()
+	}}
+	q.Start(p)
+	defer q.Shutdown(context.Background())
+	if _, err := q.Create(context.Background(), "chat-1", Spec{In: "0.05s", Prompt: "ask whether Ana answered"}); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, 3*time.Second, func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.posted) == 1 }) {
+		body, _ := os.ReadFile(filepath.Join(home, File))
+		t.Fatalf("never posted: %+v\n%s", p, body)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.turns != 1 || p.posted[0] != "Did Ana answer?" || p.recordErr == nil || fmt.Sprint(p.phases) != "[ ran]" {
 		t.Errorf("turns %d, posted %q, phases %q, recorded %v", p.turns, p.posted, p.phases, p.recordErr)
 	}
 }
@@ -763,10 +796,11 @@ func TestNoLostUpdatesAcrossProcesses(t *testing.T) {
 		t.Fatalf("q2 sees %+v", got)
 	}
 	done := make(chan error, 1)
-	q1.beforeSave = func() { // between q1's read and its write, q2 cancels x
+	q1.beforeSave = func() error { // between q1's read and its write, q2 cancels x
 		q1.beforeSave = nil
 		go func() { _, err := q2.Cancel("op-1", x.ID); done <- err }()
 		time.Sleep(150 * time.Millisecond)
+		return nil
 	}
 	if _, err := q1.Create(ctx, "chat-1", Spec{In: "2h", Text: "y"}); err != nil {
 		t.Fatal(err)

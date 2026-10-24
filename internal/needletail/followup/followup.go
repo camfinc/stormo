@@ -230,13 +230,17 @@ type Queue struct {
 	firing     map[string]bool
 	busy       map[string]time.Time // when a follow-up first found its conversation busy
 	busyLog    map[string]time.Time // when a busy follow-up's firing was last logged
-	firer      Firer
-	check      func(target string, origin Conversation) error
-	stopping   bool
+	// ran are the replies of prompt follow-ups whose turn ran, kept in memory until the
+	// follow-up settles: a checkpoint (Ran) the file did not take is not lost, so a retry posts
+	// the reply and never runs the turn again; every read of the file lays them over it
+	ran      map[string]string
+	firer    Firer
+	check    func(target string, origin Conversation) error
+	stopping bool
 
 	// beforeSave, when set, runs in save before the file is written (tests: another process
 	// changing it meanwhile)
-	beforeSave func()
+	beforeSave func() error
 
 	kick   chan struct{}
 	wg     sync.WaitGroup // the loop and the firings
@@ -260,7 +264,7 @@ func New(o Options) *Queue {
 		o.MinDelay = MinDelay
 	}
 	q := &Queue{o: o, path: filepath.Join(o.Home, filepath.FromSlash(File)), tmp: filepath.Join(o.Home, fsx.TmpDir),
-		firing: map[string]bool{}, busy: map[string]time.Time{}, busyLog: map[string]time.Time{}, kick: make(chan struct{}, 1)}
+		firing: map[string]bool{}, busy: map[string]time.Time{}, busyLog: map[string]time.Time{}, ran: map[string]string{}, kick: make(chan struct{}, 1)}
 	q.runCtx, q.cancel = context.WithCancel(context.Background())
 	return q
 }
@@ -322,6 +326,11 @@ func (q *Queue) load() error {
 		return q.readOnly
 	}
 	q.items = f.Items
+	for i := range q.items {
+		if reply, ok := q.ran[q.items[i].ID]; ok && q.items[i].Phase != PhaseRan {
+			q.items[i].Phase, q.items[i].Reply = PhaseRan, reply // a checkpoint the file missed
+		}
+	}
 	return nil
 }
 
@@ -340,7 +349,9 @@ func (q *Queue) save() error {
 		return err
 	}
 	if q.beforeSave != nil {
-		q.beforeSave()
+		if err := q.beforeSave(); err != nil {
+			return err
+		}
 	}
 	if err := fsx.WriteAtomicIn(q.path, q.tmp, append(body, '\n'), 0o600); err != nil {
 		return err
@@ -561,6 +572,7 @@ func (q *Queue) settle(fired Item, err error) {
 	delete(q.firing, fired.ID)
 	i := q.find(fired.ID)
 	if i < 0 {
+		delete(q.ran, fired.ID)
 		return // removed meanwhile (another process)
 	}
 	it := &q.items[i]
@@ -570,6 +582,7 @@ func (q *Queue) settle(fired Item, err error) {
 		q.items = append(q.items[:i], q.items[i+1:]...)
 		delete(q.busy, fired.ID)
 		delete(q.busyLog, fired.ID)
+		delete(q.ran, fired.ID)
 		q.logf("follow-up %s delivered (%s, %s late)", fired.ID, fired.Kind, now.Sub(fired.DueAt()).Round(time.Second))
 	case q.stopping || errors.Is(err, ErrInterrupted) || errors.Is(err, context.Canceled) && q.runCtx.Err() != nil:
 		q.logf("follow-up %s interrupted by the shutdown: it fires at the next boot", fired.ID)
@@ -586,6 +599,7 @@ func (q *Queue) settle(fired Item, err error) {
 		it.LastError = clip(q.o.Redact(err.Error()), 300)
 		if it.Attempts >= MaxAttempts || final(err) {
 			it.Status, it.FailedAt, it.NextTry = StatusFailed, stamp(now), ""
+			delete(q.ran, fired.ID)
 			q.logf("follow-up %s failed after %d attempts, dropped (kept for list): %s", fired.ID, it.Attempts, it.LastError)
 		} else {
 			waits := backoff
@@ -660,13 +674,18 @@ type queueKey struct{}
 
 // Ran records, from inside Fire, that the firing prompt follow-up's turn ran and what it answered
 // (the reply its delivery posts): the next attempt, should the post fail, posts it rather than
-// running the turn again. Outside a firing it does nothing.
+// running the turn again. The reply is kept in memory first, so a save that fails here loses
+// nothing in this process: the next read of the file lays it over the item and the next save
+// writes it (the error says the file does not hold it yet). Outside a firing it does nothing.
 func Ran(ctx context.Context, reply string) error {
 	q, _ := ctx.Value(queueKey{}).(*Queue)
 	id := Firing(ctx)
 	if q == nil || id == "" {
 		return nil
 	}
+	q.mu.Lock()
+	q.ran[id] = reply
+	q.mu.Unlock()
 	unlock, err := q.lock()
 	if err != nil {
 		return err
