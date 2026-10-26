@@ -1,0 +1,64 @@
+name: windows-app
+on:
+  pull_request:
+    paths: ['apps/windows/**', 'docs/apps/**', '.github/workflows/windows-app.yml', 'pkg/**', 'cmd/**', 'go.mod', 'go.sum']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build native Windows engine
+        run: python apps/windows/installer/build-engine.py
+      - name: Exercise native core lifecycle
+        run: python apps/windows/installer/smoke-engine.py
+      - name: Test desktop contracts and native adapter lifecycle
+        run: dotnet run --project apps/windows/Stormo.Runtime.Tests -c Release -- apps/windows/assets
+      - name: Test Windows engine and paths
+        run: go test ./pkg/core ./pkg/local ./pkg/build ./pkg/scaffold ./pkg/privatefs
+      - name: Restore native desktop and collect notices
+        run: |
+          dotnet restore apps/windows/Stormo.Desktop -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python apps/windows/installer/collect-licenses.py
+      - name: Publish self-contained WinUI desktop
+        run: |
+          dotnet publish apps/windows/Stormo.Desktop -c Release -p:Platform=x64 -o apps/windows/dist/Stormo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path apps/windows/dist/Stormo/Stormo.pri) -and !(Test-Path apps/windows/dist/Stormo/resources.pri)) { throw 'WinUI resource index is missing from the published app' }
+          Get-ChildItem apps/windows/dist/Stormo -Filter *.pri | Select-Object Name, Length
+      - name: Build per-user setup EXE
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" apps/windows/installer/stormo.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install per-user preview and exercise native UI
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'Stormo installed preview'
+          $setup = Start-Process apps/windows/build/installer/Stormo-Setup-native-x64-preview.exe -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$destination`"") -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Setup failed: $($setup.ExitCode)" }
+          ./apps/windows/installer/smoke-desktop.ps1 -Executable (Join-Path $destination 'Stormo.exe')
+      - name: Verify app and installer icon resources
+        run: |
+          python -m pip install pefile==2024.8.26
+          python apps/windows/installer/check-icons.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Stormo-Windows-WinUI-x64-preview-unsigned
+          path: |
+            apps/windows/build/installer/*.exe
+            apps/windows/build/screens/*
+          retention-days: 14

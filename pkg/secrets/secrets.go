@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,7 +185,7 @@ func RenderEnvFile(values *env.Env) (string, error) {
 
 // WritePrivate writes a 0600 file in a 0700 directory.
 func WritePrivate(path string, body []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := privatefs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	if err := os.WriteFile(path, body, 0o600); err != nil {

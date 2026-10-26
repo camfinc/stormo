@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +87,7 @@ func TestOpenDBMigratesOnceAndRefusesNewer(t *testing.T) {
 	if v, _ := db.Version(); v != len(migrations) {
 		t.Fatalf("version %d, want %d", v, len(migrations))
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("core.db mode %v, want 0600", info.Mode().Perm())
 	}
 	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(migrations)+1)); err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/pkg/privatefs"
 	"log"
 	"os"
 	"path/filepath"
@@ -547,7 +548,7 @@ func (l *Learner) markApplied(id string) {
 
 // writeDigest writes the cycle's summary: counts and review commands, never lesson text.
 func (l *Learner) writeDigest(c *Cycle) (string, error) {
-	if err := os.MkdirAll(l.o.DigestDir, 0o700); err != nil {
+	if err := privatefs.MkdirAll(l.o.DigestDir, 0o700); err != nil {
 		return "", err
 	}
 	var b strings.Builder

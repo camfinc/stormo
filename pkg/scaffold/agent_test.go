@@ -3,6 +3,7 @@ package scaffold
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestNewAgentFromDefaults(t *testing.T) {
 	if !slices.Contains(r.Optional, "SLACK_BOT_TOKEN") || slices.Contains(r.Missing, "SLACK_BOT_TOKEN") {
 		t.Errorf("optional %v, missing %v: a channel's tokens are good to have, not required", r.Optional, r.Missing)
 	}
-	if fi, err := os.Stat(filepath.Join(inst.Root, "agents", "front-desk", "data", "secrets.yaml")); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(filepath.Join(inst.Root, "agents", "front-desk", "data", "secrets.yaml")); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Errorf("data/secrets.yaml: %v %v", fi, err)
 	}
 	if _, err := os.Stat(filepath.Join(inst.Root, "secrets.local.yaml")); err == nil {
