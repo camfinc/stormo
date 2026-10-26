@@ -44,7 +44,9 @@ among them. On Linux, agent containers reach the core through bridge listeners t
 | `GET /api/workdir/file?path=` | `path`, `size`, `modified`, `truncated` (past 1 MiB), `binary`, `text` (absent when binary). Read-only, never follows a link out of its layer; a bad path is a 400. Owner token |
 | `GET /api/learning` | `at`, `timezone`, `next` (the schedule, empty when off), `running` (cycle id or null), `cycles` [{`id`, `trigger`, `started`, `finished`, `status`, `digest`, `runs` [{`agent`, `started`, `finished`, `napped`, `napNote`, `naps`, `newLearnings`, `resighted`, `skillProposals`, `cronProposal`, `pendingLearnings`, `pendingSkills`, `error`, `settingProposals`, `autoAccepted` (approved by the review), `passed` (passed to a person), `held` (held by the rules), `reviewNote`, `restarted`, `restartNote`}]}], newest first. Counts only |
 | `POST /api/learn` | body `{agents, force}`; 202 `{cycle}`, 409 while a cycle runs. Owner token |
-| `GET /api/review` | `review` (`auto` \| `manual`), `reviewConnection`, `reviewModel`, `reviewPrompt`, `autoAccept` (review is auto), `autoAcceptMinSeen` (legacy), `autoAcceptMinConfirmations`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `autoReview`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`, `evidence` ({`revision`, `unknown`, `attempts`, `confirmations`, `failures`, `corrections`, `evidenceTypes`, optional `validatedAt`}), `ai`, `held`}], `skills` [{`skill`, `pii`, `nap`, `new`, `stale`, `base`, `files` [{`path`, `size`, `text`, `current`}], `ai`, `held`}], `schedules` (null, or {`jobs` (agent.yaml schedules), `runtimeJobs`, `scripts` [{`name` (path in `agents/<id>/scripts/`), `status` (`new` \| `changed`), `stale` (the repo changed it since; accept refused), `size`, `text`, `current`}] (scripts the agent wrote for them; an accept writes them to `agents/<id>/scripts/`), `pii`, `nap`, `ai`, `held`}), `settings` [{`key`, `value`, `current`, `sensitive`, `opaque`, `pii`, `nap`, `ai`, `held`}]}]. On an open proposal `ai` is the review's verdict on its current content ({`approve`, `reason`, `model`, `at`}) and `held` why the rules keep it for a person. Owner token |
+| `GET /api/review` | `review` (`auto` \| `manual`), `reviewConnection`, `reviewModel`, `reviewPrompt`, `autoAccept` (review is auto), `autoAcceptMinSeen` (legacy), `autoAcceptMinConfirmations`, `autoRestart`, `agents` [{`id`, `name`, `unit`, `state`, `busy`, `unapplied`, `autoReview`, `lessons` [{`id`, `kind`, `scope`, `text`, `pii`, `status`, `seenCount`, `firstSeen`, `lastSeen`, `decidedAt`, `note`, `autoAcceptable`, `evidence` ({`revision`, `unknown`, `attempts`, `confirmations`, `failures`, `corrections`, `evidenceTypes`, optional `validatedAt`}), `ai`, `held`}], `skills` [{`skill`, `pii`, `nap`, `new`, `stale`, `base`, `files` [{`path`, `size`, `text`, `current`}], `evidence` (same aggregate fields as lessons), `ai`, `held`}], `schedules` (null, or {`jobs` (agent.yaml schedules), `runtimeJobs`, `scripts` [{`name` (path in `agents/<id>/scripts/`), `status` (`new` \| `changed`), `stale` (the repo changed it since; accept refused), `size`, `text`, `current`}] (scripts the agent wrote for them; an accept writes them to `agents/<id>/scripts/`), `pii`, `nap`, `ai`, `held`}), `settings` [{`key`, `value`, `current`, `sensitive`, `opaque`, `pii`, `nap`, `ai`, `held`}]}]. On an open proposal `ai` is the review's verdict on its current content ({`approve`, `reason`, `model`, `at`}) and `held` why the rules keep it for a person. Owner token |
+| `GET /api/agents/<id>/learning[?session=<id>]` | Owner learning bridge: `{state, message?, sessions, session?, data?}`. Without a session, lists selectable conversations; with a session, returns its events, candidates and budget/status. Read token; never available through loopback trust or an agent key |
+| `POST /api/agents/<id>/learning?session=<id>` | Either `{eventId, outcome, origin, summary}` or `{exportId}`; same response envelope. Operate token; audited without source text or credentials. The runtime owner credential is resolved server-side, never accepted in this body or query |
 | `POST /api/review` | `{agent, lessons: [id…] \| skill \| schedules: true \| settings: [key…], decision: accept \| reject \| promote (lessons), scope: unit \| group}`; 400 with the reason when refused. Owner token |
 | `POST /api/agents/<id>/restart` | restart a running local agent (applies decisions); 409 when it is not running. Owner token |
 | `POST /api/agents/<id>/start\|stop\|restart` | `{placement, confirm}` (placement: as asked, else where its link runs, else local). local runs compose here; remote (ECS) answers 428 `{plan}` until `confirm: true`; a runner placement goes to its runner (503 when none serves it). → `{action, agent, placement, log, state}`. Operate; audited |
@@ -67,6 +69,44 @@ among them. On Linux, agent containers reach the core through bridge listeners t
 
 Errors are `{"error":{"code","message"}}` with an HTTP status. There is no event stream yet: poll
 `/api/fleet` (the web office polls every 2.5 s) and correct for clock skew with `now`.
+
+### Runtime learning bridge
+
+The browser and native app use the core bridge, never the runtime API directly. The engine's
+optional `LearningRuntime` interface supplies the route and dedicated secret name. For needletail,
+the core resolves the agent's declared `NEEDLETAIL_LEARNING_KEY` and ordinary conversation key
+from local secrets (including the local overlay). They must be distinct usable credentials.
+Neither value reaches clients, query parameters or audit records. Requests do not follow redirects;
+responses redact exact configured secret values. Session titles/previews and selected learning data
+pass through memory to the authorized caller and are not persisted by this bridge.
+
+Availability failures use HTTP 200 with `state`: `ready`, `unsupported` (engine has no learning
+interface), `unavailable` (offline, missing session/API, invalid response or transport failure),
+`missing_credential` (missing, unusable or refused dedicated/conversation credential), or `error`
+(runtime refused the operation). `message` is a safe description, never an upstream error body.
+Malformed input remains HTTP 400; ordinary core authentication/scope failures use 401/403.
+Only one `session` query selector is accepted. POST bodies are at most 4,096 bytes; feedback
+summaries are at most 2,000 bytes. Unknown fields, trailing JSON and mixed feedback/export bodies
+are refused before calling the runtime.
+
+`data` is present after a successful selected-session request:
+
+- `events`: outcome metadata for the selected conversation and authorized audience, including
+  deliberately agent-scoped events from that task. Views and command exits do not confirm success.
+- `candidates`: private reflection review material (`id`, `text`, `checks`, `conditions`, `exceptions`,
+  `audience`, `sensitivity`, `reviewDate`, `action`, `relatedIds`, `eventRefs`, `root`, and optional
+  `previousMistake`). Export requires an agent-wide public/procedural candidate; export proposes
+  material for dream/review and does not activate it.
+- `status`: `reflectionEnabled`, `callsUsed/callsLimit` (100 lifetime reservations),
+  `eventsUsed/eventsLimit` (4,096), `candidatesUsed/candidatesLimit` (100),
+  `exportsUsed/exportsLimit` (100), `exportedIds`, `feedbackAllowed`, `exportAllowed`.
+  Counts describe store capacity; exported identities are limited to candidates visible in this
+  selected task. Disabled reflection still permits feedback. Untrusted conversations cannot write.
+- Optional `operation`: `{ok, code, message, feedbackSaved}`. A feedback write can succeed before
+  reflection fails: HTTP 200 and `state: ready` then carry `ok: false`, `code: reflection_failed`,
+  and `feedbackSaved: true`. Display that partial result and refresh; do not report that feedback
+  was lost or automatically resubmit it. Export success has `feedbackSaved: false`. A transport
+  failure also requires a refresh before retrying, because a write may already have reached the runtime.
 
 ## `--json`
 

@@ -15,21 +15,8 @@ import (
 )
 
 // Candidate is review material only. It never writes hot memory, live skills or policy.
-type Candidate struct {
-	ID              string   `json:"id"`
-	Text            string   `json:"text"`
-	PreviousMistake string   `json:"previousMistake,omitempty"`
-	Checks          string   `json:"checks"`
-	Conditions      string   `json:"conditions"`
-	Exceptions      string   `json:"exceptions"`
-	Audience        string   `json:"audience"`
-	Sensitivity     string   `json:"sensitivity"`
-	ReviewDate      string   `json:"reviewDate"`
-	Action          string   `json:"action"`
-	RelatedIDs      []string `json:"relatedIds"`
-	EventRefs       []string `json:"eventRefs"`
-	Root            string   `json:"root"`
-}
+type Candidate = learning.ReflectionCandidate
+
 type reflectionState struct {
 	Version    int               `json:"version"`
 	Jobs       map[string]string `json:"jobs"`
@@ -295,4 +282,47 @@ func (s *Store) Export(root, audience, id string, check func(string) error) erro
 	}
 	out.Proposals = append(out.Proposals, ExportProposal{id, text, c.EventRefs, "agent", "procedure"})
 	return s.write(ProposalsFile, out)
+}
+
+// Status exposes bounded counts and only the selected task's export identities.
+func (s *Store) Status(root, audience string) (learning.RuntimeReviewStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := learning.RuntimeReviewStatus{CallsLimit: 100, EventsLimit: learning.MaxOutcomeEvents, CandidatesLimit: 100, ExportsLimit: 100, ExportedIDs: []string{}}
+	events, err := s.load()
+	if err != nil {
+		return out, err
+	}
+	out.EventsUsed = len(events.Events)
+	state, err := s.reflections()
+	if err != nil {
+		return out, err
+	}
+	out.CallsUsed = len(state.Jobs)
+	out.CandidatesUsed = len(state.Candidates)
+	exported := exportState{Version: 1, Proposals: []ExportProposal{}}
+	b, err := os.ReadFile(filepath.Join(s.Home, ProposalsFile))
+	if err == nil {
+		if err = json.Unmarshal(b, &exported); err != nil {
+			return out, err
+		}
+		if exported.Version != 1 || len(exported.Proposals) > 100 {
+			return out, fmt.Errorf("unsupported proposal export")
+		}
+	} else if !os.IsNotExist(err) {
+		return out, err
+	}
+	out.ExportsUsed = len(exported.Proposals)
+	visible := map[string]bool{}
+	for _, c := range state.Candidates {
+		if c.Root == root && (c.Audience == audience || c.Audience == "agent") {
+			visible[c.ID] = true
+		}
+	}
+	for _, p := range exported.Proposals {
+		if visible[p.ID] {
+			out.ExportedIDs = append(out.ExportedIDs, p.ID)
+		}
+	}
+	return out, nil
 }

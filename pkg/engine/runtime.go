@@ -164,3 +164,10 @@ var ErrNotFound = errors.New("conversation not found")
 
 // ErrBusy is an engine refusing a turn because it already runs as many as it allows.
 var ErrBusy = errors.New("the agent is busy with other turns; try again shortly")
+
+// LearningRuntime is an optional owner-review API. Its dedicated credential is
+// resolved and sent only by the core; it is never an ordinary conversation key.
+type LearningRuntime interface {
+	LearningKeyName() string
+	LearningPath(session string) string
+}

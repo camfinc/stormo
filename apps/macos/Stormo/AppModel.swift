@@ -10,6 +10,7 @@ final class AppModel {
     /// Debug builds can keep their instance list apart from the installed app's (STORMO_DEFAULTS_SUITE).
     static var defaults: UserDefaults {
         #if DEBUG
+        if learningPreviewURL != nil { return UserDefaults(suiteName: "com.stormo.learning-preview")! }
         if let suite = ProcessInfo.processInfo.environment["STORMO_DEFAULTS_SUITE"], let d = UserDefaults(suiteName: suite) { return d }
         #endif
         return .standard
@@ -43,8 +44,20 @@ final class AppModel {
     /// The stormo inside the app.
     static let bundledBinary = Bundle.main.bundleURL.appending(path: "Contents/Helpers/stormo")
 
+    static var learningPreviewURL: URL? {
+        #if DEBUG
+        guard let value = ProcessInfo.processInfo.environment["STORMO_LEARNING_PREVIEW"],
+              let url = URL(string: value), url.scheme == "http", url.host == "127.0.0.1", url.port != nil,
+              url.user == nil, url.password == nil else { return nil }
+        return url
+        #else
+        return nil
+        #endif
+    }
+    var isLearningPreview: Bool { Self.learningPreviewURL != nil }
+
     init() {
-        let client = CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
+        let client = Self.learningPreviewURL.map { CoreClient(base: $0, token: "learning-preview-owner", timeout: 40) } ?? CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
         review = ReviewStore(client: client, instanceRoot: nil)
@@ -55,6 +68,9 @@ final class AppModel {
 
     /// Captures the environment, resolves the active instance's binary and starts polling.
     func start() async {
+        // Explicit synthetic debug fixture: never inspect/start an instance, run CLI commands,
+        // reconcile symlinks, or poll the installed app's core.
+        if isLearningPreview { await review.load(); return }
         let env = await ShellEnvironment.current()
         environment = env
         reconcileCommandLineLink()

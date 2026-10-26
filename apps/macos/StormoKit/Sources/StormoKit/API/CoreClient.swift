@@ -80,6 +80,21 @@ public struct CoreClient: Sendable {
         _ = try await send(r)
     }
 
+    public func learning(agent: String, session: String?, owner: String) async throws -> LearningReviewView {
+        var r = request("api/agents/\(agent)/learning", owner: owner)
+        if let session { r.url = r.url?.appending(queryItems: [URLQueryItem(name: "session", value: session)]) }
+        return try JSONDecoder().decode(LearningReviewView.self, from: try await send(r))
+    }
+
+    public func learning(_ feedback: LearningFeedback, agent: String, session: String, owner: String) async throws -> LearningReviewView {
+        var r = request("api/agents/\(agent)/learning", owner: owner)
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "session", value: session)])
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONEncoder().encode(feedback)
+        return try JSONDecoder().decode(LearningReviewView.self, from: try await send(r))
+    }
+
     /// Restarts a running local agent so accepted lessons and skills apply (slow: give the client a long timeout).
     public func restart(agent: String, owner: String) async throws {
         var r = request("api/agents/\(agent)/restart", owner: owner)

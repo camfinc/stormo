@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"time"
 
@@ -144,4 +145,9 @@ func (runtime) ParseHook(body []byte) (*engine.HookEvent, error) {
 	return &engine.HookEvent{Kind: kind, Name: h.Event, Delivery: h.Delivery, At: at, Session: h.Session,
 		Tool: h.Tool, ToolInput: h.Input, CallID: h.CallID, ApprovalID: h.ApprovalID, Platform: h.Platform,
 		Status: h.Status, Duration: time.Duration(h.DurationMS) * time.Millisecond}, nil
+}
+
+func (runtime) LearningKeyName() string { return "NEEDLETAIL_LEARNING_KEY" }
+func (runtime) LearningPath(session string) string {
+	return "/v1/sessions/" + url.PathEscape(session) + "/learning"
 }

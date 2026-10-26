@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -84,9 +85,10 @@ type ReviewSetting struct {
 
 // ReviewSkill is one skill proposal.
 type ReviewSkill struct {
-	Skill string   `json:"skill"`
-	PII   []string `json:"pii"`
-	Nap   string   `json:"nap"`
+	Evidence learning.EvidenceSummary `json:"evidence"`
+	Skill    string                   `json:"skill"`
+	PII      []string                 `json:"pii"`
+	Nap      string                   `json:"nap"`
 	// New skill, or a change to one the agent already has.
 	New bool `json:"new"`
 	// Stale: the agent's change is to an older version than the repo's (built from commit Base);
@@ -196,8 +198,13 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 		if err != nil {
 			return nil, err
 		}
+		evidence, err := learning.LoadEvidence(root, id)
+		if err != nil {
+			return nil, err
+		}
 		for _, p := range props {
 			sv := skillView(root, id, p)
+			sv.Evidence = evidence.Summary("skill", build.Sha256([]byte(p.Skill)), p.NapHash, "agent")
 			sv.AI, sv.Held = ai[loop.KindSkill+"/"+p.Skill], held[loop.KindSkill+"/"+p.Skill]
 			a.Skills = append(a.Skills, sv)
 		}

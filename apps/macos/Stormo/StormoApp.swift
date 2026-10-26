@@ -13,9 +13,13 @@ struct StormoApp: App {
 
     var body: some Scene {
         Window("Stormo", id: "main") {
-            MainView()
-                .environment(model)
-                .task { await model.start() }
+            Group {
+                if model.isLearningPreview {
+                    NavigationStack { ReviewSectionView() }
+                } else { MainView() }
+            }
+            .environment(model)
+            .task { await model.start() }
         }
         .defaultSize(width: 1120, height: 700)
         .commands { StormoCommands(model: model) }

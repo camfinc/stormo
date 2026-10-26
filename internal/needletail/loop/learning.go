@@ -9,17 +9,8 @@ import (
 )
 
 // LearningData is owner-only scoped metadata and review candidates, never raw sessions.
-type LearningData struct {
-	Events     []learning.OutcomeEvent  `json:"events"`
-	Candidates []runtimelearn.Candidate `json:"candidates"`
-}
-type LearningRequest struct {
-	EventID  string `json:"eventId"`
-	Outcome  string `json:"outcome"`
-	Origin   string `json:"origin"`
-	Summary  string `json:"summary"`
-	ExportID string `json:"exportId"`
-}
+type LearningData = learning.RuntimeReviewData
+type LearningRequest = learning.RuntimeReviewRequest
 
 func (a *Agent) LearningReview(ctx context.Context, session string, req *LearningRequest) (LearningData, error) {
 	if a.Learning == nil {
@@ -33,6 +24,7 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 	defer unlock()
 	aud := a.learningAudience(session)
 	root = runtimelearn.Hash(root)
+	var operation *learning.RuntimeReviewOperation
 	if req != nil {
 		if a.Store.Untrusted(session) {
 			return LearningData{}, fmt.Errorf("untrusted conversations cannot produce feedback or proposals")
@@ -80,7 +72,7 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 			}
 			if a.Cfg.Reflection {
 				if err = a.Learning.Reflect(ctx, a.LLM, a.Env.Memory, session, e, req.Summary, check); err != nil {
-					return LearningData{}, err
+					operation = &learning.RuntimeReviewOperation{OK: false, Code: "reflection_failed", Message: "Feedback was saved; reflection did not complete. Check the budget and review the saved evidence.", FeedbackSaved: true}
 				}
 			}
 		}
@@ -104,7 +96,20 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 		}
 		c = append(c, public...)
 	}
-	return LearningData{events, c}, err
+	if err != nil {
+		return LearningData{}, err
+	}
+	status, err := a.Learning.Status(root, aud)
+	if err != nil {
+		return LearningData{}, err
+	}
+	status.ReflectionEnabled = a.Cfg.Reflection
+	status.FeedbackAllowed = !a.Store.Untrusted(session)
+	status.ExportAllowed = status.FeedbackAllowed
+	if req != nil && operation == nil {
+		operation = &learning.RuntimeReviewOperation{OK: true, Code: "saved", Message: "Learning review saved.", FeedbackSaved: req.ExportID == ""}
+	}
+	return LearningData{Events: events, Candidates: c, Status: status, Operation: operation}, nil
 }
 
 // Serialize owner feedback/reflection with turns so a root cannot become tainted

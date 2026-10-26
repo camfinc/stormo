@@ -595,6 +595,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 			w.Header().Set("Referrer-Policy", "no-referrer")
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
 			return
+		case runtimeLearningPath.MatchString(path):
+			c.handleRuntimeLearning(w, r, runtimeLearningPath.FindStringSubmatch(path)[1], bo.Roster)
+			return
 		case path == "/api/review":
 			c.handleReview(w, r, bo.Roster)
 			return

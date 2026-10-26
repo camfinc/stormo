@@ -12,6 +12,7 @@ public struct ReviewView: Codable, Sendable, Equatable {
     /// The review is "auto" (what this field meant before: auto-accept was on).
     public var autoAccept: Bool
     public var autoAcceptMinSeen: Int
+    public var autoAcceptMinConfirmations: Int?
     public var autoRestart: Bool
     public var agents: [ReviewAgent]
 }
@@ -108,6 +109,7 @@ public struct ReviewSetting: Codable, Sendable, Equatable, Identifiable {
 
 /// One ledger entry: scrubbed text, never raw session content.
 public struct ReviewLesson: Codable, Sendable, Equatable, Identifiable {
+    public var evidence: LearningEvidence?
     public var id: String
     public var kind: String
     public var scope: String
@@ -128,6 +130,7 @@ public struct ReviewLesson: Codable, Sendable, Equatable, Identifiable {
 
 /// A skill the dream proposed: new, or a change to one the agent has.
 public struct ReviewSkill: Codable, Sendable, Equatable, Identifiable {
+    public var evidence: LearningEvidence?
     public var skill: String
     public var pii: [String]
     public var nap: String

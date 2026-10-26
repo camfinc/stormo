@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/camfinc/stormo/internal/needletail/skills"
@@ -101,5 +102,34 @@ func TestRepeatedProviderCallIDAcrossTurns(t *testing.T) {
 		if e.SourceType != "view" || e.TaskOutcome != "unknown" {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestLearningReviewReportsSavedFeedbackWhenReflectionRefused(t *testing.T) {
+	a := newAgent(t, &httptest.Server{URL: "http://unused.invalid"})
+	if _, err := a.Store.Create(wire.Session{ID: "owner-review", Source: "api_server"}); err != nil {
+		t.Fatal(err)
+	}
+	a.Cfg.Reflection = true
+	a.Learning = &runtimelearn.Store{Home: a.Cfg.Home}
+	a.Env.Redact = func(text string) string { return strings.ReplaceAll(text, "fixture-secret", "[SECRET]") }
+	e := learning.OutcomeEvent{EventID: runtimelearn.Hash("event"), TaskRoot: runtimelearn.Hash("owner-review"), SubjectKind: "skill", SubjectID: runtimelearn.Hash("skill"), SubjectRevision: runtimelearn.Hash("revision"), At: "2026-10-26T10:00:00Z", Audience: a.learningAudience("owner-review"), SourceType: "runtime", Origin: runtimelearn.Hash("origin"), ExecutionStatus: "failed", TaskOutcome: "unknown"}
+	if err := a.Learning.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	request := &LearningRequest{EventID: e.EventID, Outcome: "corrected", Origin: "checked-result", Summary: "fixture-secret"}
+	out, err := a.LearningReview(context.Background(), "owner-review", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Operation == nil || out.Operation.OK || !out.Operation.FeedbackSaved || out.Operation.Code != "reflection_failed" {
+		t.Fatalf("partial operation result missing %+v", out.Operation)
+	}
+	if !out.Status.ReflectionEnabled || out.Status.CallsUsed != 0 || out.Status.CallsLimit != 100 || out.Status.EventsUsed != 2 || !out.Status.FeedbackAllowed {
+		t.Fatalf("incorrect status %+v", out.Status)
+	}
+	body, _ := json.Marshal(out.Operation)
+	if strings.Contains(string(body), "fixture-secret") {
+		t.Fatal("operation result leaked source")
 	}
 }

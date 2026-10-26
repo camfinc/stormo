@@ -16,7 +16,7 @@ type learningReviewer interface {
 }
 
 // The ordinary API credential cannot assert human feedback. This dedicated owner key
-// is runtime-owned, scrubbed from process environments, and never passed to core/tools.
+// is runtime-owned and scrubbed from tools; the core holds its own owner-side copy.
 func (s *Server) learning(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -56,12 +56,37 @@ func (s *Server) learning(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "trailing feedback data", 400)
 			return
 		}
+		if !req.Valid() {
+			http.Error(w, "invalid learning operation", 400)
+			return
+		}
 	}
 	out, err := a.LearningReview(r.Context(), session, req)
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		writeLearningError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// Errors are allowlisted descriptions: file paths, source text and secret values never escape.
+func writeLearningError(w http.ResponseWriter, err error) {
+	code, message := "learning_refused", "Learning review was refused. Refresh the selected session and check its status."
+	text := err.Error()
+	switch {
+	case strings.Contains(text, "untrusted"):
+		code, message = "untrusted_session", "This conversation cannot produce owner feedback or proposals."
+	case strings.Contains(text, "budget"):
+		code, message = "budget_exhausted", "The reflection budget is exhausted. Feedback may already be saved; refresh the evidence."
+	case strings.Contains(text, "private candidate") || strings.Contains(text, "sensitive"):
+		code, message = "private_candidate", "Only a scrubbed agent-wide procedural candidate can be exported."
+	case strings.Contains(text, "not found"):
+		code, message = "not_found", "The selected event or candidate is no longer available in this session."
+	case strings.Contains(text, "secret"):
+		code, message = "sensitive_input", "Sensitive input was refused."
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
 }

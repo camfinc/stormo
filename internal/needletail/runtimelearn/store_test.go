@@ -192,3 +192,28 @@ func TestReflectionCandidateExportRetainsReviewContext(t *testing.T) {
 	}
 
 }
+
+func TestReviewStatusBudgetsAndExportScope(t *testing.T) {
+	s := &Store{Home: t.TempDir()}
+	event := learning.OutcomeEvent{EventID: Hash("event"), TaskRoot: Hash("root"), SubjectKind: "skill", SubjectID: Hash("skill"), SubjectRevision: Hash("revision"), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "runtime", Origin: Hash("origin"), ExecutionStatus: "succeeded", TaskOutcome: "unknown"}
+	if err := s.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	state := reflectionState{Version: 1, Jobs: map[string]string{"job-a": "reserved", "job-b": "complete"}, Candidates: []Candidate{{ID: "visible", Root: Hash("root"), Audience: "agent"}, {ID: "private-other-task", Root: Hash("other"), Audience: "dm:private"}}}
+	if err := s.write(ReflectionsFile, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(ProposalsFile, exportState{Version: 1, Proposals: []ExportProposal{{ID: "visible"}, {ID: "private-other-task"}}}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.Status(Hash("root"), "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CallsUsed != 2 || status.CallsLimit != 100 || status.EventsUsed != 1 || status.EventsLimit != 4096 || status.CandidatesUsed != 2 || status.ExportsUsed != 2 {
+		t.Fatalf("incorrect budgets %+v", status)
+	}
+	if len(status.ExportedIDs) != 1 || status.ExportedIDs[0] != "visible" {
+		t.Fatalf("other task export identity leaked %+v", status)
+	}
+}

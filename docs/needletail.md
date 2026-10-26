@@ -388,6 +388,35 @@ Set `reflection: true` in the agent's `engine/needletail/config.yaml` to enable 
 
 The owner endpoints are `GET /v1/sessions/{id}/learning` and `POST /v1/sessions/{id}/learning`, authorized with `Bearer <NEEDLETAIL_LEARNING_KEY>`. GET returns only events and candidates belonging to that conversation and audience. POST either records `{eventId, outcome, origin, summary}` for a runtime-observed event, or selects `{exportId}` for procedural review. Outcomes are `succeeded`, `failed`, or `corrected`; `origin` is a stable opaque check identifier, not source text. Reusing the same feedback is idempotent. No model tool exposes these operations. An untrusted conversation cannot submit feedback or export a candidate.
 
+The browser review and native app reach those endpoints through the owner-authenticated core
+bridge: `GET /api/agents/{id}/learning` lists conversations, and selecting one calls
+`GET /api/agents/{id}/learning?session={session}`. Feedback and candidate selection use POST to
+the same selected-session URL with the bodies above. GET requires a core read token; POST requires
+operate. The app/browser sends its core token only. The dedicated runtime key is resolved from the
+agent's declared local secrets by the core, stays server-side, and is never a UI input or returned
+value. No setup or credential is created by opening this view. The bridge uses the engine's optional
+`LearningRuntime` interface and refuses redirects; engines without it report `unsupported`.
+
+The core response is `{state, message?, sessions, session?, data?}`. A ready selected session has
+`data.events`, `data.candidates`, and `data.status`. Other states explicitly distinguish
+`unavailable` (including offline), `missing_credential`, and `error` (refused operation). Safe errors
+omit upstream bodies, file paths and source text; known configured secret values are redacted from
+successful data too. Session lists and selected private review data pass through the core in memory,
+without being copied into its database or audit detail. See [the core API contract](api.md#runtime-learning-bridge).
+
+Status shows `reflectionEnabled`, used/limit pairs for calls (100 lifetime reservations), events
+(4,096), candidates (100), and exports (100), plus `exportedIds`, `feedbackAllowed` and
+`exportAllowed`. Capacity counts are store-wide; exported IDs are scoped to the selected task's
+visible candidates. Reflection off still permits feedback; an untrusted conversation permits neither
+feedback nor candidate export. An export remains a proposal awaiting dream and review.
+
+A POST may return optional `data.operation` (`ok`, `code`, `message`, `feedbackSaved`). If feedback
+was saved but reflection failed, `state` stays `ready`, `operation.ok` is false,
+`code` is `reflection_failed`, and `feedbackSaved` is true. Show the partial result and refresh
+rather than treating it as lost feedback or automatically submitting it again. A transport failure
+can also occur after a write reached the runtime; refresh before retrying. Successful export has
+`feedbackSaved: false`.
+
 Reflection is triggered by explicit correction, verified recovery after failure, or repeated independently confirmed success of the same revision. Reflection consumes a deliberately supplied summary (at most 2,000 bytes), selected evidence and at most three audience-visible related records, never a bulk transcript or archive. It has no tools, an 8,000-byte input limit, a 512-token output request, a 30-second timeout, one reserved call per conversation task root, and at most 100 lifetime reservations per store. A reservation is persisted before requesting the model: a crash or failed response does not automatically retry a paid call. `null` is a successful no-op. Candidates stay private and inactive until explicitly selected; private-audience candidates cannot be exported to agent-wide review. Exporting is still only proposing: it does not pin memory or activate a skill.
 
 The version-1 files are runtime-owned, 0600, and atomically replaced:

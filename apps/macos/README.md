@@ -68,3 +68,47 @@ The capture does not draw system materials (the sidebar and inspector background
 
 The plan for the rest (the native office, every CLI command, configuration, signing and updates)
 is docs/macos-app.md.
+
+## Learning review
+
+The Review section has two views. **Proposals** shows the normal accept/reject flow, snapshot
+sightings, and evidence for the exact lesson or skill revision. Snapshot sightings describe
+persistence; they do not count as confirmation. The independent-confirmation threshold remains
+visible when automatic review is off. An older core's missing evidence is shown as unknown.
+
+In **Task outcomes**, choose an agent's session to inspect observed events and reflection
+candidates. Execution status and task outcome are separate. Record Succeeded, Failed or Corrected
+only when a task check supports it; the optional selected summary is limited to 2,000 UTF-8 bytes.
+The app derives an opaque source identifier from the event, so retrying after a reload or app
+restart does not create independent evidence. If feedback saves but reflection fails, the screen
+reports both results and keeps the feedback recorded.
+
+Reflection status and its call, event, candidate and export budgets are read-only. Public,
+agent-scoped procedural candidates can be explicitly selected with **Export for Review**. They
+then enter the normal learning cycle and review; export does not activate hot memory or skills.
+Private or sensitive candidates cannot be exported. Missing credentials, unsupported engines,
+unavailable agents and tainted sessions remain explicit unavailable/read-only states. All requests
+go to the core with the existing owner authentication; the app never receives a runtime learning
+key. Learning data stays in memory and is cleared when the instance, core or credentials change.
+
+## Isolated learning preview (DEBUG only)
+
+For visual and interaction checks, run a separate debug app bundle against a synthetic loopback
+fixture server:
+
+```sh
+STORMO_LEARNING_PREVIEW=http://127.0.0.1:18731 \
+  "/tmp/Stormo Learning Preview.app/Contents/MacOS/Stormo"
+```
+
+The opt-in accepts only an HTTP URL on `127.0.0.1` with an explicit port. It renders the same Review
+views, uses the synthetic token `learning-preview-owner`, and isolates defaults in
+`com.stormo.learning-preview`. It skips normal shell capture, command-line link reconciliation,
+instance activation, core startup and polling. The fixture should serve `GET /api/review` and the
+core's `GET`/`POST /api/agents/<id>/learning?session=<id>` contract. It must include Go's required
+zero-value fields, including a conversation's `ended`, every budget counter, and each event's task,
+revision and origin. The decoding examples live in
+`StormoKit/Tests/StormoKitTests/LearningReviewTests.swift`.
+
+Use a copied bundle with a unique bundle identifier so the installed app remains separate. The
+flag has no effect in release builds. Window capture can be combined with `STORMO_SNAPSHOT`.

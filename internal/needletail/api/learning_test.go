@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -48,5 +49,15 @@ func TestLearningDedicatedOwnerCredential(t *testing.T) {
 	}
 	if a.calls != 0 {
 		t.Fatal(a.calls)
+	}
+}
+
+func TestLearningErrorsDoNotExposeSourceOrSecrets(t *testing.T) {
+	for _, message := range []string{"private candidate cannot be promoted: source-private", "untrusted secret-session", "bad file /secret/path token=private-key"} {
+		w := httptest.NewRecorder()
+		writeLearningError(w, fmt.Errorf("%s", message))
+		if strings.Contains(w.Body.String(), "private-key") || strings.Contains(w.Body.String(), "secret-session") || strings.Contains(w.Body.String(), "source-private") || strings.Contains(w.Body.String(), "/secret/path") {
+			t.Fatalf("unsafe error %s", w.Body.String())
+		}
 	}
 }

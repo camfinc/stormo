@@ -215,12 +215,31 @@ Roll back behavior by disabling reflection and evidence-driven automatic decisio
 - [x] All five workstreams have initial implementation and regression coverage.
 - [x] Existing nap, rehydrate, rejection, scrub, scope, and stale-proposal tests remain green.
 - [x] Migration and restart replay tests prove evidence remains readable and idempotent.
-- [x] Core review API and browser output distinguish observations from verified outcomes; the native app continues to decode the additive API fields without new evidence controls.
+- [x] Core review API, browser, and native app distinguish observations from verified outcomes. Both interfaces expose session feedback, reflection budgets, candidate details, and explicit export into review.
 - [ ] Held-out evaluation reports quality, cost, and uncertainty against the baseline.
 - [x] Reflection budgets, disable controls, and recovery procedures are documented.
 - [x] `gofmt -l .`, `go vet ./...`, and `go test ./...` pass before implementation commits.
-- [x] Additive core API fields are documented; StormoKit decoding and integration suite passed on rerun (92 tests).
+- [x] Additive core API fields are documented; StormoKit decoding and integration suite passed (95 tests); the macOS app build passed.
 
 Review baseline: the memory, CLI, learning, and loop package tests passed during the 2026-10-26 code review. That verifies existing mechanics; it does not establish live-agent learning quality or completion of this plan.
 
 Implementation validation on 2026-10-26: full Go suite and vet passed; `gofmt -l .` and `git diff --check` were clean. Race checks passed for `internal/needletail/runtimelearn` and `pkg/learning`. StormoKit initially failed its file-browser integration scenario, then that scenario and a full 92-test rerun passed. The app tests use the existing local `bin/stormo`; they do not verify a newly packaged app or production runtime. Live model quality, production deployment, and automatic archival remain outside the completed checks.
+
+
+### UI parity validation
+
+The scoped browser and macOS extensions retain their incumbent systems: the browser uses the
+existing CSS palette, system typography, bordered review sections and disclosure controls; the
+macOS app uses its existing grouped SwiftUI forms, native pickers, disclosure groups and toolbar.
+No new visual world, design tokens, or design files were introduced. Review-specific browser
+classes isolate these sections from the office scene's absolute-positioned agents and labels.
+
+Session validation passed the full Go test suite and `go vet ./...`, 95 StormoKit tests, and the
+macOS app build. Synthetic fixture checks exercised outcome feedback and explicit candidate
+export in both browser and native interfaces. Desktop, mobile and native screenshots were
+inspected. Browser mutation checks also verified that a pending write locks its conversation
+selection and that summaries exceeding 2,000 UTF-8 bytes are refused before submission.
+
+These checks establish implementation and interface behavior with synthetic data. They do not
+establish live-agent learning quality, production credential delivery, deployment success, or
+phase F rollout thresholds. Held-out quality/cost gates and a measured live rollout remain open.
