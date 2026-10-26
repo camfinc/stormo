@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 // The memory tools (docs/needletail.md §4.5, §4.6): memory (Hermes' hot entries, unchanged), and
@@ -102,7 +103,10 @@ func memoryTool() Tool {
 "content":{"type":"string","description":"The entry's text (add, replace)."},
 "old_text":{"type":"string","description":"A unique part of the entry to change (replace, remove)."}},
 "required":["action","target"]}`),
-		Run: func(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
+		Run: func(ctx context.Context, env *Env, raw json.RawMessage) (any, error) {
+			if why := UntrustedWhy(ctx, env); why != "" {
+				return nil, messaging.Deferred("a memory mutation", why)
+			}
 			var a struct {
 				Action  string `json:"action"`
 				Target  string `json:"target"`
@@ -239,7 +243,10 @@ func memoryManageTool() Tool {
 	}
 }
 
-func runMemoryManage(_ context.Context, env *Env, raw json.RawMessage) (any, error) {
+func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, error) {
+	if why := UntrustedWhy(ctx, env); why != "" {
+		return nil, messaging.Deferred("a memory mutation", why)
+	}
 	var a struct {
 		Action     string    `json:"action"`
 		ID         string    `json:"id"`

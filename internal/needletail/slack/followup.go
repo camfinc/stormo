@@ -29,7 +29,8 @@ type FollowUpPost struct {
 	// Thread is the DM thread it was asked in, where it is posted back ("" for the DM itself).
 	Thread string
 	// Users are who asked (followup.Conversation.Users), who must still be admitted.
-	Users []string
+	Users     []string
+	Untrusted bool
 }
 
 // FollowUp posts a follow-up: the agent's before_send handlers first, then the messaging policy.
@@ -37,6 +38,11 @@ type FollowUpPost struct {
 // as one the agent is in, and a DM is its person's conversation with the agent (the person asked
 // there). Anywhere else the policy decides as for send_message. Never a broadcast.
 func (g *Gateway) FollowUp(ctx context.Context, p FollowUpPost) error {
+	ctx = messaging.WithQuarantine(ctx, nil)
+	ctx = messaging.WithSession(ctx, p.Origin)
+	if p.Untrusted || g.o.Untrusted != nil && g.o.Untrusted(p.Origin) {
+		ctx = messaging.WithUntrusted(ctx, messaging.UntrustedConversation)
+	}
 	if strings.TrimSpace(p.Text) == "" {
 		return nil
 	}
@@ -58,6 +64,11 @@ func (g *Gateway) FollowUp(ctx context.Context, p FollowUpPost) error {
 		}
 		if err := g.checkIn(channel, thread); err != nil {
 			return err
+		}
+		if p.Untrusted || messaging.UntrustedWhy(ctx) != "" || g.o.Untrusted != nil && g.o.Untrusted(p.Origin) {
+			if err := g.quarantineDestination(channel, thread); err != nil {
+				return err
+			}
 		}
 		_, err = g.postAs(ctx, channel, thread, text, false)
 		return err
@@ -81,6 +92,11 @@ func (g *Gateway) FollowUp(ctx context.Context, p FollowUpPost) error {
 		}
 	case channel == "":
 		channel = g.o.HomeChannel
+	}
+	if p.Untrusted || messaging.UntrustedWhy(ctx) != "" || g.o.Untrusted != nil && g.o.Untrusted(p.Origin) {
+		if err := g.quarantineDestination(channel, t.Thread); err != nil {
+			return err
+		}
 	}
 	_, err = g.postAs(ctx, channel, t.Thread, text, false)
 	return err
@@ -146,4 +162,19 @@ func (g *Gateway) checkIn(channel, thread string) error {
 	}
 	_, err := policy.Check(messaging.Target{Platform: "slack", Channel: channel, Thread: thread}, false)
 	return err
+}
+
+// A channel's new top-level post has no canonical thread ID before Slack accepts it.
+// Marked deliveries therefore require a DM or an existing thread, rather than posting first.
+func (g *Gateway) quarantineDestination(channel, thread string) error {
+	session := SessionID(channel, thread)
+	if strings.HasPrefix(channel, "D") {
+		session = DMSessionID(channel)
+	} else if thread == "" {
+		return fmt.Errorf("marked follow-up requires a DM or an existing Slack thread")
+	}
+	if g.o.Quarantine == nil {
+		return fmt.Errorf("durable Slack destination quarantine is unavailable")
+	}
+	return g.o.Quarantine(session)
 }

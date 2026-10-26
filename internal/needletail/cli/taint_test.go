@@ -63,3 +63,72 @@ func TestDeliveredFollowUpKeepsItsProvenance(t *testing.T) {
 		t.Errorf("an unmarked conversation: %q", why)
 	}
 }
+
+// Slack delivery must fail before posting if its local transcript cannot be marked.
+func TestSlackFollowUpAppendFailureDoesNotPost(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "sessions")
+	store, err := sessions.Open(sessionDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(api.Options{Store: store, StateDir: filepath.Join(dir, "state"), TmpDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &followUps{store: store, srv: srv, logf: func(string) {}}
+	poster := &fakePoster{}
+	var p followUpPoster = poster
+	f.slack.Store(&p)
+	id := "slack-D0EXAMPLE-dm"
+	if _, err = store.Create(wire.Session{ID: id, Source: "slack"}); err != nil {
+		t.Fatal(err)
+	}
+	// A filesystem failure stands in for a failed durable append/header rewrite.
+	path := filepath.Join(sessionDir, id+".jsonl")
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	it := followup.Item{ID: "marked-delivery", Kind: followup.KindMessage, Target: followup.TargetOrigin, Text: "must not leave", By: "luau:example", Origin: followup.Conversation{Session: id, Source: "slack"}}
+	if err = f.Fire(context.Background(), it); err == nil {
+		t.Fatal("append failure reported as delivered")
+	}
+	if len(poster.posts) != 0 {
+		t.Fatalf("append failure posted: %+v", poster.posts)
+	}
+}
+
+func TestMarkedFollowUpCreatesOwnSlackConversationBeforePost(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "sessions")
+	store, err := sessions.Open(sessionDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(api.Options{Store: store, StateDir: filepath.Join(dir, "state"), TmpDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &followUps{store: store, srv: srv, logf: func(string) {}}
+	poster := &fakePoster{}
+	var p followUpPoster = poster
+	f.slack.Store(&p)
+	id := "slack-D0EXAMPLE-dm"
+	it := followup.Item{ID: "marked-new-dm", Kind: followup.KindMessage, Target: followup.TargetOrigin, Text: "marked reminder", By: "luau:example", Origin: followup.Conversation{Session: id, Source: "slack"}}
+	if err = f.Fire(context.Background(), it); err != nil {
+		t.Fatal(err)
+	}
+	if len(poster.posts) != 1 || !poster.posts[0].Untrusted {
+		t.Fatalf("post provenance=%+v", poster.posts)
+	}
+	reopened, err := sessions.Open(sessionDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Untrusted(id) {
+		t.Fatal("new DM destination was not durably marked")
+	}
+}

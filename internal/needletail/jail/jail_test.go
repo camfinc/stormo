@@ -144,3 +144,35 @@ func TestWrapAndParse(t *testing.T) {
 		}
 	}
 }
+
+func TestQuarantineLauncherFlagsRequired(t *testing.T) {
+	_, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", "/opt/data/.tmp", "--", "/bin/bash", "bash"})
+	if err != nil {
+		t.Fatalf("read-only quarantine jail flags refused: %v", err)
+	}
+}
+
+func TestQuarantineRulesAndWritableValidation(t *testing.T) {
+	spec := Spec{Home: "/opt/data", Shared: []string{"/shared/group"}, ReadOnlyHome: true, Writable: []string{"/opt/data/.tmp"}}
+	rules := map[string]Rule{}
+	for _, r := range spec.Rules() {
+		rules[r.Path] = r
+	}
+	if rules[spec.Home].Access != RX || rules["/shared/group"].Access != RO {
+		t.Fatal("home/shared are writable in quarantine")
+	}
+	tmp := rules["/opt/data/.tmp"]
+	if tmp.Access != RW || !tmp.Required || !tmp.NoFollow {
+		t.Fatalf("unsafe temp grant %+v", tmp)
+	}
+	parsed, _, _, err := parse(append(spec.Args()[1:], "/bin/sh", "sh"))
+	if err != nil || !parsed.ReadOnlyHome || len(parsed.Writable) != 1 {
+		t.Fatalf("quarantine launcher roundtrip %+v %v", parsed, err)
+	}
+	for _, path := range []string{"/opt/data", "/shared/group", "/opt/data/.tmp/child", "/opt/data/.tmp/../scripts"} {
+		_, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", path, "--", "/bin/sh", "sh"})
+		if err == nil {
+			t.Errorf("non-temp writable grant accepted: %s", path)
+		}
+	}
+}

@@ -68,6 +68,12 @@ func writable(ctx context.Context, env *Env, p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if why := UntrustedWhy(ctx, env); why != "" {
+		rel, home := env.Sandbox.HomeRel(real)
+		if !home || !under(rel, []string{".tmp"}) {
+			return "", messaging.Deferred("a persistent file write (only .tmp is writable in quarantine)", why)
+		}
+	}
 	if rel, ok := env.Sandbox.HomeRel(real); ok && isProtected(rel) {
 		return "", fmt.Errorf("%s is the runtime's own file and cannot be written with the file tools", rel)
 	} else if ok && runLater(rel) {
@@ -95,6 +101,12 @@ func runLater(rel string) bool {
 // directory and the file opened with O_NOFOLLOW), so a directory the agent's commands swap for a
 // link to the runtime's sessions/ or logs/ is not read through.
 func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
+	if rel, home := env.Sandbox.HomeRel(real); home && strings.EqualFold(rel, "memories/RECORDS.md") {
+		return nil, nil, fmt.Errorf("%s is the private memory archive; use memory_search to read records within this conversation's audience", display)
+	}
+	if runtimeDir(env, real) {
+		return nil, nil, fmt.Errorf("%s is private runtime data; use session_search for conversation history or cronjob_manage list for job status", display)
+	}
 	info, err := os.Lstat(real)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", display, unwrapPath(err))
@@ -122,6 +134,12 @@ func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
 	if err != nil || !got.Mode().IsRegular() {
 		_ = f.Close()
 		return nil, nil, fmt.Errorf("%s is not a regular file", display)
+	}
+	// Path aliases (including a preexisting hardlink in ordinary workspace files)
+	// must not bypass the archive's audience-aware reader.
+	if archive, statErr := os.Stat(filepath.Join(env.Home, "memories", "RECORDS.md")); statErr == nil && os.SameFile(got, archive) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("%s is the private memory archive; use memory_search to read records within this conversation's audience", display)
 	}
 	return f, got, nil
 }
@@ -191,8 +209,10 @@ func noteShared(ctx context.Context, env *Env, real string) {
 func readFileTool() Tool {
 	return Tool{
 		Name: "read_file",
-		Description: "Read a text file from the agent's home (relative paths) or its shared space (/shared/group, " +
-			"/shared/<unit>). Lines come numbered as LINE|text; use offset and limit to page through long files.",
+		Description: "Read a nonprivate text file from the agent's home (relative paths) or its shared space (/shared/group, " +
+			"/shared/<unit>). sessions/, state/ and logs/ are private: use session_search for history. " +
+			"memories/RECORDS.md is private: use memory_search for audience-scoped records. " +
+			"Lines come numbered as LINE|text; use offset and limit to page through long files.",
 		Schema: schema(`{"type":"object","properties":{
 "path":{"type":"string","description":"File path, relative to the home or absolute."},
 "offset":{"type":"integer","description":"First line to return, from 1 (default 1)."},

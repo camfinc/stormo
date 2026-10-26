@@ -246,11 +246,12 @@ func (rt *Runtime) HandlerStatus(ctx context.Context, skillDir string) []skills.
 // handler named its action ("pass", {action = "pass"}); nil, nothing or a table with no action is
 // the event's default, which is no pass for an ambient message (§4.9).
 type Decision struct {
-	Action   string `json:"action"`
-	Text     string `json:"text,omitempty"`
-	Context  string `json:"context,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Explicit bool   `json:"-"`
+	Untrusted string `json:"-"`
+	Action    string `json:"action"`
+	Text      string `json:"text,omitempty"`
+	Context   string `json:"context,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Explicit  bool   `json:"-"`
 }
 
 // actions are each event's actions; the first is the default (what nil means).
@@ -363,8 +364,10 @@ type Verdict = messaging.Verdict
 // header) but cannot be loaded, blocks the message (logged; hooked as failed when it ran), since the text it was there to
 // change would otherwise go out as it was. serves, when set, picks the handlers that apply
 // (on_schedule: the job's).
-func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[string]any, serves func(*Header) bool) Verdict {
-	v := Verdict{Action: actions[event][0]}
+func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[string]any, serves func(*Header) bool) (v Verdict) {
+	ctx = messaging.WithQuarantine(ctx, nil)
+	defer func() { v.Untrusted = messaging.UntrustedWhy(ctx) }()
+	v = Verdict{Action: actions[event][0]}
 	if messaging.HandlerEvent(ctx) == BeforeSend && event == BeforeSend {
 		return v // never reached (a before_send handler cannot send); no recursion either way
 	}
@@ -465,7 +468,9 @@ func (rt *Runtime) runHandler(ctx context.Context, hf HandlerFile, event, sessio
 		}
 		return Decision{}, errors.New(msg)
 	}
-	return ParseDecision(event, res.Value)
+	d, err = ParseDecision(event, res.Value)
+	d.Untrusted = res.Untrusted
+	return d, err
 }
 
 // Events are the runtime's handlers as the gateway (messaging.Handlers) and the scheduler call

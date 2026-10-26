@@ -1,8 +1,16 @@
 package history
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
+	"github.com/camfinc/stormo/internal/needletail/sessions"
+	"github.com/camfinc/stormo/internal/needletail/wire"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,5 +67,61 @@ func TestTool(t *testing.T) {
 	got := tool.HookArgs(`{"query":"espinaca secreta","session_id":"dm-ana","sort":"newest","limit":3,"exclude_session_ids":["a","b"],"after":"7d"}`)
 	if strings.Contains(got, "espinaca") || strings.Contains(got, "dm-ana") || !strings.Contains(got, `"has_query":true`) || !strings.Contains(got, `"sort":"newest"`) || !strings.Contains(got, `"exclude_session_ids_count":2`) {
 		t.Errorf("hook args = %s", got)
+	}
+}
+
+// Marked history must never be returned when no durable reader-mark mechanism exists.
+func TestMarkedHistoryFailsClosedWithoutPropagation(t *testing.T) {
+	f := newFixture(t)
+	f.conv("marked-history", "slack", "user", "quarantine-sentinel secret procedural note")
+	path := filepath.Join(f.dir, "marked-history.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"id":"marked-history"`), []byte(`"id":"marked-history","untrusted":true`), 1)
+	if err = os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tool := Tool(f.ix, func(string) Visible { return func(string, string) bool { return true } })
+	for _, args := range []string{`{"query":"quarantine-sentinel"}`, `{"session_id":"marked-history"}`, `{"session_id":"marked-history","around_message_id":0}`, `{}`} {
+		got, err := tool.Run(context.Background(), &tools.Env{Session: "reader"}, json.RawMessage(args))
+		if err == nil || got != nil {
+			t.Errorf("marked data returned without durable reader mark: args=%s data=%+v err=%v", args, got, err)
+		}
+	}
+}
+
+func TestMarkedHistoryDurablyQuarantinesBeforeReturn(t *testing.T) {
+	f := newFixture(t)
+	f.conv("source", "slack", "user", "marked data sentinel")
+	if err := f.store.MarkUntrusted("source"); err != nil {
+		t.Fatal(err)
+	}
+	for i, args := range []string{`{"query":"sentinel"}`, `{"session_id":"source"}`, `{"session_id":"source","around_message_id":0}`, `{}`} {
+		reader := fmt.Sprintf("reader-%d", i)
+		if _, err := f.store.Create(wire.Session{ID: reader, Source: "slack"}); err != nil {
+			t.Fatal(err)
+		}
+		ctx := messaging.WithQuarantine(context.Background(), func(string) error { return f.store.MarkUntrusted(reader) })
+		tool := Tool(f.ix, func(string) Visible { return func(string, string) bool { return true } }, f.store.MarkUntrusted)
+		got, err := tool.Run(ctx, &tools.Env{Session: reader}, json.RawMessage(args))
+		if err != nil || got == nil {
+			t.Fatalf("%s: %v", args, err)
+		}
+		if messaging.UntrustedWhy(ctx) == "" {
+			t.Fatal("current run remains trusted")
+		}
+		reopened, err := sessions.Open(f.dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reopened.Untrusted(reader) {
+			t.Fatal("reader mark missing after restart")
+		}
+	}
+	tool := Tool(f.ix, func(string) Visible { return func(string, string) bool { return true } }, func(string) error { return errors.New("forced mark failure") })
+	if data, err := tool.Run(context.Background(), &tools.Env{Session: "reader"}, json.RawMessage(`{"session_id":"source"}`)); err == nil || data != nil {
+		t.Fatalf("failed persist returned data: %+v %v", data, err)
 	}
 }

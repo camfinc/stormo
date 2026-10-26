@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -87,6 +88,8 @@ type Rule struct {
 	// Required: the jail fails when Path is missing (the home); other paths are skipped, so one
 	// list serves images that lack some of them.
 	Required bool
+	// NoFollow pins a writable directory itself, never a symlink target.
+	NoFollow bool
 }
 
 // Grant is the rule's rights as the kernel takes them: those the ABI handles, and only a file's
@@ -157,15 +160,26 @@ var System = []Rule{
 
 // Spec is one agent's jail: its home and its shared layers.
 type Spec struct {
-	Home   string
-	Shared []string
+	Home         string
+	Shared       []string
+	ReadOnlyHome bool
+	Writable     []string
 }
 
 // Rules are the spec's rules: the home (required), each shared layer and System.
 func (s Spec) Rules() []Rule {
-	out := []Rule{{Path: s.Home, Access: RW, Required: true}}
+	access, shared := uint64(RW), uint64(RW)
+	if s.ReadOnlyHome {
+		access, shared = RX, RO
+	}
+	out := []Rule{{Path: s.Home, Access: access, Required: true}}
 	for _, d := range s.Shared {
-		out = append(out, Rule{Path: d, Access: RW})
+		out = append(out, Rule{Path: d, Access: shared})
+	}
+	if s.ReadOnlyHome {
+		for _, d := range s.Writable {
+			out = append(out, Rule{Path: d, Access: RW, Required: true, NoFollow: true})
+		}
 	}
 	return append(out, System...)
 }
@@ -175,6 +189,12 @@ func (s Spec) Args() []string {
 	out := []string{"jail", "--home", s.Home}
 	for _, d := range s.Shared {
 		out = append(out, "--shared", d)
+	}
+	if s.ReadOnlyHome {
+		out = append(out, "--read-only-home")
+	}
+	for _, d := range s.Writable {
+		out = append(out, "--writable", d)
 	}
 	return append(out, "--")
 }
@@ -209,6 +229,8 @@ func parse(args []string) (Spec, string, []string, error) {
 	fs.SetOutput(io.Discard)
 	var s Spec
 	fs.StringVar(&s.Home, "home", "", "")
+	fs.BoolVar(&s.ReadOnlyHome, "read-only-home", false, "")
+	fs.Func("writable", "", func(v string) error { s.Writable = append(s.Writable, v); return nil })
 	fs.Func("shared", "", func(v string) error { s.Shared = append(s.Shared, v); return nil })
 	if err := fs.Parse(args); err != nil {
 		return Spec{}, "", nil, err
@@ -220,6 +242,13 @@ func parse(args []string) (Spec, string, []string, error) {
 	}
 	if s.Home == "" || !strings.HasPrefix(s.Home, "/") {
 		return Spec{}, "", nil, errors.New("--home must be an absolute path")
+	}
+	if s.ReadOnlyHome {
+		if len(s.Writable) != 1 || filepath.Clean(s.Writable[0]) != filepath.Join(filepath.Clean(s.Home), TmpDir) {
+			return Spec{}, "", nil, errors.New("read-only home requires only its .tmp directory writable")
+		}
+	} else if len(s.Writable) != 0 {
+		return Spec{}, "", nil, errors.New("writable overrides require read-only home")
 	}
 	for _, d := range s.Shared {
 		if !strings.HasPrefix(d, "/") {

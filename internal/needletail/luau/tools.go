@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
@@ -52,10 +53,22 @@ func (rt *Runtime) Exec(ctx context.Context, x Exec) (*Result, *Call, error) {
 		return nil, nil, err
 	}
 	call := rt.NewCall(x.Name, x.Session, caps, x.DryRun)
+	ctx = call.runContext(ctx)
+	if why := call.quarantined(ctx); why != "" {
+		if err := messaging.MarkUntrusted(ctx, why); err != nil {
+			return nil, call, err
+		}
+	}
 	res, err := rt.Runner.Run(ctx, Request{Name: x.Name, Source: x.Source, Entry: x.Entry, Args: x.Args, Bindings: Bindings(),
 		Host: call, Timeout: rt.timeout(x.Header, x.Script)})
 	if err != nil {
 		return nil, call, err
+	}
+	res.Untrusted = messaging.UntrustedWhy(ctx)
+	if res.Untrusted != "" {
+		if err := messaging.MarkUntrusted(ctx, res.Untrusted); err != nil {
+			return nil, call, err
+		}
 	}
 	if len(res.Value) > 0 {
 		res.Value = json.RawMessage(rt.redact(string(res.Value)))
@@ -262,6 +275,9 @@ func (rt *Runtime) tool(tf ToolFile) tools.Tool {
 // toolResult is what the model gets from a run: its result, its logs and output.
 func toolResult(res *Result, call *Call, dry bool) (any, error) {
 	out := map[string]any{}
+	if res.Untrusted != "" {
+		out["untrusted"] = true
+	}
 	if res.Value != nil {
 		out["result"] = res.Value
 	}

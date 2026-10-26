@@ -77,6 +77,10 @@ type Options struct {
 	// Root is a session's conversation (sessions.Store.Root; nil: the session itself), so
 	// no_reply finds the turn it is called in whatever compaction did to the session.
 	Root func(session string) (string, bool)
+	// Quarantine creates and durably marks a destination before marked text is posted.
+	Quarantine func(session string) error
+	// Untrusted reads durable provenance when the bot's earlier posts enter thread context.
+	Untrusted func(session string) bool
 	// Channels are the channels the agent has conversations in (send_message's targets).
 	Channels func() []string
 	// AllowedUsers may talk to the agent (SLACK_ALLOWED_USERS); AllowAll lets anyone
@@ -729,7 +733,8 @@ func (g *Gateway) threadLines(channel, thread string, skip map[string]bool) []me
 			return "@" + g.name(id, &budget)
 		}))
 		if m.User == g.id.UserID || m.BotID != "" && m.BotID == g.id.BotID {
-			lines = append(lines, messaging.ContextLine{User: m.User, Name: "assistant", Text: text, Assistant: true})
+			marked := g.o.Untrusted != nil && (g.o.Untrusted(SessionID(channel, thread)) || strings.HasPrefix(channel, "D") && g.o.Untrusted(DMSessionID(channel)))
+			lines = append(lines, messaging.ContextLine{User: m.User, Name: "assistant", Text: text, Assistant: true, Unverified: marked})
 			continue
 		}
 		l := messaging.ContextLine{User: m.User, Name: "a bot", Text: text, Parent: m.TS == thread, Unverified: !g.admitted(m.User, m.BotID)}
@@ -751,7 +756,12 @@ func threadContext(lines []messaging.ContextLine) string {
 	unverified := false
 	for _, l := range lines {
 		if l.Assistant {
-			out = append(out, "[assistant] "+neutralise(l.Text))
+			tag := "[assistant] "
+			if l.Unverified {
+				tag += "[unverified] "
+				unverified = true
+			}
+			out = append(out, tag+neutralise(l.Text))
 			continue
 		}
 		tag := ""
@@ -931,7 +941,19 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		var v messaging.Verdict
 		// what the handler acts on (its message, and the thread context it is given), for what it
 		// does on its own later (a follow-up)
-		hctx := messaging.WithInput(g.base, inputOf([]job{j}, in.ThreadContext))
+		hctx := messaging.WithSession(messaging.WithInput(g.base, inputOf([]job{j}, in.ThreadContext)), session)
+		hctx = messaging.WithQuarantine(hctx, func(string) error {
+			if g.o.Quarantine == nil {
+				return fmt.Errorf("durable handler quarantine unavailable")
+			}
+			return g.o.Quarantine(session)
+		})
+		if why := messaging.UntrustedWhy(hctx); why != "" {
+			if err := messaging.MarkUntrusted(hctx, why); err != nil {
+				g.logf("slack: untrusted handler input refused: %v", err)
+				continue
+			}
+		}
 		if j.ambient {
 			// at most AmbientHandlers at once: a busy channel cannot run a Luau instance per message
 			select {
@@ -945,6 +967,16 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			}()
 		} else {
 			v = g.o.Handlers.Inbound(hctx, event, in)
+		}
+		if v.Untrusted != "" {
+			if g.o.Quarantine == nil {
+				g.logf("slack: marked handler result refused: durable quarantine unavailable")
+				continue
+			}
+			if err := g.o.Quarantine(session); err != nil {
+				g.logf("slack: marked handler result refused: %v", err)
+				continue
+			}
 		}
 		if j.ambient {
 			// heard, not addressed: only a handler's explicit answer does anything (a handler
@@ -1071,7 +1103,36 @@ func (g *Gateway) beforeSendAs(ctx context.Context, o messaging.Outgoing, target
 		o.Channel = ""
 	}
 	o.Text = g.o.Redact(o.Text)
+	source := o.Session
+	if source == "" {
+		source = messaging.SessionOf(ctx)
+	}
+	ctx = messaging.WithSession(ctx, source)
+	if g.o.Untrusted != nil && g.o.Untrusted(source) {
+		ctx = messaging.WithUntrusted(ctx, messaging.UntrustedConversation)
+	}
+	ctx = messaging.WithQuarantine(ctx, func(string) error {
+		if source == "" || g.o.Quarantine == nil {
+			return fmt.Errorf("durable before_send quarantine unavailable")
+		}
+		return g.o.Quarantine(source)
+	})
 	v := g.o.Handlers.BeforeSend(ctx, o)
+	if v.Untrusted != "" {
+		source := o.Session
+		if source == "" {
+			source = messaging.SessionOf(ctx)
+		}
+		if source == "" || g.o.Quarantine == nil {
+			return "", fmt.Errorf("marked before_send result requires durable conversation quarantine")
+		}
+		if err := g.o.Quarantine(source); err != nil {
+			return "", err
+		}
+		if err := messaging.MarkUntrusted(ctx, v.Untrusted); err != nil {
+			return "", err
+		}
+	}
 	switch v.Action {
 	case "block":
 		if v.Failed && notice {
@@ -1231,7 +1292,7 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, inp
 		g.status(j.channel, orDefault(j.thread, j.ts), "")
 	}()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	return slot.Turn(messaging.WithInput(g.base, in), input, loop.Options{Observer: used, Untrusted: in.Untrusted()})
+	return slot.Turn(messaging.WithSession(messaging.WithInput(g.base, in), root), input, loop.Options{Observer: used, Untrusted: in.Untrusted()})
 }
 
 // inputOf is what a run handling jobs, given the thread context lines, acts on (messaging.Input):
@@ -1240,10 +1301,10 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, inp
 func inputOf(jobs []job, lines []messaging.ContextLine) messaging.Input {
 	in := messaging.Input{Verified: true, Users: []string{}}
 	for _, l := range lines {
+		in.ContextUnverified = in.ContextUnverified || l.Unverified
 		if l.Assistant {
 			continue
 		}
-		in.ContextUnverified = in.ContextUnverified || l.Unverified
 		if l.User != "" && !slices.Contains(in.Context, l.User) {
 			in.Context = append(in.Context, l.User)
 		}

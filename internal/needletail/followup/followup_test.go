@@ -570,8 +570,8 @@ func TestToolAndViews(t *testing.T) {
 }
 
 // A run handling input the agent was not given to obey cannot launder it through a follow-up: an
-// unverified author's (allowed_users does not list them) makes none at all; an overheard one
-// (slack.listen) only a text back to its own conversation, kept marked untrusted. A verified,
+// unverified author's (allowed_users does not list them) makes none at all; marked thread
+// context allows only a text back to its own conversation, kept marked untrusted. A verified,
 // addressed input records who asked and, in a DM thread, the thread.
 func TestCreateFollowsTheInputsTrust(t *testing.T) {
 	q, home := newQueue(t)
@@ -582,13 +582,13 @@ func TestCreateFollowsTheInputsTrust(t *testing.T) {
 			t.Errorf("unverified %+v: %v", spec, err)
 		}
 	}
-	overheard := messaging.WithInput(context.Background(), messaging.Input{Verified: true, Ambient: true, Users: []string{"U0ALLOWED1"}})
+	unverifiedContext := messaging.WithInput(context.Background(), messaging.Input{Verified: true, ContextUnverified: true, Users: []string{"U0ALLOWED1"}})
 	for _, spec := range []Spec{{In: "1h", Prompt: "follow up on the booking"}, {In: "1h", Text: "x", Target: "slack"}} {
-		if _, err := q.Create(overheard, "slack-C0DEVCHAN1-1700000000.000200", spec); err == nil || !strings.Contains(err.Error(), "overheard") {
+		if _, err := q.Create(unverifiedContext, "slack-C0DEVCHAN1-1700000000.000200", spec); err == nil || !strings.Contains(err.Error(), "[unverified]") {
 			t.Errorf("overheard %+v: %v", spec, err)
 		}
 	}
-	it, err := q.Create(overheard, "slack-C0DEVCHAN1-1700000000.000200", Spec{In: "1h", Text: "I'll check the booking."})
+	it, err := q.Create(unverifiedContext, "slack-C0DEVCHAN1-1700000000.000200", Spec{In: "1h", Text: "I'll check the booking."})
 	if err != nil || !it.Untrusted || it.Target != TargetOrigin {
 		t.Errorf("overheard text: %+v %v", it, err)
 	}

@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/jail"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 )
 
@@ -70,6 +73,14 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	}
 	if strings.TrimSpace(a.Command) == "" {
 		return nil, errors.New("command is empty")
+	}
+	if a.Background && UntrustedWhy(ctx, env) != "" && conversationOf(env) == "" {
+		return nil, messaging.Deferred("a background process without a known conversation", UntrustedWhy(ctx, env))
+	}
+	var prepErr error
+	env, prepErr = quarantineEnv(ctx, env)
+	if prepErr != nil {
+		return nil, prepErr
 	}
 	timeout := env.CommandTimeout
 	if a.Timeout > 0 {
@@ -188,6 +199,64 @@ func CommandEnv(env *Env) []string { return terminalEnv(env) }
 // process group, killed whole when cmd is cancelled, env's Agent user (the uid split) and env's
 // Jail. cmd's path, arguments and environment are set before.
 func Command(cmd *exec.Cmd, env *Env) { command(cmd, env) }
+
+// CommandContext prepares a context-aware command, refusing quarantine when the
+// filesystem policy cannot be enforced. Callers must check the error before Start.
+func CommandContext(ctx context.Context, cmd *exec.Cmd, env *Env) error {
+	prepared, err := quarantineEnv(ctx, env)
+	if err != nil {
+		return err
+	}
+	if prepared != env {
+		cmd.Env = append(cmd.Env, "TMPDIR="+prepared.TmpDir, "TMP="+prepared.TmpDir, "TEMP="+prepared.TmpDir)
+	}
+	command(cmd, prepared)
+	return nil
+}
+
+func quarantineEnv(ctx context.Context, env *Env) (*Env, error) {
+	why := UntrustedWhy(ctx, env)
+	if why == "" {
+		return env, nil
+	}
+	if env.Jail == nil {
+		return nil, messaging.Deferred("terminal execution: a read-only Landlock jail is unavailable", why)
+	}
+	abi, err := jail.ABI()
+	if err != nil || abi < 3 {
+		return nil, messaging.Deferred("terminal execution: quarantine requires Landlock ABI 3 or newer (including truncation protection)", why)
+	}
+	return readOnlyCommandEnv(env, why)
+}
+
+// readOnlyCommandEnv copies the launcher, so a quarantined background command
+// retains its restriction and cannot alter another trusted command's policy.
+func readOnlyCommandEnv(env *Env, why string) (*Env, error) {
+	home, err := filepath.Abs(env.Home)
+	if err != nil {
+		return nil, messaging.Deferred("terminal execution: invalid home", why)
+	}
+	jailHome, err := filepath.Abs(env.Jail.Spec.Home)
+	if err != nil || filepath.Clean(jailHome) != filepath.Clean(home) {
+		return nil, messaging.Deferred("terminal execution: the jail does not match the home", why)
+	}
+	tmp := filepath.Join(home, jail.TmpDir)
+	if env.TmpDir != "" && filepath.Clean(env.TmpDir) != tmp {
+		return nil, messaging.Deferred("terminal execution: only the home's .tmp may be writable", why)
+	}
+	info, err := os.Lstat(tmp)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, messaging.Deferred("terminal execution: .tmp must be an existing directory, never a symlink", why)
+	}
+	copy := *env
+	launcher := *env.Jail
+	launcher.Spec = env.Jail.Spec
+	launcher.Spec.ReadOnlyHome = true
+	launcher.Spec.Writable = []string{tmp}
+	copy.Jail = &launcher
+	copy.TmpDir = tmp
+	return &copy, nil
+}
 
 // command is Command; on unix it also jails cmd (env.Jail).
 func command(cmd *exec.Cmd, env *Env) {

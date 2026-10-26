@@ -62,7 +62,11 @@ func Restrict(rules []Rule, abi int) error {
 // addRule adds r beneath its path, opened O_PATH (system paths may be symlinks: /lib64,
 // /etc/localtime; the rule binds what they resolve to).
 func addRule(ruleset int, r Rule, abi int) error {
-	pfd, err := unix.Open(r.Path, unix.O_PATH|unix.O_CLOEXEC, 0)
+	flags := unix.O_PATH | unix.O_CLOEXEC
+	if r.NoFollow {
+		flags |= unix.O_NOFOLLOW
+	}
+	pfd, err := unix.Open(r.Path, flags, 0)
 	if err != nil {
 		if !r.Required && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
 			return nil
@@ -105,6 +109,10 @@ func Main(args []string, stderr io.Writer) int {
 	abi, err := ABI()
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail jail: %v\n", err)
+		return ExitJail
+	}
+	if spec.ReadOnlyHome && abi < 3 {
+		fmt.Fprintln(stderr, "needletail jail: quarantine requires Landlock ABI 3 or newer to deny truncation")
 		return ExitJail
 	}
 	// best effort: the runtime makes it at boot; a command may have removed it since

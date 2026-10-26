@@ -76,7 +76,7 @@ func TestGuideGolden(t *testing.T) {
 	// a conversation with untrusted input schedules nothing, and the guide says why, with or
 	// without Luau and Slack
 	for _, g := range []string{got, min} {
-		if !strings.Contains(g, "words you may not obey") || !strings.Contains(g, "can schedule no prompt, job or skill change") {
+		if !strings.Contains(g, "untrusted input") || !strings.Contains(g, "nothing you do there is kept or forwarded") {
 			t.Errorf("the guide does not say what an untrusted conversation cannot schedule:\n%s", g)
 		}
 	}

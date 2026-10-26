@@ -72,7 +72,8 @@ func TestFollowUpBindings(t *testing.T) {
 }
 
 // A message handler's follow_up runs on the message's word (the Input the gateway puts on its
-// context): from a person allowed_users does not list, none; from an overheard one, only a text.
+// context): an unverified author is refused; verified ambient input stays trusted,
+// while explicitly unverified thread context still quarantines prompt follow-ups.
 func TestFollowUpFromAHandlerFollowsItsInput(t *testing.T) {
 	rt, _ := newRuntime(t)
 	rt.Grants = append(rt.Grants, fuRW...)
@@ -89,7 +90,8 @@ end`)})
 		what, want string
 	}{
 		{messaging.Input{Ambient: true}, "text", "allowed_users"},
-		{messaging.Input{Verified: true, Ambient: true}, "prompt", "overheard"},
+		{messaging.Input{Verified: true, Ambient: true}, "prompt", "made"},
+		{messaging.Input{Verified: true, Ambient: true, ContextUnverified: true}, "prompt", "thread context"},
 		{messaging.Input{Verified: true, Ambient: true}, "text", "made"},
 		{messaging.Input{Verified: true}, "prompt", "made"},
 	} {

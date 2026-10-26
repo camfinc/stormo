@@ -13,7 +13,7 @@ import (
 // In a conversation that has taken in words the agent may not obey, nothing it writes is run
 // later as its own: skill_manage writes nothing (a skill's SKILL.md is loaded as instructions,
 // its tools and handlers run), and the file tools write nothing under skills/ or scripts/ (job
-// scripts); elsewhere they write as before, and an unmarked conversation is unchanged.
+// scripts); only temporary files may be written elsewhere; an unmarked conversation is unchanged.
 func TestUntrustedConversationWritesNothingRunLater(t *testing.T) {
 	r, env := setup(t)
 	env.Session = "s1"
@@ -36,7 +36,7 @@ func TestUntrustedConversationWritesNothingRunLater(t *testing.T) {
 			t.Errorf("%s %v: %v", c.tool, c.args, m)
 		}
 	}
-	if m, failed := call(t, r, &marked, "write_file", map[string]any{"path": "notes/today.md", "content": "hi"}); failed {
+	if m, failed := call(t, r, &marked, "write_file", map[string]any{"path": ".tmp/today.md", "content": "hi"}); failed {
 		t.Errorf("a note: %v", m)
 	}
 	if body, _ := os.ReadFile(filepath.Join(env.Home, "scripts", "job.sh")); string(body) != "echo hi\n" {

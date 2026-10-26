@@ -583,8 +583,8 @@ func TestMemoryScriptScoped(t *testing.T) {
 }
 
 // The archive and its counters are memory:read's: fs.read:home does not read them, by any path
-// that reaches the file (another spelling, a hard link); listing or stat-ing them only shows they
-// are there.
+// that reaches the file (another spelling, a hard link). The archive can be
+// listed/stat-ed; runtime-private state counters require typed APIs even for the owner.
 func TestFSReadOfTheArchiveNeedsMemoryRead(t *testing.T) {
 	rt, _ := newRuntime(t)
 	if _, err := rt.Memory.Save(memory.SaveOptions{Text: "A client's private note.", Force: true}); err != nil {
@@ -596,9 +596,10 @@ func TestFSReadOfTheArchiveNeedsMemoryRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"memories/RECORDS.md", "~/memories/RECORDS.md", rt.Home + "/memories/RECORDS.md", "memories/./RECORDS.md",
-		"notes.md", "state/needletail/memory-usage.json"} {
+		"notes.md"} {
 		fails(t, rt, []string{"fs.read:home"}, `return read_file("`+p+`")`, "denied")
 	}
+	fails(t, rt, []string{"fs.read:home"}, `return read_file("state/needletail/memory-usage.json")`, "refused")
 	res, _ := exec(t, rt, []string{"fs.read:home"}, `return {stat_file("memories/RECORDS.md").type, #list_files("memories")}`)
 	if res.Err != nil || !strings.Contains(string(res.Value), `"file"`) {
 		t.Errorf("stat and list = %v %s", res.Err, res.Value)

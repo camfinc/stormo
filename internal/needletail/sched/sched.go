@@ -268,6 +268,7 @@ type waiter struct {
 // held.
 type gateResult struct {
 	runContext, scriptBlock string
+	untrusted               string
 	commit                  func()
 }
 
@@ -558,9 +559,9 @@ func (s *Scheduler) trusted(j *Job) bool {
 // and a repo job always is.
 func (s *Scheduler) runContext(j *Job) context.Context {
 	if !s.trusted(j) && j.Bool("untrusted") {
-		return messaging.WithUntrusted(s.runCtx, "this scheduled run's job was made from words you may not obey")
+		return messaging.WithQuarantine(messaging.WithUntrusted(s.runCtx, "this scheduled run's job was made from words you may not obey"), nil)
 	}
-	return s.runCtx
+	return messaging.WithQuarantine(s.runCtx, nil)
 }
 
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
@@ -768,12 +769,13 @@ func (s *Scheduler) start(id string, now time.Time) {
 				return
 			}
 		}
-		o := s.execute(s.runContext(job), job, &slot, session, release, cached)
+		ctx := s.runContext(job)
+		o := s.execute(ctx, job, &slot, session, release, cached)
 		release()
 		if slot != nil {
 			slot.Release()
 		}
-		s.finish(s.runCtx, job, o)
+		s.finish(ctx, job, o)
 		if o.status == statusBusy {
 			return // no turn was free: it waits in line with its gate's result for the next tick
 		}
@@ -840,6 +842,10 @@ func interrupted(session string) outcome {
 // monitor's new output is stored only once the slot is held. cached is such a kept result: the
 // job comes with its slot, and its gate does not run again.
 func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session string, release func(), cached *gateResult) (o outcome) {
+	ctx = messaging.WithQuarantine(ctx, nil)
+	if cached != nil && cached.untrusted != "" {
+		_ = messaging.MarkUntrusted(ctx, cached.untrusted)
+	}
 	name, id := j.Name(), j.ID()
 	defer func() {
 		if p := recover(); p != nil {
@@ -886,7 +892,14 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		if !changed {
 			return outcome{status: wire.StatusNoChange}
 		}
-		runContext, commit = block, store
+		runContext = block
+		// A baseline becomes future model context. Quarantined observations may
+		// be used in this run, but must never become a clean run's previous text.
+		commit = func() {
+			if messaging.UntrustedWhy(ctx) == "" {
+				store()
+			}
+		}
 	}
 	scriptBlock, scriptOut := "", ""
 	if sc := strings.TrimSpace(j.Str("script")); sc != "" {
@@ -910,6 +923,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			"skills": j.Skills(), "deliver": j.Str("deliver"), "repo": s.trusted(j)}, "script_output": scriptOut, "run_context": runContext,
 			"time": s.at(s.o.Now())}
 		v := s.o.OnSchedule(ctx, id, j.Str("name"), ev)
+		if v.Untrusted != "" {
+			_ = messaging.MarkUntrusted(ctx, v.Untrusted)
+		}
 		switch {
 		case s.isStopping() && v.Action != "pass":
 			return interrupted("")
@@ -924,7 +940,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		}
 	}
 	release()
-	gate := &gateResult{runContext: runContext, scriptBlock: scriptBlock, commit: commit}
+	gate := &gateResult{runContext: runContext, scriptBlock: scriptBlock, commit: commit, untrusted: messaging.UntrustedWhy(ctx)}
 	if *slot == nil {
 		if s.ahead(id, dueAt(j, s.o.Now())) {
 			// an older job waits for the lane: it goes first (the kick lets it try now, the lane
@@ -952,7 +968,9 @@ func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, promp
 	s.unwait(id)
 	s.warnOnce("busy:"+id, "")
 	s.warnOnce("yield:"+id, "")
-	gate.commit()
+	if messaging.UntrustedWhy(ctx) == "" {
+		gate.commit()
+	}
 	runContext, scriptBlock := gate.runContext, gate.scriptBlock
 	if j.Str("model") != "" || j.Str("provider") != "" {
 		s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, j.Str("model"), j.Str("provider")))
@@ -1192,6 +1210,20 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 		deliveryErr = s.deliver(ctx, j, o)
 	}
 	s.record(j, o, now)
+	// Detailed diagnostics stay in the private Raw run record. The public job
+	// metadata is read by cronjob_manage in later, potentially trusted turns.
+	publicError, publicPause, publicDeliveryError := o.err, o.pause, deliveryErr
+	if messaging.UntrustedWhy(ctx) != "" {
+		if publicError != "" {
+			publicError = "The quarantined run failed; detailed output is retained in its private run record."
+		}
+		if publicPause != "" {
+			publicPause = "The quarantined run could not continue; review its private run record."
+		}
+		if publicDeliveryError != "" {
+			publicDeliveryError = "Scheduled forwarding was refused because this run is quarantined."
+		}
+	}
 	err := s.mutate(func(f *File) (bool, error) {
 		requested := settle() // with the record, so a `run` asked meanwhile is neither lost nor run twice
 		live := f.Find(id)
@@ -1205,14 +1237,14 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 		}
 		live.Set("last_status", status)
 		if o.failed() {
-			live.Set("last_error", o.err)
+			live.Set("last_error", publicError)
 			live.Set("failure_streak", streak)
 		} else {
 			live.Set("last_error", nil)
 			live.Set("failure_streak", 0)
 		}
 		if deliveryErr != "" {
-			live.Set("last_delivery_error", deliveryErr)
+			live.Set("last_delivery_error", publicDeliveryError)
 		} else {
 			live.Set("last_delivery_error", nil)
 		}
@@ -1224,7 +1256,7 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 			live.Set("enabled", false)
 			live.Set("state", "paused")
 			live.Set("paused_at", s.at(now))
-			live.Set("paused_reason", "Auto-paused by the scheduler: "+o.pause)
+			live.Set("paused_reason", "Auto-paused by the scheduler: "+publicPause)
 		case times > 0 && completed >= times:
 			live.Set("enabled", false)
 			live.Set("state", "completed")
@@ -1270,6 +1302,9 @@ func clip(s string, n int) string {
 // deliver sends the output to the lane's targets: failure_deliver for a failure when the job has
 // one, else deliver. "" when every target took it.
 func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return messaging.Deferred("scheduled forwarding", why).Error()
+	}
 	lane := j.Str("deliver")
 	if o.failed() {
 		if fd := strings.TrimSpace(j.Str("failure_deliver")); fd != "" {

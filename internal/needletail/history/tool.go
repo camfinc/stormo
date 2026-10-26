@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
@@ -18,7 +19,7 @@ const ToolName = "session_search"
 // profile and detail), in four shapes picked by the arguments. audience is the calling turn's
 // visibility (from its session, the runtime's: never the model's arguments); the turn's own
 // session is never a hit.
-func Tool(ix *Index, audience func(session string) Visible) tools.Tool {
+func Tool(ix *Index, audience func(session string) Visible, persist ...func(session string) error) tools.Tool {
 	return tools.Tool{
 		Name: ToolName,
 		Description: "Recall your past conversations: search them by keyword, or read inside one. query: the conversations " +
@@ -41,7 +42,8 @@ func Tool(ix *Index, audience func(session string) Visible) tools.Tool {
 "session_id":{"type":"string","description":"A session to read (alone) or scroll (with around_message_id)."},
 "around_message_id":{"type":"integer","minimum":0,"description":"With session_id: the message to centre on (a hit's match_message_id, or an id from a window)."},
 "window":{"type":"integer","minimum":1,"maximum":20,"description":"With around_message_id: messages on each side (default 5)."}}}`),
-		Run: func(_ context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
+		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
+			ctx = messaging.WithQuarantine(ctx, nil)
 			var a struct {
 				Query     string   `json:"query"`
 				Limit     int      `json:"limit"`
@@ -69,14 +71,31 @@ func Tool(ix *Index, audience func(session string) Visible) tools.Tool {
 			if visible == nil {
 				visible = func(string, string) bool { return false }
 			}
+			var result any
+			var err error
 			if id := sessionID(a.SessionID); id != "" {
-				return ix.Scroll(Scroll{SessionID: id, Around: a.Around, Window: a.Window, Current: session, Visible: visible})
+				result, err = ix.Scroll(Scroll{SessionID: id, Around: a.Around, Window: a.Window, Current: session, Visible: visible})
+			} else if strings.TrimSpace(a.Query) == "" {
+				result, err = ix.Browse(Browse{Limit: a.Limit, Source: a.Source, Current: session, Visible: visible})
+			} else {
+				result, err = ix.Search(Query{Text: a.Query, Limit: a.Limit, Sort: strings.ToLower(strings.TrimSpace(a.Sort)), After: a.After, Before: a.Before,
+					Source: a.Source, Roles: a.Roles, Exclude: a.Exclude, Current: session, Visible: visible})
 			}
-			if strings.TrimSpace(a.Query) == "" {
-				return ix.Browse(Browse{Limit: a.Limit, Source: a.Source, Current: session, Visible: visible})
+			if err != nil {
+				return nil, err
 			}
-			return ix.Search(Query{Text: a.Query, Limit: a.Limit, Sort: strings.ToLower(strings.TrimSpace(a.Sort)), After: a.After, Before: a.Before,
-				Source: a.Source, Roles: a.Roles, Exclude: a.Exclude, Current: session, Visible: visible})
+			if markedResult(result) {
+				if session == "" || len(persist) == 0 || persist[0] == nil {
+					return nil, fmt.Errorf("marked history requires durable conversation quarantine")
+				}
+				if err := persist[0](session); err != nil {
+					return nil, fmt.Errorf("quarantine history reader: %w", err)
+				}
+				if err := messaging.MarkUntrusted(ctx, "read marked conversation history"); err != nil {
+					return nil, err
+				}
+			}
+			return result, nil
 		},
 		HookArgs: hookArgs,
 	}
@@ -146,4 +165,37 @@ func hookArgs(args string) string {
 	}
 	b, _ := json.Marshal(out)
 	return string(b)
+}
+
+// Inspect typed result flags, never source text: quoted JSON must not mark an unrelated reader.
+func markedResult(result any) bool {
+	switch r := result.(type) {
+	case Result:
+		for _, h := range r.Results {
+			if h.Untrusted {
+				return true
+			}
+			for _, m := range h.Messages {
+				if m.Untrusted {
+					return true
+				}
+			}
+		}
+	case ScrollResult:
+		if r.Untrusted {
+			return true
+		}
+		for _, m := range r.Messages {
+			if m.Untrusted {
+				return true
+			}
+		}
+	case BrowseResult:
+		for _, h := range r.Results {
+			if h.Untrusted {
+				return true
+			}
+		}
+	}
+	return false
 }

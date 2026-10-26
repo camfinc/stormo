@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 )
 
@@ -106,6 +107,7 @@ func orDefault(n, def int) int {
 // proc is one background process.
 type proc struct {
 	id, conv, command string
+	quarantined       bool
 	pid               int
 	started           time.Time
 	cancel            context.CancelFunc // kills the group (cmd.Cancel)
@@ -230,7 +232,7 @@ func (p *Processes) spawn(env *Env, command, conv, dir, skillDir string) (*proc,
 	if buf <= 0 {
 		buf = DefaultBuffer
 	}
-	pr := &proc{id: newProcID(), conv: conv, command: command, pid: cmd.Process.Pid, started: time.Now(), cancel: cancel,
+	pr := &proc{id: newProcID(), conv: conv, command: command, quarantined: env.Jail != nil && env.Jail.Spec.ReadOnlyHome, pid: cmd.Process.Pid, started: time.Now(), cancel: cancel,
 		out: newRing(buf), done: make(chan struct{}), outDone: make(chan struct{}), stdin: inW}
 	pr.lifetime = time.AfterFunc(p.lifetime(), func() { p.kill(pr, "lifetime") })
 	overlap := 0
@@ -469,6 +471,10 @@ func runProcess(ctx context.Context, env *Env, raw json.RawMessage) (any, error)
 		return nil, errNoProcesses
 	}
 	conv := conversationOf(env)
+	why := UntrustedWhy(ctx, env)
+	if why != "" && conv == "" {
+		return nil, messaging.Deferred("process access without a known conversation", why)
+	}
 	if a.Action == "list" {
 		return map[string]any{"processes": p.list(conv)}, nil
 	}
@@ -478,6 +484,9 @@ func runProcess(ctx context.Context, env *Env, raw json.RawMessage) (any, error)
 	pr, err := p.find(conv, a.SessionID)
 	if err != nil {
 		return nil, err
+	}
+	if why != "" && !pr.quarantined && (a.Action == "write" || a.Action == "submit" || a.Action == "close") {
+		return nil, messaging.Deferred("input to a process started before quarantine", why)
 	}
 	switch a.Action {
 	case "poll":

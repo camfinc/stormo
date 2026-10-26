@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,13 +198,20 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		history = append(history, stored...)
 		a.logf("session=%s: %d tool calls of an interrupted turn answered as interrupted", tip, len(calls))
 	}
-	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input, Kind: opts.InputKind, Untrusted: opts.Untrusted})
+	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input, Kind: opts.InputKind, Untrusted: opts.Untrusted || messaging.UntrustedWhy(ctx) != ""})
 	if err != nil {
 		return nil, err
 	}
 	history = append(history, stored...)
 	turnIdentity := fmt.Sprintf("%s:%d", tip, len(history))
 	res = &Result{Session: tip}
+	ctx = messaging.WithSession(ctx, tip)
+	ctx = messaging.WithQuarantine(ctx, func(string) error { return a.Store.MarkUntrusted(res.Session) })
+	if a.Store.Untrusted(tip) {
+		if err := messaging.MarkUntrusted(ctx, messaging.UntrustedConversation); err != nil {
+			return res, err
+		}
+	}
 	defer func() {
 		if err := a.Store.Sync(res.Session); err != nil {
 			a.logf("session sync: %v", err)
@@ -296,6 +304,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			return res, nil
 		}
 		env.Session = res.Session
+		ctx = messaging.WithSession(ctx, res.Session)
 		for callIndex, c := range calls {
 			subject := a.outcomeSubject(c)
 			seen := observed(a.Tools, c)
@@ -335,7 +344,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 				}
 			}
 			obs.ToolDone(res.Session, withPaths(seen, touched), out, failed, time.Since(started))
-			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out})
+			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out, Untrusted: messaging.UntrustedWhy(ctx) != ""})
 			if err != nil {
 				return res, err
 			}

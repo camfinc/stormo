@@ -165,3 +165,63 @@ func TestJailRefusesBadArgs(t *testing.T) {
 		}
 	}
 }
+
+// This exercises the actual kernel restriction without containers or production
+// resources. It runs on any Linux test host with Landlock ABI >=3.
+func TestQuarantineReadOnlyJail(t *testing.T) {
+	abi, err := ABI()
+	if err != nil || abi < 3 {
+		t.Skip("requires Landlock ABI 3 or newer")
+	}
+	home := t.TempDir()
+	shared := t.TempDir()
+	tmp := filepath.Join(home, TmpDir)
+	for _, dir := range []string{tmp, filepath.Join(home, "scripts"), filepath.Join(home, "memories")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "memories", "note.txt"), []byte("note"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "read.txt"), []byte("shared"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "scripts", "read.sh"), []byte("#!/bin/sh\nprintf readable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "scripts"), filepath.Join(tmp, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{Home: home, Shared: []string{shared}, ReadOnlyHome: true, Writable: []string{tmp}}
+	self, _ := os.Executable()
+	run := func(command string) ([]byte, error) {
+		cmd := exec.Command(self, append(spec.Args()[1:], "/bin/sh", "sh", "-c", command)...)
+		cmd.Dir = home
+		cmd.Env = append(os.Environ(), launchEnv+"=1", "HOME="+home, "TMPDIR="+tmp)
+		return cmd.CombinedOutput()
+	}
+	for _, command := range []string{"cat memories/note.txt", fmt.Sprintf("cat %q/read.txt", shared), "./scripts/read.sh", "printf scratch > \"$TMPDIR/scratch\"", "(printf background > \"$TMPDIR/bg\") & wait"} {
+		if out, err := run(command); err != nil {
+			t.Errorf("allowed command %q: %v %s", command, err, out)
+		}
+	}
+	for _, command := range []string{"printf tainted > scripts/new.sh", "printf tainted > memories/note.txt", fmt.Sprintf("printf tainted > %q/new.txt", shared), "printf tainted > .tmp/escape/new.sh", "truncate -s 0 memories/note.txt", "(printf tainted > scripts/bg.sh) & wait $!"} {
+		if out, err := run(command); err == nil {
+			t.Errorf("persistent write allowed %q: %s", command, out)
+		}
+	}
+	if note, err := os.ReadFile(filepath.Join(home, "memories/note.txt")); err != nil || string(note) != "note" {
+		t.Fatal("readonly memory changed")
+	}
+	// Replacing the writable root itself must not grant write access to its target.
+	if err := os.RemoveAll(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, tmp); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run("printf should-not-run"); err == nil || strings.Contains(string(out), "should-not-run") {
+		t.Fatalf("temp root symlink was followed: %v %s", err, out)
+	}
+}

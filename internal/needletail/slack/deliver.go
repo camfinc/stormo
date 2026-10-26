@@ -22,6 +22,10 @@ import (
 // over; checked again here). The output is posted as it is, with no "Cronjob Response" wrapper
 // (Hermes' cron.wrap_response: false), and never broadcasts.
 func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
+	ctx = messaging.WithQuarantine(ctx, nil)
+	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+		return messaging.Deferred("scheduled Slack delivery", why)
+	}
 	if d.Target.Platform != "slack" {
 		return fmt.Errorf("needletail does not deliver to %s", d.Target.Platform)
 	}
@@ -38,6 +42,9 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	text, err := g.beforeSendAs(ctx, messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt, d.Failure)
 	if err != nil {
 		return err
+	}
+	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+		return messaging.Deferred("scheduled Slack delivery", why)
 	}
 	if !d.Trusted {
 		if err := g.CheckTarget(d.Target); err != nil {
@@ -152,6 +159,7 @@ func (g *Gateway) engaged(channel, thread string) bool {
 // Send posts a message the agent sends on its own (send_message, Luau's send_message) under
 // the messaging policy.
 func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent, error) {
+	ctx = messaging.WithQuarantine(ctx, nil)
 	if strings.TrimSpace(r.Text) == "" {
 		return messaging.Sent{}, errors.New("message is required")
 	}
@@ -159,10 +167,16 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
+	if err := g.quarantineSend(ctx, t); err != nil {
+		return messaging.Sent{}, err
+	}
 	// the agent's before_send handlers first (they change only the text); the messaging policy
 	// decides after them
-	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindSend, Text: r.Text, Broadcast: r.Broadcast}, t)
+	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindSend, Session: messaging.SessionOf(ctx), Text: r.Text, Broadcast: r.Broadcast}, t)
 	if err != nil {
+		return messaging.Sent{}, err
+	}
+	if err := g.quarantineSend(ctx, t); err != nil {
 		return messaging.Sent{}, err
 	}
 	broadcast, err := g.Policy().Check(t, r.Broadcast)
@@ -205,6 +219,12 @@ func (g *Gateway) SendTool() tools.Tool {
 			case "", "send":
 			default:
 				return nil, fmt.Errorf("unknown action %q: send or list", a.Action)
+			}
+			if env != nil {
+				ctx = messaging.WithSession(ctx, env.Session)
+				if why := tools.UntrustedWhy(ctx, env); why != "" {
+					ctx = messaging.WithUntrusted(ctx, why)
+				}
 			}
 			sent, err := g.Send(ctx, messaging.Request{Target: a.Target, Text: a.Message, Broadcast: a.Broadcast})
 			if err != nil {
@@ -254,3 +274,51 @@ func (g *Gateway) targets() []map[string]string {
 
 var _ sched.Deliverer = (*Gateway)(nil)
 var _ messaging.Messenger = (*Gateway)(nil)
+
+// Quarantined content can only be answered in the runtime's own originating DM/thread.
+func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target) error {
+	session := messaging.SessionOf(ctx)
+	why := messaging.UntrustedWhy(ctx)
+	if why == "" && g.o.Untrusted != nil && g.o.Untrusted(session) {
+		why = messaging.UntrustedConversation
+	}
+	if why == "" {
+		return nil
+	}
+	channel, thread, ok := Origin(g.root(session))
+	if !ok {
+		return messaging.Deferred("send_message outside its own conversation", why)
+	}
+	dest := target.Channel
+	if strings.HasPrefix(channel, "D") {
+		if in, ok := messaging.InputOf(ctx); ok {
+			thread = in.Thread
+		}
+	}
+	if target.User != "" {
+		if !strings.HasPrefix(channel, "D") {
+			return messaging.Deferred("send_message outside its own conversation", why)
+		}
+		person, err := g.dmUser(channel)
+		if err != nil || person != target.User {
+			return messaging.Deferred("send_message outside its own conversation", why)
+		}
+		dest = channel
+	} else if dest == "" {
+		dest = g.o.HomeChannel
+	}
+	if dest != channel || target.Thread != thread {
+		return messaging.Deferred("send_message outside its own conversation", why)
+	}
+	return nil
+}
+
+func (g *Gateway) deliveryQuarantine(ctx context.Context, session string) string {
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return why
+	}
+	if g.o.Untrusted != nil && g.o.Untrusted(session) {
+		return messaging.UntrustedConversation
+	}
+	return ""
+}

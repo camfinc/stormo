@@ -152,6 +152,21 @@ func newRig(t *testing.T, mod func(*Options), before ...func(*Gateway)) *rig {
 	r.fake.DMUsers[dm] = alice
 	o := Options{Web: &Web{BaseURL: r.fake.API(), BotToken: slacktest.BotToken, AppToken: slacktest.AppToken},
 		Turns: r.turns, Exists: r.turns.exists, AllowedUsers: []string{alice}, HomeChannel: home,
+		Quarantine: func(id string) error {
+			r.turns.mu.Lock()
+			defer r.turns.mu.Unlock()
+			h := r.turns.sessions[id]
+			h.ID = id
+			h.Source = Source
+			h.Untrusted = true
+			r.turns.sessions[id] = h
+			return nil
+		},
+		Untrusted: func(id string) bool {
+			r.turns.mu.Lock()
+			defer r.turns.mu.Unlock()
+			return r.turns.sessions[id].Untrusted
+		},
 		Channels: func() []string { return []string{dev} }, RetryEvery: 10 * time.Millisecond,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "sekret-value", "[REDACTED]") },
 		Log:    func(l string) { r.mu.Lock(); r.logs = append(r.logs, l); r.mu.Unlock() }}

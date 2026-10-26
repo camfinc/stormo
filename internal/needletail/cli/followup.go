@@ -134,7 +134,16 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 		if p == nil {
 			return errNoSlack
 		}
-		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text})
+		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text, Untrusted: untrustedText(it) || f.store.Untrusted(it.Origin.Session)})
+	}
+	if it.Origin.Source == slack.Source {
+		if _, ok := f.store.Root(it.Origin.Session); !ok {
+			if _, err := f.store.Create(wire.Session{ID: it.Origin.Session, Source: slack.Source, Title: "Slack conversation", Untrusted: untrustedText(it)}); err != nil {
+				if _, exists := f.store.Root(it.Origin.Session); !exists {
+					return err
+				}
+			}
+		}
 	}
 	release, err := f.srv.Hold(it.Origin.Session)
 	if err != nil {
@@ -147,14 +156,17 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 		if p == nil {
 			return errNoSlack
 		}
-		if err := p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text}); err != nil {
+		// Keep the marked row durably before Slack sees its text. Failure is delivery failure.
+		if !ok {
+			return followup.ErrGone
+		}
+		if err := f.appendReply(tip, it.Text, untrustedText(it)); err != nil {
 			return err
 		}
-		if ok {
-			if err := f.appendReply(tip, it.Text, untrustedText(it)); err != nil {
-				f.logf(fmt.Sprintf("follow-up %s: posted, but not kept in the conversation: %v", it.ID, err))
-			}
+		if err := p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text, Untrusted: untrustedText(it) || f.store.Untrusted(it.Origin.Session)}); err != nil {
+			return err
 		}
+
 		return nil
 	}
 	if !ok {
@@ -267,9 +279,9 @@ func (f *followUps) deliver(ctx context.Context, it followup.Item, text string) 
 		return errNoSlack
 	}
 	if it.Target != followup.TargetOrigin {
-		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: text})
+		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: text, Untrusted: untrustedText(it) || f.store.Untrusted(it.Origin.Session)})
 	}
-	return p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpReply, Text: text})
+	return p.FollowUp(ctx, slack.FollowUpPost{Origin: it.Origin.Session, Thread: it.Origin.Thread, Users: it.Origin.Users, Kind: slack.FollowUpReply, Text: text, Untrusted: untrustedText(it) || f.store.Untrusted(it.Origin.Session)})
 }
 
 // input is a prompt follow-up's turn input: what it is (the agent's own, not a new message from

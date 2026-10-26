@@ -76,6 +76,8 @@ type Runtime struct {
 	LuauTimeout   time.Duration
 	ScriptTimeout time.Duration
 	Now           func() time.Time
+	// Untrusted is the persisted conversation provenance, resolved by the host.
+	Untrusted func(context.Context, string) string
 	// Observer, when set, gives the observer of handler runs (the core's hooks, which connect
 	// after boot): each run is a tool_start and tool_done named luau:<skill>__<name>#<event>.
 	Observer func() HookObserver
@@ -128,6 +130,7 @@ func (rt *Runtime) timeout(h *Header, script bool) time.Duration {
 // engine's Host.
 type Call struct {
 	rt      *Runtime
+	ctx     context.Context
 	Tool    string
 	Session string
 	Caps    Caps
@@ -147,6 +150,49 @@ type Call struct {
 // NewCall is a run of tool (its name, for the audit) in session with caps.
 func (rt *Runtime) NewCall(tool, session string, caps Caps, dryRun bool) *Call {
 	return &Call{rt: rt, Tool: tool, Session: session, Caps: caps, DryRun: dryRun}
+}
+
+// runContext keeps one mutable quarantine state across every binding of a run.
+// WithQuarantine preserves an existing loop persistence callback.
+func (c *Call) runContext(ctx context.Context) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctx == nil {
+		c.ctx = messaging.WithQuarantine(ctx, nil)
+	}
+	return messaging.ShareQuarantine(ctx, c.ctx)
+}
+func (c *Call) UntrustedWhy() string {
+	c.mu.Lock()
+	ctx := c.ctx
+	c.mu.Unlock()
+	if ctx == nil {
+		return ""
+	}
+	return messaging.UntrustedWhy(ctx)
+}
+func (c *Call) quarantined(ctx context.Context) string {
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return why
+	}
+	if c.rt.Untrusted != nil {
+		return c.rt.Untrusted(ctx, c.Session)
+	}
+	return ""
+}
+
+// Write-capable bindings require an explicit quarantine path. Unknown future
+// writers fail closed; these exceptions have their own gates or only reach the
+// external network (which quarantine does not constrain).
+func quarantineWrite(name string, b Binding) bool {
+	if !b.Write {
+		return false
+	}
+	switch name {
+	case "core.call", "http.request", "message.send", "kv.set", "kv.delete", "followup.create", "followup.cancel":
+		return false
+	}
+	return true
 }
 
 // Touched are the shared-space paths the run wrote (as /shared/<layer>/…).
@@ -190,12 +236,15 @@ func (c *Call) deny(binding, capability string) error {
 
 // Call answers one host call (Host).
 func (c *Call) Call(ctx context.Context, name string, in []byte) []byte {
+	ctx = c.runContext(ctx)
 	b, ok := registry[name]
 	var v any
 	var err error
 	switch {
 	case !ok || b.Local || b.run == nil:
 		err = errf("unknown", "no binding %q", name)
+	case quarantineWrite(name, b) && c.quarantined(ctx) != "":
+		err = errf("refused", "%v", messaging.Deferred(name, c.quarantined(ctx)))
 	case c.DryRun && b.Write:
 		err = errf("dry_run", "%s is not run in a dry run (luau_test): writes, http and core calls are off", name)
 	default:
@@ -423,6 +472,14 @@ func (c *Call) readPlace(name string, in json.RawMessage) (place, error) {
 	p, err := c.place(a.Path)
 	if err != nil {
 		return place{}, err
+	}
+	if !p.shared {
+		first, _, _ := strings.Cut(p.rel, "/")
+		for _, private := range []string{"sessions", "state", "logs"} {
+			if strings.EqualFold(first, private) {
+				return place{}, errf("refused", "%s is private runtime data: use the model's session_search for history, search_memory for memory, or kv_get for KV so provenance is preserved", display(p))
+			}
+		}
 	}
 	if !c.Caps.FSRead(scope(p)) {
 		return place{}, c.deny(name, "fs.read:"+scope(p))
@@ -758,6 +815,9 @@ func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 
 // core calls one of the core's tools: an object answer as it is, any other text as {result}.
 func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any, error) {
+	if why := c.quarantined(ctx); why != "" && !messaging.ReadOnlyCoreTool(tool) {
+		return nil, errf("refused", "%v", messaging.Deferred("core_call "+tool, why))
+	}
 	if c.rt.Core == nil {
 		return nil, errf("unavailable", "%s: the agent is not on a swarm core", tool)
 	}
@@ -876,7 +936,7 @@ func messageSend(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 	if c.rt.Messenger == nil {
 		return nil, errf("unavailable", "send_message: no messaging gateway runs here (Slack is off)")
 	}
-	sent, err := c.rt.Messenger.Send(ctx, messaging.Request{Target: t.String(), Text: text})
+	sent, err := c.rt.Messenger.Send(messaging.WithSession(ctx, c.Session), messaging.Request{Target: t.String(), Text: text})
 	switch {
 	case errors.Is(err, messaging.ErrRefused):
 		return nil, errf("refused", "send_message: %v", err)

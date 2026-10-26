@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
@@ -244,6 +245,9 @@ type Result struct {
 
 // Call runs tool name with args (a JSON object; empty means {}).
 func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (*Result, error) {
+	if why := messaging.UntrustedWhy(ctx); why != "" && !messaging.ReadOnlyCoreTool(name) {
+		return nil, messaging.Deferred("core tool "+name, why)
+	}
 	if len(bytes.TrimSpace(args)) == 0 {
 		args = json.RawMessage("{}")
 	}
@@ -286,7 +290,10 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 			Name:        Prefix + name,
 			Description: info.Description,
 			Schema:      info.InputSchema,
-			Run: func(ctx context.Context, _ *tools.Env, args json.RawMessage) (any, error) {
+			Run: func(ctx context.Context, env *tools.Env, args json.RawMessage) (any, error) {
+				if why := tools.UntrustedWhy(ctx, env); why != "" && !messaging.ReadOnlyCoreTool(name) {
+					return nil, messaging.Deferred("core tool "+name, why)
+				}
 				res, err := c.Call(ctx, name, args)
 				if err != nil {
 					if Away(err) {

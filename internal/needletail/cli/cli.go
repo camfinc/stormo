@@ -234,7 +234,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	agent.Tools.Add(fu.Tool())
 	// session_search (§4.5): the agent's past conversations, in the turn's audience; indexed at
 	// the first search, then only what was appended since
-	agent.Tools.Add(history.Tool(&history.Index{Dir: cfg.SessionsDir(), Log: logf}, searchable(mem.Where, sourceOf(store), knownDM, ops)))
+	agent.Tools.Add(history.Tool(&history.Index{Dir: cfg.SessionsDir(), Log: logf}, searchable(mem.Where, sourceOf(store), knownDM, ops), store.MarkUntrusted))
 	lr := startLuau(cfg, sec, red, mem, env.Skills, agent, logf)
 	if lr != nil {
 		lr.FollowUps = fu // follow_up and nt.followup, in the run's conversation
@@ -382,6 +382,7 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 	}
 	lr := &luau.Runtime{Runner: eng, Home: cfg.Home, SharedDir: cfg.SharedDir, Layers: layers, Grants: cfg.Luau.Grants,
 		HTTPSecrets: cfg.Luau.HTTPSecrets, Secret: sec.Get, Memory: mem, Redact: red.Redact, Log: logf,
+		Untrusted:   agent.Env.Untrusted,
 		LuauTimeout: time.Duration(cfg.Limits.LuauTimeout) * time.Second, ScriptTimeout: time.Duration(cfg.Limits.ScriptTimeout) * time.Second}
 	if u := os.Getenv("SWARM_CORE_URL"); u != "" {
 		lr.CoreURLs = append(lr.CoreURLs, u)
@@ -527,10 +528,21 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 		handlers = luau.Events{RT: rt.luau}
 	}
 	gw, err := slack.New(slack.Options{
-		Web:          &slack.Web{BaseURL: os.Getenv(SlackAPIEnv), BotToken: bot, AppToken: app},
-		Turns:        slackTurns{srv},
-		Exists:       func(session string) bool { _, ok := store.Root(session); return ok },
-		Root:         store.Root,
+		Web:       &slack.Web{BaseURL: os.Getenv(SlackAPIEnv), BotToken: bot, AppToken: app},
+		Turns:     slackTurns{srv},
+		Exists:    func(session string) bool { _, ok := store.Root(session); return ok },
+		Root:      store.Root,
+		Untrusted: store.Untrusted,
+		Quarantine: func(session string) error {
+			if _, ok := store.Root(session); !ok {
+				if _, err := store.Create(wire.Session{ID: session, Source: slack.Source, Title: "Slack conversation", Untrusted: true}); err != nil {
+					if _, exists := store.Root(session); !exists {
+						return err
+					}
+				}
+			}
+			return store.MarkUntrusted(session)
+		},
 		Channels:     func() []string { return slackChannels(store) },
 		AllowedUsers: users,
 		AllowAll:     strings.EqualFold(os.Getenv("SLACK_ALLOW_ALL_USERS"), "true"),

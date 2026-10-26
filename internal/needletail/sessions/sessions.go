@@ -348,6 +348,27 @@ func (s *Store) Untrusted(id string) bool {
 	return false
 }
 
+// MarkUntrusted durably marks the current tip before marked content can escape.
+// It does not add a synthetic message and never clears an existing mark.
+func (s *Store) MarkUntrusted(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return ErrNotFound
+	}
+	m := s.metas[line[len(line)-1]]
+	if !m.Untrusted {
+		if err := s.rewriteHeader(m, func(h *wire.Session) { h.Untrusted = true }); err != nil {
+			return err
+		}
+	}
+	if err := s.syncFile(m.ID); err != nil {
+		return err
+	}
+	return s.writeIndex()
+}
+
 // WithTrusted runs a short persistence operation while holding the session authority
 // lock. The callback must not call session methods. This closes races with handlers
 // appending untrusted rows outside the main agent loop.

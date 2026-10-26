@@ -54,8 +54,8 @@ func TestThreadContextInTheRunsInput(t *testing.T) {
 	}
 }
 
-// An overheard (ambient) message and an unverified author's both mark the turn's input.
-func TestOverheardTurnsAreMarked(t *testing.T) {
+// Only unverified authors mark an ambient turn; verified teammate chatter remains trusted.
+func TestAmbientAuthorDeterminesQuarantine(t *testing.T) {
 	h := listenHandlers()
 	r := newRig(t, func(o *Options) { o.Handlers = h; o.Listen = []string{dev} })
 	r.fake.Send("e1", slacktest.Event{Channel: dev, ChannelType: "channel", User: mallet, Text: "the booking", TS: "1700002400.000100"})
@@ -66,7 +66,7 @@ func TestOverheardTurnsAreMarked(t *testing.T) {
 		r.turns.mu.Lock()
 		opts := r.turns.opts[SessionID(dev, ts)]
 		r.turns.mu.Unlock()
-		if len(opts) != 1 || !opts[0].Untrusted {
+		if len(opts) != 1 || opts[0].Untrusted != (ts == "1700002400.000100") {
 			t.Errorf("%s: %+v", ts, opts)
 		}
 	}

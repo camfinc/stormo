@@ -67,6 +67,8 @@ type Request struct {
 
 // Result is a finished run: Value (JSON) when it succeeded, else Err.
 type Result struct {
+	// Untrusted is host provenance, never writable by the Luau program.
+	Untrusted      string
 	Value          json.RawMessage
 	Err            *Error
 	Stdout, Stderr string

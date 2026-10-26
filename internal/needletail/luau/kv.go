@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 // The key-value store (docs/needletail.md §5.3): kv_get (kv:read), kv_set and kv_delete (kv:write).
@@ -51,14 +52,15 @@ var kvMaxKeys = kvKeysCap
 // holds them), the JSON around each of kvKeysCap entries (kvEntryJSON), and a margin. What the
 // store writes always fits it.
 const (
-	kvEntryJSON = 48 // `,"<key>":{"value":<value>,"expires":<20 digits>}` around a key and a value
+	kvEntryJSON = 68 // `,"<key>":{"value":<value>,"expires":<20 digits>}` around a key and a value
 	kvFileMax   = KVMaxBytes + kvKeysCap*kvEntryJSON + 4<<10
 )
 
 // kvEntry is one key's value and, when it expires, when (Unix seconds).
 type kvEntry struct {
-	Value   json.RawMessage `json:"value"`
-	Expires int64           `json:"expires,omitempty"`
+	Untrusted bool            `json:"untrusted,omitempty"`
+	Value     json.RawMessage `json:"value"`
+	Expires   int64           `json:"expires,omitempty"`
 }
 
 func (e kvEntry) expired(now time.Time) bool { return e.Expires != 0 && now.Unix() >= e.Expires }
@@ -214,7 +216,7 @@ func kvKey(binding string, raw any) (string, error) {
 	return k, nil
 }
 
-func kvGet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+func kvGet(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	st, err := c.kv("kv.get", "read")
 	if err != nil {
 		return nil, err
@@ -237,10 +239,15 @@ func kvGet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if !ok {
 		return nil, nil
 	}
+	if e.Untrusted {
+		if err := messaging.MarkUntrusted(ctx, "a Luau key-value entry contains untrusted data"); err != nil {
+			return nil, err
+		}
+	}
 	return e.Value, nil
 }
 
-func kvSet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+func kvSet(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	st, err := c.kv("kv.set", "write")
 	if err != nil {
 		return nil, err
@@ -301,7 +308,7 @@ func kvSet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if size > KVMaxBytes {
 		return nil, errf("full", "kv_set: the store would hold over %d bytes; kv_delete some or give them a ttl", KVMaxBytes)
 	}
-	st.entries[key] = kvEntry{Value: append(json.RawMessage(nil), value...), Expires: expires}
+	st.entries[key] = kvEntry{Value: append(json.RawMessage(nil), value...), Expires: expires, Untrusted: c.quarantined(ctx) != ""}
 	if err := st.save(c.rt.Home); err != nil {
 		if had {
 			st.entries[key] = old
@@ -313,7 +320,7 @@ func kvSet(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	return nil, nil
 }
 
-func kvDelete(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+func kvDelete(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	st, err := c.kv("kv.delete", "write")
 	if err != nil {
 		return nil, err
@@ -335,6 +342,9 @@ func kvDelete(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	old, had := st.entries[key]
 	if !had {
 		return false, nil
+	}
+	if why := c.quarantined(ctx); why != "" && !old.Untrusted {
+		return nil, errf("refused", "%v", messaging.Deferred("kv_delete of an unmarked key", why))
 	}
 	delete(st.entries, key)
 	if err := st.save(c.rt.Home); err != nil {
