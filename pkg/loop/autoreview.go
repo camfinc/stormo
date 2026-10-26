@@ -55,7 +55,7 @@ const maxSkillReview = 48 << 10
 var skillTextExt = []string{".md", ".markdown", ".txt"}
 
 // ReviewCandidates sorts agent's open proposals by the rules.
-func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]Candidate, []Held, error) {
+func ReviewCandidates(inst *instance.Instance, agentID string, minConfirmations int) ([]Candidate, []Held, error) {
 	root := inst.Root
 	cands, held := []Candidate{}, []Held{}
 
@@ -74,11 +74,11 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]C
 			held = append(held, Held{KindLesson, e.ID, "the scrubber flagged " + strings.Join(e.PII, ", ")})
 		case e.Scope != manifest.ScopeAgent:
 			held = append(held, Held{KindLesson, e.ID, "shared beyond the agent (" + string(e.Scope) + ")"})
-		case e.SeenCount < minSeen:
-			held = append(held, Held{KindLesson, e.ID, fmt.Sprintf("seen %d of %d times", e.SeenCount, minSeen)})
+		case !e.Evidence.AutoEligible(minConfirmations):
+			held = append(held, Held{KindLesson, e.ID, fmt.Sprintf("%d independent confirmations; need %d, with no failures or corrections (snapshot sightings are not evidence)", e.Evidence.Confirmations, minConfirmations)})
 		default:
-			cands = append(cands, Candidate{Kind: KindLesson, Ref: e.ID, Hash: e.ID, Title: "lesson " + e.ID,
-				Body: fmt.Sprintf("A lesson the agent wrote into its own memory (seen %d times):\n\n%s", e.SeenCount, e.Text)})
+			cands = append(cands, Candidate{Kind: KindLesson, Ref: e.ID, Hash: shaText("evidence-review-v1\n" + learning.LessonRevision(e) + "\n" + e.Evidence.Revision), Title: "lesson " + e.ID,
+				Body: fmt.Sprintf("A lesson the agent wrote into its own memory (snapshot sightings: %d). Evidence summary (bounded aggregate, no source text): %+v\n\n%s", e.SeenCount, e.Evidence, e.Text)})
 		}
 	}
 
@@ -86,8 +86,20 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]C
 	if err != nil {
 		return nil, nil, err
 	}
+	evidence, err := learning.LoadEvidence(root, agentID)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, p := range skills {
 		c, why := skillCandidate(root, agentID, p)
+		summary := evidence.Summary("skill", shaText(p.Skill), p.NapHash, "agent")
+		if why == "" && !summary.AutoEligible(minConfirmations) {
+			why = fmt.Sprintf("%d independent confirmations; need %d, with no failures or corrections (views are not evidence)", summary.Confirmations, minConfirmations)
+		}
+		if why == "" {
+			c.Hash = shaText("evidence-review-v1\n" + p.NapHash + "\n" + summary.Revision)
+			c.Body += fmt.Sprintf("\nEvidence summary (bounded aggregate, no source text): %+v", summary)
+		}
 		if why != "" {
 			held = append(held, Held{KindSkill, p.Skill, why})
 		} else {
@@ -256,7 +268,7 @@ func schedulesCandidate(agent *manifest.Agent, list []manifest.Schedule, meta *S
 // Approve applies an approval of the review to one candidate, recording who approved it and why.
 // It refuses when the proposal changed since it was judged (its hash no longer matches).
 func Approve(inst *instance.Instance, agentID string, c Candidate, who Decider) error {
-	cands, _, err := ReviewCandidates(inst, agentID, 1)
+	cands, _, err := ReviewCandidates(inst, agentID, max(1, inst.CoreLearning.AutoAcceptMinConfirmations))
 	if err != nil {
 		return err
 	}

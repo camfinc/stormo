@@ -28,6 +28,7 @@ var listenRe = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
 
 // agentConfig is engine/needletail/config.yaml.
 type agentConfig struct {
+	Reflection bool `yaml:"reflection"`
 	// Timezone is the agent's wall clock (an IANA zone, as Hermes' config.yaml timezone).
 	Timezone string `yaml:"timezone"`
 	Luau     struct {
@@ -105,6 +106,9 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 		}
 	}
 	for _, s := range c.Luau.HTTPSecrets {
+		if s.Env == "NEEDLETAIL_LEARNING_KEY" {
+			return nil, fmt.Errorf("%s: owner learning key is reserved", ConfigFile)
+		}
 		if s.Host == "" || s.Header == "" || !envNameRe.MatchString(s.Env) {
 			return nil, fmt.Errorf("%s: http_secrets entries need host, header and an env var name", ConfigFile)
 		}
@@ -149,6 +153,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout,
 			BackgroundLifetime: ac.Limits.BackgroundLifetime},
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit, Recall: ac.Memory.Recall}}
+	c.Reflection = ac.Reflection
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}
 	if onCore(a, target) && !core.NoGateway {

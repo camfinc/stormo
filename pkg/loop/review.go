@@ -192,11 +192,11 @@ func pruneEmpty(dir string) {
 }
 
 // AutoAcceptable: a proposed lesson the review's rules let its model judge. Agent-scoped memory
-// only (a user-profile entry is about a person), with no PII flag, seen at least minSeen times
+// only (a user-profile entry is about a person), with no PII flag and minConfirmations independent confirmations
 // (ReviewCandidates applies the same rules).
-func AutoAcceptable(e *learning.Learning, minSeen int) bool {
+func AutoAcceptable(e *learning.Learning, minConfirmations int) bool {
 	return e.Status == learning.Proposed && e.Scope == manifest.ScopeAgent && e.Kind == learning.KindMemory &&
-		len(e.PII) == 0 && e.SeenCount >= minSeen
+		len(e.PII) == 0 && e.Evidence.AutoEligible(minConfirmations)
 }
 
 func or(a, b string) string {

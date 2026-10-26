@@ -23,17 +23,18 @@ import (
 
 // ReviewLesson is one ledger entry on the review page.
 type ReviewLesson struct {
-	ID        string   `json:"id"`
-	Kind      string   `json:"kind"`
-	Scope     string   `json:"scope"`
-	Text      string   `json:"text"`
-	PII       []string `json:"pii"`
-	Status    string   `json:"status"`
-	SeenCount int      `json:"seenCount"`
-	FirstSeen string   `json:"firstSeen"`
-	LastSeen  string   `json:"lastSeen"`
-	DecidedAt string   `json:"decidedAt,omitempty"`
-	Note      string   `json:"note,omitempty"`
+	Evidence  learning.EvidenceSummary `json:"evidence"`
+	ID        string                   `json:"id"`
+	Kind      string                   `json:"kind"`
+	Scope     string                   `json:"scope"`
+	Text      string                   `json:"text"`
+	PII       []string                 `json:"pii"`
+	Status    string                   `json:"status"`
+	SeenCount int                      `json:"seenCount"`
+	FirstSeen string                   `json:"firstSeen"`
+	LastSeen  string                   `json:"lastSeen"`
+	DecidedAt string                   `json:"decidedAt,omitempty"`
+	Note      string                   `json:"note,omitempty"`
 	// What the review's rules let its model judge (agent-scoped memory, no PII flag).
 	AutoAcceptable bool `json:"autoAcceptable"`
 	// The review's verdict on this exact text, and why the rules hold it for a person.
@@ -127,14 +128,15 @@ type ReviewAgent struct {
 type ReviewView struct {
 	// Review is core.learning.review (auto | manual), with the model it asks and the instance's
 	// rules file; AutoAccept is Review == "auto" (the field readers had before).
-	Review            string        `json:"review"`
-	ReviewConnection  string        `json:"reviewConnection"`
-	ReviewModel       string        `json:"reviewModel,omitempty"`
-	ReviewPrompt      string        `json:"reviewPrompt,omitempty"`
-	AutoAccept        bool          `json:"autoAccept"`
-	AutoAcceptMinSeen int           `json:"autoAcceptMinSeen"`
-	AutoRestart       bool          `json:"autoRestart"`
-	Agents            []ReviewAgent `json:"agents"`
+	Review                     string        `json:"review"`
+	ReviewConnection           string        `json:"reviewConnection"`
+	ReviewModel                string        `json:"reviewModel,omitempty"`
+	ReviewPrompt               string        `json:"reviewPrompt,omitempty"`
+	AutoAccept                 bool          `json:"autoAccept"`
+	AutoAcceptMinSeen          int           `json:"autoAcceptMinSeen"`
+	AutoAcceptMinConfirmations int           `json:"autoAcceptMinConfirmations"`
+	AutoRestart                bool          `json:"autoRestart"`
+	Agents                     []ReviewAgent `json:"agents"`
 }
 
 const maxReviewText = 64 << 10
@@ -143,7 +145,7 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 	root := l.o.Inst.Root
 	cfg := l.o.Inst.CoreLearning
 	v := &ReviewView{Review: cfg.Review, ReviewConnection: cfg.ReviewConnection, ReviewModel: cfg.ReviewModel, ReviewPrompt: cfg.ReviewPrompt,
-		AutoAccept: cfg.AutoAccept, AutoAcceptMinSeen: cfg.AutoAcceptMinSeen, AutoRestart: cfg.AutoRestart, Agents: []ReviewAgent{}}
+		AutoAccept: cfg.AutoAccept, AutoAcceptMinSeen: cfg.AutoAcceptMinSeen, AutoAcceptMinConfirmations: cfg.AutoAcceptMinConfirmations, AutoRestart: cfg.AutoRestart, Agents: []ReviewAgent{}}
 	unapplied := l.Unapplied()
 	ids := manifest.AgentIDs(root)
 	sort.Strings(ids)
@@ -168,7 +170,7 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 				continue
 			}
 			r := ReviewLesson{ID: e.ID, Kind: string(e.Kind), Scope: string(e.Scope), Text: e.Text, PII: e.PII, Status: string(e.Status),
-				SeenCount: e.SeenCount, FirstSeen: e.FirstSeen, LastSeen: e.LastSeen, AutoAcceptable: loop.AutoAcceptable(e, 1)}
+				Evidence: e.Evidence, SeenCount: e.SeenCount, FirstSeen: e.FirstSeen, LastSeen: e.LastSeen, AutoAcceptable: loop.AutoAcceptable(e, cfg.AutoAcceptMinConfirmations)}
 			if r.PII == nil {
 				r.PII = []string{}
 			}
@@ -221,7 +223,7 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 // (a verdict on older content is not shown) and why the rules hold the others for a person.
 func (l *Learner) reviewNotes(agent string) (map[string]*ReviewAI, map[string]string) {
 	ai, held := map[string]*ReviewAI{}, map[string]string{}
-	cands, hs, err := loop.ReviewCandidates(l.o.Inst, agent, l.o.Inst.CoreLearning.AutoAcceptMinSeen)
+	cands, hs, err := loop.ReviewCandidates(l.o.Inst, agent, l.o.Inst.CoreLearning.AutoAcceptMinConfirmations)
 	if err != nil {
 		return ai, held
 	}

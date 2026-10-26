@@ -234,6 +234,24 @@ type MemoryArchive interface {
 	ArchivedMemories(read func(path string) []byte) []ArchivedMemory
 }
 
+// OutcomeEvidence exposes the metadata-only outcome export a dream may ingest.
+// The path must be classified Learning; raw conversations are never evidence input.
+type OutcomeEvidence interface {
+	OutcomePath() string
+}
+
+// LearningProposals exposes explicitly selected, scrubbed procedural proposals.
+// Private reflection queues remain Raw and are never read by the dream.
+type LearningProposals interface {
+	LearningProposalsPath() string
+}
+
+// PrivateLearningState identifies runtime-owned learning files whose restore must
+// remain private even before the runtime applies its permission preparation.
+type PrivateLearningState interface {
+	PrivateLearningPaths() []string
+}
+
 // ArchivedMemory is one archive entry: the hot file it belongs to ("memory" or "user") and its
 // text as the agent saved it.
 type ArchivedMemory struct {

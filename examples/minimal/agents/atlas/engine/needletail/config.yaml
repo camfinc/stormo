@@ -18,3 +18,5 @@ luau:
 
 # schedules:
 #   turns: 2                    # scheduled runs that may hold a turn at once (1 to 4; unset: 1)
+
+# reflection: false             # optional owner-triggered, bounded review proposals; off by default

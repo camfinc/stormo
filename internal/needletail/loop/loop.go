@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/config"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/memory"
+	"github.com/camfinc/stormo/internal/needletail/runtimelearn"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
@@ -78,10 +80,12 @@ func (o observers) TurnEnd(session string, err error) {
 
 // Agent runs turns for one agent home.
 type Agent struct {
-	Cfg   *config.Config
-	LLM   *llm.Client
-	Store *sessions.Store
-	Tools *tools.Registry
+	learningLocks [64]sync.Mutex
+	Learning      *runtimelearn.Store
+	Cfg           *config.Config
+	LLM           *llm.Client
+	Store         *sessions.Store
+	Tools         *tools.Registry
 	// Env is the template every tool call gets (Session is set per turn).
 	Env tools.Env
 	Log func(string)
@@ -159,6 +163,8 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 	if !ok {
 		return nil, ErrNoSession
 	}
+	unlockLearning := a.lockLearning(tip)
+	defer unlockLearning()
 	var obs observers
 	for _, o := range []Observer{a.Observer, opts.Observer} {
 		if o != nil {
@@ -196,6 +202,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		return nil, err
 	}
 	history = append(history, stored...)
+	turnIdentity := fmt.Sprintf("%s:%d", tip, len(history))
 	res = &Result{Session: tip}
 	defer func() {
 		if err := a.Store.Sync(res.Session); err != nil {
@@ -289,7 +296,8 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			return res, nil
 		}
 		env.Session = res.Session
-		for _, c := range calls {
+		for callIndex, c := range calls {
+			subject := a.outcomeSubject(c)
 			seen := observed(a.Tools, c)
 			obs.ToolStart(res.Session, seen)
 			started := time.Now()
@@ -303,6 +311,29 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 				out, failed = fmt.Sprintf(`{"error":"tool %q is not available in this turn"}`, c.Name), true
 			}
 			env.Touched = nil
+			subjects := a.memoryOutcomeSubjects(c, out, failed)
+			if subject != nil {
+				subjects = append(subjects, subject)
+			}
+			for _, subject := range subjects {
+				if a.Learning != nil {
+					root, _ := a.Store.Root(res.Session)
+					subject.TaskRoot = runtimelearn.Hash(root)
+					if subject.Audience == "" {
+						subject.Audience = a.learningAudience(res.Session)
+					}
+					subject.EventID = runtimelearn.Hash(root + "\n" + turnIdentity + fmt.Sprintf(":%d:%d:", res.Steps, callIndex) + c.ID + "\n" + subject.SubjectID + "\n" + subject.SubjectRevision)
+					subject.Origin = subject.EventID
+					subject.At = a.now().UTC().Format(time.RFC3339Nano)
+					subject.ExecutionStatus = "succeeded"
+					if failed {
+						subject.ExecutionStatus = "failed"
+					}
+					if err := a.Learning.Append(*subject); err != nil {
+						a.logf("outcome collection: %v", err)
+					}
+				}
+			}
 			obs.ToolDone(res.Session, withPaths(seen, touched), out, failed, time.Since(started))
 			stored, err := a.Store.Append(res.Session, wire.Message{Role: "tool", ToolCallID: c.ID, Content: out})
 			if err != nil {

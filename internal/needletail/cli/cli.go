@@ -33,6 +33,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/privsep"
+	"github.com/camfinc/stormo/internal/needletail/runtimelearn"
 	"github.com/camfinc/stormo/internal/needletail/sandbox"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/secrets"
@@ -224,7 +225,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// The jail (§7): the agent's commands confined to the home and the shared layers.
 	js := jailFor(split.Exec != nil, jailSpec(cfg), jail.ABI, self, os.Getenv, logf)
 	env.Jail = js.launcher
-	agent := &loop.Agent{Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
+	agent := &loop.Agent{Learning: &runtimelearn.Store{Home: cfg.Home, Trusted: store.WithTrusted}, Cfg: cfg, LLM: client, Store: store, Tools: tools.NewRegistry(tools.Builtins()...), Env: env, Log: logf}
 	recall := recaller(cfg.Memory.Recall, mem, store, logf)
 	agent.Recall = recall.Block
 	// One-time follow-ups (§4.12): in the conversation they are made in, as the runtime knows it.
@@ -622,7 +623,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
 	var gw *slack.Gateway
-	srv, err := api.New(api.Options{Key: key, Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
+	srv, err := api.New(api.Options{Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, Jail: rt.jail,
 		Platforms: func() map[string]wire.Platform {
 			if gw == nil {

@@ -51,6 +51,12 @@ func TestReviewRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	evidence := &learning.EvidenceStore{Version: learning.EvidenceVersion}
+	evidence.Ingest(learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: clean.ID, SubjectRevision: learning.LessonRevision(clean), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"})
+	evidence.Ingest(learning.OutcomeEvent{EventID: "skill-check", TaskRoot: "skill-task", Origin: "skill-check", SubjectKind: "skill", SubjectID: shaText("notes/brief"), SubjectRevision: "h1", At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"})
+	if err := learning.SaveEvidence(root, "atlas", evidence); err != nil {
+		t.Fatal(err)
+	}
 	skills := ProposalsDir(root, "atlas")
 	write(t, filepath.Join(skills, "notes/brief/SKILL.md"), "---\nname: brief\n---\nKeep briefs to five lines.\n")
 	write(t, filepath.Join(skills, "notes/brief/.proposal.json"), `{"skill":"notes/brief","napHash":"h1","nap":"n","pii":[]}`)
@@ -98,11 +104,11 @@ func TestReviewRules(t *testing.T) {
 		}
 	}
 
-	t.Run("seen too few times is held", func(t *testing.T) {
+	t.Run("too few independent confirmations is held", func(t *testing.T) {
 		_, held, _ := ReviewCandidates(inst, "atlas", 2)
 		found := false
 		for _, h := range held {
-			found = found || h.Ref == clean.ID && strings.Contains(h.Why, "seen 1 of 2")
+			found = found || h.Ref == clean.ID && strings.Contains(h.Why, "1 independent confirmations; need 2")
 		}
 		if !found {
 			t.Error("a lesson seen once was not held at min_seen 2")
@@ -155,4 +161,85 @@ func TestReviewRules(t *testing.T) {
 			t.Error("approving a decided proposal again succeeded")
 		}
 	})
+}
+
+func TestEvidenceReviewRevisionsAndNegativeReplay(t *testing.T) {
+	inst := reviewInstance(t)
+	root := inst.Root
+	ledger := []*learning.Learning{}
+	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check the task assertion before claiming success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	learning.SaveLedger(root, "atlas", ledger)
+	cands, held, err := ReviewCandidates(inst, "atlas", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 || len(held) != 1 {
+		t.Fatalf("unsupported note eligible %v %v", cands, held)
+	}
+	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	if err := learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	cands, _, err = ReviewCandidates(inst, "atlas", 1)
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("confirmed note unavailable %v %v", cands, err)
+	}
+	old := cands[0]
+	second := event
+	second.EventID = "second"
+	second.TaskRoot = "task2"
+	second.Origin = "check2"
+	learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{second})
+	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
+	if cands[0].Hash == old.Hash {
+		t.Fatal("evidence did not invalidate verdict hash")
+	}
+	negative := event
+	negative.EventID = "negative"
+	negative.TaskRoot = "failed-task"
+	negative.Origin = "failed-check"
+	negative.TaskOutcome = "failed"
+	learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{negative, negative})
+	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
+	if len(cands) != 0 {
+		t.Fatal("negative evidence did not suspend auto eligibility")
+	}
+	if err := Approve(inst, "atlas", old, Decider{By: "test"}); err == nil {
+		t.Fatal("cached approval accepted after contradiction")
+	}
+	e.Text = "Revised procedure."
+	learning.SaveLedger(root, "atlas", ledger)
+	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
+	if len(cands) != 0 {
+		t.Fatal("revised text inherited confirmations")
+	}
+}
+
+func TestApprovalRechecksConfirmationThreshold(t *testing.T) {
+	inst := reviewInstance(t)
+	ledger := []*learning.Learning{}
+	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check the quote currency before presenting totals.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(inst.Root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	if err := learning.MergeEvidence(inst.Root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	inst.CoreLearning.AutoAcceptMinConfirmations = 1
+	cands, _, err := ReviewCandidates(inst, "atlas", 1)
+	if err != nil || len(cands) != 1 {
+		t.Fatalf("candidate at threshold one: %v %v", cands, err)
+	}
+	inst.CoreLearning.AutoAcceptMinConfirmations = 2
+	if err := Approve(inst, "atlas", cands[0], Decider{By: "test"}); err == nil {
+		t.Fatal("approval applied after confirmation threshold increased")
+	}
+	after, err := learning.LoadLedger(inst.Root, "atlas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[0].Status != learning.Proposed {
+		t.Fatal("refused approval changed the decision")
+	}
 }

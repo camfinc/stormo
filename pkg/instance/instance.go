@@ -111,9 +111,11 @@ type CoreLearning struct {
 	// ReviewPrompt is a file, relative to the instance, appended to the built-in review rules.
 	ReviewPrompt string `json:"reviewPrompt,omitempty"`
 	// AutoAccept is Review == "auto" (the field API readers had before Review). AutoAcceptMinSeen:
-	// a lesson is judged only once seen this many times.
-	AutoAccept        bool `json:"autoAccept"`
-	AutoAcceptMinSeen int  `json:"autoAcceptMinSeen"`
+	// legacy persistence setting retained for readers; sightings never establish confirmation.
+	// AutoAcceptMinConfirmations requires independent verified task evidence.
+	AutoAccept                 bool `json:"autoAccept"`
+	AutoAcceptMinSeen          int  `json:"autoAcceptMinSeen"`
+	AutoAcceptMinConfirmations int  `json:"autoAcceptMinConfirmations"`
 	// AutoRestart: restart a running, idle agent after the review approved something, so it applies.
 	AutoRestart bool `json:"autoRestart"`
 }
@@ -223,18 +225,19 @@ type rawFile struct {
 		URLs          map[string]string `yaml:"urls"`
 		Storage       string            `yaml:"storage"`
 		Learning      struct {
-			At                string   `yaml:"at"`
-			Timezone          string   `yaml:"timezone"`
-			StaggerMinutes    *int     `yaml:"stagger_minutes"`
-			QuietWaitMinutes  *int     `yaml:"quiet_wait_minutes"`
-			Agents            []string `yaml:"agents"`
-			Review            string   `yaml:"review"`
-			ReviewConnection  string   `yaml:"review_connection"`
-			ReviewModel       string   `yaml:"review_model"`
-			ReviewPrompt      string   `yaml:"review_prompt"`
-			AutoAccept        *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
-			AutoAcceptMinSeen *int     `yaml:"auto_accept_min_seen"`
-			AutoRestart       bool     `yaml:"auto_restart"`
+			At                         string   `yaml:"at"`
+			Timezone                   string   `yaml:"timezone"`
+			StaggerMinutes             *int     `yaml:"stagger_minutes"`
+			QuietWaitMinutes           *int     `yaml:"quiet_wait_minutes"`
+			Agents                     []string `yaml:"agents"`
+			Review                     string   `yaml:"review"`
+			ReviewConnection           string   `yaml:"review_connection"`
+			ReviewModel                string   `yaml:"review_model"`
+			ReviewPrompt               string   `yaml:"review_prompt"`
+			AutoAccept                 *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
+			AutoAcceptMinSeen          *int     `yaml:"auto_accept_min_seen"`
+			AutoAcceptMinConfirmations *int     `yaml:"auto_accept_min_confirmations"`
+			AutoRestart                bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
 	Connections  []rawConnection          `yaml:"connections"`
@@ -346,7 +349,13 @@ func Load(root string) (*Instance, error) {
 	}
 	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
 		Review: review, ReviewConnection: or(cl.ReviewConnection, DefaultChatGPT), ReviewModel: cl.ReviewModel, ReviewPrompt: cl.ReviewPrompt,
-		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
+		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoAcceptMinConfirmations: 1, AutoRestart: cl.AutoRestart}
+	if cl.AutoAcceptMinConfirmations != nil {
+		if *cl.AutoAcceptMinConfirmations < 1 || *cl.AutoAcceptMinConfirmations > 1000 {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_confirmations must be 1 to 1000", path)}
+		}
+		learning.AutoAcceptMinConfirmations = *cl.AutoAcceptMinConfirmations
+	}
 	if cl.AutoAcceptMinSeen != nil {
 		if *cl.AutoAcceptMinSeen < 1 || *cl.AutoAcceptMinSeen > 1000 {
 			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_seen must be 1 to 1000", path)}

@@ -48,6 +48,8 @@ type Tool struct {
 type Request struct {
 	Messages []Message
 	Tools    []Tool
+	// MaxTokens bounds auxiliary jobs such as proposal-only reflection (0: endpoint default).
+	MaxTokens int
 }
 
 // Usage is a completion's token counts.
@@ -316,6 +318,7 @@ type chatTool struct {
 }
 
 type chatRequest struct {
+	MaxTokens       int           `json:"max_tokens,omitempty"`
 	Model           string        `json:"model"`
 	Messages        []chatMessage `json:"messages"`
 	Tools           []chatTool    `json:"tools,omitempty"`
@@ -325,7 +328,7 @@ type chatRequest struct {
 }
 
 func (c *Client) body(ep Endpoint, req Request) ([]byte, error) {
-	out := chatRequest{Model: ep.Model, Stream: true, StreamOptions: map[string]bool{"include_usage": true}, ReasoningEffort: c.Reasoning}
+	out := chatRequest{Model: ep.Model, Stream: true, StreamOptions: map[string]bool{"include_usage": true}, ReasoningEffort: c.Reasoning, MaxTokens: req.MaxTokens}
 	for _, m := range req.Messages {
 		cm := chatMessage{Role: m.Role, ToolCallID: m.ToolCallID}
 		content := m.Content

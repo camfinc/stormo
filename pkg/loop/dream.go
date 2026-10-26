@@ -219,6 +219,7 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	}
 	settings := map[string]settingSighting{}
 
+	outcomeEvents := []learning.OutcomeEvent{}
 	// 1. Memories from every unseen nap, so provenance counts every instance that held a lesson.
 	var last *Nap
 	for _, id := range napIDs {
@@ -229,6 +230,42 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 			continue
 		}
 		last = nap
+		if err := ingestReflectionProposals(s, agentID, nap, eng, scrubber, &ledger, report); err != nil {
+			return nil, err
+		}
+		if source, ok := eng.(interface{ OutcomePath() string }); ok {
+			blob, err := learningBlob(s, agentID, nap, source.OutcomePath())
+			if err != nil {
+				return nil, err
+			}
+			if blob != nil {
+				if len(*blob) > learning.MaxEvidenceBytes {
+					return nil, fmt.Errorf("outcome evidence byte limit exceeded")
+				}
+				var outcomes learning.EvidenceStore
+				if err := json.Unmarshal([]byte(*blob), &outcomes); err != nil {
+					return nil, fmt.Errorf("outcome evidence: %w", err)
+				}
+				if outcomes.Version != learning.EvidenceVersion || len(outcomes.Events) > learning.MaxOutcomeEvents {
+					return nil, fmt.Errorf("unsupported or oversized outcome evidence")
+				}
+				for _, event := range outcomes.Events {
+					if err := event.Validate(); err != nil {
+						return nil, err
+					}
+					// References never cross into tracked evidence. Reject identifiers that
+					// the instance scrubber flags rather than storing sensitive provenance.
+					event.EvidenceRef = ""
+					if event.Audience != "agent" {
+						continue
+					}
+					if !learning.ExportableEvidence(event) {
+						continue
+					}
+					outcomeEvents = append(outcomeEvents, event)
+				}
+			}
+		}
 		if hasSettings {
 			blob, err := learningBlob(s, agentID, nap, L.Config)
 			if err != nil {
@@ -411,6 +448,11 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		}
 	}
 
+	if len(outcomeEvents) > 0 {
+		if err := learning.MergeEvidence(root, agentID, outcomeEvents); err != nil {
+			return nil, err
+		}
+	}
 	if err := learning.SaveLedger(root, agentID, ledger); err != nil {
 		return nil, err
 	}

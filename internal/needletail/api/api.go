@@ -98,18 +98,19 @@ var (
 
 // Server is the API and the turn scheduler behind it.
 type Server struct {
-	key      string
-	store    *sessions.Store
-	agent    Turns
-	idem     *idemStore
-	maxTurns int
-	maxJobs  int
-	log      func(string)
-	redact   func(string) string
-	now      func() time.Time
-	jobs     func() ([]string, time.Time)
-	platform func() map[string]wire.Platform
-	jail     string
+	learningKey string
+	key         string
+	store       *sessions.Store
+	agent       Turns
+	idem        *idemStore
+	maxTurns    int
+	maxJobs     int
+	log         func(string)
+	redact      func(string) string
+	now         func() time.Time
+	jobs        func() ([]string, time.Time)
+	platform    func() map[string]wire.Platform
+	jail        string
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -127,6 +128,8 @@ type Server struct {
 
 // Options configure a Server.
 type Options struct {
+	// LearningKey is a separate owner-only credential, never the agent/core API key.
+	LearningKey string
 	// Key is API_SERVER_KEY; shorter than MinKey refuses every authenticated route.
 	Key   string
 	Store *sessions.Store
@@ -159,7 +162,7 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{key: o.Key, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
+	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
 		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
@@ -192,6 +195,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /v1/sessions/{id}/learning", s.learning)
+	mux.HandleFunc("POST /v1/sessions/{id}/learning", s.learning)
 	mux.Handle("GET /v1/activity", s.auth(s.activity))
 	mux.Handle("POST /v1/runs", s.auth(s.runs))
 	mux.Handle("GET /v1/sessions", s.auth(s.list))

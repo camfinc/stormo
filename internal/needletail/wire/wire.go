@@ -252,16 +252,17 @@ const (
 
 // Config is $AGENT_HOME/needletail.yaml, rendered by the adapter and read once at boot.
 type Config struct {
-	Version   int          `json:"version" yaml:"version"`
-	Agent     string       `json:"agent" yaml:"agent"`
-	Model     ModelConfig  `json:"model" yaml:"model"`
-	Reasoning string       `json:"reasoning,omitempty" yaml:"reasoning,omitempty"`
-	Limits    Limits       `json:"limits" yaml:"limits"`
-	Core      *CoreConfig  `json:"core,omitempty" yaml:"core,omitempty"`
-	Channels  []string     `json:"channels,omitempty" yaml:"channels,omitempty"`
-	Memory    MemoryConfig `json:"memory" yaml:"memory"`
-	Skills    SkillsConfig `json:"skills,omitempty" yaml:"skills,omitempty"`
-	Luau      LuauConfig   `json:"luau" yaml:"luau"`
+	Reflection bool         `json:"reflection,omitempty" yaml:"reflection,omitempty"`
+	Version    int          `json:"version" yaml:"version"`
+	Agent      string       `json:"agent" yaml:"agent"`
+	Model      ModelConfig  `json:"model" yaml:"model"`
+	Reasoning  string       `json:"reasoning,omitempty" yaml:"reasoning,omitempty"`
+	Limits     Limits       `json:"limits" yaml:"limits"`
+	Core       *CoreConfig  `json:"core,omitempty" yaml:"core,omitempty"`
+	Channels   []string     `json:"channels,omitempty" yaml:"channels,omitempty"`
+	Memory     MemoryConfig `json:"memory" yaml:"memory"`
+	Skills     SkillsConfig `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Luau       LuauConfig   `json:"luau" yaml:"luau"`
 	// Timezone is the IANA zone the agent's wall clock is on (schedules' cron expressions, the
 	// system prompt's time); "": the container's $TZ, else UTC.
 	Timezone string `json:"timezone,omitempty" yaml:"timezone,omitempty"`

@@ -44,6 +44,9 @@ func New(inst *instance.Instance) *Needletail {
 		// home: the container needs no writable root and no tmpfs (docs/needletail.md §7).
 		ReadOnlyRoot: true,
 		Rules: []engine.SnapshotRule{
+			// Versioned metadata and explicitly selected procedural proposals only.
+			{Class: engine.Learning, Glob: "state/needletail/outcomes-export-v1.json"},
+			{Class: engine.Learning, Glob: "state/needletail/reflection-proposals-v1.json"},
 			// learning: what the agent taught itself (Luau tools live inside skills)
 			{Class: engine.Learning, Glob: "memories/{MEMORY,USER}.md"},
 			{Class: engine.Learning, Glob: "skills/.usage.json"},
@@ -73,6 +76,9 @@ func New(inst *instance.Instance) *Needletail {
 			// Luau's key-value store: unscoped, meant for hashes and counters, but a handler can
 			// keep message text there; restored at boot, never read by the dream
 			{Class: engine.Raw, Glob: "state/needletail/kv.json"},
+			// Reflection candidates retain source context and are never dream input.
+			{Class: engine.Raw, Glob: "state/needletail/reflections-v1.json"},
+			{Class: engine.Raw, Glob: "state/needletail/outcomes-v1.json"},
 			// state: tool state and the runtime's own state
 			{Class: engine.State, Glob: sd + "/**"},
 			{Class: engine.State, Glob: "state/needletail/**"},
@@ -89,6 +95,13 @@ func New(inst *instance.Instance) *Needletail {
 func (n *Needletail) Kind() string           { return "needletail" }
 func (n *Needletail) Layout() *engine.Layout { return &n.layout }
 func (n *Needletail) Port() int              { return port }
+func (n *Needletail) OutcomePath() string    { return "state/needletail/outcomes-export-v1.json" }
+func (n *Needletail) LearningProposalsPath() string {
+	return "state/needletail/reflection-proposals-v1.json"
+}
+func (n *Needletail) PrivateLearningPaths() []string {
+	return []string{"state/needletail/outcomes-v1.json", "state/needletail/reflections-v1.json", n.OutcomePath(), n.LearningProposalsPath()}
+}
 func (n *Needletail) HealthCheck() []string {
 	return []string{"CMD", "/usr/local/bin/needletail", "healthcheck"}
 }

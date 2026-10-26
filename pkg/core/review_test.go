@@ -190,3 +190,47 @@ func TestReviewPageAndDecisions(t *testing.T) {
 		t.Errorf("home channel in agent.yaml: %+v %v", a, err)
 	}
 }
+
+func TestReviewViewUsesConfirmationThreshold(t *testing.T) {
+	_, inst := fixture(t)
+	ledger := []*learning.Learning{}
+	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check task assertions before reporting success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(inst.Root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	if err := learning.MergeEvidence(inst.Root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: testDB(t), DigestDir: t.TempDir()})
+	for _, threshold := range []int{2, 1} {
+		inst.CoreLearning.AutoAcceptMinConfirmations = threshold
+		view, err := learner.review(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lesson *ReviewLesson
+		for _, agent := range view.Agents {
+			if agent.ID == "atlas" {
+				for i := range agent.Lessons {
+					if agent.Lessons[i].ID == e.ID {
+						copy := agent.Lessons[i]
+						lesson = &copy
+					}
+				}
+			}
+		}
+		if lesson == nil {
+			t.Fatal("lesson missing from review")
+		}
+		if lesson.AutoAcceptable != (threshold == 1) {
+			t.Fatalf("threshold %d autoAcceptable=%v", threshold, lesson.AutoAcceptable)
+		}
+		if threshold == 2 && lesson.Held == "" {
+			t.Fatal("insufficient evidence not held for review")
+		}
+		if threshold == 1 && lesson.Held != "" {
+			t.Fatalf("supported lesson still held: %s", lesson.Held)
+		}
+	}
+}

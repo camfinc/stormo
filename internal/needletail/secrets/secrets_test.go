@@ -97,3 +97,15 @@ func TestClean(t *testing.T) {
 		t.Errorf("clean = %s", got)
 	}
 }
+
+func TestLearningOwnerKeyNeverShared(t *testing.T) {
+	c := cfg()
+	c.Luau.HTTPSecrets = append(c.Luau.HTTPSecrets, wire.HTTPSecret{Env: LearningKey})
+	s := Load(c, []string{LearningKey + "=owner-secret-0123456789"})
+	if s.Get(LearningKey) == "" {
+		t.Fatal("owner credential unavailable")
+	}
+	if strings.Contains(strings.Join(s.Clean([]string{LearningKey + "=owner-secret-0123456789"}), " "), LearningKey) {
+		t.Fatal("owner credential exposed to command")
+	}
+}

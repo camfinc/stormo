@@ -60,8 +60,11 @@ function lessonHTML(a, l) {
   const tags = [
     `<span class="tag">${esc(l.kind === "user" ? "about a person" : "lesson")}</span>`,
     `<span class="tag">${esc(l.scope)}</span>`,
-    `<span class="tag">seen ${l.seenCount}×</span>`,
-    `<span class="tag">last ${esc(ago(l.lastSeen))}</span>`,
+    `<span class="tag">${l.seenCount} snapshot sightings</span>`,
+    `<span class="tag">last snapshot ${esc(ago(l.lastSeen))}</span>`,
+    l.evidence?.unknown !== false
+      ? `<span class="tag">outcome evidence unknown</span>`
+      : `<span class="tag">${esc(l.evidence.confirmations)} independent confirmations · ${esc(l.evidence.failures)} failures · ${esc(l.evidence.corrections)} corrections</span>`,
     ...l.pii.map((p) => `<span class="tag warn">redacted ${esc(p)}</span>`),
     l.status === "accepted"
       ? `<span class="tag ok"${l.note ? ` title="${esc(l.note)}"` : ""}>accepted${l.note?.startsWith("approved by") ? " by the review" : l.note?.includes("automatically") ? " automatically" : ""}</span>`

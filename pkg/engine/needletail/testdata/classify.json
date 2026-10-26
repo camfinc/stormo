@@ -200,6 +200,26 @@
    "path": "scripts/node_modules/x/index.js",
    "class": null,
    "glob": null
+  },
+  {
+   "path": "state/needletail/outcomes-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/outcomes-v1.json"
+  },
+  {
+   "path": "state/needletail/reflection-proposals-v1.json",
+   "class": "learning",
+   "glob": "state/needletail/reflection-proposals-v1.json"
+  },
+  {
+   "path": "state/needletail/reflections-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/reflections-v1.json"
+  },
+  {
+   "path": "state/needletail/outcomes-export-v1.json",
+   "class": "learning",
+   "glob": "state/needletail/outcomes-export-v1.json"
   }
  ]
 }

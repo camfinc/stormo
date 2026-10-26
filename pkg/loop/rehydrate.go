@@ -364,6 +364,22 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	}
 
 	// 5. State and raw history come back verbatim.
+	// Explicitly selected proposal exports survive reboot too, without broadening the
+	// default rule that other Learning files must be reviewed/merged. The runtime's
+	// private evidence lives in Raw; its metadata-only outcome export is rebuilt there.
+	privateMetadata := map[string]bool{}
+	if provider, ok := o.Engine.(engine.PrivateLearningState); ok {
+		for _, p := range provider.PrivateLearningPaths() {
+			privateMetadata[p] = true
+		}
+	}
+	if provider, ok := o.Engine.(engine.LearningProposals); ok {
+		p := provider.LearningProposalsPath()
+		if v, found := live[p]; found && v.meta.Class == engine.Learning {
+			out[p] = v.body
+			privateMetadata[p] = true
+		}
+	}
 	for p, v := range live {
 		if v.meta.Class != engine.Learning {
 			out[p] = v.body
@@ -381,8 +397,17 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dst, body, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if privateMetadata[p] {
+			mode = 0o600
+		}
+		if err := os.WriteFile(dst, body, mode); err != nil {
 			return nil, err
+		}
+		if privateMetadata[p] {
+			if err := os.Chmod(dst, mode); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, s := range o.Agent.State {

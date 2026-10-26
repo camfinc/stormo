@@ -71,6 +71,19 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	if c.Version != wire.ConfigVersion {
 		return nil, fmt.Errorf("%s: version %d (this runtime reads %d)", File, c.Version, wire.ConfigVersion)
 	}
+	for _, ep := range append([]wire.Endpoint{c.Model.Primary}, c.Model.Fallbacks...) {
+		if ep.KeyEnv == "NEEDLETAIL_LEARNING_KEY" {
+			return nil, fmt.Errorf("owner learning key is reserved")
+		}
+	}
+	if c.Core != nil && c.Core.KeyEnv == "NEEDLETAIL_LEARNING_KEY" {
+		return nil, fmt.Errorf("owner learning key is reserved")
+	}
+	for _, secret := range c.Luau.HTTPSecrets {
+		if secret.Env == "NEEDLETAIL_LEARNING_KEY" {
+			return nil, fmt.Errorf("owner learning key is reserved")
+		}
+	}
 	if c.Model.Primary.BaseURL == "" || c.Model.Primary.Model == "" {
 		return nil, fmt.Errorf("%s: model.primary needs base_url and model", File)
 	}

@@ -23,6 +23,7 @@ var Passthrough = []string{"SWARM_CORE_URL", "SWARM_CORE_KEY"}
 // Names the runtime reads for itself, besides the model and http_secrets key envs in the config.
 const (
 	APIKey      = "API_SERVER_KEY"
+	LearningKey = "NEEDLETAIL_LEARNING_KEY"
 	CoreKey     = "SWARM_CORE_KEY"
 	SlackBot    = "SLACK_BOT_TOKEN"
 	SlackApp    = "SLACK_APP_TOKEN"
@@ -43,7 +44,7 @@ type Secrets struct {
 // Owned are the env names the runtime reads for cfg: its API key, the core key, the Slack tokens,
 // each model endpoint's key and each http_secrets env (Luau never sees those).
 func Owned(cfg *wire.Config) []string {
-	names := []string{APIKey, CoreKey, SlackBot, SlackApp}
+	names := []string{APIKey, CoreKey, SlackBot, SlackApp, LearningKey}
 	add := func(n string) {
 		if n != "" && !slices.Contains(names, n) {
 			names = append(names, n)
@@ -74,11 +75,23 @@ func Load(cfg *wire.Config, environ []string) *Secrets {
 	// An http_secrets env is usually a skill's own token (a CRM key its bash scripts read from
 	// the env): Go injects it into Luau's requests, and the terminal keeps it. It is redacted.
 	for _, h := range cfg.Luau.HTTPSecrets {
-		s.shared = append(s.shared, h.Env)
+		if h.Env != LearningKey {
+			s.shared = append(s.shared, h.Env)
+		}
 	}
 	for _, n := range s.owned {
 		if v := env[n]; v != "" {
 			s.values[n] = v
+		}
+	}
+	// Owner feedback authority must never share a value with credentials the agent
+	// or another service receives. Disable this optional surface on accidental reuse.
+	if owner := s.values[LearningKey]; owner != "" {
+		for name, value := range env {
+			if name != LearningKey && value == owner {
+				s.values[LearningKey] = ""
+				break
+			}
 		}
 	}
 	return s
