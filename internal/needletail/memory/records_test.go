@@ -490,14 +490,14 @@ func TestRecall(t *testing.T) {
 	if x := u.recs[got[0]]; x == nil || x.Recalls < 1 || x.Uses != 0 {
 		t.Errorf("a recall is counted apart from uses: %+v", x)
 	}
-	// the Recaller remembers a conversation's recalled ids by its root, and is off for jobs
+	// Every turn recalls independently, including compacted descendants; jobs remain off.
 	rc := &Recaller{Store: s, Auto: true, Root: func(string) (string, bool) { return "root", true }}
 	if rc.Block("s1", "Which balcony cabin does Ana want on the cruise?", true) != "" {
 		t.Error("recalled for a job")
 	}
 	first := rc.Block("s1", "Which balcony cabin does Ana want on the cruise?", false)
 	second := rc.Block("s2-after-compaction", "Which balcony cabin does Ana want on the cruise?", false)
-	if first == "" || strings.Contains(second, got[0]) {
+	if first == "" || second != first {
 		t.Errorf("recaller: %q then %q", first, second)
 	}
 	if (&Recaller{Store: s}).Block("s", "Which balcony cabin does Ana want?", false) != "" {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // Automatic recall (docs/needletail.md §4.4, §4.6): before a user turn, the archive records most
@@ -26,8 +25,6 @@ const (
 	recallCover = 0.3
 	// recallSame is the word-set Jaccard at which a candidate repeats one already picked.
 	recallSame = 0.6
-	// recallSessions is how many conversations' recalled ids are remembered.
-	recallSessions = 256
 )
 
 // trivial is a message that is only an acknowledgement or a greeting: nothing to recall for.
@@ -40,7 +37,7 @@ const RecallHeader = "<memory-context>\n[Recalled from your memory archive becau
 const RecallFooter = "</memory-context>"
 
 // Recall is the block of archive records related to input that a may see ("" when none passes
-// the gate), and their ids. skip leaves out records (already recalled in the conversation). Each
+// the gate), and their ids. skip optionally excludes caller-selected records. Each
 // recalled record counts a recall, not a use.
 func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max, budget int) (string, []string) {
 	if max <= 0 {
@@ -114,7 +111,7 @@ func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max,
 		}
 		line := recallLine(c.r)
 		if used+Units(line) > budget {
-			break
+			continue
 		}
 		used += Units(line)
 		b.WriteString(line)
@@ -182,60 +179,26 @@ func jaccard(a, b map[string]bool) float64 {
 	return float64(inter) / float64(len(a)+len(b)-inter)
 }
 
-// Recaller is the per-turn recall policy: on or off, for scheduled runs or not, and the records a
-// conversation was already given (by its root session, so a compaction keeps them).
+// Recaller is the per-turn recall policy. Call Block once per turn and reuse its result
+// across that turn's model requests. Recall text is not persisted in the conversation, so a
+// previous turn (including a failed turn or compacted ancestor) cannot suppress current recall.
 type Recaller struct {
 	Store *Store
-	// Root is a session's conversation (sessions.Store.Root); nil: each session is its own.
+	// Root is retained for source compatibility; recall no longer tracks conversation history.
 	Root func(session string) (string, bool)
 	// Auto: recall for user turns; Jobs: for scheduled runs too.
 	Auto, Jobs  bool
 	Max, Budget int
 	Log         func(string)
-
-	mu    sync.Mutex
-	seen  map[string]map[string]bool
-	order []string
 }
 
-// Block is the recalled block for a turn of session on input ("" for none).
+// Block selects current, visible records afresh for this turn.
 func (rc *Recaller) Block(session, input string, job bool) string {
 	if rc == nil || rc.Store == nil || !rc.Auto || job && !rc.Jobs {
 		return ""
 	}
-	conv := session
-	if rc.Root != nil {
-		if root, ok := rc.Root(session); ok {
-			conv = root
-		}
-	}
-	rc.mu.Lock()
-	given := map[string]bool{}
-	for id := range rc.seen[conv] {
-		given[id] = true
-	}
-	rc.mu.Unlock()
-	block, ids := rc.Store.Recall(rc.Store.AudienceOf(session), input, func(id string) bool { return given[id] }, rc.Max, rc.Budget)
-	if len(ids) == 0 {
-		return ""
-	}
-	rc.mu.Lock()
-	if rc.seen == nil {
-		rc.seen = map[string]map[string]bool{}
-	}
-	if rc.seen[conv] == nil {
-		rc.seen[conv] = map[string]bool{}
-		rc.order = append(rc.order, conv)
-		if len(rc.order) > recallSessions {
-			delete(rc.seen, rc.order[0])
-			rc.order = rc.order[1:]
-		}
-	}
-	for _, id := range ids {
-		rc.seen[conv][id] = true
-	}
-	rc.mu.Unlock()
-	if rc.Log != nil {
+	block, ids := rc.Store.Recall(rc.Store.AudienceOf(session), input, nil, rc.Max, rc.Budget)
+	if len(ids) > 0 && rc.Log != nil {
 		rc.Log(fmt.Sprintf("memory: recalled %s for session=%s", strings.Join(ids, ","), session))
 	}
 	return block
