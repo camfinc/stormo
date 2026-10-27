@@ -106,10 +106,11 @@ func (a *Agent) outcomeSubject(c wire.ToolCall) *learning.OutcomeEvent {
 	if err != nil {
 		return nil
 	}
-	// New observations use the versioned full-bundle algorithm, including modes.
-	// Legacy snapshot hashes remain readable evidence but cannot authorize drafts.
-	rev, err := a.Env.Skills.BundleRevision(s.Dir)
-	if err != nil || rev == "" {
+	// The revision is the snapshot's skill hash (the nap's NapHash): the dream's review looks
+	// skill evidence up by it, so another hash would never match. A background draft binds the
+	// mode-inclusive bundle revision when it is staged (backgroundSkillContext, StagePatch).
+	rev := skillRevision(a.Env.Skills, s)
+	if rev == "" {
 		return nil
 	}
 	// Opaque subject identity prevents names supplied by clients leaking into review metadata.

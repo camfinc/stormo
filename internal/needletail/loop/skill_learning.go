@@ -38,15 +38,17 @@ func (a *Agent) backgroundSkillContext(t runtimelearn.BackgroundTrigger) (*skill
 			if runtimelearn.Hash(strings.TrimSpace(s.Dir)) != e.SubjectID {
 				continue
 			}
-			revision, err := a.Env.Skills.BundleRevision(s.Dir)
-			if err != nil || revision != e.SubjectRevision {
+			// The observation names the skill's content as snapshotted (outcomeSubject); the draft
+			// binds the bundle revision it reads (modes included), which staging and approval
+			// recheck. A content change between the two reads is a refusal.
+			if skillRevision(a.Env.Skills, s) != e.SubjectRevision {
 				continue
 			}
 			draft, err := a.Env.Skills.DraftContext(s.Dir)
 			if err != nil {
 				return nil, err
 			}
-			if draft.Revision != e.SubjectRevision {
+			if skillRevision(a.Env.Skills, s) != e.SubjectRevision {
 				return nil, fmt.Errorf("observed skill revision changed")
 			}
 			if err := tools.SecretCheck(a.Env.Redact)(draft.Content); err != nil {

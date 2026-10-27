@@ -364,6 +364,12 @@ idempotent, with an explicit backup and rollback procedure. If hashes change, pr
 legacy identity alongside the versioned full-bundle revision; never treat legacy hashes
 as proof that unchanged scripts were checked.
 
+Skill outcome events carry the snapshot's skill hash (`build.SkillHash` over the skill's
+files, the nap's `NapHash`) as their subject revision: that is the key the dream's review
+looks skill evidence up by, so the bundle revision there would never match. A background
+draft matches its observation by that hash, then binds the full-bundle revision it reads
+(modes included), which staging and approval recheck.
+
 Older runtimes must not overwrite unknown queue state. A downgrade disables new worker
 behavior and preserves its files. Nap/restore round-trip tests prove both privacy class
 and exact durable reservation preservation. Human decisions and revocations take

@@ -14,6 +14,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/learning"
 )
 
@@ -52,13 +53,7 @@ func skillLearningAgent(t *testing.T, private bool, response string, during func
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := learning.OutcomeEvent{EventID: runtimelearn.Hash("skill-view"), TaskRoot: runtimelearn.Hash("skill-source"), SubjectKind: "skill", SubjectID: runtimelearn.Hash(skill.Dir), SubjectRevision: func() string {
-		revision, err := a.Env.Skills.BundleRevision(skill.Dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return revision
-	}(), At: a.now().Format("2006-01-02T15:04:05Z"), Audience: a.learningAudience("skill-source"), SourceType: "view", Origin: runtimelearn.Hash("skill-call"), ExecutionStatus: "unknown", TaskOutcome: "unknown"}
+	e := learning.OutcomeEvent{EventID: runtimelearn.Hash("skill-view"), TaskRoot: runtimelearn.Hash("skill-source"), SubjectKind: "skill", SubjectID: runtimelearn.Hash(skill.Dir), SubjectRevision: skillRevision(a.Env.Skills, skill), At: a.now().Format("2006-01-02T15:04:05Z"), Audience: a.learningAudience("skill-source"), SourceType: "view", Origin: runtimelearn.Hash("skill-call"), ExecutionStatus: "unknown", TaskOutcome: "unknown"}
 	if err := a.Learning.Append(e); err != nil {
 		t.Fatal(err)
 	}
@@ -204,39 +199,70 @@ func TestSkillLearningMissingObservedRevisionCannotInventTarget(t *testing.T) {
 	assertSkillBytes(t, a, skillLearningOriginal)
 }
 
-func TestSkillLearningPermissionChangeInvalidatesObservation(t *testing.T) {
-	a, st, e := skillLearningAgent(t, false, "null", nil)
+// A mode change after the observation does not change what was observed (the content), but the
+// draft binds the bundle revision it reads, modes included: the staged patch expects the new modes,
+// and staging and approval recheck them.
+func TestSkillLearningDraftBindsTheModesItRead(t *testing.T) {
+	a, _, e := skillLearningAgent(t, false, skillLearningResponse, nil)
 	if err := os.Chmod(filepath.Join(a.Cfg.Home, "skills/crm/crm-api/SKILL.md"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	current, err := a.Env.Skills.BundleRevision("crm-api")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if worked, err := processSkillLearning(a); !worked || err != nil {
 		t.Fatal(worked, err)
 	}
-	st.mu.Lock()
-	input, _ := json.Marshal(st.requests)
-	st.mu.Unlock()
-	if strings.Contains(string(input), "Check the response.") {
-		t.Fatal("mode change failed to invalidate observed bundle", string(input))
-	}
 	patches, err := a.Env.Skills.ListPatches(e.TaskRoot, e.Audience)
-	if err != nil || len(patches) != 0 {
-		t.Fatal(patches, err)
+	if err != nil || len(patches) != 1 || patches[0].ExpectedRevision != current {
+		t.Fatalf("patches %+v (want expected revision %s): %v", patches, current, err)
 	}
 }
 
-func TestSkillLearningNewObservationsUseCanonicalBundleRevision(t *testing.T) {
+// New observations carry the snapshot's skill hash: a content change makes a new revision, a
+// mode change does not (snapshots keep no modes).
+func TestSkillLearningNewObservationsUseTheSnapshotRevision(t *testing.T) {
 	a, _, _ := skillLearningAgent(t, false, "null", nil)
 	call := wire.ToolCall{Name: "skill_view", Arguments: `{"name":"crm-api"}`}
 	before := a.outcomeSubject(call)
-	canonical, err := a.Env.Skills.BundleRevision("crm-api")
-	if err != nil || before == nil || before.SubjectRevision != canonical {
-		t.Fatal(before, canonical, err)
+	if before == nil {
+		t.Fatal("no subject")
 	}
 	if err := os.Chmod(filepath.Join(a.Cfg.Home, "skills/crm/crm-api/SKILL.md"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	after := a.outcomeSubject(call)
-	if after == nil || after.SubjectRevision == before.SubjectRevision {
-		t.Fatal("mode change omitted from new attribution", before, after)
+	if after := a.outcomeSubject(call); after == nil || after.SubjectRevision != before.SubjectRevision {
+		t.Fatal("a mode change made a new snapshot revision", before, after)
+	}
+	if err := os.WriteFile(filepath.Join(a.Cfg.Home, "skills/crm/crm-api/SKILL.md"), []byte(skillLearningOriginal+"More.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if after := a.outcomeSubject(call); after == nil || after.SubjectRevision == before.SubjectRevision {
+		t.Fatal("a content change kept the revision", before, after)
+	}
+}
+
+// A skill's outcome events are keyed as the dream's review looks them up: the subject is the
+// skill's dir and the revision the snapshot's skill hash (the nap's NapHash, build.SkillHash over
+// skills/<dir>/<file>), so the review finds the evidence for the exact version it shows.
+func TestSkillOutcomeSubjectMatchesTheDreamsReview(t *testing.T) {
+	a, _, _ := skillLearningAgent(t, false, "null", nil)
+	ev := a.outcomeSubject(wire.ToolCall{Name: "terminal", Arguments: `{"skill":"crm-api"}`})
+	const path = "skills/crm/crm-api/SKILL.md"
+	napHash := build.SkillHash(map[string]string{path: build.Sha256([]byte(skillLearningOriginal))}, []string{path})
+	skillID := build.Sha256([]byte("crm/crm-api")) // the review's shaText(p.Skill)
+	if ev == nil || ev.SubjectRevision != napHash || ev.SubjectID != skillID {
+		t.Fatalf("outcome subject %+v; want revision %s", ev, napHash)
+	}
+	event := *ev
+	event.EventID, event.TaskRoot, event.Origin = runtimelearn.Hash("e"), runtimelearn.Hash("t"), runtimelearn.Hash("o")
+	event.At, event.Audience, event.SourceType, event.TaskOutcome = "2026-10-26T10:00:00Z", "agent", "assertion", "succeeded"
+	store := &learning.EvidenceStore{Version: learning.EvidenceVersion}
+	if _, err := store.Ingest(event); err != nil || !learning.ExportableEvidence(event) {
+		t.Fatal(err)
+	}
+	if s := store.Summary("skill", skillID, napHash, "agent"); s.Confirmations != 1 {
+		t.Fatalf("the review does not find the skill's evidence: %+v", s)
 	}
 }
