@@ -6,3 +6,14 @@
 !internal/needletail
 internal/needletail/**/*_test.go
 internal/needletail/**/testdata
+
+# Shared learning contracts and their engine-neutral dependencies.
+!pkg/learning
+!pkg/engine
+!pkg/env
+!pkg/yamlfmt
+!pkg/instance
+!pkg/manifest
+!pkg/shared
+pkg/**/*_test.go
+pkg/**/testdata
