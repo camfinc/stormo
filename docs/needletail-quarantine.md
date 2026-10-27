@@ -1,6 +1,13 @@
 # Needletail quarantine mode: implementation spec
 
-Status: implemented on 2026-10-26; rollout pending the review gate below. Written 2026-10-26 against branch `needletail` at `9f000b1`
+> **Superseded (2026-10-28)** by information-flow control and approvals: `docs/needletail.md` §7
+> ("Information flow", "Approvals", "Risky commands"). A tainted run no longer refuses every
+> persistent or forwarding action: each action has a tier (allow, allow marked, approval,
+> refuse); writes go to a per-conversation `work/<conversation>/` instead of `.tmp`; the owner
+> approves the rest in Slack, and can endorse a conversation. This document is kept as the
+> history of the quarantine it replaced.
+
+Status: implemented on 2026-10-26; superseded 2026-10-28 (above). Written 2026-10-26 against branch `needletail` at `9f000b1`
 (stormo worktree `stormo/.claude/worktrees/needletail`). Line references below are from that commit
 or from the Codex review of `4770a03`; find code by name if lines moved. Read `docs/needletail.md`
 (§4.5 tools, §4.6 memory, §4.7 schedules, §4.9 Slack, §4.12 follow-ups, §5 Luau, §6 storage, §7
