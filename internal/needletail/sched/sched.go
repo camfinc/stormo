@@ -65,6 +65,9 @@ type Slot interface {
 
 // Options configure a Scheduler.
 type Options struct {
+	// OnDelivery records private transport evidence. It must not call back into the scheduler.
+	OnDelivery func(DeliveryEvent)
+
 	// Home is the agent's home: cron/jobs.json, scripts/, state/needletail/.
 	Home  string
 	Turns Turns
@@ -74,7 +77,7 @@ type Options struct {
 	Tools func() []string
 	// Env is what a script runs with (tools.CommandEnv) and how its output is redacted.
 	Env tools.Env
-	// Deliver sends a run's output (nil: Pending, which records and logs).
+	// Deliver sends a run's output (nil: Pending, which refuses until the gateway is ready).
 	Deliver Deliverer
 	// End ends a run's session after its turn (sessions.Store.End).
 	End func(session, reason string) error
@@ -101,6 +104,9 @@ type Options struct {
 type Scheduler struct {
 	o                     Options
 	path, state, tmp, out string
+	deliverySendMu        sync.Mutex
+	deliverySending       bool
+	deliveryMu            sync.Mutex
 	mu                    sync.Mutex         // cron/jobs.json
 	runMu                 sync.Mutex         // running, claimed, requested, waiting, stopping, lastStart, warned
 	running               map[string]string  // id → name
@@ -609,6 +615,7 @@ func (s *Scheduler) Wait() { s.wg.Wait() }
 // Tick starts every due job, the longest due first (jobs.json's order between equals), so a job
 // the busy lane left due goes before the ones that came due after it.
 func (s *Scheduler) Tick() {
+	s.recoverDeliveries()
 	now := s.o.Now()
 	type dueJob struct {
 		id  string
@@ -620,7 +627,7 @@ func (s *Scheduler) Tick() {
 		changed := false
 		for i, j := range f.Jobs {
 			id := j.ID()
-			if id == "" || !j.Enabled() || s.isRunning(id) {
+			if id == "" || !j.Enabled() || j.Bool("delivery_hold") || s.isRunning(id) {
 				continue
 			}
 			if s.settleNext(j, now) {
@@ -649,6 +656,9 @@ func (s *Scheduler) Tick() {
 	}
 	sort.SliceStable(due, func(a, b int) bool { return due[a].at.Before(due[b].at) })
 	for _, d := range due {
+		if s.deliveryBlocked(d.id) {
+			continue
+		}
 		s.start(d.id, now)
 	}
 }
@@ -1236,6 +1246,8 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 			status = "delivery_failed" // the run worked: the streak stands
 		}
 		live.Set("last_status", status)
+		live.Set("last_execution_status", o.status)
+		live.Set("delivery_hold", deliveryErr != "")
 		if o.failed() {
 			live.Set("last_error", publicError)
 			live.Set("failure_streak", streak)
@@ -1302,9 +1314,6 @@ func clip(s string, n int) string {
 // deliver sends the output to the lane's targets: failure_deliver for a failure when the job has
 // one, else deliver. "" when every target took it.
 func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
-	if why := messaging.UntrustedWhy(ctx); why != "" {
-		return messaging.Deferred("scheduled forwarding", why).Error()
-	}
 	lane := j.Str("deliver")
 	if o.failed() {
 		if fd := strings.TrimSpace(j.Str("failure_deliver")); fd != "" {
@@ -1316,17 +1325,13 @@ func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
 		origin = j.raw["origin"]
 	}
 	targets, err := Targets(lane, origin)
-	errs := []string{}
 	if err != nil {
-		errs = append(errs, err.Error())
+		return err.Error()
 	}
-	for _, t := range targets {
-		d := Delivery{JobID: j.ID(), JobName: j.Name(), Target: t, Text: o.text, Failure: o.failed(), Session: o.session, Trusted: s.trusted(j)}
-		if err := s.o.Deliver.Deliver(ctx, d); err != nil {
-			errs = append(errs, t.String()+": "+err.Error())
-		}
+	if len(targets) == 0 && messaging.UntrustedWhy(ctx) != "" {
+		return messaging.Deferred("scheduled forwarding", messaging.UntrustedWhy(ctx)).Error()
 	}
-	return s.o.Env.Redact(strings.Join(errs, "; "))
+	return s.enqueueDelivery(ctx, j, o, targets)
 }
 
 // record keeps the run's output in state/needletail/jobs/<id>/<time>.md (the newest

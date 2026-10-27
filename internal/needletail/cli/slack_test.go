@@ -115,8 +115,10 @@ func TestServeSlack(t *testing.T) {
 	}()
 	fake.WaitConnected(10 * time.Second)
 
-	// the scheduled jobs: home channel and origin thread posted, the [SILENT] one not
-	posts := fake.WaitPosts(2, 15*time.Second)
+	// Successful scheduled reports and one fixed owner notice are posted. The
+	// refused report body stays private, and the silent job produces no post.
+	const homeNotice = "A scheduled report could not be delivered. I have kept the report and put further runs of that job on hold. Please confirm where it should be sent and that I have access, so I can retry the saved report."
+	posts := fake.WaitPosts(3, 15*time.Second)
 	byText := map[string]slacktest.Post{}
 	for _, p := range posts {
 		byText[p.Text] = p
@@ -128,26 +130,36 @@ func TestServeSlack(t *testing.T) {
 		t.Errorf("origin delivery %+v", posts)
 	}
 
+	if p, ok := byText[homeNotice]; !ok || p.Channel != "C0HOME0001" || p.Thread != "" {
+		t.Errorf("fixed owner delivery notice missing or misrouted: %+v", posts)
+	}
+	if len(posts) != 3 {
+		t.Fatalf("expected exactly two successful reports and one fixed notice: %+v", posts)
+	}
+
 	// a DM, then a channel mention, then a reply in that thread
 	fake.Send("e1", slacktest.Event{Channel: "D0DMCHAN01", ChannelType: "im", User: "U0ALLOWED1", Text: "Hello there", TS: "1700000200.000100"})
-	posts = fake.WaitPosts(3, 15*time.Second)
-	if p := posts[2]; p.Channel != "D0DMCHAN01" || p.Thread != "" || p.Text != "Reply to: Hello there" {
+	posts = fake.WaitPosts(4, 15*time.Second)
+	if p := posts[3]; p.Channel != "D0DMCHAN01" || p.Thread != "" || p.Text != "Reply to: Hello there" {
 		t.Errorf("DM reply %+v", p)
 	}
 	fake.Send("e2", slacktest.Event{Type: "app_mention", Channel: "C0DEVCHAN1", ChannelType: "channel", User: "U0ALLOWED1",
 		Text: "<@" + slacktest.BotUser + "> what is the status?", TS: "1700000300.000100"})
-	posts = fake.WaitPosts(4, 15*time.Second)
-	if p := posts[3]; p.Channel != "C0DEVCHAN1" || p.Thread != "1700000300.000100" || p.Text != "Reply to: what is the status?" {
+	posts = fake.WaitPosts(5, 15*time.Second)
+	if p := posts[4]; p.Channel != "C0DEVCHAN1" || p.Thread != "1700000300.000100" || p.Text != "Reply to: what is the status?" {
 		t.Errorf("mention reply %+v", p)
 	}
 	fake.Send("e3", slacktest.Event{Channel: "C0DEVCHAN1", ChannelType: "channel", User: "U0ALLOWED1", Text: "and tomorrow?",
 		TS: "1700000300.000200", ThreadTS: "1700000300.000100"})
-	posts = fake.WaitPosts(5, 15*time.Second)
-	if p := posts[4]; p.Thread != "1700000300.000100" || p.Text != "Reply to: and tomorrow?" {
+	posts = fake.WaitPosts(6, 15*time.Second)
+	if p := posts[5]; p.Thread != "1700000300.000100" || p.Text != "Reply to: and tomorrow?" {
 		t.Errorf("thread reply %+v", p)
 	}
 	time.Sleep(200 * time.Millisecond)
 	for _, p := range fake.Posts() {
+		if p.Channel == "C0SECRET01" || strings.Contains(p.Text, "Post it where I may not.") || strings.Contains(p.Text, "C0SECRET01") {
+			t.Errorf("private refused report leaked into Slack: %+v", p)
+		}
 		if strings.Contains(p.Text, "SILENT") {
 			t.Errorf("a [SILENT] run was delivered: %+v", p)
 		}
@@ -178,11 +190,21 @@ func TestServeSlack(t *testing.T) {
 			t.Errorf("%s: %v / %v", id, jobs[id]["last_status"], jobs[id]["last_delivery_error"])
 		}
 	}
-	if jobs["agentjob001"]["last_status"] != "delivery_failed" || !strings.Contains(fmt.Sprint(jobs["agentjob001"]["last_delivery_error"]), "may message") {
+	if jobs["agentjob001"]["last_status"] != "delivery_failed" || jobs["agentjob001"]["last_execution_status"] != "ok" || jobs["agentjob001"]["delivery_hold"] != true || jobs["agentjob001"]["last_delivery_error"] != "Report retained pending delivery; review destination and retry_delivery." || jobs["agentjob001"]["last_error"] != nil || jobs["agentjob001"]["failure_streak"] != float64(0) {
 		t.Errorf("an agent job's delivery outside the policy: %v / %v", jobs["agentjob001"]["last_status"], jobs["agentjob001"]["last_delivery_error"])
 	}
 	if jobs["silentjob01"]["last_status"] != "silent" {
 		t.Errorf("silent job: %v", jobs["silentjob01"]["last_status"])
+	}
+
+	noticeCount := 0
+	for _, post := range fake.Posts() {
+		if post.Text == homeNotice {
+			noticeCount++
+		}
+	}
+	if noticeCount != 1 || len(fake.Posts()) != 6 {
+		t.Errorf("expected one fixed owner notice and five ordinary reports/replies: %+v", fake.Posts())
 	}
 
 	cancel()

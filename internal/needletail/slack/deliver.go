@@ -65,6 +65,27 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	return err
 }
 
+// deliveryFailureAlertText contains no job, destination, result or error material.
+const deliveryFailureAlertText = "A scheduled report could not be delivered. I have kept the report and put further runs of that job on hold. Please confirm where it should be sent and that I have access, so I can retry the saved report."
+
+var _ sched.DeliveryAlerter = (*Gateway)(nil)
+
+// AlertDelivery is a deterministic runtime notice, never model/handler output. It
+// bypasses before_send and the general send surface, reaches only the configured
+// home, and g.post always formats without broadcasts. Missing home/API failures
+// remain errors so the scheduler can retain the pending alert for retry.
+func (g *Gateway) AlertDelivery(ctx context.Context) error {
+	if g.o.HomeChannel == "" {
+		return errors.New("no home channel: cannot alert about scheduled delivery failure")
+	}
+	channel, err := g.channelFor(ctx, g.o.HomeChannel)
+	if err != nil {
+		return err
+	}
+	_, err = g.post(ctx, channel, "", deliveryFailureAlertText)
+	return err
+}
+
 // CheckTarget holds a scheduled job's target to the messaging policy: what cronjob_manage
 // checks when the agent sets deliver or failure_deliver, and Deliver for a job the agent made.
 func (g *Gateway) CheckTarget(t sched.Target) error {

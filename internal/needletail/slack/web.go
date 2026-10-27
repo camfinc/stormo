@@ -29,6 +29,20 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("slack %s: %s", e.Method, e.Code) }
 
+// DeliveryPermanent classifies destination/auth failures for the scheduler without
+// exposing provider-specific codes through its generic delivery interface. Unknown
+// errors remain retryable; errors.As also finds this method through wrappers.
+func (e *APIError) DeliveryPermanent() bool {
+	if e == nil {
+		return false
+	}
+	switch e.Code {
+	case "channel_not_found", "not_in_channel", "is_archived", "missing_scope", "invalid_auth", "account_inactive":
+		return true
+	}
+	return false
+}
+
 // Web calls Slack's Web API with the bot token (BotToken), or the app token for
 // apps.connections.open (AppToken).
 type Web struct {

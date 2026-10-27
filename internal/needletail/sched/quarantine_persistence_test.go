@@ -49,6 +49,12 @@ func TestQuarantinedMonitorNeverBecomesTrustedBaseline(t *testing.T) {
 			if _, had := r.job("mon").monitor(); had {
 				t.Fatal("marked baseline hash persisted")
 			}
+			// A quarantined report holds execution until explicit owner discard.
+			if r.job("mon").Bool("delivery_hold") {
+				if _, err := r.s.manage(cronArgs{Action: "discard_delivery", JobID: "mon"}, nil, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// A later clean observation must be a first baseline, never a diff containing
 			// the previous marked text. It can resume ordinary baseline persistence.
 			marked = false

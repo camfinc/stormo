@@ -160,8 +160,8 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	s1.Tick()
 	s1.Wait()
 	before := jobsIn(t, home1)[mine]
-	if before["last_status"] != "ok" || before["repeat"].(map[string]any)["completed"] != float64(1) || len(turns.inputs) != 1 {
-		t.Fatalf("the agent's job did not run: %v (turns %d)", before, len(turns.inputs))
+	if before["last_status"] != "delivery_failed" || before["last_execution_status"] != "ok" || before["delivery_hold"] != true || before["last_delivery_error"] != "Report retained pending delivery; review destination and retry_delivery." || before["repeat"].(map[string]any)["completed"] != float64(1) || len(turns.inputs) != 1 {
+		t.Fatalf("the job execution or retained-delivery state is wrong: %v (turns %d)", before, len(turns.inputs))
 	}
 	if !strings.Contains(turns.inputs[0], "stale deals: ACME-1 ACME-2") {
 		t.Errorf("the job's script did not feed its run: %s", turns.inputs[0])
@@ -217,7 +217,7 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	if j == nil {
 		t.Fatalf("the agent's job did not survive the rehydrate: %v", after)
 	}
-	for _, k := range []string{"name", "prompt", "schedule", "skills", "enabled_toolsets", "deliver", "last_run_at", "last_status", "next_run_at", "repeat", "created_at"} {
+	for _, k := range []string{"name", "prompt", "schedule", "skills", "enabled_toolsets", "deliver", "last_run_at", "last_status", "last_execution_status", "delivery_hold", "last_delivery_error", "next_run_at", "repeat", "created_at"} {
 		a, _ := json.Marshal(before[k])
 		b, _ := json.Marshal(j[k])
 		if string(a) != string(b) {
@@ -228,10 +228,12 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 		t.Errorf("the repo job's definition did not win: %v", got["prompt"])
 	}
 
-	// 5. And it runs again on the new home when its time comes.
+	// 5. Once its retained report is acknowledged, it runs again when due.
+	// Recovery sends the saved report without rerunning its model turn.
 	clock = clock.Add(2*time.Hour + time.Minute)
 	turns.reply = "No stale deals."
-	s2 := sched.New(sched.Options{Home: home2, Turns: turns, Now: func() time.Time { return clock }})
+	ack := &acknowledgedDeliveries{}
+	s2 := sched.New(sched.Options{Home: home2, Turns: turns, Deliver: ack, Now: func() time.Time { return clock }})
 	if err := s2.Boot(); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +242,12 @@ func TestAgentJobSurvivesRehydrate(t *testing.T) {
 	if j := jobsIn(t, home2)[mine]; j["repeat"].(map[string]any)["completed"] != float64(2) || len(turns.inputs) != 2 || !strings.Contains(turns.inputs[1], "Sweep deals with no activity") ||
 		!strings.Contains(turns.inputs[1], "stale deals: ACME-1 ACME-2") {
 		t.Errorf("after the rehydrate: %v (turns %d)", j, len(turns.inputs))
+	}
+	if len(ack.deliveries) != 2 || ack.deliveries[0].Text != "Two stale deals: ACME-1, ACME-2." || ack.deliveries[1].Text != "No stale deals." {
+		t.Fatalf("retained report and new report were not acknowledged exactly once: %+v", ack.deliveries)
+	}
+	if final := jobsIn(t, home2)[mine]; final["delivery_hold"] == true || final["last_delivery_error"] != nil || final["last_status"] != "ok" {
+		t.Fatalf("successful recovery left delivery blocked: %v", final)
 	}
 	t.Logf("agent job %s: %s %s, next %v; proposal runtime jobs %v", mine, j["last_status"], j["schedule"], j["next_run_at"], meta.RuntimeJobs)
 
@@ -374,4 +382,12 @@ func TestServeRunsADueJob(t *testing.T) {
 	if recs, _ := os.ReadDir(filepath.Join(h, "state", "needletail", "jobs", "due0001")); len(recs) != 1 {
 		t.Errorf("run records %v", recs)
 	}
+}
+
+// Acknowledges only synthetic test deliveries; no network or provider is involved.
+type acknowledgedDeliveries struct{ deliveries []sched.Delivery }
+
+func (d *acknowledgedDeliveries) Deliver(_ context.Context, delivery sched.Delivery) error {
+	d.deliveries = append(d.deliveries, delivery)
+	return nil
 }

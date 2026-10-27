@@ -21,12 +21,12 @@ import (
 // agent.yaml defines comes back with the repo's definition (the adapter's MergeSchedules); the
 // dream proposes the agent's jobs (and its changes to the repo's) for review.
 
-const toolDescription = `Manage scheduled jobs: action 'create' schedules a job from a prompt and/or skills; 'list' shows the jobs; 'update', 'pause', 'resume', 'remove' and 'run' act on one by job_id (list first: never guess an id). 'run' makes a job due now (it starts within the next tick; its output is delivered as the job's deliver says, it does not come back here).
+const toolDescription = `Manage scheduled jobs: action 'create' schedules a job from a prompt and/or skills; 'list' shows the jobs; 'update', 'pause', 'resume', 'remove' and 'run' act on one by job_id (list first: never guess an id). 'retry_delivery' retries the retained report without reanalysis (optional deliver explicitly replaces unsent destinations); 'discard_delivery' explicitly discards it. Pending reports block new runs. 'run' makes a job due now (it starts within the next tick; its output is delivered as the job's deliver says, it does not come back here).
 
 Jobs run in a fresh session with no chat context, so prompts must be self-contained, and the run's FINAL REPLY is what gets delivered; a run cannot ask questions. Prefer updating a job over creating a near-duplicate.`
 
 const toolSchema = `{"type":"object","properties":{
-"action":{"type":"string","description":"One of: create, list, update, pause, resume, remove, run. create needs schedule, and prompt unless no_agent."},
+"action":{"type":"string","description":"One of: create, list, update, pause, resume, remove, run, retry_delivery, discard_delivery. create needs schedule, and prompt unless no_agent."},
 "job_id":{"type":"string","description":"Required for update, pause, resume, remove and run."},
 "prompt":{"type":"string","description":"create/update: the job's whole, self-contained prompt (paired with any skills as the task), at most 8 KB."},
 "schedule":{"type":"string","description":"Required for create. A recurring interval ('30m', 'every 2h', 'every hour'), a day and time ('every monday 9am', 'weekdays at 9am', 'every day at 14:00') or a 5-field cron expression ('0 9 * * 1-5'). One-time schedules are not jobs (follow_up does something once, later); nothing runs more often than every 5 minutes."},
@@ -144,35 +144,38 @@ func (s *Scheduler) checkEvery(sch wire.JobSchedule) error {
 
 // jobView is a job as list shows it.
 type jobView struct {
-	JobID          string   `json:"job_id"`
-	Name           string   `json:"name"`
-	Schedule       string   `json:"schedule"`
-	Enabled        bool     `json:"enabled"`
-	State          string   `json:"state"`
-	Prompt         string   `json:"prompt,omitempty"`
-	Skills         []string `json:"skills,omitempty"`
-	Script         string   `json:"script,omitempty"`
-	Monitor        string   `json:"monitor,omitempty"`
-	NoAgent        bool     `json:"no_agent,omitempty"`
-	Deliver        string   `json:"deliver,omitempty"`
-	FailureDeliver string   `json:"failure_deliver,omitempty"`
-	Toolsets       []string `json:"enabled_toolsets,omitempty"`
-	Repeat         string   `json:"repeat,omitempty"`
-	NextRunAt      string   `json:"next_run_at,omitempty"`
-	LastRunAt      string   `json:"last_run_at,omitempty"`
-	LastStatus     string   `json:"last_status,omitempty"`
-	LastError      string   `json:"last_error,omitempty"`
-	FailureStreak  int      `json:"failure_streak,omitempty"`
-	Running        bool     `json:"running,omitempty"`
-	PausedReason   string   `json:"paused_reason,omitempty"`
+	DeliveryHold      bool           `json:"delivery_hold,omitempty"`
+	JobID             string         `json:"job_id"`
+	Name              string         `json:"name"`
+	Schedule          string         `json:"schedule"`
+	Enabled           bool           `json:"enabled"`
+	State             string         `json:"state"`
+	Prompt            string         `json:"prompt,omitempty"`
+	Skills            []string       `json:"skills,omitempty"`
+	Script            string         `json:"script,omitempty"`
+	Monitor           string         `json:"monitor,omitempty"`
+	NoAgent           bool           `json:"no_agent,omitempty"`
+	Deliver           string         `json:"deliver,omitempty"`
+	FailureDeliver    string         `json:"failure_deliver,omitempty"`
+	Toolsets          []string       `json:"enabled_toolsets,omitempty"`
+	Repeat            string         `json:"repeat,omitempty"`
+	NextRunAt         string         `json:"next_run_at,omitempty"`
+	LastRunAt         string         `json:"last_run_at,omitempty"`
+	LastStatus        string         `json:"last_status,omitempty"`
+	DeliveryRecovery  map[string]any `json:"delivery_recovery,omitempty"`
+	LastDeliveryError string         `json:"last_delivery_error,omitempty"`
+	LastError         string         `json:"last_error,omitempty"`
+	FailureStreak     int            `json:"failure_streak,omitempty"`
+	Running           bool           `json:"running,omitempty"`
+	PausedReason      string         `json:"paused_reason,omitempty"`
 }
 
 func view(j *Job) jobView {
-	v := jobView{JobID: j.ID(), Name: j.Name(), Schedule: j.Schedule().Display, Enabled: j.Enabled(), State: j.Str("state"),
+	v := jobView{DeliveryHold: j.Bool("delivery_hold"), JobID: j.ID(), Name: j.Name(), Schedule: j.Schedule().Display, Enabled: j.Enabled(), State: j.Str("state"),
 		Prompt: clip(j.Str("prompt"), 300), Skills: j.Skills(), Script: j.Str("script"), Monitor: j.Str("monitor_script"),
 		NoAgent: j.Bool("no_agent"), Deliver: j.Str("deliver"), FailureDeliver: j.Str("failure_deliver"), Toolsets: j.Strings("enabled_toolsets"),
 		NextRunAt: j.Str("next_run_at"), LastRunAt: j.Str("last_run_at"), LastStatus: j.Str("last_status"), LastError: clip(j.Str("last_error"), 300),
-		FailureStreak: j.Int("failure_streak"), Running: j.Bool("running"), PausedReason: j.Str("paused_reason")}
+		LastDeliveryError: clip(j.Str("last_delivery_error"), 300), FailureStreak: j.Int("failure_streak"), Running: j.Bool("running"), PausedReason: j.Str("paused_reason")}
 	if v.Schedule == "" {
 		v.Schedule = j.Schedule().Expr
 	}
@@ -185,13 +188,35 @@ func view(j *Job) jobView {
 func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string) (any, error) {
 	action := strings.ToLower(strings.TrimSpace(a.Action))
 	switch action {
+	case "retry_delivery", "discard_delivery":
+		a.Action = action
+		result, err := s.deliveryAction(a, untrusted)
+		if err == nil && action == "discard_delivery" {
+			err = s.mutate(func(f *File) (bool, error) {
+				j := f.Find(a.JobID)
+				if j == nil {
+					return false, nil
+				}
+				j.Set("delivery_hold", false)
+				j.Set("last_status", "delivery_discarded")
+				j.Set("last_delivery_error", "Retained report explicitly discarded; no delivery receipt.")
+				return true, nil
+			})
+		}
+		return result, err
 	case "list":
+		recovery, recoveryErr := s.deliveryViews()
+		if recoveryErr != nil {
+			return nil, recoveryErr
+		}
 		var out []jobView
 		all := a.IncludeDisabled == nil || *a.IncludeDisabled
 		err := s.mutate(func(f *File) (bool, error) {
 			for _, j := range f.Jobs {
 				if all || j.Enabled() {
-					out = append(out, view(j))
+					v := view(j)
+					v.DeliveryRecovery = recovery[j.ID()]
+					out = append(out, v)
 				}
 			}
 			return false, nil
@@ -210,12 +235,15 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string)
 			return nil, messaging.Deferred("a change to a job's "+strings.Join(fields, ", "), untrusted+" (its schedule, repeat and targets can change, and it can be paused, resumed, run and removed)")
 		}
 	case "":
-		return nil, errors.New("action is required: create, list, update, pause, resume, remove or run")
+		return nil, errors.New("action is required: create, list, update, pause, resume, remove, run, retry_delivery or discard_delivery")
 	default:
-		return nil, fmt.Errorf("unknown action %q: create, list, update, pause, resume, remove or run", a.Action)
+		return nil, fmt.Errorf("unknown action %q: create, list, update, pause, resume, remove, run, retry_delivery or discard_delivery", a.Action)
 	}
 	if strings.TrimSpace(a.JobID) == "" {
 		return nil, fmt.Errorf("job_id is required for %s (list the jobs first)", action)
+	}
+	if (action == "remove" || action == "run" && !s.isRunning(a.JobID)) && s.deliveryBlocked(a.JobID) {
+		return nil, errors.New("report pending delivery: retry_delivery or explicitly discard_delivery first")
 	}
 	var result jobView
 	now := s.o.Now()
@@ -250,6 +278,9 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string)
 		}
 		switch action {
 		case "remove":
+			if s.isRunning(a.JobID) {
+				return false, errors.New("wait for the active run and its delivery to settle before removing the job")
+			}
 			f.Remove(a.JobID)
 			_ = os.Remove(filepath.Join(s.state, "monitor", safeID(a.JobID)+".out"))
 		case "pause":
@@ -268,6 +299,9 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string)
 				s.settleNext(j, now)
 			}
 		case "run":
+			if j.Bool("delivery_hold") {
+				return false, errors.New("delivery is held: recover or explicitly discard_delivery before running again")
+			}
 			if !j.Enabled() {
 				return false, fmt.Errorf("job %s is %s: resume it first", a.JobID, orDefault(j.Str("state"), "disabled"))
 			}

@@ -242,7 +242,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
 	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
-		End: store.End, Location: cfg.Location, Log: logf, RepoJobs: cfg.Schedules.Repo}
+		End: store.End, Location: cfg.Location, Log: logf, RepoJobs: cfg.Schedules.Repo, OnDelivery: deliveryLearning(agent, logf)}
 	if lr != nil {
 		opts.Luau = lr.RunScript
 		opts.OnSchedule = luau.Events{RT: lr}.OnSchedule // the agent's on_schedule handlers (§5.5)

@@ -69,6 +69,7 @@ func New(inst *instance.Instance) *Needletail {
 			// a monitor's last output and each run's record hold what jobs fetched and replied:
 			// client data, before the state rule that would claim them
 			{Class: engine.Raw, Glob: "state/needletail/jobs/**"},
+			{Class: engine.Raw, Glob: "state/needletail/deliveries-v1.json"},
 			{Class: engine.Raw, Glob: "state/needletail/monitor/**"},
 			// the pending follow-ups hold what the agent promised to say or do in a conversation:
 			// client data, restored at boot so they survive a restart, never read by the dream

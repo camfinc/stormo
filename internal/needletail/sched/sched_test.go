@@ -735,7 +735,7 @@ func TestReviewReadsTheRuntimesFile(t *testing.T) {
 	}
 	joined := strings.Join(got, "\n")
 	for _, want := range []string{"SLA watchdog: last run error: Script exited with code 1", "SLA watchdog: failure streak 1",
-		"Metrics collector: last run delivery_failed", "Metrics collector: delivery error: telegram (home): needletail does not deliver to telegram",
+		"Metrics collector: last run delivery_failed", "Metrics collector: delivery error: Report retained pending delivery",
 		"Tracker watch: overdue since 2026-10-21T11:00:00Z"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("review lacks %q:\n%s", want, joined)

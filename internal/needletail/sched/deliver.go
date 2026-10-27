@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Target is where a run's output goes: a platform's home channel (Channel ""), a channel, or a
@@ -40,6 +41,16 @@ type Delivery struct {
 	// and the deliverer takes them as they are. Any other job's targets (a job the agent made)
 	// go through the messaging policy.
 	Trusted bool
+}
+
+// DeliveryEvent is metadata from a durably retained failed delivery report or
+// its later completion. ID is the stable outbox ID plus :failed or :recovered.
+// It deliberately excludes payloads, provider errors, targets and job names.
+type DeliveryEvent struct {
+	ID, JobID, Session string
+	At                 time.Time
+	Status             string // failed or recovered; normal successful delivery emits no event
+	Failure            bool   // the original execution failed, independent of delivery recovery
 }
 
 // Deliverer sends a delivery (the Slack gateway's, from M5).
@@ -100,7 +111,7 @@ func Targets(lane string, origin json.RawMessage) ([]Target, error) {
 }
 
 // Pending is the deliverer until the Slack gateway (M5) takes its place: a Slack target is
-// accepted and logged (the output stays in the run's record, state/needletail/jobs/<id>/), any
+// refused until the gateway is available (the outbox retains the report), and any
 // other platform is refused (needletail serves Slack only).
 type Pending struct{ Log func(string) }
 
@@ -112,5 +123,5 @@ func (p Pending) Deliver(_ context.Context, d Delivery) error {
 	if p.Log != nil {
 		p.Log(fmt.Sprintf("cron: job %s: delivery to %s waits for the Slack gateway; the output is kept in state/needletail/jobs/", d.JobID, d.Target))
 	}
-	return nil
+	return fmt.Errorf("Slack gateway is not ready; delivery remains pending")
 }
