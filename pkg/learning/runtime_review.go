@@ -40,10 +40,24 @@ type RuntimeReviewOperation struct {
 }
 
 type RuntimeReviewData struct {
+	Background *BackgroundReviewData   `json:"background,omitempty"`
 	Events     []OutcomeEvent          `json:"events"`
 	Candidates []ReflectionCandidate   `json:"candidates"`
 	Status     RuntimeReviewStatus     `json:"status"`
 	Operation  *RuntimeReviewOperation `json:"operation,omitempty"`
+}
+
+// BackgroundReviewData is owner-only, scoped proposal material. Candidates here
+// cannot be exported or activated through the legacy reflection operations.
+type BackgroundReviewData struct {
+	Enabled        bool                  `json:"enabled"`
+	Pending        int                   `json:"pending"`
+	Completed      int                   `json:"completed"`
+	Failed         int                   `json:"failed"`
+	Interrupted    int                   `json:"interrupted"`
+	CallsUsed      int                   `json:"callsUsed"`
+	TokensReserved int                   `json:"tokensReserved"`
+	Candidates     []ReflectionCandidate `json:"candidates"`
 }
 
 type RuntimeReviewRequest struct {

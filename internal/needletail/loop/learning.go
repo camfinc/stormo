@@ -70,6 +70,9 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 			if err != nil {
 				return LearningData{}, err
 			}
+			if req.Outcome == "corrected" {
+				a.queueBackground(session, e, runtimelearn.TriggerFeedbackCorrected, req.Summary)
+			}
 			if a.Cfg.Reflection {
 				if err = a.Learning.Reflect(ctx, a.LLM, a.Env.Memory, session, e, req.Summary, check); err != nil {
 					operation = &learning.RuntimeReviewOperation{OK: false, Code: "reflection_failed", Message: "Feedback was saved; reflection did not complete. Check the budget and review the saved evidence.", FeedbackSaved: true}
@@ -109,7 +112,23 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 	if req != nil && operation == nil {
 		operation = &learning.RuntimeReviewOperation{OK: true, Code: "saved", Message: "Learning review saved.", FeedbackSaved: req.ExportID == ""}
 	}
-	return LearningData{Events: events, Candidates: c, Status: status, Operation: operation}, nil
+	bs, bc, err := a.Learning.BackgroundSnapshot(root, aud, a.now())
+	if err != nil {
+		return LearningData{}, err
+	}
+	if aud != "agent" {
+		publicStatus, publicCandidates, err := a.Learning.BackgroundSnapshot(root, "agent", a.now())
+		if err != nil {
+			return LearningData{}, err
+		}
+		bs.Pending += publicStatus.Pending
+		bs.Completed += publicStatus.Completed
+		bs.Failed += publicStatus.Failed
+		bs.Interrupted += publicStatus.Interrupted
+		bc = append(bc, publicCandidates...)
+	}
+	background := &learning.BackgroundReviewData{Enabled: a.Cfg.BackgroundLearning, Pending: bs.Pending, Completed: bs.Completed, Failed: bs.Failed, Interrupted: bs.Interrupted, CallsUsed: bs.CallsUsed, TokensReserved: bs.TokensReserved, Candidates: bc}
+	return LearningData{Events: events, Candidates: c, Status: status, Operation: operation, Background: background}, nil
 }
 
 // Serialize owner feedback/reflection with turns so a root cannot become tainted

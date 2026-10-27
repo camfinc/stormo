@@ -220,6 +220,21 @@
    "path": "state/needletail/outcomes-export-v1.json",
    "class": "learning",
    "glob": "state/needletail/outcomes-export-v1.json"
+  },
+  {
+   "path": "state/needletail/background-learning-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/background-learning-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-origins-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-origins-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-proposals-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-proposals-v1.json"
   }
  ]
 }

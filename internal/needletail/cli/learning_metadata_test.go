@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/runtimelearn"
+	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/pkg/learning"
 )
 
@@ -47,10 +48,13 @@ func TestLearningMetadataNapRoundTrip(t *testing.T) {
 		}
 	}
 	writeMetadata(runtimelearn.ReflectionsFile, reflection)
+	for _, path := range []string{runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json"} {
+		writeMetadata(path, []byte(`{"version":1,"privateSentinel":"background-private-sentinel"}`))
+	}
 	proposal, _ := json.Marshal(map[string]any{"version": 1, "proposals": []runtimelearn.ExportProposal{{ID: runtimelearn.Hash("proposal"), Text: procedure, EventRefs: []string{event.EventID}, Audience: "agent", Kind: "procedure"}}})
 	writeMetadata(runtimelearn.ProposalsFile, proposal)
 	before := map[string][]byte{}
-	for _, rel := range []string{runtimelearn.OutcomesFile, runtimelearn.OutcomesExportFile, runtimelearn.ReflectionsFile, runtimelearn.ProposalsFile} {
+	for _, rel := range []string{runtimelearn.OutcomesFile, runtimelearn.OutcomesExportFile, runtimelearn.ReflectionsFile, runtimelearn.ProposalsFile, runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json"} {
 		b, err := os.ReadFile(filepath.Join(home, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -67,7 +71,7 @@ func TestLearningMetadataNapRoundTrip(t *testing.T) {
 	for _, f := range nap.Files {
 		classes[f.Path] = string(f.Class)
 	}
-	for rel, want := range map[string]string{runtimelearn.OutcomesFile: "raw", runtimelearn.ReflectionsFile: "raw", runtimelearn.OutcomesExportFile: "learning", runtimelearn.ProposalsFile: "learning"} {
+	for rel, want := range map[string]string{runtimelearn.BackgroundFile: "raw", skills.OriginsFile: "raw", "state/needletail/skill-proposals-v1.json": "raw", runtimelearn.OutcomesFile: "raw", runtimelearn.ReflectionsFile: "raw", runtimelearn.OutcomesExportFile: "learning", runtimelearn.ProposalsFile: "learning"} {
 		if classes[rel] != want {
 			t.Fatalf("class %s=%q want %s", rel, classes[rel], want)
 		}

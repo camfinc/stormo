@@ -203,7 +203,7 @@ func (c *Core) handleRuntimeLearning(w http.ResponseWriter, r *http.Request, age
 		return
 	}
 	var data learning.RuntimeReviewData
-	if json.Unmarshal(body, &data) != nil || len(data.Events) > learning.MaxOutcomeEvents || len(data.Candidates) > 100 {
+	if json.Unmarshal(body, &data) != nil || len(data.Events) > learning.MaxOutcomeEvents || len(data.Candidates) > 100 || (data.Background != nil && len(data.Background.Candidates) > 256) {
 		send("unavailable", "The runtime learning response could not be read.")
 		return
 	}

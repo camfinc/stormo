@@ -156,6 +156,7 @@ func (l *Library) Create(name, category, content string) (Skill, error) {
 	_, desc, _ := frontMatter([]byte(content))
 	s := Skill{Name: name, Description: strings.Join(strings.Fields(desc), " "), Path: "skills/" + dir + "/SKILL.md", Dir: dir}
 	l.created(s)
+	l.recordOrigin(s, content)
 	return s, nil
 }
 

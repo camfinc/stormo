@@ -881,3 +881,25 @@ owner to update/reinstall the Slack app; this change does not mutate live scopes
 nonexistence. Provider failures remain errors, rather than an empty successful channel list.
 See Slack's [conversations.list](https://docs.slack.dev/reference/methods/conversations.list/)
 and [conversations.info](https://docs.slack.dev/reference/methods/conversations.info/) contracts.
+
+### Background learning foundations
+
+See [the autonomous learning plan](needletail-autonomous-learning.md) for the full
+background learning, skill improvement, and maintenance architecture.
+`background_learning: true` in `engine/needletail/config.yaml` opts into the first
+proposal-only worker; it is independent of `reflection` and disabled by default.
+The serve-owned worker admits one job per 15-second idle poll with at most eight
+calls and 4,096 reserved output tokens per rolling 24 hours. Corrections and observed
+failed foreground skill commands enqueue private review material. No transcript or
+command output enters that request. No candidate activates itself.
+
+Owner learning responses include a separate `background` field with scoped job
+counts/candidates and home-wide rolling budget counters. These candidates are not
+accepted by the legacy export operation. Native/browser presentation and owner
+queue cancellation/retention controls remain planned. The 256-job cumulative cap
+fails closed; production retention must precede broad enablement.
+
+Skill maintenance and exact-revision patch staging are library foundations only:
+no maintenance timer, model-driven patch generator, automatic activation, or
+archival is enabled by this flag. All three new private state files are Raw in
+snapshots and excluded from dream and raw file browsing.

@@ -360,3 +360,27 @@ func TestSlackListenRender(t *testing.T) {
 		}
 	}
 }
+
+func TestBackgroundLearningConfigOptIn(t *testing.T) {
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0755)
+	for _, enabled := range []bool{false, true} {
+		body := "background_learning: false\n"
+		if enabled {
+			body = "background_learning: true\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		ac, err := readAgentConfig(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+		if c.BackgroundLearning != enabled || c.Reflection {
+			t.Fatalf("config=%+v", c)
+		}
+	}
+}

@@ -140,9 +140,13 @@ func TestRuntimeLearningOwnerBridge(t *testing.T) {
 func TestLearningRedactionPreservesCountersAndOverlappingSecrets(t *testing.T) {
 	c := &Core{owner: "core-owner-credential"}
 	view := RuntimeLearningView{State: "ready", Data: &learning.RuntimeReviewData{Candidates: []learning.ReflectionCandidate{{Text: "long-secret-value and long-secret"}}, Status: learning.RuntimeReviewStatus{EventsUsed: 3, CallsUsed: 3}}}
+	view.Data.Background = &learning.BackgroundReviewData{CallsUsed: 3, Candidates: []learning.ReflectionCandidate{{Text: "long-secret-value and long-secret"}}}
 	safe := c.redactLearningView(view, map[string]string{"short": "long-secret", "long": "long-secret-value", "number": "3"})
 	if safe.Data == nil || safe.Data.Status.EventsUsed != 3 || safe.Data.Status.CallsUsed != 3 {
 		t.Fatal("redaction changed numeric budget metadata")
+	}
+	if safe.Data.Background.CallsUsed != 3 || safe.Data.Background.Candidates[0].Text != "[SECRET] and [SECRET]" {
+		t.Fatal("background redaction failed")
 	}
 	if safe.Data.Candidates[0].Text != "[SECRET] and [SECRET]" {
 		t.Fatalf("overlapping secret suffix exposed: %s", safe.Data.Candidates[0].Text)

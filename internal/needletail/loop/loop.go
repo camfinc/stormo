@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/config"
@@ -81,6 +82,7 @@ func (o observers) TurnEnd(session string, err error) {
 
 // Agent runs turns for one agent home.
 type Agent struct {
+	activeTurns   atomic.Int64
 	learningLocks [64]sync.Mutex
 	Learning      *runtimelearn.Store
 	Cfg           *config.Config
@@ -160,6 +162,8 @@ func (a *Agent) logf(format string, args ...any) {
 // Run is one turn of session (any session of its lineage: the turn goes to the tip). The caller
 // makes sure one turn at a time runs per conversation.
 func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (res *Result, err error) {
+	a.activeTurns.Add(1)
+	defer a.activeTurns.Add(-1)
 	tip, ok := a.Store.Tip(session)
 	if !ok {
 		return nil, ErrNoSession
@@ -335,11 +339,24 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 					subject.Origin = subject.EventID
 					subject.At = a.now().UTC().Format(time.RFC3339Nano)
 					subject.ExecutionStatus = "succeeded"
-					if failed {
+					executionFailed := failed
+					if c.Name == "terminal" && !failed {
+						var result struct {
+							ExitCode *int `json:"exit_code"`
+						}
+						if json.Unmarshal([]byte(out), &result) != nil || result.ExitCode == nil {
+							subject.ExecutionStatus = "unknown"
+						} else {
+							executionFailed = *result.ExitCode != 0
+						}
+					}
+					if executionFailed {
 						subject.ExecutionStatus = "failed"
 					}
 					if err := a.Learning.Append(*subject); err != nil {
 						a.logf("outcome collection: %v", err)
+					} else if executionFailed && subject.SourceType == "runtime" {
+						a.queueBackground(res.Session, *subject, runtimelearn.TriggerToolFailure, "A skill command failed. Diagnose only what the observed execution establishes; task success and a reusable fix are unknown.")
 					}
 				}
 			}

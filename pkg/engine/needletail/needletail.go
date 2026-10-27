@@ -79,6 +79,9 @@ func New(inst *instance.Instance) *Needletail {
 			{Class: engine.Raw, Glob: "state/needletail/kv.json"},
 			// Reflection candidates retain source context and are never dream input.
 			{Class: engine.Raw, Glob: "state/needletail/reflections-v1.json"},
+			{Class: engine.Raw, Glob: "state/needletail/background-learning-v1.json"},
+			{Class: engine.Raw, Glob: "state/needletail/skill-origins-v1.json"},
+			{Class: engine.Raw, Glob: "state/needletail/skill-proposals-v1.json"},
 			{Class: engine.Raw, Glob: "state/needletail/outcomes-v1.json"},
 			// state: tool state and the runtime's own state
 			{Class: engine.State, Glob: sd + "/**"},
@@ -101,7 +104,7 @@ func (n *Needletail) LearningProposalsPath() string {
 	return "state/needletail/reflection-proposals-v1.json"
 }
 func (n *Needletail) PrivateLearningPaths() []string {
-	return []string{"state/needletail/outcomes-v1.json", "state/needletail/reflections-v1.json", n.OutcomePath(), n.LearningProposalsPath()}
+	return []string{"state/needletail/outcomes-v1.json", "state/needletail/reflections-v1.json", "state/needletail/background-learning-v1.json", "state/needletail/skill-origins-v1.json", "state/needletail/skill-proposals-v1.json", n.OutcomePath(), n.LearningProposalsPath()}
 }
 func (n *Needletail) HealthCheck() []string {
 	return []string{"CMD", "/usr/local/bin/needletail", "healthcheck"}

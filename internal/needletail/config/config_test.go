@@ -94,3 +94,24 @@ func TestLocation(t *testing.T) {
 		t.Error("a bad timezone was accepted")
 	}
 }
+
+func TestBackgroundLearningDefaultsOff(t *testing.T) {
+	home := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	for _, enabled := range []bool{false, true} {
+		body := base
+		if enabled {
+			body += "background_learning: true\n"
+		}
+		if err := os.WriteFile(filepath.Join(home, File), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(home, env(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.BackgroundLearning != enabled || c.Reflection {
+			t.Fatalf("config=%+v", c)
+		}
+	}
+}

@@ -188,3 +188,14 @@ deletes a key, an object merges into an object, anything else (an array too) rep
 inside a replaced array, unchanged strings keep their comments and objects are matched by position.
 A patch that names `id`, `deploy` or `format` is refused with `readonly` (`stormo migrate agent` changes the format); then the result is validated and
 written as `write` does.
+
+### Background learning review metadata
+
+Runtime learning review data may include an additive `background` object:
+`enabled`, `pending`, `completed`, `failed`, `interrupted`, `callsUsed`,
+`tokensReserved`, and `candidates`. Job counts and candidates match the selected
+task root and authorized audience; budget counters cover the whole agent home over
+the rolling 24-hour window. Candidates remain private review material and cannot
+be passed to the legacy `exportId` operation. The existing dedicated owner
+credential, core authorization, redaction, and no-store response policy apply.
+Clients that do not render this optional field continue to work.

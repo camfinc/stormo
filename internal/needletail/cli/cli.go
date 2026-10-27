@@ -657,6 +657,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	gw = startSlack(rt, srv, fu)
 	ticks, stopTicks := context.WithCancel(context.Background())
 	defer stopTicks()
+	learningDone := make(chan struct{})
+	go func() {
+		defer close(learningDone)
+		rt.agent.RunBackgroundLearning(ticks)
+	}()
+	defer func() { stopTicks(); <-learningDone }()
 	rt.sched.Start(ticks)
 	rt.followUps.Start(fu) // what fell due while the agent was down fires now, marked late
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: rt.logger}

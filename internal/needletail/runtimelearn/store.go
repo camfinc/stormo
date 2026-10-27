@@ -26,9 +26,10 @@ func Hash(text string) string { h := sha256.Sum256([]byte(text)); return hex.Enc
 // Store owns version 1 runtime files, private 0600. Unknown versions fail closed and
 // are never rewritten. Capacity exhaustion stops collection rather than erasing evidence.
 type Store struct {
-	Home    string
-	Trusted func(string, func() error) error
-	mu      sync.Mutex
+	Home         string
+	Trusted      func(string, func() error) error
+	mu           sync.Mutex
+	backgroundMu sync.Mutex
 }
 
 func (s *Store) load() (*learning.EvidenceStore, error) {
