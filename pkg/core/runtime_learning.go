@@ -21,6 +21,10 @@ import (
 
 var runtimeLearningPath = regexp.MustCompile(`^/api/agents/([a-z][a-z0-9-]*)/learning$`)
 
+// runtimeLearningEngine is an agent's engine for the learning bridge (engines.Get; tests give it
+// a fake engine whose runtime implements engine.LearningRuntime).
+var runtimeLearningEngine = engines.Get
+
 // RuntimeLearningView contains private owner-only data. State is explicit even when
 // no runtime, engine support or dedicated credential is available. Credentials and
 // upstream failure bodies never appear in this response or the audit log.
@@ -59,7 +63,7 @@ func (c *Core) handleRuntimeLearning(w http.ResponseWriter, r *http.Request, age
 		send("unavailable", "The agent configuration is unavailable.")
 		return
 	}
-	eng, err := engines.Get(m.Engine.Kind, c.inst)
+	eng, err := runtimeLearningEngine(m.Engine.Kind, c.inst)
 	if err != nil {
 		send("unsupported", "This engine does not expose learning review.")
 		return

@@ -1,23 +1,79 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/engines"
+	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 )
 
+// The learning bridge is engine-neutral: it is tested on a fake engine kind whose runtime has the
+// optional engine.LearningRuntime (over Hermes' runtime, which has not), with its own key name.
+const fakeLearningKind = "learning-fake"
+
+type fakeLearningEngine struct{ engine.Engine }
+
+func (e fakeLearningEngine) Runtime() engine.Runtime {
+	return fakeLearningRuntime{e.Engine.Runtime()}
+}
+
+type fakeLearningRuntime struct{ engine.Runtime }
+
+func (fakeLearningRuntime) LearningKeyName() string { return "FAKE_LEARNING_KEY" }
+func (fakeLearningRuntime) LearningPath(session string) string {
+	return "/v1/sessions/" + url.PathEscape(session) + "/learning"
+}
+func (fakeLearningRuntime) Conversations(call engine.APICall) engine.Conversations {
+	return fakeConversations{call: call}
+}
+
+// fakeConversations lists sessions from GET /v1/sessions ({"data": [{id, title}]}).
+type fakeConversations struct {
+	engine.Conversations
+	call engine.APICall
+}
+
+func (f fakeConversations) List(ctx context.Context, limit int) ([]engine.Conversation, error) {
+	_, body, err := f.call(ctx, http.MethodGet, "/v1/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data []engine.Conversation `json:"data"`
+	}
+	return out.Data, json.Unmarshal(body, &out)
+}
+
+func withFakeLearningEngine(t *testing.T) {
+	t.Helper()
+	get := runtimeLearningEngine
+	runtimeLearningEngine = func(kind string, inst *instance.Instance) (engine.Engine, error) {
+		if kind != fakeLearningKind {
+			return get(kind, inst)
+		}
+		eng, err := engines.Get("hermes", inst)
+		return fakeLearningEngine{eng}, err
+	}
+	t.Cleanup(func() { runtimeLearningEngine = get })
+}
+
 func TestRuntimeLearningOwnerBridge(t *testing.T) {
+	withFakeLearningEngine(t)
 	_, inst := fixture(t)
 	const normal = "ordinary-runtime-key-0123456789"
 	const dedicated = "owner-learning-secret-0123456789"
 	const owner = "core-owner-secret-0123456789"
-	write(t, filepath.Join(inst.Root, "agents/atlas/agent.yaml"), "format: 1\nid: atlas\nname: Atlas\nunit: sales\nrole: test\nengine: {kind: needletail, version: 0.1.0}\nmodel: {name: test}\nsecrets: [API_SERVER_KEY, NEEDLETAIL_LEARNING_KEY]\n")
-	write(t, filepath.Join(inst.Root, "secrets.local.yaml"), "agents:\n  atlas:\n    API_SERVER_KEY: "+normal+"\n    NEEDLETAIL_LEARNING_KEY: "+dedicated+"\n")
+	write(t, filepath.Join(inst.Root, "agents/atlas/agent.yaml"), "format: 1\nid: atlas\nname: Atlas\nunit: sales\nrole: test\nengine: {kind: "+fakeLearningKind+", version: 0.1.0}\nmodel: {name: test}\nsecrets: [API_SERVER_KEY, FAKE_LEARNING_KEY]\n")
+	write(t, filepath.Join(inst.Root, "secrets.local.yaml"), "agents:\n  atlas:\n    API_SERVER_KEY: "+normal+"\n    FAKE_LEARNING_KEY: "+dedicated+"\n")
 	calls, posts := 0, 0
 	upstreamError := false
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
