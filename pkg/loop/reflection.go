@@ -3,6 +3,7 @@ package loop
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/engine"
@@ -81,7 +82,7 @@ func reflectionTexts(body string, scrub *learning.Scrubber) ([]reflected, []stri
 		return nil, []string{fmt.Sprintf("reflection proposals: %d, more than %d, skipped", len(export.Proposals), maxReflectionProposals)}
 	}
 	out, notices := []reflected{}, []string{}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for i, p := range export.Proposals {
 		n := i + 1
 		if p.Audience != "agent" || p.Kind != "procedure" || len(p.ID) == 0 || len(p.ID) > 128 || len(p.EventRefs) > 20 {
@@ -97,11 +98,20 @@ func reflectionTexts(body string, scrub *learning.Scrubber) ([]reflected, []stri
 		if len(flags) > 0 {
 			notices = append(notices, fmt.Sprintf("reflection proposal %d: the scrubber flagged %s, kept scrubbed and flagged for a person", n, strings.Join(flags, ", ")))
 		}
+		// Twins (one scrubbed text) are taken once with every flag either had, so a flagged
+		// proposal is never hidden behind an unflagged twin that came first.
 		key := learning.Normalize(clean)
-		if !seen[key] {
-			out = append(out, reflected{Text: clean, PII: flags})
-			seen[key] = true
+		if i, ok := seen[key]; ok {
+			for _, f := range flags {
+				if !slices.Contains(out[i].PII, f) {
+					out[i].PII = append(out[i].PII, f)
+				}
+			}
+			slices.Sort(out[i].PII)
+			continue
 		}
+		seen[key] = len(out)
+		out = append(out, reflected{Text: clean, PII: flags})
 	}
 	return out, notices
 }

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,5 +80,19 @@ func TestReflectionExportBoundary(t *testing.T) {
 		if strings.Contains(n, "example.com") || strings.Contains(n, "sk_") || strings.Contains(n, "dm:private") {
 			t.Errorf("a notice carries proposal text: %q", n)
 		}
+	}
+}
+
+// Two proposals that scrub to one text keep every flag either had: a flagged sighting is never
+// hidden behind an unflagged twin that came first.
+func TestReflectionDedupKeepsFlags(t *testing.T) {
+	scrub := learning.NewScrubber(&instance.Instance{})
+	body, _ := json.Marshal(map[string]any{"version": 1, "proposals": []any{
+		map[string]any{"id": "a", "text": "Put the token [SECRET] in the header.", "eventRefs": []string{}, "audience": "agent", "kind": "procedure"},
+		map[string]any{"id": "b", "text": "Put the token sk_abcdefghijklmnop in the header.", "eventRefs": []string{}, "audience": "agent", "kind": "procedure"},
+	}})
+	got, _ := reflectionTexts(string(body), scrub)
+	if len(got) != 1 || !slices.Contains(got[0].PII, "secret") {
+		t.Fatalf("the flagged twin lost its flag: %+v", got)
 	}
 }

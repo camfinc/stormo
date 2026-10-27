@@ -165,6 +165,9 @@ func Upsert(ledger *[]*Learning, s Sighting) (*Learning, bool) {
 		if s.At > e.LastSeen {
 			e.LastSeen = s.At
 		}
+		// A text flagged on any sighting stays flagged (promotion refuses it): the flags are a
+		// union, never the latest sighting's.
+		e.PII = unionFlags(e.PII, s.PII)
 		return e, false
 	}
 	pii := s.PII
@@ -175,6 +178,18 @@ func Upsert(ledger *[]*Learning, s Sighting) (*Learning, bool) {
 		Status: Proposed, FirstSeen: s.At, LastSeen: s.At, SeenCount: 1, Instances: []string{s.Instance}, Naps: []string{s.Nap}}
 	*ledger = append(*ledger, e)
 	return e, true
+}
+
+// unionFlags is a's flags plus b's it lacks, sorted (never nil).
+func unionFlags(a, b []string) []string {
+	out := append([]string{}, a...)
+	for _, f := range b {
+		if !contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func contains(l []string, s string) bool {

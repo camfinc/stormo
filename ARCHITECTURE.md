@@ -377,7 +377,8 @@ asked for anything else, and raw history sits under a prefix the dream role can 
 - Every memory entry from every unseen nap is scrubbed (tokens, emails, cards, phones, plus the
   instance's own `scrub.rules`) and upserted into `learnings/ledger.jsonl` by content hash. The same lesson seen by
   several instances or naps merges into one entry with `seenCount`, `instances` and `naps`
-  (provenance and corroboration).
+  (provenance and corroboration), and the union of every sighting's `pii` flags: an entry flagged
+  once stays flagged (reflection proposals that scrub to one text keep every flag too).
 - Changed or new skills in the newest nap become scrubbed copies under
   `learnings/proposals/skills/` (a skill already decided at that content hash is not re-proposed).
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
@@ -411,7 +412,10 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   flagged for a person).
 - What the dream cannot take from these exports (an unreadable export, a private or oversized
   proposal, invalid events, an evidence store that refuses the merge) is a notice in its report and
-  `DREAM.md`, never a failure: the rest of the dream, watermark included, goes through.
+  `DREAM.md`, never a failure: the rest of the dream, watermark included, goes through. A refused
+  evidence merge is not lost: `watermark.json`'s `evidenceNap` (additive; absent means the same as
+  `lastNap`, `""` before every nap) stays at the last nap whose evidence merged, the next dream
+  (even with no new nap) merges the naps after it again, and Prune keeps those naps.
 - It writes the working tree only. It never commits, branches or pushes.
 
 **Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),
