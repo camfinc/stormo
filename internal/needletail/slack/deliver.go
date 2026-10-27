@@ -226,20 +226,27 @@ func (g *Gateway) SendTool() tools.Tool {
 	return tools.Tool{Name: messaging.SendTool, Description: sendDescription, Schema: json.RawMessage(sendSchema),
 		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
 			var a struct {
-				Action    string `json:"action"`
-				Target    string `json:"target"`
-				Message   string `json:"message"`
-				Broadcast bool   `json:"broadcast"`
+				Action      string `json:"action"`
+				Query       string `json:"query"`
+				Cursor      string `json:"cursor"`
+				ChannelType string `json:"channel_type"`
+				Target      string `json:"target"`
+				Message     string `json:"message"`
+				Broadcast   bool   `json:"broadcast"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return nil, fmt.Errorf("bad arguments: %v", err)
 			}
 			switch strings.ToLower(strings.TrimSpace(a.Action)) {
+			case "channels":
+				return g.discover(ctx, a.Query, a.Cursor, a.ChannelType)
+			case "channel_info":
+				return g.inspectChannel(ctx, a.Target)
 			case "list":
 				return map[string]any{"targets": g.targets()}, nil
 			case "", "send":
 			default:
-				return nil, fmt.Errorf("unknown action %q: send or list", a.Action)
+				return nil, fmt.Errorf("unknown action %q: send, list, channels or channel_info", a.Action)
 			}
 			if env != nil {
 				ctx = messaging.WithSession(ctx, env.Session)
@@ -261,11 +268,14 @@ func (g *Gateway) SendTool() tools.Tool {
 
 const sendDescription = `Send a message to Slack, or list the targets you may use.
 
-Targets: 'slack' (the home channel), 'slack:<channel id>' for a channel you have a conversation in, 'slack:<channel id>:<thread ts>' for a thread you are in, or 'slack:<user id>' for an allowed user's DM. Call action 'list' to see them. Your reply in this conversation reaches it anyway: use this only to post somewhere else. @channel, @here, @everyone and user groups are never pinged unless you set broadcast and the agent is granted it.`
+Targets: 'slack' (the home channel), 'slack:<channel id>' for a channel you have a conversation in, 'slack:<channel id>:<thread ts>' for a thread you are in, or 'slack:<user id>' for an allowed user's DM. Call action 'list' to see known targets. Use 'channels' to discover Slack-visible channel IDs and names (query filters one page; follow next_cursor until has_more is false), then 'channel_info' with the exact target ID to check current metadata and runtime policy. Public channels are the default; channel_type private_channel discovers private channels visible to the bot. Discovery never joins channels or grants permission to send; metadata is not a delivery receipt. Your reply in this conversation reaches it anyway: use this only to post somewhere else. @channel, @here, @everyone and user groups are never pinged unless you set broadcast and the agent is granted it.`
 
 const sendSchema = `{"type":"object","properties":{
-"action":{"type":"string","enum":["send","list"],"description":"send (default) or list the targets."},
+"action":{"type":"string","enum":["send","list","channels","channel_info"],"description":"send (default), list known targets, channels to discover channels, or channel_info to check an exact channel ID."},
 "target":{"type":"string","description":"'slack' (home channel), 'slack:<channel>', 'slack:<channel>:<thread_ts>' or 'slack:<user id>'."},
+"query":{"type":"string","description":"channels: case-insensitive channel-name substring, optionally starting with #; filters this page only."},
+"cursor":{"type":"string","description":"channels: next_cursor from the preceding page; continue even if there were no matches."},
+"channel_type":{"type":"string","enum":["public_channel","private_channel"],"description":"channels: public_channel by default; private_channel only lists channels visible to the bot."},
 "message":{"type":"string","description":"The message (Markdown)."},
 "broadcast":{"type":"boolean","description":"Ping @channel, @here, @everyone or a user group the message names. Refused unless the agent is granted broadcasts; leave it out otherwise."}
 }}`

@@ -844,3 +844,40 @@ A `pkg/engines` test checks that `needletail` resolves for both `Get` and `Runti
 8. **Background consolidation** of near-duplicate records on plan usage (P2): wanted, and how often?
 9. **Erasure**: must a deleted memory also leave older Raw naps (pruning on demand)?
 10. **The record cap**: 20,000 per agent?
+
+
+### Slack channel discovery
+
+`send_message` keeps `action: list` as the local list of known destinations. Two read-only
+helpers query Slack without sending a message, joining a channel, or adding it to the
+runtime's engaged destinations:
+
+```json
+{"action":"channels","query":"control"}
+{"action":"channels","query":"control","cursor":"<next_cursor>"}
+{"action":"channels","channel_type":"private_channel","query":"control"}
+{"action":"channel_info","target":"slack:C0000000001"}
+```
+
+`channels` reads at most 100 channels per call (15-second deadline). Public channels are the
+default; private channels require an explicit `channel_type`. A case-insensitive name query
+filters only the current page, so follow `next_cursor` while `has_more` is true even when a
+page has zero matches. The exact returned ID is the destination; names are never silently
+converted into sending targets. Archived channels are omitted from discovery, but
+`channel_info` reports archive status for an explicitly supplied ID. `target: slack` checks
+the configured home. User IDs and thread targets are refused by the metadata helper; it
+never opens a DM.
+
+Results expose ID, name, privacy, archive status, membership when Slack supplies it, and
+`policy_allowed` for ordinary agent sends. They omit topics, purposes, messages and member
+lists. Slack visibility, bot membership and Stormo's messaging permission are separate facts;
+none guarantees that a later post will succeed. `channel_info` explicitly returns
+`delivery_verified: false`. Existing repo-scheduled delivery policy is unchanged.
+
+The bot needs `channels:read` for public discovery, `groups:read` for private discovery,
+and `im:read` for DM metadata. Missing permissions produce an actionable error asking the
+owner to update/reinstall the Slack app; this change does not mutate live scopes. A
+`channel_not_found` response is reported as inaccessible or unavailable, never proof of
+nonexistence. Provider failures remain errors, rather than an empty successful channel list.
+See Slack's [conversations.list](https://docs.slack.dev/reference/methods/conversations.list/)
+and [conversations.info](https://docs.slack.dev/reference/methods/conversations.info/) contracts.
