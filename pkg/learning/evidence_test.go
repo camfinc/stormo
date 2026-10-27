@@ -2,6 +2,7 @@ package learning
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -110,5 +111,41 @@ func TestUnknownEvidenceVersionPreserved(t *testing.T) {
 	got, _ := os.ReadFile(p)
 	if string(got) != string(body) {
 		t.Fatal("future evidence lost")
+	}
+}
+
+// Without outcome evidence (every Hermes lesson) the hot tier ranks as it did before evidence
+// existed: pinned, then most corroborated (seen), then most recent, then id.
+func TestRankWithoutEvidenceFallsBackToSightings(t *testing.T) {
+	pinned := true
+	mk := func(id string, seen int, last string) *Learning {
+		return &Learning{ID: id, SeenCount: seen, LastSeen: last}
+	}
+	entries := []*Learning{
+		mk("a00000000001", 1, "2026-10-01T00:00:00.000Z"),
+		mk("b00000000002", 3, "2026-10-02T00:00:00.000Z"),
+		mk("c00000000003", 3, "2026-10-05T00:00:00.000Z"),
+		mk("d00000000004", 2, "2026-10-09T00:00:00.000Z"),
+		mk("e00000000005", 1, "2026-10-01T00:00:00.000Z"),
+	}
+	entries[4].Pinned = &pinned
+	empty := (&EvidenceStore{Version: EvidenceVersion}).Summary("lesson", "x", "r", "agent")
+	for _, e := range entries {
+		e.Evidence = empty
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return Rank(entries[i], entries[j]) })
+	got := []string{}
+	for _, e := range entries {
+		got = append(got, e.ID[:1])
+	}
+	if strings.Join(got, "") != "ecbda" {
+		t.Fatalf("rank without evidence = %v, want pinned, seen desc, last seen desc, id", got)
+	}
+
+	// Supported knowledge still comes first among the unpinned.
+	entries[4].Evidence = EvidenceSummary{Confirmations: 1, EvidenceTypes: []string{"assertion"}} // "a", seen once
+	sort.SliceStable(entries, func(i, j int) bool { return Rank(entries[i], entries[j]) })
+	if entries[1].ID[:1] != "a" {
+		t.Fatalf("a confirmed lesson ranks below unconfirmed ones: %v", entries[1].ID)
 	}
 }

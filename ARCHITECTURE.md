@@ -406,7 +406,10 @@ passes it to a person; it never rejects (a reject purges, a wrong approve is und
 reject`). The instance can append its own rules; agents can opt out (`learning.auto_review: false`).
 
 **Build** compiles accepted learnings into two tiers:
-- **hot**: the top-ranked own lessons (pinned, then most corroborated, then most recent) packed into
+- **hot**: the top-ranked own lessons (pinned; then those with outcome evidence supporting them and no
+  recorded failure or correction, by confirmations and when last confirmed; then most corroborated
+  across naps, then most recent, then id: without evidence, as for every Hermes lesson, the order is
+  pinned, seen count, last seen) packed into
   the seed share of `MEMORY.md` / `USER.md`;
 - **cold**: every visible accepted lesson plus `units/<unit>/knowledge/*.md` and
   `units/group/knowledge/*.md`, shipped as the generated knowledge skill (`names.knowledge_skill`; no size cap; the

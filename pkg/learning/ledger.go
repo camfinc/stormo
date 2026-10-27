@@ -213,8 +213,10 @@ func Promote(e *Learning, scope manifest.Scope) error {
 	return nil
 }
 
-// Rank preserves pins, then supported knowledge and actual validation time. Snapshot
-// timestamps and sighting counts are persistence metadata, never fact freshness.
+// Rank orders the hot tier: pinned; then lessons with outcome evidence that supports them (no
+// failure or correction), by confirmations and when last confirmed; then, as before evidence
+// existed (and for every lesson of an engine that records no outcomes), corroboration across
+// naps (seen count), recency (last seen) and id.
 func Rank(a, b *Learning) bool {
 	if a.IsPinned() != b.IsPinned() {
 		return a.IsPinned()
@@ -228,6 +230,12 @@ func Rank(a, b *Learning) bool {
 	}
 	if as && a.Evidence.ValidatedAt != b.Evidence.ValidatedAt {
 		return a.Evidence.ValidatedAt > b.Evidence.ValidatedAt
+	}
+	if a.SeenCount != b.SeenCount {
+		return a.SeenCount > b.SeenCount
+	}
+	if a.LastSeen != b.LastSeen {
+		return a.LastSeen > b.LastSeen
 	}
 	return a.ID < b.ID
 }
