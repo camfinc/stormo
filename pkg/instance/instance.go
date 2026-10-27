@@ -111,8 +111,9 @@ type CoreLearning struct {
 	// ReviewPrompt is a file, relative to the instance, appended to the built-in review rules.
 	ReviewPrompt string `json:"reviewPrompt,omitempty"`
 	// AutoAccept is Review == "auto" (the field API readers had before Review). AutoAcceptMinSeen:
-	// legacy persistence setting retained for readers; sightings never establish confirmation.
-	// AutoAcceptMinConfirmations requires independent verified task evidence.
+	// a lesson is judged only once seen this many times. AutoAcceptMinConfirmations
+	// (auto_accept_min_confirmations) is deprecated and unused: still read and range-checked so an
+	// instance that set it loads, but outcome evidence is the review model's input, never a rule.
 	AutoAccept                 bool `json:"autoAccept"`
 	AutoAcceptMinSeen          int  `json:"autoAcceptMinSeen"`
 	AutoAcceptMinConfirmations int  `json:"autoAcceptMinConfirmations"`

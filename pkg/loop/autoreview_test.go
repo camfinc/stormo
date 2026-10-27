@@ -51,12 +51,6 @@ func TestReviewRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	evidence := &learning.EvidenceStore{Version: learning.EvidenceVersion}
-	evidence.Ingest(learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: clean.ID, SubjectRevision: learning.LessonRevision(clean), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"})
-	evidence.Ingest(learning.OutcomeEvent{EventID: "skill-check", TaskRoot: "skill-task", Origin: "skill-check", SubjectKind: "skill", SubjectID: shaText("notes/brief"), SubjectRevision: "h1", At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"})
-	if err := learning.SaveEvidence(root, "atlas", evidence); err != nil {
-		t.Fatal(err)
-	}
 	skills := ProposalsDir(root, "atlas")
 	write(t, filepath.Join(skills, "notes/brief/SKILL.md"), "---\nname: brief\n---\nKeep briefs to five lines.\n")
 	write(t, filepath.Join(skills, "notes/brief/.proposal.json"), `{"skill":"notes/brief","napHash":"h1","nap":"n","pii":[]}`)
@@ -89,6 +83,20 @@ func TestReviewRules(t *testing.T) {
 			t.Errorf("missing candidate %s (got %v)", want, got)
 		}
 	}
+	// A Hermes agent records no outcome evidence: what the model reads and the hash its verdict is
+	// kept under are what they were before evidence existed (cached verdicts stay valid).
+	for _, c := range cands {
+		switch c.Kind + ":" + c.Ref {
+		case "lesson:" + clean.ID:
+			if c.Hash != clean.ID || c.Body != "A lesson the agent wrote into its own memory (seen 1 times):\n\n"+clean.Text {
+				t.Errorf("Hermes lesson candidate changed: hash %q body %q", c.Hash, c.Body)
+			}
+		case "skill:notes/brief":
+			if c.Hash != "h1" || strings.Contains(c.Body, "evidence") {
+				t.Errorf("Hermes skill candidate changed: hash %q body %q", c.Hash, c.Body)
+			}
+		}
+	}
 	whyOf := map[string]string{}
 	for _, h := range held {
 		whyOf[h.Kind+":"+h.Ref] = h.Why
@@ -104,11 +112,11 @@ func TestReviewRules(t *testing.T) {
 		}
 	}
 
-	t.Run("too few independent confirmations is held", func(t *testing.T) {
+	t.Run("seen too few times is held", func(t *testing.T) {
 		_, held, _ := ReviewCandidates(inst, "atlas", 2)
 		found := false
 		for _, h := range held {
-			found = found || h.Ref == clean.ID && strings.Contains(h.Why, "1 independent confirmations; need 2")
+			found = found || h.Ref == clean.ID && strings.Contains(h.Why, "seen 1 of 2")
 		}
 		if !found {
 			t.Error("a lesson seen once was not held at min_seen 2")
@@ -163,83 +171,66 @@ func TestReviewRules(t *testing.T) {
 	})
 }
 
-func TestEvidenceReviewRevisionsAndNegativeReplay(t *testing.T) {
+// Outcome evidence is what the model reads beside a change, never a rule: a lesson seen enough
+// times reaches the model with or without confirmations, and one with recorded failures still
+// reaches it, marked as such. Its verdict is keyed to the evidence, so new evidence asks again.
+func TestEvidenceIsReviewInputNotGate(t *testing.T) {
+	withLearningEngine(t)
 	inst := reviewInstance(t)
 	root := inst.Root
 	ledger := []*learning.Learning{}
 	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check the task assertion before claiming success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
-	learning.SaveLedger(root, "atlas", ledger)
-	cands, held, err := ReviewCandidates(inst, "atlas", 1)
-	if err != nil {
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 0 || len(held) != 1 {
-		t.Fatalf("unsupported note eligible %v %v", cands, held)
+	only := func(min int) Candidate {
+		t.Helper()
+		cands, held, err := ReviewCandidates(inst, "atlas", min)
+		if err != nil || len(cands) != 1 || len(held) != 0 {
+			t.Fatalf("candidates %v held %v: %v", cands, held, err)
+		}
+		return cands[0]
 	}
+	none := only(1)
+	if !strings.Contains(none.Evidence, "No outcome evidence") || strings.Contains(none.Body, "evidence") || none.Hash == e.ID {
+		t.Fatalf("an engine that records outcomes: evidence %q body %q hash %q", none.Evidence, none.Body, none.Hash)
+	}
+
 	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
 	if err := learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{event}); err != nil {
 		t.Fatal(err)
 	}
-	cands, _, err = ReviewCandidates(inst, "atlas", 1)
-	if err != nil || len(cands) != 1 {
-		t.Fatalf("confirmed note unavailable %v %v", cands, err)
+	confirmed := only(1)
+	if confirmed.Hash == none.Hash || !strings.Contains(confirmed.Evidence, "Independent confirmations (a task check or authorized feedback found the result right): 1") || strings.Contains(confirmed.Evidence, "WARNING") {
+		t.Fatalf("confirmed: %+v", confirmed)
 	}
-	old := cands[0]
-	second := event
-	second.EventID = "second"
-	second.TaskRoot = "task2"
-	second.Origin = "check2"
-	learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{second})
-	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
-	if cands[0].Hash == old.Hash {
-		t.Fatal("evidence did not invalidate verdict hash")
-	}
-	negative := event
-	negative.EventID = "negative"
-	negative.TaskRoot = "failed-task"
-	negative.Origin = "failed-check"
-	negative.TaskOutcome = "failed"
-	learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{negative, negative})
-	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
-	if len(cands) != 0 {
-		t.Fatal("negative evidence did not suspend auto eligibility")
-	}
-	if err := Approve(inst, "atlas", old, Decider{By: "test"}); err == nil {
-		t.Fatal("cached approval accepted after contradiction")
-	}
-	e.Text = "Revised procedure."
-	learning.SaveLedger(root, "atlas", ledger)
-	cands, _, _ = ReviewCandidates(inst, "atlas", 1)
-	if len(cands) != 0 {
-		t.Fatal("revised text inherited confirmations")
-	}
-}
 
-func TestApprovalRechecksConfirmationThreshold(t *testing.T) {
-	inst := reviewInstance(t)
-	ledger := []*learning.Learning{}
-	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check the quote currency before presenting totals.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
-	if err := learning.SaveLedger(inst.Root, "atlas", ledger); err != nil {
+	negative := event
+	negative.EventID, negative.TaskRoot, negative.Origin, negative.TaskOutcome = "negative", "failed-task", "failed-check", "failed"
+	if err := learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{negative, negative}); err != nil {
 		t.Fatal(err)
 	}
-	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
-	if err := learning.MergeEvidence(inst.Root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+	failed := only(1)
+	if failed.Hash == confirmed.Hash || !strings.HasPrefix(failed.Evidence, "WARNING: this exact version has 1 recorded failure(s) and 0 correction(s)") {
+		t.Fatalf("a recorded failure is not presented as one: %+v", failed)
+	}
+	if err := Approve(inst, "atlas", confirmed, Decider{By: "test"}); err == nil {
+		t.Fatal("a verdict given before the failure was recorded was applied")
+	}
+
+	// The seen-count rule still decides what reaches the model; confirmations do not bypass it.
+	if _, held, _ := ReviewCandidates(inst, "atlas", 2); len(held) != 1 || !strings.Contains(held[0].Why, "seen 1 of 2") {
+		t.Fatalf("held at min_seen 2: %v", held)
+	}
+
+	e.Text = "Revised procedure."
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
 		t.Fatal(err)
 	}
-	inst.CoreLearning.AutoAcceptMinConfirmations = 1
-	cands, _, err := ReviewCandidates(inst, "atlas", 1)
-	if err != nil || len(cands) != 1 {
-		t.Fatalf("candidate at threshold one: %v %v", cands, err)
+	if revised := only(1); !strings.Contains(revised.Evidence, "No outcome evidence") {
+		t.Fatalf("revised text inherited the old version's evidence: %q", revised.Evidence)
 	}
-	inst.CoreLearning.AutoAcceptMinConfirmations = 2
-	if err := Approve(inst, "atlas", cands[0], Decider{By: "test"}); err == nil {
-		t.Fatal("approval applied after confirmation threshold increased")
-	}
-	after, err := learning.LoadLedger(inst.Root, "atlas")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after[0].Status != learning.Proposed {
-		t.Fatal("refused approval changed the decision")
+	if err := Approve(inst, "atlas", failed, Decider{By: "test"}); err == nil {
+		t.Fatal("a verdict on the old text was applied to the revised one")
 	}
 }

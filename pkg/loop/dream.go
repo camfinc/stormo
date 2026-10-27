@@ -168,6 +168,9 @@ func deref(s *string) string {
 	return *s
 }
 
+// engineFor is an agent's engine (engines.Get; tests give it a fake engine).
+var engineFor = engines.Get
+
 // Dream folds an agent's unseen naps into its ledger and proposals.
 func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, error) {
 	root := inst.Root
@@ -175,7 +178,7 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	if err != nil {
 		return nil, err
 	}
-	eng, err := engines.Get(agent.Engine.Kind, inst)
+	eng, err := engineFor(agent.Engine.Kind, inst)
 	if err != nil {
 		return nil, err
 	}

@@ -330,7 +330,7 @@ func TestReviewApprovesPassesAndRestartsOnlyIdleRunningAgents(t *testing.T) {
 	d.Restart = func(id string) error { restarted = append(restarted, id); return nil }
 
 	// manual: nothing asked, nothing approved.
-	f.inst.CoreLearning.Review, f.inst.CoreLearning.AutoAcceptMinConfirmations = instance.ReviewManual, 2
+	f.inst.CoreLearning.Review, f.inst.CoreLearning.AutoAcceptMinSeen = instance.ReviewManual, 2
 	c, err := f.l.RunCycle("manual", nil, false)
 	if err != nil {
 		t.Fatal(err)

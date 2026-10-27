@@ -137,7 +137,7 @@ private struct LessonRow: View {
             HStack(spacing: 6) {
                 Tag(lesson.kind)
                 Tag(lesson.scope)
-                Tag("\(lesson.seenCount) snapshot sightings")
+                if lesson.seenCount > 1 { Tag("seen \(lesson.seenCount)×") }
                 ForEach(lesson.pii, id: \.self) { Tag("PII: \($0)", tint: .red) }
                 Spacer()
                 if lesson.status == "proposed" {
@@ -251,12 +251,8 @@ private struct ReviewModeNote: View {
 
     var body: some View {
         if view.review == "manual" || (view.review == nil && !view.autoAccept) {
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Automatic review is off (core.learning.review: manual): every proposal waits for you.", systemImage: "person")
-                    .font(.callout).foregroundStyle(.secondary)
-                Text("Minimum independent confirmations: \(view.autoAcceptMinConfirmations.map(String.init) ?? "unknown (older core)"). Snapshot sightings are persistence only.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Label("Automatic review is off (core.learning.review: manual): every proposal waits for you.", systemImage: "person")
+                .font(.callout).foregroundStyle(.secondary)
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Label("Automatic review is on: after each learning cycle a model approves what is obviously safe and passes the rest to you. It never rejects. What is here waits for you.", systemImage: "checkmark.shield")
@@ -267,7 +263,7 @@ private struct ReviewModeNote: View {
     }
 
     private var details: String {
-        var parts = ["Minimum independent confirmations: \(view.autoAcceptMinConfirmations.map(String.init) ?? "unknown (older core)")", "Snapshot sightings are persistence only", "Rules in code always keep client data, people's profiles, scripts and permission changes for you"]
+        var parts = ["Rules in code always keep client data, people's profiles, scripts and permission changes for you", "the model also reads any outcome evidence the agent's engine recorded"]
         if let c = view.reviewConnection { parts.append("model: \(view.reviewModel ?? "the first \(c) lists")") }
         if let p = view.reviewPrompt { parts.append("your rules: \(p)") }
         if view.autoRestart { parts.append("idle agents restart to apply") }

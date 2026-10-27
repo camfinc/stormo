@@ -126,16 +126,6 @@ func TestAutoAcceptableOnlyWhatNeedsNoJudgement(t *testing.T) {
 	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
 		t.Fatal(err)
 	}
-	evidence := &learning.EvidenceStore{Version: learning.EvidenceVersion}
-	for _, e := range ledger {
-		for i := 0; i < e.SeenCount; i++ {
-			event := learning.OutcomeEvent{EventID: fmt.Sprintf("%s-%d", e.ID, i), TaskRoot: fmt.Sprintf("task-%d", i), Origin: fmt.Sprintf("check-%d", i), SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
-			evidence.Ingest(event)
-		}
-	}
-	if err := learning.SaveEvidence(root, "atlas", evidence); err != nil {
-		t.Fatal(err)
-	}
 	acceptable := func(minSeen int) []string {
 		ids := []string{}
 		after, _ := learning.LoadLedger(root, "atlas")

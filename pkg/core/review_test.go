@@ -191,10 +191,14 @@ func TestReviewPageAndDecisions(t *testing.T) {
 	}
 }
 
-func TestReviewViewUsesConfirmationThreshold(t *testing.T) {
+// The review page shows a lesson's outcome evidence; confirmations decide nothing there
+// (core.learning.auto_accept_min_confirmations is read but unused), and a lesson with none is as
+// auto-acceptable as before evidence existed.
+func TestReviewViewShowsEvidenceWithoutGating(t *testing.T) {
 	_, inst := fixture(t)
 	ledger := []*learning.Learning{}
 	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check task assertions before reporting success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	bare, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Reports are due on Mondays.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
 	if err := learning.SaveLedger(inst.Root, "atlas", ledger); err != nil {
 		t.Fatal(err)
 	}
@@ -203,34 +207,25 @@ func TestReviewViewUsesConfirmationThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: testDB(t), DigestDir: t.TempDir()})
-	for _, threshold := range []int{2, 1} {
-		inst.CoreLearning.AutoAcceptMinConfirmations = threshold
-		view, err := learner.review(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var lesson *ReviewLesson
-		for _, agent := range view.Agents {
-			if agent.ID == "atlas" {
-				for i := range agent.Lessons {
-					if agent.Lessons[i].ID == e.ID {
-						copy := agent.Lessons[i]
-						lesson = &copy
-					}
-				}
+	inst.CoreLearning.AutoAcceptMinConfirmations = 5
+	view, err := learner.review(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lessons := map[string]ReviewLesson{}
+	for _, agent := range view.Agents {
+		if agent.ID == "atlas" {
+			for _, l := range agent.Lessons {
+				lessons[l.ID] = l
 			}
 		}
-		if lesson == nil {
-			t.Fatal("lesson missing from review")
+	}
+	for _, id := range []string{e.ID, bare.ID} {
+		if l, ok := lessons[id]; !ok || !l.AutoAcceptable || l.Held != "" {
+			t.Errorf("lesson %s: %+v", id, l)
 		}
-		if lesson.AutoAcceptable != (threshold == 1) {
-			t.Fatalf("threshold %d autoAcceptable=%v", threshold, lesson.AutoAcceptable)
-		}
-		if threshold == 2 && lesson.Held == "" {
-			t.Fatal("insufficient evidence not held for review")
-		}
-		if threshold == 1 && lesson.Held != "" {
-			t.Fatalf("supported lesson still held: %s", lesson.Held)
-		}
+	}
+	if lessons[e.ID].Evidence.Confirmations != 1 || lessons[bare.ID].Evidence.Confirmations != 0 {
+		t.Errorf("evidence not shown: %+v %+v", lessons[e.ID].Evidence, lessons[bare.ID].Evidence)
 	}
 }

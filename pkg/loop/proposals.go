@@ -13,7 +13,6 @@ import (
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/config"
 	"github.com/camfinc/stormo/pkg/engine"
-	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -196,7 +195,7 @@ func DecideSetting(inst *instance.Instance, agentID, key, decision string, who D
 		if err != nil {
 			return nil, err
 		}
-		eng, err := engines.Get(agent.Engine.Kind, inst)
+		eng, err := engineFor(agent.Engine.Kind, inst)
 		if err != nil {
 			return nil, err
 		}

@@ -25,7 +25,6 @@ office:
 # every night. Without `at` it never starts on its own; `stormo core learn` still runs one.
 # core:
 #   learning:
-#     auto_accept_min_confirmations: 1 # independent verified task results; sightings never confirm
 #     at: "03:00"
 #     timezone: America/New_York
 #     review_prompt: review/rules.md   # your rules for the automatic review, appended to the built-in ones

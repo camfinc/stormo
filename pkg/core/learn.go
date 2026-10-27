@@ -407,7 +407,7 @@ func (l *Learner) autoReview(id string, r *AgentRun) {
 		r.ReviewNote = "off for this agent (learning.auto_review)"
 		return
 	}
-	cands, held, err := l.o.Deps.Candidates(id, cfg.AutoAcceptMinConfirmations)
+	cands, held, err := l.o.Deps.Candidates(id, cfg.AutoAcceptMinSeen)
 	if err != nil {
 		r.ReviewNote = "rules: " + clip(err.Error(), 200)
 		return

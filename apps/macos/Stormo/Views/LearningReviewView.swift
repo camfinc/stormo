@@ -198,20 +198,23 @@ private struct LearningCandidateRow: View {
     }
 }
 
+/// What the agent's runtime recorded about a proposal's exact version, when it recorded anything
+/// (an engine that records no outcomes, like Hermes, shows nothing). The review's model reads the
+/// same counts beside the change; they decide nothing on their own.
 struct LearningEvidenceNote: View {
     let evidence: LearningEvidence?
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if let evidence {
+        if let evidence, !evidence.evidenceTypes.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if evidence.failures > 0 || evidence.corrections > 0 {
+                    Label("Recorded \(evidence.failures) failures and \(evidence.corrections) corrections for this version", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
                 Text("\(evidence.attempts) attempts · \(evidence.confirmations) verified confirmations · \(evidence.failures) failures · \(evidence.corrections) corrections")
-                if evidence.unknown { Text("Evidence unknown; snapshot sightings do not confirm this lesson.") }
-                if !evidence.evidenceTypes.isEmpty { Text("Sources: " + evidence.evidenceTypes.joined(separator: ", ")) }
+                Text("Sources: " + evidence.evidenceTypes.joined(separator: ", "))
                 if let at = evidence.validatedAt { Text("Last validated: " + at) }
-                DisclosureGroup("Evidence revision") { Text(evidence.revision).textSelection(.enabled) }
-            } else {
-                Text("Evidence unknown; snapshot sightings do not confirm this lesson.")
-            }
-        }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

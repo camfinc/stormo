@@ -21,3 +21,13 @@ test('mutation disables new controls; background budgets are labeled home-wide',
  assert.match(result, /data-learning-action="retry_job"[^>]+disabled/);
  assert.match(result, /remain proposals/);
 });
+test('outcome evidence shows only what was recorded, failures marked', () => {
+  assert.equal(vm.runInContext(`outcomeEvidence({revision:'r',unknown:true,attempts:0,confirmations:0,failures:0,corrections:0,evidenceTypes:[]})`, context), '');
+  assert.equal(vm.runInContext(`outcomeEvidence(undefined)`, context), '');
+  const failed = vm.runInContext(`outcomeEvidence({unknown:false,attempts:2,confirmations:1,failures:1,corrections:0,evidenceTypes:['assertion']})`, context);
+  assert.match(failed, /rv-tag warn/);
+  assert.match(failed, /1 verified confirmations · 1 failures · 0 corrections/);
+  const lesson = vm.runInContext(`lessonHTML({id:'a'}, {id:'l',kind:'memory',scope:'agent',text:'t',pii:[],status:'proposed',seenCount:3,lastSeen:'2026-10-26T10:00:00Z',evidence:{evidenceTypes:[]}})`, context);
+  assert.match(lesson, /seen 3×/);
+  assert.doesNotMatch(lesson, /evidence|confirmations/);
+});

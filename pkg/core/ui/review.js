@@ -62,11 +62,9 @@ function lessonHTML(a, l) {
   const tags = [
     `<span class="rv-tag">${esc(l.kind === "user" ? "about a person" : "lesson")}</span>`,
     `<span class="rv-tag">${esc(l.scope)}</span>`,
-    `<span class="rv-tag">${l.seenCount} snapshot sightings</span>`,
-    `<span class="rv-tag">last snapshot ${esc(ago(l.lastSeen))}</span>`,
-    l.evidence?.unknown !== false
-      ? `<span class="rv-tag">outcome evidence unknown</span>`
-      : `<span class="rv-tag">${esc(l.evidence.confirmations)} independent confirmations · ${esc(l.evidence.failures)} failures · ${esc(l.evidence.corrections)} corrections</span>`,
+    `<span class="rv-tag">seen ${l.seenCount}×</span>`,
+    `<span class="rv-tag">last ${esc(ago(l.lastSeen))}</span>`,
+    outcomeEvidence(l.evidence),
     ...l.pii.map((p) => `<span class="rv-tag warn">redacted ${esc(p)}</span>`),
     l.status === "accepted"
       ? `<span class="rv-tag ok"${l.note ? ` title="${esc(l.note)}"` : ""}>accepted${l.note?.startsWith("approved by") ? " by the review" : l.note?.includes("automatically") ? " automatically" : ""}</span>`
@@ -99,7 +97,7 @@ function skillHTML(a, s) {
       <button class="btn yes" data-a="${esc(a.id)}" data-k="${esc(s.skill)}" data-d="accept">Accept</button>
       <button class="btn no" data-a="${esc(a.id)}" data-k="${esc(s.skill)}" data-d="reject">Reject</button>
     </div>
-    <div class="rv-tags">${s.pii.map((p) => `<span class="rv-tag warn">contains ${esc(p)}</span>`).join("")}<span class="rv-tag">${s.files.length} file${s.files.length === 1 ? "" : "s"}</span>${s.evidence ? outcomeEvidence(s.evidence) : ""}${reviewTags(s)}</div>
+    <div class="rv-tags">${s.pii.map((p) => `<span class="rv-tag warn">contains ${esc(p)}</span>`).join("")}<span class="rv-tag">${s.files.length} file${s.files.length === 1 ? "" : "s"}</span>${outcomeEvidence(s.evidence)}${reviewTags(s)}</div>
     <details class="files"><summary>Show files</summary>${files}</details>
   </div>`;
 }
@@ -243,9 +241,12 @@ function learningPanel(id) {
   return [...app.querySelectorAll("[data-learning-agent]")].find((p) => p.dataset.learningAgent === id);
 }
 
+// What the agent's runtime recorded about this exact version, when it recorded anything (an engine
+// that records no outcomes shows nothing). The review's model reads the same counts; they decide nothing.
 function outcomeEvidence(e) {
-  if (!e) return `<span class="rv-tag">outcome evidence unknown</span>`;
-  return `<span class="rv-tag">${esc(e.confirmations ?? 0)} independent confirmations · ${esc(e.failures ?? 0)} failures · ${esc(e.corrections ?? 0)} corrections</span>${e.unknown ? `<span class="rv-tag">outcome evidence unknown</span>` : ""}`;
+  if (!e?.evidenceTypes?.length) return "";
+  const negative = (e.failures ?? 0) > 0 || (e.corrections ?? 0) > 0;
+  return `<span class="rv-tag${negative ? " warn" : ""}" title="${esc(e.evidenceTypes.join(", "))}">${esc(e.confirmations ?? 0)} verified confirmations · ${esc(e.failures ?? 0)} failures · ${esc(e.corrections ?? 0)} corrections</span>`;
 }
 
 function eventHTML(id, e, status) {

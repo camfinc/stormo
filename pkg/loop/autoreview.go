@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/build"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -38,6 +39,10 @@ type Candidate struct {
 	Title string `json:"title"`
 	// Body is what the model reads: scrubbed text, the current version beside the proposed one.
 	Body string `json:"body"`
+	// Evidence is what the agent's runtime recorded about this exact version (counts only, no
+	// source text), given to the model beside the change; empty when the engine records no
+	// outcomes and none are held for it (a Hermes agent: its candidates read as before).
+	Evidence string `json:"evidence,omitempty"`
 }
 
 // Held is a proposal the rules keep for a person, and why.
@@ -54,11 +59,20 @@ const maxSkillReview = 48 << 10
 // reads. Anything else (a script, a binary) runs or hides something and waits for a person.
 var skillTextExt = []string{".md", ".markdown", ".txt"}
 
-// ReviewCandidates sorts agent's open proposals by the rules.
-func ReviewCandidates(inst *instance.Instance, agentID string, minConfirmations int) ([]Candidate, []Held, error) {
+// ReviewCandidates sorts agent's open proposals by the rules. A lesson reaches the model once
+// seen minSeen times (core.learning.auto_accept_min_seen); a skill when it is all text the agent
+// reads, small enough, not flagged and not stale. Outcome evidence never decides what reaches the
+// model: it is what the model reads beside the change (Candidate.Evidence), to judge whether the
+// change is obviously safe and useful.
+func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]Candidate, []Held, error) {
 	root := inst.Root
 	cands, held := []Candidate{}, []Held{}
 
+	agent, err := manifest.Load(root, agentID, inst.Names.Secret)
+	if err != nil {
+		return nil, nil, err
+	}
+	records := recordsOutcomes(inst, agent)
 	ledger, err := learning.LoadLedger(root, agentID)
 	if err != nil {
 		return nil, nil, err
@@ -74,11 +88,13 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minConfirmations 
 			held = append(held, Held{KindLesson, e.ID, "the scrubber flagged " + strings.Join(e.PII, ", ")})
 		case e.Scope != manifest.ScopeAgent:
 			held = append(held, Held{KindLesson, e.ID, "shared beyond the agent (" + string(e.Scope) + ")"})
-		case !e.Evidence.AutoEligible(minConfirmations):
-			held = append(held, Held{KindLesson, e.ID, fmt.Sprintf("%d independent confirmations; need %d, with no failures or corrections (snapshot sightings are not evidence)", e.Evidence.Confirmations, minConfirmations)})
+		case e.SeenCount < minSeen:
+			held = append(held, Held{KindLesson, e.ID, fmt.Sprintf("seen %d of %d times", e.SeenCount, minSeen)})
 		default:
-			cands = append(cands, Candidate{Kind: KindLesson, Ref: e.ID, Hash: shaText("evidence-review-v1\n" + learning.LessonRevision(e) + "\n" + e.Evidence.Revision), Title: "lesson " + e.ID,
-				Body: fmt.Sprintf("A lesson the agent wrote into its own memory (snapshot sightings: %d). Evidence summary (bounded aggregate, no source text): %+v\n\n%s", e.SeenCount, e.Evidence, e.Text)})
+			c := Candidate{Kind: KindLesson, Ref: e.ID, Hash: e.ID, Title: "lesson " + e.ID,
+				Body: fmt.Sprintf("A lesson the agent wrote into its own memory (seen %d times):\n\n%s", e.SeenCount, e.Text)}
+			withEvidence(&c, learning.LessonRevision(e), e.Evidence, records)
+			cands = append(cands, c)
 		}
 	}
 
@@ -92,25 +108,14 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minConfirmations 
 	}
 	for _, p := range skills {
 		c, why := skillCandidate(root, agentID, p)
-		summary := evidence.Summary("skill", shaText(p.Skill), p.NapHash, "agent")
-		if why == "" && !summary.AutoEligible(minConfirmations) {
-			why = fmt.Sprintf("%d independent confirmations; need %d, with no failures or corrections (views are not evidence)", summary.Confirmations, minConfirmations)
-		}
-		if why == "" {
-			c.Hash = shaText("evidence-review-v1\n" + p.NapHash + "\n" + summary.Revision)
-			c.Body += fmt.Sprintf("\nEvidence summary (bounded aggregate, no source text): %+v", summary)
-		}
 		if why != "" {
 			held = append(held, Held{KindSkill, p.Skill, why})
-		} else {
-			cands = append(cands, c)
+			continue
 		}
+		withEvidence(&c, p.NapHash, evidence.Summary("skill", shaText(p.Skill), p.NapHash, "agent"), records)
+		cands = append(cands, c)
 	}
 
-	agent, err := manifest.Load(root, agentID, inst.Names.Secret)
-	if err != nil {
-		return nil, nil, err
-	}
 	if list, meta, err := ReadSchedulesProposal(root, agentID); err != nil {
 		return nil, nil, err
 	} else if meta != nil {
@@ -138,6 +143,47 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minConfirmations 
 		}
 	}
 	return cands, held, nil
+}
+
+// recordsOutcomes: agent's engine exports outcome evidence (engine.OutcomeEvidence).
+func recordsOutcomes(inst *instance.Instance, agent *manifest.Agent) bool {
+	eng, err := engineFor(agent.Engine.Kind, inst)
+	if err != nil {
+		return false
+	}
+	_, ok := eng.(engine.OutcomeEvidence)
+	return ok
+}
+
+// withEvidence gives the model what the runtime recorded about the candidate's exact version
+// (revision) and keys its verdict to that record too: a new confirmation, failure or correction
+// asks the model again. An engine that records no outcomes, with none held for the candidate,
+// adds nothing, so its candidates and their cached verdicts stay as they were.
+func withEvidence(c *Candidate, revision string, s learning.EvidenceSummary, records bool) {
+	if !records && len(s.EvidenceTypes) == 0 {
+		return
+	}
+	c.Hash = shaText("evidence-review-v1\n" + revision + "\n" + s.Revision)
+	c.Evidence = EvidenceText(s)
+}
+
+// EvidenceText is an evidence summary as the review's model reads it.
+func EvidenceText(s learning.EvidenceSummary) string {
+	var b strings.Builder
+	if s.Failures > 0 || s.Corrections > 0 {
+		fmt.Fprintf(&b, "WARNING: this exact version has %d recorded failure(s) and %d correction(s): at least once it did not work as written. Weigh that before approving.\n", s.Failures, s.Corrections)
+	}
+	if len(s.EvidenceTypes) == 0 {
+		b.WriteString("No outcome evidence is recorded for this version yet. That alone is no reason to pass it to a person: judge the change itself.\n")
+	} else {
+		fmt.Fprintf(&b, "Independent confirmations (a task check or authorized feedback found the result right): %d\n", s.Confirmations)
+		fmt.Fprintf(&b, "Failures: %d\nCorrections: %d\nTasks it took part in: %d\nKinds of evidence: %s\n", s.Failures, s.Corrections, s.Attempts, strings.Join(s.EvidenceTypes, ", "))
+		if s.ValidatedAt != "" {
+			fmt.Fprintf(&b, "Last confirmed: %s\n", s.ValidatedAt)
+		}
+	}
+	b.WriteString("Views, snapshot sightings, the model's own claims and a command that merely exited cleanly are not evidence that it works.")
+	return b.String()
 }
 
 func orNone(s string) string {
@@ -268,7 +314,7 @@ func schedulesCandidate(agent *manifest.Agent, list []manifest.Schedule, meta *S
 // Approve applies an approval of the review to one candidate, recording who approved it and why.
 // It refuses when the proposal changed since it was judged (its hash no longer matches).
 func Approve(inst *instance.Instance, agentID string, c Candidate, who Decider) error {
-	cands, _, err := ReviewCandidates(inst, agentID, max(1, inst.CoreLearning.AutoAcceptMinConfirmations))
+	cands, _, err := ReviewCandidates(inst, agentID, 1)
 	if err != nil {
 		return err
 	}

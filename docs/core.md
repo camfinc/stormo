@@ -502,12 +502,19 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   the old `auto_accept: false` means manual): after the dream, a first pass over the agent's open
   proposals (lessons, skills, runtime schedules and settings). Rules in code
   (`loop.ReviewCandidates`) hold for a person, without asking any model, what a model must not
-  decide: user-profile lessons, anything PII-flagged, lessons shared beyond the agent, lessons or skills lacking
-  `auto_accept_min_confirmations` independent confirmations (default 1), any matching failure or
-  correction, skills holding scripts or binaries (or stale, or over 48 KB),
+  decide: user-profile lessons, anything PII-flagged, lessons shared beyond the agent or seen fewer
+  than `auto_accept_min_seen` times, skills holding scripts or binaries (or stale, or over 48 KB),
   schedules with a script (proposed with them or named), a monitor, another model, an explicit
   delivery target or a removed repo job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
-  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. It never
+  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. Outcome
+  evidence never decides what reaches the model; the model judges whether a change is obvious. When
+  the agent's engine records outcomes (`engine.OutcomeEvidence`) or any are held for the proposal,
+  the model also reads, after the change's delimiters and marked as Stormo's count, the evidence
+  summary for its exact version (`loop.EvidenceText`): independent confirmations, failures,
+  corrections, attempts, evidence kinds and when it was last confirmed, a `WARNING` line first when
+  any failure or correction is recorded, and that views, snapshot sightings, model claims and a
+  clean exit are not evidence. An engine that records none (Hermes) adds nothing: its proposals
+  read, and hash, as they did before evidence existed. It never
   rejects: a reject purges what the agent learned, and a wrong approval is undone with `stormo learn
   reject`. Anything but a well-formed approve is a pass to a person.
   - Rules: the built-in prompt (`pkg/core/review_prompt.md`, embedded), then the instance's own
@@ -518,8 +525,10 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
     the plan lists; required for an API connection, which is called with the instance's shared
     key).
   - Verdicts are kept in `core.db` (`review_verdicts`) by agent, proposal, content hash and rules
-    hash: lesson and skill hashes also include their exact revision and evidence summary revision,
-    so new contradictory evidence invalidates a cached approval. A rules change asks again. At most 40
+    hash: an unchanged proposal is not asked about again, and a rules change asks again. A proposal
+    shown with evidence is hashed with its exact revision and its evidence summary's revision, so
+    new evidence (a failure, a correction, a confirmation) asks again and an approval given before
+    it is refused at apply time. At most 40
     model calls per agent per cycle; a model out of reach leaves everything for a person and says
     so in the run.
   - An approval is applied like a person's (`loop.Approve`, working tree only) and records who and
@@ -696,6 +705,6 @@ which another session owns right now:
 
 `agents/<id>/learnings/evidence-v1.json` is a separate versioned, metadata-only store (0600). Existing ledger lines and usage counts keep their formats. Snapshot sightings and timestamps describe persistence; they no longer provide confirmation or fact freshness. Existing accepted lessons remain accepted when evidence is absent, and legacy evidence is reported as unknown. Pins remain first in retention ranking; supported knowledge and actual validation time follow, with a deterministic ID fallback.
 
-Only authorized feedback or task assertions can confirm a result. Views, model claims, snapshots, and a successful process exit cannot. Events are attributed to an exact subject revision and deduplicated by task and underlying source; another snapshot cannot manufacture independent support. Review exposes bounded counts and evidence types rather than source text. The legacy `auto_accept_min_seen` setting remains readable for compatibility; the separate `auto_accept_min_confirmations` controls evidence eligibility.
+Only authorized feedback or task assertions can confirm a result. Views, model claims, snapshots, and a successful process exit cannot. Events are attributed to an exact subject revision and deduplicated by task and underlying source; another snapshot cannot manufacture independent support. Review exposes bounded counts and evidence types rather than source text. Evidence is the review model's input, never a rule (§6 *Review*): `auto_accept_min_seen` still decides when a lesson reaches the model, and `auto_accept_min_confirmations` is read and range-checked for compatibility but unused.
 
 Missing stores initialize at version 1. Unsupported versions are refused without rewriting. Replayed identical events are no-ops; conflicting event IDs and stores over 4,096 events are refused. Updates are locked and atomically replaced. No implicit eviction or conversion from historical usage occurs. Broad deployment still requires a retention/archival policy and measured quality/cost gates; deterministic regression tests do not establish live learning quality.

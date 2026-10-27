@@ -2,20 +2,18 @@ package loop
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/learning"
-	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 func TestDreamOutcomeExportReplayAndSkillReview(t *testing.T) {
+	eng := withLearningEngine(t)
 	inst := reviewInstance(t)
 	root := inst.Root
-	write(t, filepath.Join(manifest.AgentDir(root, "atlas"), "agent.yaml"), "format: 1\nid: atlas\nname: Atlas\nunit: sales\nrole: test\nengine:\n  kind: needletail\n  version: 0.1.0\nmodel:\n  name: test\n")
 	store := FsStore{Root: t.TempDir()}
 	skillPath := "skills/notes/check/SKILL.md"
 	skillBody := []byte("---\nname: check\ndescription: Check results\n---\nCheck the task assertion.\n")
@@ -28,7 +26,7 @@ func TestDreamOutcomeExportReplayAndSkillReview(t *testing.T) {
 	invalid := event
 	invalid.EventID = "a-private-source-name"
 	invalid.Origin = "unflagged-private-identity"
-	outcomePath := "state/needletail/outcomes-export-v1.json"
+	outcomePath := eng.OutcomePath()
 	putNap := func(id string, events []learning.OutcomeEvent) {
 		t.Helper()
 		body, _ := json.Marshal(learning.EvidenceStore{Version: 1, Events: events})
@@ -37,7 +35,7 @@ func TestDreamOutcomeExportReplayAndSkillReview(t *testing.T) {
 			t.Fatal(err)
 		}
 		store.Put(BlobKey("atlas", engine.Learning, skillSHA), skillBody)
-		nap := Nap{ID: id, Agent: "atlas", Unit: "sales", Engine: "needletail", Instance: "instance", TakenAt: "2026-10-26T10:00:00Z", Files: []NapFile{{Path: outcomePath, Class: engine.Learning, Sha256: sha, Size: len(body)}, {Path: skillPath, Class: engine.Learning, Sha256: skillSHA, Size: len(skillBody)}}}
+		nap := Nap{ID: id, Agent: "atlas", Unit: "sales", Engine: "hermes", Instance: "instance", TakenAt: "2026-10-26T10:00:00Z", Files: []NapFile{{Path: outcomePath, Class: engine.Learning, Sha256: sha, Size: len(body)}, {Path: skillPath, Class: engine.Learning, Sha256: skillSHA, Size: len(skillBody)}}}
 		b, _ := json.Marshal(nap)
 		if err := store.Put(NapKey("atlas", id), b); err != nil {
 			t.Fatal(err)
@@ -58,7 +56,7 @@ func TestDreamOutcomeExportReplayAndSkillReview(t *testing.T) {
 	if err != nil || len(cands) != 1 || cands[0].Kind != KindSkill {
 		t.Fatalf("skill outcome disconnected: %v %v", cands, err)
 	}
-	if strings.Contains(cands[0].Body, "private-client") || strings.Contains(cands[0].Body, event.TaskRoot) {
+	if c := cands[0]; strings.Contains(c.Body+c.Evidence, "private-client") || strings.Contains(c.Body+c.Evidence, event.TaskRoot) || !strings.Contains(c.Evidence, "Independent confirmations (a task check or authorized feedback found the result right): 1") {
 		t.Fatal("review summary exposes provenance")
 	}
 	old := cands[0]
@@ -80,8 +78,8 @@ func TestDreamOutcomeExportReplayAndSkillReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	cands, held, err := ReviewCandidates(inst, "atlas", 1)
-	if err != nil || len(cands) != 0 || len(held) != 1 {
-		t.Fatalf("contradiction failed to suspend skill %v %v %v", cands, held, err)
+	if err != nil || len(cands) != 1 || len(held) != 0 || !strings.HasPrefix(cands[0].Evidence, "WARNING: this exact version has 1 recorded failure(s)") {
+		t.Fatalf("a contradicted skill is not presented to the model as one: %v %v %v", cands, held, err)
 	}
 	if err := Approve(inst, "atlas", old, Decider{By: "test"}); err == nil {
 		t.Fatal("stale cached skill approval applied")

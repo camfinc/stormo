@@ -172,7 +172,7 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 				continue
 			}
 			r := ReviewLesson{ID: e.ID, Kind: string(e.Kind), Scope: string(e.Scope), Text: e.Text, PII: e.PII, Status: string(e.Status),
-				Evidence: e.Evidence, SeenCount: e.SeenCount, FirstSeen: e.FirstSeen, LastSeen: e.LastSeen, AutoAcceptable: loop.AutoAcceptable(e, cfg.AutoAcceptMinConfirmations)}
+				Evidence: e.Evidence, SeenCount: e.SeenCount, FirstSeen: e.FirstSeen, LastSeen: e.LastSeen, AutoAcceptable: loop.AutoAcceptable(e, 1)}
 			if r.PII == nil {
 				r.PII = []string{}
 			}
@@ -230,7 +230,7 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 // (a verdict on older content is not shown) and why the rules hold the others for a person.
 func (l *Learner) reviewNotes(agent string) (map[string]*ReviewAI, map[string]string) {
 	ai, held := map[string]*ReviewAI{}, map[string]string{}
-	cands, hs, err := loop.ReviewCandidates(l.o.Inst, agent, l.o.Inst.CoreLearning.AutoAcceptMinConfirmations)
+	cands, hs, err := loop.ReviewCandidates(l.o.Inst, agent, l.o.Inst.CoreLearning.AutoAcceptMinSeen)
 	if err != nil {
 		return ai, held
 	}

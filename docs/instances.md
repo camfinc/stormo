@@ -100,8 +100,8 @@ core:
     review_connection: chatgpt    # the connection the review asks (default: the default ChatGPT sign-in)
     review_model: gpt-5.6-luna    # default for a ChatGPT connection: the first model its plan lists; required for an API one
     review_prompt: review/rules.md  # your own review rules, appended to the built-in ones (a file in the instance)
-    auto_accept_min_confirmations: 1 # independent verified task confirmations required (default 1)
-    # auto_accept_min_seen: 1     # legacy snapshot setting, readable but no longer approval evidence
+    auto_accept_min_seen: 1       # a lesson is judged only once seen this many times (default 1)
+    # auto_accept_min_confirmations: 1  # deprecated, unused: outcome evidence is the review model's input, not a rule
     auto_restart: false           # restart an idle running agent after the review approved something (needs review: auto)
 
 deploy:
