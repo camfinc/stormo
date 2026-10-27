@@ -222,3 +222,50 @@ func TestQuarantinePrivateRuntimeReadsRequireTypedTools(t *testing.T) {
 		}
 	}
 }
+
+// approvingMessenger asks for approval for every send (a tainted run's send to another target).
+type approvingMessenger struct{}
+
+func (approvingMessenger) Send(context.Context, messaging.Request) (messaging.Sent, error) {
+	return messaging.Sent{}, messaging.NeedsApproval("send_message to slack:C0OTHER001", "unverified author")
+}
+
+// A tainted script's core write and send elsewhere are put to a person as the same call
+// (Runtime.Approve): the script gets the approval's answer; in a dry run they stay refused.
+func TestTaintedLuauWritesGoToApproval(t *testing.T) {
+	rt, core := newRuntime(t)
+	rt.Grants = append(rt.Grants, "message:*")
+	rt.Messenger = approvingMessenger{}
+	type asked struct{ session, tool, args string }
+	var got []asked
+	rt.Approve = func(_ context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error) {
+		got = append(got, asked{session, tool, string(args)})
+		return map[string]any{"status": "pending_approval", "approval_id": "ap_test"}, nil
+	}
+	caps, err := NewCaps([]string{"core:msg_*", "message:*"}, rt.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := messaging.WithUntrusted(context.Background(), "unverified author")
+	call := rt.NewCall("relay", "slack-C0DEV-1.1", caps, false)
+	for _, tc := range []struct{ name, args string }{
+		{"core.call", `{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`},
+		{"message.send", `{"target":"slack:C0OTHER001","text":"hello there"}`},
+	} {
+		raw := call.Call(ctx, tc.name, []byte(tc.args))
+		if !strings.Contains(string(raw), `"ok":true`) || !strings.Contains(string(raw), "ap_test") {
+			t.Errorf("%s: %s", tc.name, raw)
+		}
+	}
+	if len(got) != 2 || got[0].tool != "mcp_core_msg_send" || got[0].args != `{"message":"later","to":"atlas"}` ||
+		got[1].tool != "send_message" || got[1].args != `{"message":"hello there","target":"slack:C0OTHER001"}` || got[0].session != "slack-C0DEV-1.1" {
+		t.Fatalf("asked %+v", got)
+	}
+	if len(core.got()) != 0 {
+		t.Fatal("the core write ran before approval", core.got())
+	}
+	dry := rt.NewCall("relay", "slack-C0DEV-1.1", caps, true)
+	if raw := dry.Call(ctx, "core.call", []byte(`{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`)); strings.Contains(string(raw), `"ok":true`) || len(got) != 2 {
+		t.Errorf("a dry run asked: %s", raw)
+	}
+}
