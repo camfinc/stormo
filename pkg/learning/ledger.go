@@ -73,10 +73,7 @@ func LoadLedger(root, agent string) ([]*Learning, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	evidence, err := LoadEvidence(root, agent)
-	if err != nil {
-		return nil, err
-	}
+	evidence, _ := ReadEvidence(root, agent) // unreadable evidence reads as none (logged)
 	out := []*Learning{}
 	for _, line := range strings.Split(string(body), "\n") {
 		if strings.TrimSpace(line) == "" {

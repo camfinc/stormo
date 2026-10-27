@@ -229,3 +229,27 @@ func TestReviewViewShowsEvidenceWithoutGating(t *testing.T) {
 		t.Errorf("evidence not shown: %+v %+v", lessons[e.ID].Evidence, lessons[bare.ID].Evidence)
 	}
 }
+
+// An unreadable evidence store does not take the review page down: the agent's proposals are
+// listed as usual, with a notice saying why its evidence reads as none.
+func TestReviewSurvivesUnreadableEvidence(t *testing.T) {
+	_, inst := fixture(t)
+	write(t, learning.EvidencePath(inst.Root, "atlas"), "{not json")
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: testDB(t), DigestDir: t.TempDir()})
+	view, err := learner.review(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range view.Agents {
+		switch a.ID {
+		case "atlas":
+			if len(a.Lessons) == 0 || len(a.Notices) != 1 || !strings.Contains(a.Notices[0], "evidence-v1.json") {
+				t.Errorf("atlas: lessons %d notices %q", len(a.Lessons), a.Notices)
+			}
+		default:
+			if len(a.Notices) != 0 {
+				t.Errorf("%s notices %q", a.ID, a.Notices)
+			}
+		}
+	}
+}

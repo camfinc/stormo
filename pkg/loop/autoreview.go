@@ -73,6 +73,7 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]C
 		return nil, nil, err
 	}
 	records := recordsOutcomes(inst, agent)
+	evidence, unreadable := learning.ReadEvidence(root, agentID)
 	ledger, err := learning.LoadLedger(root, agentID)
 	if err != nil {
 		return nil, nil, err
@@ -93,16 +94,12 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]C
 		default:
 			c := Candidate{Kind: KindLesson, Ref: e.ID, Hash: e.ID, Title: "lesson " + e.ID,
 				Body: fmt.Sprintf("A lesson the agent wrote into its own memory (seen %d times):\n\n%s", e.SeenCount, e.Text)}
-			withEvidence(&c, learning.LessonRevision(e), e.Evidence, records)
+			withEvidence(&c, learning.LessonRevision(e), e.Evidence, records, unreadable)
 			cands = append(cands, c)
 		}
 	}
 
 	skills, err := ListSkillProposals(root, agentID)
-	if err != nil {
-		return nil, nil, err
-	}
-	evidence, err := learning.LoadEvidence(root, agentID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -112,7 +109,7 @@ func ReviewCandidates(inst *instance.Instance, agentID string, minSeen int) ([]C
 			held = append(held, Held{KindSkill, p.Skill, why})
 			continue
 		}
-		withEvidence(&c, p.NapHash, evidence.Summary("skill", shaText(p.Skill), p.NapHash, "agent"), records)
+		withEvidence(&c, p.NapHash, evidence.Summary("skill", shaText(p.Skill), p.NapHash, "agent"), records, unreadable)
 		cands = append(cands, c)
 	}
 
@@ -158,18 +155,28 @@ func recordsOutcomes(inst *instance.Instance, agent *manifest.Agent) bool {
 // withEvidence gives the model what the runtime recorded about the candidate's exact version
 // (revision) and keys its verdict to that record too: a new confirmation, failure or correction
 // asks the model again. An engine that records no outcomes, with none held for the candidate,
-// adds nothing, so its candidates and their cached verdicts stay as they were.
-func withEvidence(c *Candidate, revision string, s learning.EvidenceSummary, records bool) {
+// adds nothing, so its candidates and their cached verdicts stay as they were. unreadable is
+// learning.ReadEvidence's warning: the store could not be read, so the summary is empty.
+func withEvidence(c *Candidate, revision string, s learning.EvidenceSummary, records bool, unreadable string) {
 	if !records && len(s.EvidenceTypes) == 0 {
 		return
 	}
 	c.Hash = shaText("evidence-review-v1\n" + revision + "\n" + s.Revision)
-	c.Evidence = EvidenceText(s)
+	if unreadable != "" {
+		c.Hash = shaText("evidence-review-v1\n" + revision + "\nunreadable")
+	}
+	c.Evidence = EvidenceText(s, unreadable != "")
 }
 
-// EvidenceText is an evidence summary as the review's model reads it.
-func EvidenceText(s learning.EvidenceSummary) string {
+// EvidenceText is an evidence summary as the review's model reads it; unreadable: the store
+// could not be read (the summary is empty for that reason, not because nothing was recorded).
+func EvidenceText(s learning.EvidenceSummary, unreadable bool) string {
 	var b strings.Builder
+	if unreadable {
+		b.WriteString("The agent's outcome evidence could not be read, so none is shown. Judge the change itself.\n")
+		b.WriteString("Views, snapshot sightings, the model's own claims and a command that merely exited cleanly are not evidence that it works.")
+		return b.String()
+	}
 	if s.Failures > 0 || s.Corrections > 0 {
 		fmt.Fprintf(&b, "WARNING: this exact version has %d recorded failure(s) and %d correction(s): at least once it did not work as written. Weigh that before approving.\n", s.Failures, s.Corrections)
 	}

@@ -234,3 +234,28 @@ func TestEvidenceIsReviewInputNotGate(t *testing.T) {
 		t.Fatal("a verdict on the old text was applied to the revised one")
 	}
 }
+
+// An unreadable evidence store fails nothing: the review goes on, and the model is told the
+// evidence could not be read rather than that none was recorded.
+func TestUnreadableEvidenceDoesNotStopReview(t *testing.T) {
+	withLearningEngine(t)
+	inst := reviewInstance(t)
+	root := inst.Root
+	ledger := []*learning.Learning{}
+	learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Reports are due on Mondays.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ProposalsDir(root, "atlas"), "notes/brief/SKILL.md"), "---\nname: brief\n---\nKeep briefs to five lines.\n")
+	write(t, filepath.Join(ProposalsDir(root, "atlas"), "notes/brief/.proposal.json"), `{"skill":"notes/brief","napHash":"h1","nap":"n","pii":[]}`)
+	write(t, learning.EvidencePath(root, "atlas"), "{not json")
+	cands, _, err := ReviewCandidates(inst, "atlas", 1)
+	if err != nil || len(cands) != 2 {
+		t.Fatalf("candidates %v: %v", cands, err)
+	}
+	for _, c := range cands {
+		if !strings.Contains(c.Evidence, "could not be read") || strings.Contains(c.Evidence, "No outcome evidence is recorded") {
+			t.Errorf("%s %s evidence: %q", c.Kind, c.Ref, c.Evidence)
+		}
+	}
+}

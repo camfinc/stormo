@@ -35,6 +35,9 @@ public struct ReviewAgent: Codable, Sendable, Equatable, Identifiable {
     public var autoReview: Bool?
     /// Decisions since it last restarted through the core: restart to apply them.
     public var unapplied: Bool
+    /// Problems reading its learning state that fail nothing (an unreadable outcome evidence store
+    /// reads as none). Absent from older cores.
+    public var notices: [String]?
 
     public var proposedLessons: [ReviewLesson] { lessons.filter { $0.status == "proposed" } }
     public var acceptedLessons: [ReviewLesson] { lessons.filter { $0.status == "accepted" } }

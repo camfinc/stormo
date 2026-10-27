@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -89,6 +91,27 @@ func LoadEvidence(root, agent string) (*EvidenceStore, error) {
 	}
 	return &s, nil
 }
+
+// ReadEvidence is the store as its readers see it (the ledger, the compile, the review): a
+// store they cannot read (corrupt, oversized, invalid, a version this build does not know, or
+// unreadable) reads as no evidence, and the reason comes back as a warning, logged once per
+// store and reason. A missing store is empty and no warning. Only MergeEvidence, which writes,
+// refuses an unreadable store (so it is never overwritten).
+func ReadEvidence(root, agent string) (*EvidenceStore, string) {
+	s, err := LoadEvidence(root, agent)
+	if err == nil {
+		return s, ""
+	}
+	warning := "outcome evidence (" + filepath.Base(EvidencePath(root, agent)) + ") is unreadable, so it reads as none: " + err.Error()
+	if _, seen := evidenceWarned.LoadOrStore(EvidencePath(root, agent)+"\n"+warning, true); !seen {
+		log.Printf("learning: %s: %s", agent, warning)
+	}
+	return &EvidenceStore{Version: EvidenceVersion, Events: []OutcomeEvent{}}, warning
+}
+
+// evidenceWarned are the warnings ReadEvidence logged (store path and reason).
+var evidenceWarned sync.Map
+
 func (e OutcomeEvent) Validate() error {
 	for _, s := range []string{e.EventID, e.TaskRoot, e.SubjectKind, e.SubjectID, e.SubjectRevision, e.Audience, e.SourceType, e.Origin} {
 		if len(s) == 0 || len(s) > 256 {

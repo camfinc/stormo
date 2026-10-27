@@ -75,7 +75,7 @@ func TestReviewerJudge(t *testing.T) {
 		t.Errorf("a candidate without evidence:\n%s", user)
 	}
 	withEvidence := c
-	withEvidence.Evidence = loop.EvidenceText(learning.EvidenceSummary{Confirmations: 1, Failures: 2, Attempts: 3, EvidenceTypes: []string{"assertion"}})
+	withEvidence.Evidence = loop.EvidenceText(learning.EvidenceSummary{Confirmations: 1, Failures: 2, Attempts: 3, EvidenceTypes: []string{"assertion"}}, false)
 	if _, err := rv.Judge(context.Background(), agent, withEvidence); err != nil {
 		t.Fatal(err)
 	}

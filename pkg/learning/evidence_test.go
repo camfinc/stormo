@@ -2,9 +2,13 @@ package learning
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/instance"
 )
 
 func testOutcome(id, task, origin string) OutcomeEvent {
@@ -147,5 +151,71 @@ func TestRankWithoutEvidenceFallsBackToSightings(t *testing.T) {
 	sort.SliceStable(entries, func(i, j int) bool { return Rank(entries[i], entries[j]) })
 	if entries[1].ID[:1] != "a" {
 		t.Fatalf("a confirmed lesson ranks below unconfirmed ones: %v", entries[1].ID)
+	}
+}
+
+// An evidence store the readers cannot read (corrupt, oversized, a version this build does not
+// know) never breaks the ledger, the compile or the review for the agent: it reads as no evidence,
+// with a warning. Only MergeEvidence, which would overwrite it, refuses.
+func TestUnreadableEvidenceReadsAsNone(t *testing.T) {
+	inst := &instance.Instance{Root: t.TempDir()}
+	root := inst.Root
+	manifestDir := filepath.Join(root, "agents", "atlas")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "units", "sales"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "units", "sales", "unit.yaml"), []byte("id: sales\nname: Sales\ndescription: Sales\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "SOUL.md"), []byte("# Atlas\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "agent.yaml"), []byte("format: 1\nid: atlas\nname: Atlas\nunit: sales\nrole: test\nengine:\n  kind: hermes\n  version: 0.1.0\nmodel:\n  name: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries := []*Learning{}
+	Upsert(&entries, Sighting{Kind: KindMemory, Text: "Reports are due on Mondays.", Agent: "atlas", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	entries[0].Status = Accepted
+	if err := SaveLedger(root, "atlas", entries); err != nil {
+		t.Fatal(err)
+	}
+	p := EvidencePath(root, "atlas")
+	for name, body := range map[string]string{
+		"corrupt":   "{not json",
+		"future":    `{"version":2,"events":[]}`,
+		"oversized": strings.Repeat(" ", MaxEvidenceBytes+1),
+		"invalid":   `{"version":1,"events":[{"eventId":"x"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s, warning := ReadEvidence(root, "atlas")
+			if s == nil || len(s.Events) != 0 || warning == "" {
+				t.Fatalf("ReadEvidence = %v, %q", s, warning)
+			}
+			loaded, err := LoadLedger(root, "atlas")
+			if err != nil || len(loaded) != 1 || loaded[0].Evidence.Confirmations != 0 {
+				t.Fatalf("LoadLedger = %v, %v", loaded, err)
+			}
+			if _, err := CompileLearning(inst, "atlas", engine.Delimited("\n")); err != nil {
+				t.Fatalf("CompileLearning: %v", err)
+			}
+			if err := MergeEvidence(root, "atlas", []OutcomeEvent{testOutcome("event", "task", "check")}); err == nil {
+				t.Fatal("MergeEvidence overwrote a store it cannot read")
+			}
+			if got, _ := os.ReadFile(p); string(got) != body {
+				t.Fatal("the unreadable store was changed")
+			}
+		})
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if _, warning := ReadEvidence(root, "atlas"); warning != "" {
+		t.Fatalf("a missing store is no warning: %q", warning)
 	}
 }

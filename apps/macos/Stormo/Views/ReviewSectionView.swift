@@ -18,7 +18,7 @@ struct ReviewSectionView: View {
             if !coreReady {
                 ContentUnavailableView("Core stopped", systemImage: "server.rack", description: Text("Start the core to review what the agents learned."))
             } else if let view = review.view {
-                let agents = view.agents.filter { learningMode || showAll || $0.pending > 0 || $0.unapplied }
+                let agents = view.agents.filter { learningMode || showAll || $0.pending > 0 || $0.unapplied || !($0.notices ?? []).isEmpty }
                 if agents.isEmpty {
                     ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle", description: Text("Proposals appear here after an agent's dream."))
                 } else {
@@ -82,6 +82,11 @@ private struct AgentReview: View {
     var body: some View {
         Section {
             if agent.unapplied { restartRow }
+            ForEach(agent.notices ?? [], id: \.self) { notice in
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(agent.proposedLessons) { LessonRow(agent: agent.id, lesson: $0) }
             ForEach(agent.skills) { SkillRow(agent: agent.id, skill: $0) }
             if let schedules = agent.schedules { SchedulesRow(agent: agent.id, schedules: schedules) }

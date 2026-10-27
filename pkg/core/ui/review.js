@@ -149,6 +149,7 @@ function agentHTML(a) {
       <span class="pill"><b>${pending}</b> to review</span>
       ${restart}
     </header>
+    ${(a.notices ?? []).map((n) => `<p class="empty notice-warn" role="status">${esc(n)}</p>`).join("")}
     ${pending === 0 && accepted.length === 0 ? `<p class="empty">Nothing proposed yet. Proposals appear after a learning cycle (swarm core learn ${esc(a.id)}).</p>` : ""}
     ${proposed.length ? `<div class="sec"><h3>Proposed lessons</h3>${proposed.map((l) => lessonHTML(a, l)).join("")}</div>` : ""}
     ${a.skills.length ? `<div class="sec"><h3>Skill proposals</h3>${a.skills.map((s) => skillHTML(a, s)).join("")}</div>` : ""}

@@ -124,6 +124,9 @@ type ReviewAgent struct {
 	AutoReview bool `json:"autoReview"`
 	// Decisions since it last restarted through the core: restart to apply them.
 	Unapplied bool `json:"unapplied"`
+	// Notices are problems reading its learning state that fail nothing (an unreadable outcome
+	// evidence store reads as none); absent when there are none.
+	Notices []string `json:"notices,omitempty"`
 }
 
 // ReviewView is GET /api/review.
@@ -198,9 +201,9 @@ func (l *Learner) review(roster map[string]BusAgent) (*ReviewView, error) {
 		if err != nil {
 			return nil, err
 		}
-		evidence, err := learning.LoadEvidence(root, id)
-		if err != nil {
-			return nil, err
+		evidence, unreadable := learning.ReadEvidence(root, id)
+		if unreadable != "" {
+			a.Notices = append(a.Notices, unreadable)
 		}
 		for _, p := range props {
 			sv := skillView(root, id, p)
