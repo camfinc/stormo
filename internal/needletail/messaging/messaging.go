@@ -392,7 +392,16 @@ func UntrustedWhy(ctx context.Context) string {
 // Deferred is the refusal of work a run that may defer none asks for (what), for the reason why:
 // done later, it would run those words as the agent's own.
 func Deferred(what, why string) error {
-	return fmt.Errorf("%s cannot be made here: %s. Done later, it would run those words as your own: do what is safe now, or tell the person to ask in a fresh conversation", what, why)
+	return &deferredError{msg: fmt.Sprintf("%s cannot be made here: %s. Done later, it would run those words as your own: do what is safe now, or tell the person to ask in a fresh conversation", what, why)}
+}
+
+// deferredError is a Deferred refusal: a policy refusal (errors.Is ErrRefused), so what retries
+// on errors (a scheduled delivery, a follow-up) knows asking again is refused again.
+type deferredError struct{ msg string }
+
+func (e *deferredError) Error() string { return e.msg }
+func (e *deferredError) Is(target error) bool {
+	return target == ErrRefused
 }
 
 // InputOf is the input the run ctx belongs to handles; false outside a platform message's run.

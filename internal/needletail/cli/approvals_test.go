@@ -455,3 +455,77 @@ func TestServeApprovalsSurviveRestart(t *testing.T) {
 		t.Fatalf("the expired one ran too (%d sends)", n)
 	}
 }
+
+// A tainted scheduled run keeps its schedule; its report is held as an approval card with exactly
+// that report (Approve sends it to the job's targets). Reports a policy refuses wait for review
+// under ONE home notice, updated in place with the count.
+func TestServeHeldReportAndMergedNotice(t *testing.T) {
+	next := func(msgs []scriptMsg) (string, string, any) {
+		user, _ := lastUser(msgs)
+		if strings.Contains(user, "Daily digest") {
+			return "The digest for today.", "", nil
+		}
+		return "A report for elsewhere.", "", nil
+	}
+	r := newApprovalRig(t, "", next)
+	jobsPath := filepath.Join(r.home, "cron", "jobs.json")
+	f, err := sched.ReadFile(jobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []struct {
+		id, prompt, deliver string
+		untrusted           bool
+	}{{"heldjob0001", "Daily digest.", "slack", true}, {"badjob00001", "Report one.", "slack:C0SECRET01", false}, {"badjob00002", "Report two.", "slack:C0SECRET01", false}} {
+		job := sched.NewJob()
+		for k, v := range map[string]any{"id": j.id, "name": j.id, "prompt": j.prompt, "skills": []string{}, "no_agent": false, "created_at": "2026-10-01T00:00:00Z",
+			"schedule": map[string]any{"kind": "interval", "minutes": 60, "display": "every 60m"}, "enabled": true, "state": "scheduled",
+			"next_run_at": "2026-01-01T00:00:00Z", "deliver": j.deliver, "repeat": map[string]any{"times": nil, "completed": 0}} {
+			job.Set(k, v)
+		}
+		if j.untrusted {
+			job.Set("untrusted", true)
+		}
+		f.Jobs = append(f.Jobs, job)
+	}
+	if err := f.Write(jobsPath, filepath.Join(r.home, ".needletail-tmp")); err != nil {
+		t.Fatal(err)
+	}
+	r.start()
+	defer r.srv.stop()
+	c := r.waitCards(1)[0]
+	if !strings.Contains(c.post.Blocks, "The digest for today.") || !strings.Contains(c.post.Blocks, "heldjob0001") {
+		t.Errorf("held report card:\n%s", c.post.Blocks)
+	}
+	waitFor(t, "the jobs' runs", 20*time.Second, func() bool {
+		j := jobsIn(t, r.home)
+		return j["heldjob0001"]["last_status"] != nil && j["badjob00001"]["last_status"] != nil && j["badjob00002"]["last_status"] != nil
+	})
+	held := jobsIn(t, r.home)["heldjob0001"]
+	if held["delivery_hold"] == true || !strings.Contains(fmt.Sprint(held["last_delivery_error"]), c.id) || held["enabled"] != true {
+		t.Errorf("the held job: %v", held)
+	}
+	if len(r.postsTo(homeChan, "The digest")) != 0 {
+		t.Fatal("a tainted run's report was delivered without approval")
+	}
+	// one notice for both refused reports, updated in place
+	waitFor(t, "the merged notice", 10*time.Second, func() bool {
+		for _, u := range r.fake.Updates() {
+			if u.Channel == homeChan && strings.Contains(u.Text, "2 scheduled reports") {
+				return true
+			}
+		}
+		return false
+	})
+	if n := len(r.postsTo(homeChan, "could not be delivered")); n != 1 {
+		t.Errorf("%d home notices, want one updated in place", n)
+	}
+	for _, p := range r.fake.Posts() {
+		if strings.Contains(p.Text, "A report for elsewhere") {
+			t.Errorf("a refused report leaked: %+v", p)
+		}
+	}
+	// approve: exactly that report, to the job's target
+	r.click("i1", owner, c, "needletail_approve", c.hash)
+	waitFor(t, "the approved report", 10*time.Second, func() bool { return len(r.postsTo(homeChan, "The digest for today.")) == 1 })
+}

@@ -9,15 +9,77 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
-// DeliveryAlerter sends only a constant runtime notice to the configured home.
-// It must not forward report content or run user/model handlers.
-type DeliveryAlerter interface{ AlertDelivery(context.Context) error }
+// DeliveryAlerter keeps ONE runtime notice in the configured home about the reports waiting for
+// review: posted when the first one is, updated in place (Ref) as the set changes, and updated to
+// say delivery recovered once none waits. It carries a count and opaque job ids only, never
+// report content, targets or errors, and runs no user/model handler.
+type DeliveryAlerter interface {
+	AlertDeliveries(ctx context.Context, a DeliveryAlert) (AlertRef, error)
+}
+
+// DeliveryAlert is the home notice's state: the jobs whose reports wait for review (none:
+// recovered), and the message to update (Ref; empty: post a new one).
+type DeliveryAlert struct {
+	JobIDs []string
+	Ref    AlertRef
+}
+
+// AlertRef is the posted notice.
+type AlertRef struct {
+	Channel string `json:"channel"`
+	TS      string `json:"ts"`
+}
+
+// Coarse delivery error classes (delivery_recovery's error_class): policy_refused,
+// unsupported_platform, not_in_channel and auth are permanent (no automatic retry: the report
+// waits for review); transient is retried.
+const (
+	ClassPolicyRefused       = "policy_refused"
+	ClassUnsupportedPlatform = "unsupported_platform"
+	ClassNotInChannel        = "not_in_channel"
+	ClassAuth                = "auth"
+	ClassTransient           = "transient"
+)
+
+// ErrUnsupportedPlatform is a delivery to a platform the deliverer does not serve (permanent).
+var ErrUnsupportedPlatform = errors.New("unsupported delivery platform")
+
+// errorClass is a delivery error's class: a deliverer's own (DeliveryClass), a policy refusal
+// (messaging.ErrRefused), an unsupported platform, a permanent provider error, else transient.
+func errorClass(e error) string {
+	var c interface{ DeliveryClass() string }
+	if errors.As(e, &c) {
+		if k := c.DeliveryClass(); k != "" {
+			return k
+		}
+	}
+	var permanent interface{ DeliveryPermanent() bool }
+	switch {
+	case errors.Is(e, messaging.ErrRefused):
+		return ClassPolicyRefused
+	case errors.Is(e, ErrUnsupportedPlatform):
+		return ClassUnsupportedPlatform
+	case errors.As(e, &permanent) && permanent.DeliveryPermanent():
+		return ClassNotInChannel
+	}
+	return ClassTransient
+}
+
+// alertState is the home notice (deliveries-v1.json's "alert", additive): where it is, the jobs it
+// counts, and how many tries the current set had (at most 3 until the set changes).
+type alertState struct {
+	Ref      AlertRef `json:"ref"`
+	Jobs     []string `json:"jobs"`
+	Attempts int      `json:"attempts,omitempty"`
+}
 
 type deliveryTarget struct {
 	Target Target `json:"target"`
@@ -39,6 +101,11 @@ type pendingDelivery struct {
 	Alerted       bool             `json:"alerted"`
 	AlertAttempts int              `json:"alert_attempts"`
 	Next          time.Time        `json:"next"`
+	// ErrorClass is the last failure's coarse class (additive): errorClass.
+	ErrorClass string `json:"error_class,omitempty"`
+	// Audience are the report's original targets (additive): a repair stays within their
+	// channels, the home channel or an owner's DM. Absent (an older entry): its targets.
+	Audience []Target `json:"audience,omitempty"`
 }
 
 func (p *pendingDelivery) complete() bool {
@@ -53,6 +120,8 @@ func (p *pendingDelivery) complete() bool {
 type deliveryFile struct {
 	Version int                         `json:"version"`
 	Pending map[string]*pendingDelivery `json:"pending"`
+	// Alert is the one home notice about the reports waiting for review (additive; absent: none).
+	Alert *alertState `json:"alert,omitempty"`
 }
 
 func (s *Scheduler) readDeliveries() (*deliveryFile, error) {
@@ -131,6 +200,7 @@ func (s *Scheduler) enqueueDelivery(ctx context.Context, j *Job, o outcome, targ
 	for _, t := range targets {
 		p.Targets = append(p.Targets, deliveryTarget{Target: t})
 	}
+	p.Audience = append([]Target{}, targets...)
 	f.Pending[p.JobID] = p
 	if e = s.writeDeliveries(f); e != nil {
 		return "Could not retain report; delivery was not attempted."
@@ -150,6 +220,7 @@ func (s *Scheduler) attemptDelivery(ctx context.Context, f *deliveryFile, p *pen
 		return "Could not persist delivery attempt."
 	}
 	var last error
+	interrupted := false
 	if p.Quarantined {
 		last = errors.New("scheduled forwarding was refused because this run is quarantined.")
 	} else {
@@ -166,11 +237,17 @@ func (s *Scheduler) attemptDelivery(ctx context.Context, f *deliveryFile, p *pen
 			s.deliveryMu.Unlock()
 			e := s.o.Deliver.Deliver(ctx, Delivery{JobID: p.JobID, JobName: p.JobName, Target: t.Target, Text: p.Text, Failure: p.Failure, Session: p.Session, Trusted: p.Trusted})
 			s.deliveryMu.Lock()
+			if e != nil && (ctx.Err() != nil || errors.Is(e, context.Canceled)) {
+				// the runtime stopping (or the attempt's own deadline) is not the destination's
+				// failure: no attempt counted, nothing alerted; it goes again at the next start
+				interrupted = true
+				break
+			}
 			if e != nil {
 				last = e
-				var permanent interface{ DeliveryPermanent() bool }
-				if errors.As(e, &permanent) && permanent.DeliveryPermanent() {
-					p.Blocked = true
+				p.ErrorClass = errorClass(e)
+				if p.ErrorClass != ClassTransient {
+					p.Blocked = true // a refusal or a missing destination: retrying asks the same
 				}
 				continue
 			}
@@ -184,13 +261,23 @@ func (s *Scheduler) attemptDelivery(ctx context.Context, f *deliveryFile, p *pen
 		p.Quarantined = true
 		p.Blocked = true
 	}
+	if interrupted && !p.complete() {
+		p.Attempts = max(0, p.Attempts-1)
+		p.Next = s.o.Now()
+		if e := s.writeDeliveries(f); e != nil {
+			return "Could not persist an interrupted delivery."
+		}
+		return "Delivery was interrupted (the runtime is stopping); the kept report goes at the next start."
+	}
 	if p.complete() {
+		p.ErrorClass = ""
 		if e := s.writeDeliveries(f); e != nil {
 			return "Could not persist completed delivery."
 		}
 		if p.Failed && !p.Quarantined && s.o.OnDelivery != nil {
 			s.o.OnDelivery(DeliveryEvent{ID: p.ID + ":recovered", JobID: p.JobID, Session: p.Session, At: s.o.Now(), Status: "recovered", Failure: p.Failure})
 		}
+		s.syncAlert(ctx, f)
 		return ""
 	}
 	first := !p.Failed
@@ -204,43 +291,99 @@ func (s *Scheduler) attemptDelivery(ctx context.Context, f *deliveryFile, p *pen
 	if first && !p.Quarantined && s.o.OnDelivery != nil {
 		s.o.OnDelivery(DeliveryEvent{ID: p.ID + ":failed", JobID: p.JobID, Session: p.Session, At: s.o.Now(), Status: "failed", Failure: p.Failure})
 	}
-	s.alertDelivery(ctx, f, p)
+	// the home notice counts reports whose retries are exhausted or whose error is permanent
+	s.syncAlert(ctx, f)
 	if p.Quarantined {
 		return "scheduled forwarding was refused because this run is quarantined."
 	}
 	if last != nil {
-		s.logf("job %s: delivery attempt failed: %s", p.JobID, s.o.Env.Redact(last.Error()))
+		s.logf("job %s: delivery attempt failed (%s): %s", p.JobID, p.ErrorClass, s.o.Env.Redact(last.Error()))
 	}
 	return "Report retained pending delivery; review destination and retry_delivery."
 }
-func (s *Scheduler) alertDelivery(ctx context.Context, f *deliveryFile, p *pendingDelivery) {
-	if p.Alerted || p.AlertAttempts >= 3 {
-		return
+
+// waitingReview are the jobs whose reports wait for a person: retries exhausted or a permanent
+// error, not yet delivered (sorted).
+func waitingReview(f *deliveryFile) []string {
+	out := []string{}
+	for id, p := range f.Pending {
+		if p.Blocked && !p.complete() {
+			out = append(out, id)
+		}
 	}
+	sort.Strings(out)
+	return out
+}
+
+// syncAlert brings the one home notice in line with the reports waiting for review: posted when
+// the first waits, updated in place (with the count and job ids) when the set changes, updated to
+// "recovered" when none waits any more. A failed post is tried again at the next change or tick,
+// at most 3 times per set. deliveryMu is held (and released around the provider call).
+func (s *Scheduler) syncAlert(ctx context.Context, f *deliveryFile) {
 	a, ok := s.o.Deliver.(DeliveryAlerter)
 	if !ok {
 		return
 	}
-	p.AlertAttempts++
+	jobs := waitingReview(f)
+	cur := f.Alert
+	if cur == nil {
+		if len(jobs) == 0 {
+			return
+		}
+		cur = &alertState{}
+	}
+	if slices.Equal(cur.Jobs, jobs) && cur.Ref.TS != "" {
+		return // the notice says this already
+	}
+	if !slices.Equal(cur.Jobs, jobs) && cur.Ref.TS != "" {
+		cur.Attempts = 0
+	}
+	if cur.Attempts >= 3 {
+		return
+	}
+	if len(jobs) == 0 && cur.Ref.TS == "" {
+		f.Alert = nil // nothing was ever posted: nothing to recover
+		_ = s.writeDeliveries(f)
+		return
+	}
+	cur.Attempts++
+	f.Alert = cur
 	if s.writeDeliveries(f) != nil {
 		return
 	}
 	s.deliveryMu.Unlock()
-	e := a.AlertDelivery(ctx)
+	ref, e := a.AlertDeliveries(ctx, DeliveryAlert{JobIDs: jobs, Ref: cur.Ref})
 	s.deliveryMu.Lock()
-	if e == nil {
-		p.Alerted = true
+	if e != nil {
+		s.logf("scheduled delivery home notice failed")
+		_ = s.writeDeliveries(f)
+		return
+	}
+	for _, id := range jobs {
+		if p := f.Pending[id]; p != nil {
+			p.Alerted = true
+		}
+	}
+	if len(jobs) == 0 {
+		f.Alert = nil // recovered: the next report waiting gets a new notice
 	} else {
-		s.logf("scheduled delivery home alert failed")
+		cur.Ref, cur.Jobs, cur.Attempts = ref, jobs, 0
 	}
 	if e := s.writeDeliveries(f); e != nil {
-		s.logf("could not persist delivery alert status")
+		s.logf("could not persist delivery notice status")
 	}
 }
 
 // recoverDeliveries never executes the model or re-analyzes the source material.
 func (s *Scheduler) recoverDeliveries() {
-	s.deliverySendMu.Lock()
+	if s.isStopping() {
+		return // a shutdown: what is kept goes at the next start
+	}
+	// a delivery under way (a run's own) holds the lock across provider I/O: this tick skips
+	// recovery rather than wait for it
+	if !s.deliverySendMu.TryLock() {
+		return
+	}
 	defer s.deliverySendMu.Unlock()
 	s.deliveryMu.Lock()
 	s.deliverySending = true
@@ -289,10 +432,12 @@ func (s *Scheduler) recoverDeliveries() {
 				recovered = append(recovered, p.JobID)
 			}
 		} else {
-			s.alertDelivery(ctx, f, p)
 			p.Next = s.o.Now().Add(30 * time.Minute)
 			_ = s.writeDeliveries(f)
 		}
+	}
+	if ctx.Err() == nil {
+		s.syncAlert(ctx, f) // a notice that failed earlier, or a set that changed meanwhile
 	}
 }
 func (s *Scheduler) deliveryAction(a cronArgs, untrusted string) (any, error) {
@@ -322,7 +467,11 @@ func (s *Scheduler) deliveryAction(a cronArgs, untrusted string) (any, error) {
 	p := f.Pending[a.JobID]
 	if a.Action == "discard_delivery" {
 		delete(f.Pending, a.JobID)
-		return map[string]any{"discarded": true}, s.writeDeliveries(f)
+		if e := s.writeDeliveries(f); e != nil {
+			return nil, e
+		}
+		s.syncAlertLater()
+		return map[string]any{"discarded": true}, nil
 	}
 	if p == nil {
 		return nil, errors.New("no pending report for this job")
@@ -337,6 +486,13 @@ func (s *Scheduler) deliveryAction(a cronArgs, untrusted string) (any, error) {
 		}
 		if len(ts) == 0 {
 			return nil, errors.New("retry requires a delivery target")
+		}
+		// a repair reaches the report's own audience (its targets' channels), the home channel or
+		// an owner's DM: never a new audience for a report the run made for another
+		for _, t := range ts {
+			if !s.retargetAllowed(p, t) {
+				return nil, fmt.Errorf("retry_delivery may send a kept report only to its own destinations' channels, the home channel or the owner's DM, not %s", t)
+			}
 		}
 		// Explicit replacement applies only to unsent targets. Already acknowledged targets stay acknowledged.
 		old := p.Targets
@@ -360,6 +516,9 @@ func (s *Scheduler) deliveryAction(a cronArgs, untrusted string) (any, error) {
 		p.Trusted = false // repaired targets always pass the current messaging policy
 	}
 	p.Blocked = false
+	p.Alerted = false // an explicit retry: the notice counts it again should it fail again
+	p.AlertAttempts = 0
+	p.ErrorClass = ""
 	p.Attempts = 0
 	p.Next = s.o.Now()
 	if e = s.writeDeliveries(f); e != nil {
@@ -380,9 +539,53 @@ func (s *Scheduler) deliveryViews() (map[string]map[string]any, error) {
 		if p.complete() {
 			continue
 		}
-		out[id] = map[string]any{"pending": true, "attempts": p.Attempts, "needs_review": p.Blocked, "home_alert_sent": p.Alerted, "quarantined": p.Quarantined}
+		v := map[string]any{"pending": true, "attempts": p.Attempts, "needs_review": p.Blocked, "home_alert_sent": p.Alerted, "quarantined": p.Quarantined}
+		if p.ErrorClass != "" {
+			v["error_class"] = p.ErrorClass
+		}
+		out[id] = v
 	}
 	return out, nil
+}
+
+// retargetAllowed is whether a kept report may be repaired to t: one of its targets' channels (any
+// thread of it), the home channel, or an owner's DM (Options.Owners).
+func (s *Scheduler) retargetAllowed(p *pendingDelivery, t Target) bool {
+	if t.Channel == "" {
+		return true // the home channel
+	}
+	audience := p.Audience
+	if len(audience) == 0 {
+		for _, o := range p.Targets {
+			audience = append(audience, o.Target)
+		}
+	}
+	for _, o := range audience {
+		if o.Platform == t.Platform && o.Channel == t.Channel {
+			return true
+		}
+	}
+	return s.o.Owners != nil && slices.Contains(s.o.Owners(), t.Channel) && t.Thread == ""
+}
+
+// syncAlertLater brings the home notice in line after a change made by a tool call (a discard):
+// in the background, never holding the tool.
+func (s *Scheduler) syncAlertLater() {
+	go func() {
+		if !s.deliverySendMu.TryLock() {
+			return // a delivery under way syncs it when it ends
+		}
+		defer s.deliverySendMu.Unlock()
+		s.deliveryMu.Lock()
+		defer s.deliveryMu.Unlock()
+		f, e := s.readDeliveries()
+		if e != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(s.runCtx, 30*time.Second)
+		defer cancel()
+		s.syncAlert(ctx, f)
+	}()
 }
 
 func (s *Scheduler) clearDeliveryHold(id string) bool {

@@ -107,6 +107,31 @@
    "glob": "state/needletail/kv.json"
   },
   {
+   "path": "state/needletail/deliveries-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/deliveries-v1.json"
+  },
+  {
+   "path": "state/needletail/approvals-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/approvals-v1.json"
+  },
+  {
+   "path": "state/needletail/approvals-audit.jsonl",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "work/slack-C0DEVCHAN1-1700000100.000100/draft.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".tmp/scratch.txt",
+   "class": null,
+   "glob": null
+  },
+  {
    "path": "state/needletail/followups.json",
    "class": "raw",
    "glob": "state/needletail/followups.json"

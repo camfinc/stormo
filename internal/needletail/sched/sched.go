@@ -98,6 +98,9 @@ type Options struct {
 	// job (id, name or "*"). A reply is the run's output with no turn, silent a silent run, a
 	// pass's notes go into the prompt. nil: none.
 	OnSchedule func(ctx context.Context, id, name string, ev map[string]any) messaging.Verdict
+	// Owners are the user ids whose DMs a kept report may be repaired to (retry_delivery: the
+	// approvers); nil: none.
+	Owners func() []string
 }
 
 // Scheduler runs one home's jobs. Safe for concurrent use.

@@ -175,11 +175,13 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 	return f.appendReply(tip, it.Text, untrustedText(it))
 }
 
-// untrustedText: a message follow-up's text came from words the agent may not obey (made by a run
-// on such input, or in a conversation that took some in) or from its handler's: the row it leaves
-// in its conversation is kept marked, which marks the conversation, so the next turn and
-// session_search know where it came from.
-func untrustedText(it followup.Item) bool { return it.Untrusted || it.ByHandler() }
+// untrustedText: a message follow-up's text came from words the agent may not obey (made by a
+// tainted run: on such input, or in a conversation that holds some; a handler's on an unverified
+// message too): the row it leaves in its conversation is kept marked, which marks the
+// conversation, so the next turn and session_search know where it came from. A trusted handler's
+// text (by luau:…, from a verified message in a clean conversation) is not marked, and may go to
+// a channel's top level.
+func untrustedText(it followup.Item) bool { return it.Untrusted }
 
 func (f *followUps) appendReply(tip, text string, untrusted bool) error {
 	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Kind: wire.KindFollowUp, Content: text, Untrusted: untrusted}); err != nil {

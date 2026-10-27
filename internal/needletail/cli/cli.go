@@ -690,6 +690,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	if err := fsx.Sweep(rt.cfg.Home); err != nil {
 		rt.logger.Printf("could not empty %s: %v", fsx.TmpDir, err)
 	}
+	// the commands' .tmp too: a scratch file one run left is no channel to the next run (a tainted
+	// run writes only its own work/<conversation>/, docs/needletail.md §7)
+	if err := fsx.SweepIn(rt.cfg.Home, jail.TmpDir); err != nil {
+		rt.logger.Printf("could not empty %s: %v", jail.TmpDir, err)
+	}
 	key := rt.sec.Get(secrets.APIKey)
 	if len(key) < api.MinKey {
 		rt.logger.Printf("%s is missing or shorter than %d characters: the API answers only /health", secrets.APIKey, api.MinKey)

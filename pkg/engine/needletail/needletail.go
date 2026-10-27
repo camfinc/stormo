@@ -70,6 +70,10 @@ func New(inst *instance.Instance) *Needletail {
 			// client data, before the state rule that would claim them
 			{Class: engine.Raw, Glob: "state/needletail/jobs/**"},
 			{Class: engine.Raw, Glob: "state/needletail/deliveries-v1.json"},
+			// pending and recent approval requests hold their payloads (a message, a file, a
+			// report): client data, restored at boot so a pending request survives a restart; the
+			// audit beside it (ids, hashes, decisions) is State
+			{Class: engine.Raw, Glob: "state/needletail/approvals-v1.json"},
 			{Class: engine.Raw, Glob: "state/needletail/monitor/**"},
 			// the pending follow-ups hold what the agent promised to say or do in a conversation:
 			// client data, restored at boot so they survive a restart, never read by the dream

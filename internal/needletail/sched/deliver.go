@@ -118,7 +118,7 @@ type Pending struct{ Log func(string) }
 // Deliver implements Deliverer.
 func (p Pending) Deliver(_ context.Context, d Delivery) error {
 	if d.Target.Platform != "slack" {
-		return fmt.Errorf("needletail does not deliver to %s", d.Target.Platform)
+		return fmt.Errorf("%w: needletail does not deliver to %s", ErrUnsupportedPlatform, d.Target.Platform)
 	}
 	if p.Log != nil {
 		p.Log(fmt.Sprintf("cron: job %s: delivery to %s waits for the Slack gateway; the output is kept in state/needletail/jobs/", d.JobID, d.Target))

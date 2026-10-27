@@ -117,7 +117,8 @@ func TestServeSlack(t *testing.T) {
 
 	// Successful scheduled reports and one fixed owner notice are posted. The
 	// refused report body stays private, and the silent job produces no post.
-	const homeNotice = "A scheduled report could not be delivered. I have kept the report and put further runs of that job on hold. Please confirm where it should be sent and that I have access, so I can retry the saved report."
+	// the one home notice about kept reports: a count and the job's opaque id, never its report
+	const homeNotice = "1 scheduled report could not be delivered and is kept for review (jobs agentjob001); further runs of those jobs are on hold. Please confirm where each should go and that I have access, so I can retry it (or discard it)."
 	posts := fake.WaitPosts(3, 15*time.Second)
 	byText := map[string]slacktest.Post{}
 	for _, p := range posts {

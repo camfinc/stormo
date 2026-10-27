@@ -24,6 +24,10 @@ type DeliveryAsker func(ctx context.Context, d approvals.Delivery, why string) (
 // nil: such a report is not delivered (its record keeps it).
 func (s *Scheduler) SetApprovals(ask DeliveryAsker) { s.askDelivery = ask }
 
+// SetOwners gives the scheduler who the owners are (the approvers), whose DMs a kept report may be
+// repaired to; before Start.
+func (s *Scheduler) SetOwners(owners func() []string) { s.o.Owners = owners }
+
 // lane is a target as Targets reads it back.
 func lane(t Target) string {
 	s := t.Platform

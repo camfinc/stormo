@@ -43,6 +43,20 @@ func (e *APIError) DeliveryPermanent() bool {
 	return false
 }
 
+// DeliveryClass is the scheduler's coarse class of a delivery failure (sched.errorClass).
+func (e *APIError) DeliveryClass() string {
+	if e == nil {
+		return ""
+	}
+	switch e.Code {
+	case "channel_not_found", "not_in_channel", "is_archived":
+		return "not_in_channel"
+	case "missing_scope", "invalid_auth", "account_inactive", "not_authed":
+		return "auth"
+	}
+	return "transient"
+}
+
 // Web calls Slack's Web API with the bot token (BotToken), or the app token for
 // apps.connections.open (AppToken).
 type Web struct {

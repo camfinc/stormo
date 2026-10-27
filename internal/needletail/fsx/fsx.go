@@ -69,27 +69,31 @@ func WriteAtomicIn(path, tmpDir string, body []byte, perm os.FileMode) error {
 // descriptor and nothing is followed: a symlink is removed as itself, and a read-only directory
 // is made writable through the descriptor it was opened by, never by path, so a symlink raced in
 // where a directory was can never redirect the change (to the home's root, a shared directory).
-func Sweep(home string) error {
+func Sweep(home string) error { return SweepIn(home, TmpDir) }
+
+// SweepIn empties the directory name in home as Sweep does (the commands' .tmp at boot: what a
+// run left there is no channel to the next, docs/needletail.md §7); missing is nothing to do.
+func SweepIn(home, name string) error {
 	root, err := unix.Open(home, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return &os.PathError{Op: "open", Path: home, Err: err}
 	}
 	defer unix.Close(root)
-	dir, err := unix.Openat(root, TmpDir, dirFlags, 0)
+	dir, err := unix.Openat(root, name, dirFlags, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
 	if err != nil {
-		return &os.PathError{Op: "open", Path: TmpDir, Err: err}
+		return &os.PathError{Op: "open", Path: name, Err: err}
 	}
 	defer unix.Close(dir)
 	names, err := dirNames(dir)
 	if err != nil {
-		return &os.PathError{Op: "readdir", Path: TmpDir, Err: err}
+		return &os.PathError{Op: "readdir", Path: name, Err: err}
 	}
 	var first error
 	for _, n := range names {
-		if err := removeAt(dir, n, TmpDir+"/"+n); err != nil && first == nil {
+		if err := removeAt(dir, n, name+"/"+n); err != nil && first == nil {
 			first = err
 		}
 	}

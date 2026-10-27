@@ -27,7 +27,7 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		return messaging.Deferred("scheduled Slack delivery", why)
 	}
 	if d.Target.Platform != "slack" {
-		return fmt.Errorf("needletail does not deliver to %s", d.Target.Platform)
+		return fmt.Errorf("%w: needletail does not deliver to %s", sched.ErrUnsupportedPlatform, d.Target.Platform)
 	}
 	if strings.TrimSpace(d.Text) == "" || sched.Silent(d.Text) {
 		return nil
@@ -65,25 +65,51 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	return err
 }
 
-// deliveryFailureAlertText contains no job, destination, result or error material.
-const deliveryFailureAlertText = "A scheduled report could not be delivered. I have kept the report and put further runs of that job on hold. Please confirm where it should be sent and that I have access, so I can retry the saved report."
+// deliveryAlertText is the home notice about the kept reports waiting for review: a count and the
+// jobs' opaque ids, never a report, a target, a job's name or an error.
+func deliveryAlertText(jobs []string) string {
+	if len(jobs) == 0 {
+		return "Scheduled report delivery recovered: no kept report is waiting for review now."
+	}
+	n := "1 scheduled report"
+	if len(jobs) > 1 {
+		n = fmt.Sprintf("%d scheduled reports", len(jobs))
+	}
+	return fmt.Sprintf("%s could not be delivered and %s kept for review (jobs %s); further runs of those jobs are on hold. "+
+		"Please confirm where each should go and that I have access, so I can retry it (or discard it).", n, map[bool]string{true: "is", false: "are"}[len(jobs) == 1], strings.Join(jobs, ", "))
+}
 
 var _ sched.DeliveryAlerter = (*Gateway)(nil)
 
-// AlertDelivery is a deterministic runtime notice, never model/handler output. It
-// bypasses before_send and the general send surface, reaches only the configured
-// home, and g.post always formats without broadcasts. Missing home/API failures
-// remain errors so the scheduler can retain the pending alert for retry.
-func (g *Gateway) AlertDelivery(ctx context.Context) error {
+// AlertDeliveries keeps the one home notice about kept reports (sched.DeliveryAlerter): a new post
+// when there is none, else the same message updated in place. A deterministic runtime notice,
+// never model or handler output: it bypasses before_send, reaches only the configured home and
+// never broadcasts. A failure is an error, so the scheduler tries again.
+func (g *Gateway) AlertDeliveries(ctx context.Context, a sched.DeliveryAlert) (sched.AlertRef, error) {
 	if g.o.HomeChannel == "" {
-		return errors.New("no home channel: cannot alert about scheduled delivery failure")
+		return sched.AlertRef{}, errors.New("no home channel: cannot alert about scheduled delivery failure")
+	}
+	text := Format(g.o.Redact(deliveryAlertText(a.JobIDs)), false)
+	if a.Ref.TS != "" && a.Ref.Channel != "" {
+		if err := g.o.Web.Update(ctx, a.Ref.Channel, a.Ref.TS, text); err == nil {
+			return a.Ref, nil
+		} else if len(a.JobIDs) == 0 {
+			return sched.AlertRef{}, err // the recovered notice only updates
+		}
+		// the old notice is gone (deleted, too old to edit): a new one
+	}
+	if len(a.JobIDs) == 0 {
+		return sched.AlertRef{}, nil
 	}
 	channel, err := g.channelFor(ctx, g.o.HomeChannel)
 	if err != nil {
-		return err
+		return sched.AlertRef{}, err
 	}
-	_, err = g.post(ctx, channel, "", deliveryFailureAlertText)
-	return err
+	ts, err := g.o.Web.PostMessage(ctx, channel, "", text)
+	if err != nil {
+		return sched.AlertRef{}, err
+	}
+	return sched.AlertRef{Channel: channel, TS: ts}, nil
 }
 
 // CheckTarget holds a scheduled job's target to the messaging policy: what cronjob_manage

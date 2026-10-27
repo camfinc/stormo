@@ -254,3 +254,29 @@ func TestServeTaintFromDataAndTrust(t *testing.T) {
 		t.Errorf("a trusted send needed approval: %d cards", len(r.cards()))
 	}
 }
+
+// serve empties the commands' .tmp at boot: a scratch file one run left is no channel to another.
+func TestServeSweepsTmpAtBoot(t *testing.T) {
+	h := home(t, "http://127.0.0.1:1/v1", "http://127.0.0.1:1/v1")
+	setenv(t, h)
+	if err := os.MkdirAll(filepath.Join(h, ".tmp", "dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{".tmp/left.txt", ".tmp/dir/deep.txt", "work/kept/draft.md"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(h, p)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(h, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := startServe(t)
+	s.stop()
+	entries, _ := os.ReadDir(filepath.Join(h, ".tmp"))
+	if len(entries) != 0 {
+		t.Errorf(".tmp kept %v", entries)
+	}
+	if _, err := os.Stat(filepath.Join(h, "work", "kept", "draft.md")); err != nil {
+		t.Errorf("a work directory was swept: %v", err)
+	}
+}

@@ -406,3 +406,39 @@ func TestSkillMaintenanceIndependentOptIn(t *testing.T) {
 		}
 	}
 }
+
+// engine/needletail/config.yaml's approvals and slack.relay_bots reach needletail.yaml; bad ids,
+// bounds and patterns are refused; with neither, nothing is rendered (older images keep working).
+func TestApprovalsRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	body := "approvals:\n  approvers: [U0OWNER001]\n  timeout: 900\n  delivery_expiry_days: 2\n  per_conversation: 2\n  per_day: 10\n  commands:\n    - {name: prod db, pattern: 'psql .*prod'}\nslack:\n  relay_bots: [B0FORMBOT1]\n"
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+	raw, _ := yaml.Marshal(c)
+	for _, want := range []string{"approvers:", "U0OWNER001", "timeout: 900", "delivery_expiry_days: 2", "per_conversation: 2", "per_day: 10", "psql .*prod", "relay_bots:", "B0FORMBOT1"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("needletail.yaml lacks %q:\n%s", want, raw)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("timezone: UTC\n"), 0o644)
+	ac, _ = readAgentConfig(dir)
+	raw, _ = yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac))
+	if strings.Contains(string(raw), "approvals") || strings.Contains(string(raw), "relay_bots") {
+		t.Errorf("rendered without config:\n%s", raw)
+	}
+	for _, bad := range []string{"approvals:\n  approvers: [owner]\n", "approvals:\n  approvers: [B0BOT00001]\n", "approvals:\n  timeout: 10\n",
+		"approvals:\n  per_day: 1000\n", "approvals:\n  delivery_expiry_days: 60\n", "approvals:\n  commands: [{pattern: '('}]\n",
+		"approvals:\n  unknown: 1\n", "slack:\n  relay_bots: [formbot]\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

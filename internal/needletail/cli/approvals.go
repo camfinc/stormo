@@ -137,6 +137,7 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 	rt.approvals.Store(svc)
 	rt.agent.Notes = svc.Notes
 	rt.sched.SetApprovals(rt.askDelivery)
+	rt.sched.SetOwners(svc.Approvers)
 	go func() {
 		t := time.NewTicker(approvalTick)
 		defer t.Stop()
