@@ -29,6 +29,7 @@ var listenRe = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
 // agentConfig is engine/needletail/config.yaml.
 type agentConfig struct {
 	BackgroundLearning bool `yaml:"background_learning"`
+	SkillMaintenance   bool `yaml:"skill_maintenance"`
 	Reflection         bool `yaml:"reflection"`
 	// Timezone is the agent's wall clock (an IANA zone, as Hermes' config.yaml timezone).
 	Timezone string `yaml:"timezone"`
@@ -156,6 +157,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit, Recall: ac.Memory.Recall}}
 	c.Reflection = ac.Reflection
 	c.BackgroundLearning = ac.BackgroundLearning
+	c.SkillMaintenance = ac.SkillMaintenance
 	c.Model.Primary = cloud
 	grants := []string{"fs.read:home", "fs.write:home"}
 	if onCore(a, target) && !core.NoGateway {

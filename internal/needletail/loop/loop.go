@@ -82,13 +82,14 @@ func (o observers) TurnEnd(session string, err error) {
 
 // Agent runs turns for one agent home.
 type Agent struct {
-	activeTurns   atomic.Int64
-	learningLocks [64]sync.Mutex
-	Learning      *runtimelearn.Store
-	Cfg           *config.Config
-	LLM           *llm.Client
-	Store         *sessions.Store
-	Tools         *tools.Registry
+	activeTurns       atomic.Int64
+	learningLocks     [64]sync.Mutex
+	Learning          *runtimelearn.Store
+	MaintenancePolicy func() (skills.MaintenancePolicy, error)
+	Cfg               *config.Config
+	LLM               *llm.Client
+	Store             *sessions.Store
+	Tools             *tools.Registry
 	// Env is the template every tool call gets (Session is set per turn).
 	Env tools.Env
 	Log func(string)

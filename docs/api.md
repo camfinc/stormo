@@ -199,3 +199,28 @@ the rolling 24-hour window. Candidates remain private review material and cannot
 be passed to the legacy `exportId` operation. The existing dedicated owner
 credential, core authorization, redaction, and no-store response policy apply.
 Clients that do not render this optional field continue to work.
+
+
+The optional `background` object also includes `jobs`, `callsLimit` and `tokensLimit`.
+Each job exposes its ID, kind, state, attempts, owner retries, timestamps, next attempt,
+bounded result code and candidate ID. `skills` contains patches (before/after text,
+base/current revisions, status, checks, conditions, evidence references and action
+eligibility), maintenance recommendations, archives, last scan and timer enabled status.
+Responses are bounded to 64 MiB, 256 jobs/patches/archives, 4,352 retained background
+candidates and 4,096 maintenance rows, and recursively redacted by the core.
+
+POST to the existing owner learning endpoint accepts these additive control requests:
+
+| `action` | Additional fields |
+|---|---|
+| `prune_jobs`, `scan_maintenance` | None |
+| `cancel_job`, `retry_job`, `reject_patch`, `restore_skill` | `id` |
+| `approve_patch`, `rollback_patch`, `archive_skill` | `id`, `expectedRevision` |
+
+For archive, `id` is the skill name; restore uses the archive receipt ID. Patch and job
+operations use their respective IDs. Control fields cannot mix with feedback or export
+fields. Operations retain the selected root/audience authority, quarantine checks and
+owner authentication. Safe failures include `revision_conflict`, `protected_skill`,
+`disabled` and `retry_limit`. An operation result does not claim feedback was saved.
+Cancellation invalidates an in-flight generation; retry can spend another bounded model
+reservation. Pruning preserves candidates, dedupe identities and rolling costs.

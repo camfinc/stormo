@@ -38,6 +38,10 @@ func (l *Library) PlanMaintenance(p MaintenancePolicy) ([]MaintenanceProposal, e
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.planMaintenance(p)
+}
+
+func (l *Library) planMaintenance(p MaintenancePolicy) ([]MaintenanceProposal, error) {
 	origins, err := l.readOrigins()
 	if err != nil {
 		return nil, err
@@ -73,9 +77,14 @@ func (l *Library) PlanMaintenance(p MaintenancePolicy) ([]MaintenanceProposal, e
 	for _, s := range idx {
 		r := MaintenanceProposal{Dir: s.Dir, Action: "keep"}
 		e := usage[s.Name]
-		_, repositoryOwned := booted[s.Dir]
+		repositoryOwned := false
+		for dir := range booted {
+			if below(s.Dir, dir) || below(dir, s.Dir) {
+				repositoryOwned = true
+			}
+		}
 		switch {
-		case l.ReadOnly(s.Dir):
+		case l.ReadOnly(s.Dir) || maintenanceProtected(s.Dir, l.Generated):
 			r.Reason = "generated or read-only"
 		case repositoryOwned:
 			r.Reason = "repository-owned"

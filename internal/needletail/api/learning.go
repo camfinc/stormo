@@ -18,6 +18,7 @@ type learningReviewer interface {
 // The ordinary API credential cannot assert human feedback. This dedicated owner key
 // is runtime-owned and scrubbed from tools; the core holds its own owner-side copy.
 func (s *Server) learning(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
 		http.Error(w, "unauthorized", 401)
@@ -75,6 +76,14 @@ func writeLearningError(w http.ResponseWriter, err error) {
 	code, message := "learning_refused", "Learning review was refused. Refresh the selected session and check its status."
 	text := err.Error()
 	switch {
+	case strings.Contains(text, "revision") || strings.Contains(text, "changed"):
+		code, message = "revision_conflict", "The skill changed since this proposal. Refresh before reviewing or restoring it."
+	case strings.Contains(text, "protected") || strings.Contains(text, "private evidence"):
+		code, message = "protected_skill", "This skill or source is protected from that operation."
+	case strings.Contains(text, "disabled"):
+		code, message = "disabled", "Background learning is disabled. Enable it in the agent configuration before retrying."
+	case strings.Contains(text, "retry limit") || strings.Contains(text, "attempt limit"):
+		code, message = "retry_limit", "This job reached its retry limit. Review its evidence before creating new work."
 	case strings.Contains(text, "untrusted"):
 		code, message = "untrusted_session", "This conversation cannot produce owner feedback or proposals."
 	case strings.Contains(text, "budget"):

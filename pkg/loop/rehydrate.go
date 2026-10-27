@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -385,6 +386,22 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			out[p] = v.body
 		}
 	}
+	privateDirs := map[string]bool{}
+	if provider, ok := o.Engine.(engine.PrivateLearningTrees); ok {
+		for _, tree := range provider.PrivateLearningDirectories() {
+			if tree == "" || filepath.IsAbs(tree) || filepath.ToSlash(filepath.Clean(tree)) != tree || strings.HasPrefix(tree, "../") {
+				return nil, fmt.Errorf("invalid private learning directory")
+			}
+			for p := range out {
+				if strings.HasPrefix(p, tree+"/") {
+					privateMetadata[p] = true
+					for dir := filepath.ToSlash(filepath.Dir(p)); dir == tree || strings.HasPrefix(dir, tree+"/"); dir = filepath.ToSlash(filepath.Dir(dir)) {
+						privateDirs[dir] = true
+					}
+				}
+			}
+		}
+	}
 
 	// Write. Runtime dirs the engine owns but we did not capture (logs, caches) are left alone.
 	for _, d := range L.Managed {
@@ -408,6 +425,11 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 			if err := os.Chmod(dst, mode); err != nil {
 				return nil, err
 			}
+		}
+	}
+	for dir := range privateDirs {
+		if err := os.Chmod(filepath.Join(o.Home, dir), 0700); err != nil {
+			return nil, err
 		}
 	}
 	for _, s := range o.Agent.State {

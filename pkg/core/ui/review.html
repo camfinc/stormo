@@ -68,6 +68,10 @@
     .learning .detail-copy { margin: 6px 0; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; white-space: pre-wrap; }
     .learning .pill { border-radius: 6px; font-variant-numeric: tabular-nums; }
     .learning .bar { margin: 12px 0; }
+    .learning-preview { grid-column: 1 / -1; min-width: 0; }
+    .learning-preview summary { cursor: pointer; margin-bottom: 10px; }
+    .learning-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+    .learning .text, .learning .note { overflow-wrap: anywhere; }
     @media (max-width: 640px) {
       .item { grid-template-columns: 1fr; }
       .acts { grid-row: auto; grid-column: 1; justify-content: start; }

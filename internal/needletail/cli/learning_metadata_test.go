@@ -48,13 +48,13 @@ func TestLearningMetadataNapRoundTrip(t *testing.T) {
 		}
 	}
 	writeMetadata(runtimelearn.ReflectionsFile, reflection)
-	for _, path := range []string{runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json"} {
+	for _, path := range []string{runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json", runtimelearn.BackgroundBackupFile, skills.DecisionsFile, skills.MaintenanceFile, skills.ArchivesFile, skills.ArchiveDir + "/opaque/scripts/check.sh"} {
 		writeMetadata(path, []byte(`{"version":1,"privateSentinel":"background-private-sentinel"}`))
 	}
 	proposal, _ := json.Marshal(map[string]any{"version": 1, "proposals": []runtimelearn.ExportProposal{{ID: runtimelearn.Hash("proposal"), Text: procedure, EventRefs: []string{event.EventID}, Audience: "agent", Kind: "procedure"}}})
 	writeMetadata(runtimelearn.ProposalsFile, proposal)
 	before := map[string][]byte{}
-	for _, rel := range []string{runtimelearn.OutcomesFile, runtimelearn.OutcomesExportFile, runtimelearn.ReflectionsFile, runtimelearn.ProposalsFile, runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json"} {
+	for _, rel := range []string{runtimelearn.OutcomesFile, runtimelearn.OutcomesExportFile, runtimelearn.ReflectionsFile, runtimelearn.ProposalsFile, runtimelearn.BackgroundFile, skills.OriginsFile, "state/needletail/skill-proposals-v1.json", runtimelearn.BackgroundBackupFile, skills.DecisionsFile, skills.MaintenanceFile, skills.ArchivesFile, skills.ArchiveDir + "/opaque/scripts/check.sh"} {
 		b, err := os.ReadFile(filepath.Join(home, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func TestLearningMetadataNapRoundTrip(t *testing.T) {
 	for _, f := range nap.Files {
 		classes[f.Path] = string(f.Class)
 	}
-	for rel, want := range map[string]string{runtimelearn.BackgroundFile: "raw", skills.OriginsFile: "raw", "state/needletail/skill-proposals-v1.json": "raw", runtimelearn.OutcomesFile: "raw", runtimelearn.ReflectionsFile: "raw", runtimelearn.OutcomesExportFile: "learning", runtimelearn.ProposalsFile: "learning"} {
+	for rel, want := range map[string]string{runtimelearn.BackgroundBackupFile: "raw", skills.DecisionsFile: "raw", skills.MaintenanceFile: "raw", skills.ArchivesFile: "raw", skills.ArchiveDir + "/opaque/scripts/check.sh": "raw", runtimelearn.BackgroundFile: "raw", skills.OriginsFile: "raw", "state/needletail/skill-proposals-v1.json": "raw", runtimelearn.OutcomesFile: "raw", runtimelearn.ReflectionsFile: "raw", runtimelearn.OutcomesExportFile: "learning", runtimelearn.ProposalsFile: "learning"} {
 		if classes[rel] != want {
 			t.Fatalf("class %s=%q want %s", rel, classes[rel], want)
 		}
@@ -115,6 +115,13 @@ func TestLearningMetadataNapRoundTrip(t *testing.T) {
 		got, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatalf("restore %s: %v", rel, err)
+		}
+		if rel == skills.ArchiveDir+"/opaque/scripts/check.sh" {
+			for _, dir := range []string{skills.ArchiveDir, skills.ArchiveDir + "/opaque", skills.ArchiveDir + "/opaque/scripts"} {
+				if st, e := os.Stat(filepath.Join(home2, dir)); e != nil || st.Mode().Perm() != 0700 {
+					t.Fatalf("private archive directory %s mode error %v", dir, e)
+				}
+			}
 		}
 		if string(got) != string(want) {
 			t.Fatalf("restore changed %s", rel)

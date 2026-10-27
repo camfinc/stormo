@@ -253,6 +253,7 @@ const (
 // Config is $AGENT_HOME/needletail.yaml, rendered by the adapter and read once at boot.
 type Config struct {
 	BackgroundLearning bool         `json:"background_learning,omitempty" yaml:"background_learning,omitempty"`
+	SkillMaintenance   bool         `json:"skill_maintenance,omitempty" yaml:"skill_maintenance,omitempty"`
 	Reflection         bool         `json:"reflection,omitempty" yaml:"reflection,omitempty"`
 	Version            int          `json:"version" yaml:"version"`
 	Agent              string       `json:"agent" yaml:"agent"`

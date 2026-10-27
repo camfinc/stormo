@@ -252,6 +252,13 @@ type PrivateLearningState interface {
 	PrivateLearningPaths() []string
 }
 
+// PrivateLearningTrees identifies private archive data directories. Restored files
+// are data (0600), not executable skill bundles; engines restore reviewed modes
+// from their own archive manifest when an owner explicitly restores a skill.
+type PrivateLearningTrees interface {
+	PrivateLearningDirectories() []string
+}
+
 // ArchivedMemory is one archive entry: the hot file it belongs to ("memory" or "user") and its
 // text as the agent saved it.
 type ArchivedMemory struct {

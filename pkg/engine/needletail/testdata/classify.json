@@ -235,6 +235,31 @@
    "path": "state/needletail/skill-proposals-v1.json",
    "class": "raw",
    "glob": "state/needletail/skill-proposals-v1.json"
+  },
+  {
+   "path": "state/needletail/background-learning-v1.backup.json",
+   "class": "raw",
+   "glob": "state/needletail/background-learning-v1.backup.json"
+  },
+  {
+   "path": "state/needletail/skill-decisions-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-decisions-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-maintenance-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-maintenance-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-archives-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-archives-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-archives-v1/opaque/scripts/check.sh",
+   "class": "raw",
+   "glob": "state/needletail/skill-archives-v1/**"
   }
  ]
 }

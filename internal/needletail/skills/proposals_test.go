@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/camfinc/stormo/internal/needletail/messaging"
@@ -135,5 +136,50 @@ func TestStagePatchRefusesQuarantineDuringValidation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(l.Home, ProposalsFile)); !os.IsNotExist(err) {
 		t.Fatal("quarantined proposal persisted")
+	}
+}
+
+func TestPatchRetainsBoundedIndependentEvidence(t *testing.T) {
+	l := library(t)
+	rev, _ := l.BundleRevision("solo")
+	refs := []string{strings.Repeat("a", 64)}
+	r := PatchRequest{Root: "root", Audience: "agent", Name: "solo", ExpectedRevision: rev, OldText: "A top-level skill.", NewText: "An improved skill.", SourceCandidate: strings.Repeat("b", 64), EvidenceRefs: refs, Checks: "Verified fixture", Conditions: "When input is valid"}
+	p, err := l.StagePatch(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs[0] = strings.Repeat("c", 64)
+	restarted := &Library{Home: l.Home}
+	all, err := restarted.ListPatches("root", "agent")
+	if err != nil || len(all) != 1 {
+		t.Fatal(all, err)
+	}
+	stored := all[0]
+	if stored.ID != p.ID || stored.Checks != r.Checks || stored.Conditions != r.Conditions || stored.SourceCandidate != r.SourceCandidate || stored.EvidenceRefs[0] != strings.Repeat("a", 64) {
+		t.Fatal("evidence not durably copied", stored)
+	}
+	r.EvidenceRefs = []string{"invalid"}
+	if _, err = l.StagePatch(context.Background(), r); err == nil {
+		t.Fatal("unbounded provenance accepted")
+	}
+	r.EvidenceRefs = nil
+	r.SourceCandidate = "invalid"
+	if _, err = l.StagePatch(context.Background(), r); err == nil {
+		t.Fatal("invalid source accepted")
+	}
+	r.SourceCandidate = ""
+	r.Checks = strings.Repeat("x", 2001)
+	if _, err = l.StagePatch(context.Background(), r); err == nil {
+		t.Fatal("oversized checks accepted")
+	}
+	r.Checks = "forbidden"
+	l.Check = func(s string) error {
+		if strings.Contains(s, "forbidden") {
+			return errors.New("secret")
+		}
+		return nil
+	}
+	if _, err = l.StagePatch(context.Background(), r); err == nil {
+		t.Fatal("evidence secret accepted")
 	}
 }

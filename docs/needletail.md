@@ -882,24 +882,27 @@ nonexistence. Provider failures remain errors, rather than an empty successful c
 See Slack's [conversations.list](https://docs.slack.dev/reference/methods/conversations.list/)
 and [conversations.info](https://docs.slack.dev/reference/methods/conversations.info/) contracts.
 
-### Background learning foundations
+### Background learning and skill maintenance
 
-See [the autonomous learning plan](needletail-autonomous-learning.md) for the full
-background learning, skill improvement, and maintenance architecture.
-`background_learning: true` in `engine/needletail/config.yaml` opts into the first
-proposal-only worker; it is independent of `reflection` and disabled by default.
-The serve-owned worker admits one job per 15-second idle poll with at most eight
-calls and 4,096 reserved output tokens per rolling 24 hours. Corrections and observed
-failed foreground skill commands enqueue private review material. No transcript or
-command output enters that request. No candidate activates itself.
+See [the autonomous learning plan](needletail-autonomous-learning.md) for implementation
+and operating limits. `background_learning: true` in `engine/needletail/config.yaml`
+enables the idle proposal worker, independently of `reflection`; default is false.
+Corrections and observed failed skill commands can produce reviewable exact-revision
+`SKILL.md` patches. The model has no tools and cannot activate its own output.
+Limits are eight calls / 4,096 reserved output tokens per rolling day, 512 tokens per
+request, a 30-second deadline, and a 15-second idle poll.
 
-Owner learning responses include a separate `background` field with scoped job
-counts/candidates and home-wide rolling budget counters. These candidates are not
-accepted by the legacy export operation. Native/browser presentation and owner
-queue cancellation/retention controls remain planned. The 256-job cumulative cap
-fails closed; production retention must precede broad enablement.
+`skill_maintenance: true` independently enables the daily, model-free idle scan (one-minute
+poll). The owner may also refresh manually. Runtime-owned stale skills can be reviewed
+for archival; repository/generated/pinned skills and scheduled references are protected.
+Archive and restore preserve the whole bundle, ownership and executable modes.
 
-Skill maintenance and exact-revision patch staging are library foundations only:
-no maintenance timer, model-driven patch generator, automatic activation, or
-archival is enabled by this flag. All three new private state files are Raw in
-snapshots and excluded from dream and raw file browsing.
+Browser and native macOS learning review support queue cancellation, bounded explicit
+retry, 30-day detail pruning, patch approval/rejection/rollback, maintenance refresh,
+archive and restore. Approval and rollback refuse stale revisions. Private source
+material cannot activate agent-wide skills. Background candidates do not use legacy export.
+
+Queue format v2 retains 256 active records and 4,096 tombstones/candidates within 16 MiB;
+capacity exhaustion preserves existing state and refuses new work. Migration preserves
+an exact v1 backup. Decisions, maintenance metadata and archived trees are private Raw
+snapshot material. Neither flag enables automatic activation or repository promotion.

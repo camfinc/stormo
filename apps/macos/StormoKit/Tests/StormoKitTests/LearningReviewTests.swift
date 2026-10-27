@@ -21,6 +21,22 @@ import Testing
         #expect(!data.candidates[0].canExport && data.candidates[0].relatedIds.isEmpty)
         #expect(!data.status.reflectionEnabled && data.status.callsLimit == 100)
     }
+    @Test func olderBackgroundPayloadDecodesWithoutNewControls() throws {
+        let background = try JSONDecoder().decode(BackgroundLearningReview.self, from: Data(#"{"enabled":true,"pending":1,"completed":0,"failed":0,"interrupted":0,"callsUsed":1,"tokensReserved":512}"#.utf8))
+        #expect(background.callsLimit == 8 && background.tokensLimit == 4096)
+        #expect(background.jobs == nil && background.pending == 1)
+    }
+
+    @Test func controlRequestBindsExactRevisionWithoutFeedbackFields() throws {
+        let request = LearningFeedback.control("approve_patch", id: "patch-1", revision: "base-r")
+        let body = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: String])
+        #expect(body == ["action": "approve_patch", "id": "patch-1", "expectedRevision": "base-r"])
+        let prune = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(LearningFeedback.control("prune_jobs"))) as? [String: String])
+        #expect(prune == ["action": "prune_jobs"])
+        let patch = try JSONDecoder().decode(LearningSkillPatch.self, from: Data(#"{"id":"p","name":"example","status":"conflict","before":"old","after":"new","expectedRevision":"base","currentRevision":"changed","audience":"agent","createdAt":"2026-10-27","canApprove":false,"canRollback":false}"#.utf8))
+        #expect(!patch.canApprove && patch.expectedRevision != patch.currentRevision)
+    }
+
     @Test func feedbackUsesStableOpaqueOriginAndBoundsUnicodeSummary() throws {
         let origin = LearningFeedback.origin(for: "event1")
         #expect(origin.count == 71 && origin.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" })

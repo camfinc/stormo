@@ -75,6 +75,13 @@ nap/dream machinery, the deployer and the bench only talk to that interface. Add
 new module plus one registry line; agents switch by changing `engine.kind` and porting their
 engine-specific files (`hermes/` today).
 
+Private learning storage also crosses this boundary through optional engine interfaces:
+`PrivateLearningState` identifies private files, and `PrivateLearningTrees` identifies
+private directory trees. Rehydrate restores those files as 0600 and tree directories as
+0700; their snapshot class stays Raw. Needletail uses this for review receipts and
+reversible skill archives. Archive mode manifests belong to the runtime and restore
+executable permissions only when the owner explicitly restores a skill.
+
 ### Hermes specifics
 
 - Image: stock `nousresearch/hermes-agent:<image_tag>`, pinned per agent (`engine.image_tag`).

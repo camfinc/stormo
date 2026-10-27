@@ -35,7 +35,12 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 			}
 			return nil
 		}
-		if req.ExportID != "" {
+		if req.Action != "" {
+			if err := a.learningControl(ctx, session, root, aud, req); err != nil {
+				return LearningData{}, err
+			}
+			operation = &learning.RuntimeReviewOperation{OK: true, Code: "saved", Message: "Learning operation saved."}
+		} else if req.ExportID != "" {
 			exportAudience := aud
 			candidates, lookupErr := a.Learning.Candidates(root, "agent")
 			if lookupErr != nil {
@@ -128,7 +133,16 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 		bc = append(bc, publicCandidates...)
 	}
 	background := &learning.BackgroundReviewData{Enabled: a.Cfg.BackgroundLearning, Pending: bs.Pending, Completed: bs.Completed, Failed: bs.Failed, Interrupted: bs.Interrupted, CallsUsed: bs.CallsUsed, TokensReserved: bs.TokensReserved, Candidates: bc}
-	return LearningData{Events: events, Candidates: c, Status: status, Operation: operation, Background: background}, nil
+	background.CallsLimit, background.TokensLimit = 8, 4096
+	background.Jobs, err = a.backgroundJobs(root, aud)
+	if err != nil {
+		return LearningData{}, err
+	}
+	skillData, err := a.skillReview(root, aud, status.FeedbackAllowed)
+	if err != nil {
+		return LearningData{}, err
+	}
+	return LearningData{Events: events, Candidates: c, Status: status, Operation: operation, Background: background, Skills: skillData}, nil
 }
 
 // Serialize owner feedback/reflection with turns so a root cannot become tainted

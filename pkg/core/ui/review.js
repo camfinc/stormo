@@ -282,7 +282,7 @@ function renderLearning(id) {
   const notice = state.error ? `<p class="notice error" role="alert">${esc(state.error)} Refresh outcomes to try again.</p>` : envelope.state && envelope.state !== "ready" ? `<p class="notice" role="status">${esc(envelope.message || "Learning review is unavailable for this agent.")}</p>` : "";
   body.innerHTML = `<p class="note">Review checked task outcomes and reflection proposals. Proposals remain pending until the learning cycle and review accept them.</p>${controls}${notice}
     ${data ? `<div class="bar"><span class="pill">Reflection <b>${status.reflectionEnabled ? "enabled" : "disabled"}</b></span><span class="pill">Calls <b>${esc(status.callsUsed ?? 0)} / ${esc(status.callsLimit ?? 100)}</b></span><span class="pill">Events ${esc(status.eventsUsed ?? 0)} / ${esc(status.eventsLimit ?? 4096)}</span><span class="pill">Candidates ${esc(status.candidatesUsed ?? 0)} / ${esc(status.candidatesLimit ?? 100)}</span><span class="pill">Exports ${esc(status.exportsUsed ?? 0)} / ${esc(status.exportsLimit ?? 100)}</span></div>
-      ${!status.reflectionEnabled ? `<p class="note">Outcome feedback is still recorded. Reflection is disabled, so it creates no new reflection jobs.</p>` : ""}${status.feedbackAllowed === false ? `<p class="notice">Feedback is unavailable for this conversation. Existing outcomes and proposals remain readable.</p>` : ""}
+      ${backgroundLearningHTML(id, data.background, state.loading || state.mutating)}${skillLearningHTML(id, data.skills, state.loading || state.mutating)}${!status.reflectionEnabled ? `<p class="note">Outcome feedback is still recorded. Legacy reflection is disabled; background generation has its own setting.</p>` : ""}${status.feedbackAllowed === false ? `<p class="notice">Feedback is unavailable for this conversation. Existing outcomes and proposals remain readable.</p>` : ""}
       <h4>Observed outcomes (${(data.events ?? []).length})</h4>${(data.events ?? []).length ? data.events.map((e) => eventHTML(id, e, status)).join("") : `<p class="notice">No attributed outcomes in this conversation yet. Views and command exits alone do not establish task success.</p>`}
       <h4>Reflection proposals (${(data.candidates ?? []).length})</h4>${(data.candidates ?? []).length ? data.candidates.map((c) => candidateHTML(id, c, status)).join("") : `<p class="notice">No reflection proposals for this conversation. A routine turn may produce none.</p>`}` : !state.loading && !state.error && envelope.state === "ready" ? `<p class="notice">${sessions.length ? "Choose a conversation to see its outcomes and proposals." : "No conversations available for this agent yet."}</p>` : ""}`;
 }
@@ -371,3 +371,57 @@ function lockLearningControls(id, locked) {
   panel?.querySelectorAll("select, textarea, button").forEach((control) => { control.disabled = locked; });
   panel?.querySelector(".learning-body").setAttribute("aria-busy", String(locked));
 }
+
+
+function learningAction(id, action, label, target = "", revision = "", disabled = false) {
+  return `<button class="btn" data-learning-action="${esc(action)}" data-learning-id="${esc(id)}" data-target-id="${esc(target)}" data-revision="${esc(revision)}" ${disabled ? "disabled" : ""}>${esc(label)}</button>`;
+}
+
+function backgroundLearningHTML(id, background, locked) {
+  if (!background) return "";
+  return `<h4>Background jobs · ${background.enabled ? "enabled" : "disabled"}</h4>
+    <p class="note">Home budget, rolling 24 hours: ${esc(background.callsUsed)} / ${esc(background.callsLimit)} calls · ${esc(background.tokensReserved)} / ${esc(background.tokensLimit)} reserved output tokens.</p>
+    <p class="note">Conversation jobs: ${esc(background.pending)} pending · ${esc(background.completed)} complete · ${esc(background.failed)} failed · ${esc(background.interrupted)} interrupted. Candidates are scoped to this conversation and remain proposals.</p>
+    ${(background.jobs ?? []).map((job) => `<div class="item"><div class="text"><b>${esc(job.kind)} · ${esc(job.state)}</b><p class="note">${esc(job.id)} · attempts ${esc(job.attempts)} · owner retries ${esc(job.ownerRetries)} · ${esc(job.resultCode)}</p></div><div class="acts">${["pending", "reserved"].includes(job.state) ? learningAction(id, "cancel_job", "Cancel job", job.id, "", locked) : ""}${["failed", "interrupted", "cancelled"].includes(job.state) ? learningAction(id, "retry_job", "Retry job…", job.id, "", locked) : ""}</div></div>`).join("")}
+    ${learningAction(id, "prune_jobs", "Prune terminal job details", "", "", locked)}
+    <h4>Background proposals (${(background.candidates ?? []).length})</h4>${(background.candidates ?? []).map((candidate) => `<div class="item"><div class="text">${esc(candidate.text)}<p class="note">Proposal only · ${esc(candidate.audience)} · checks: ${esc(candidate.checks)}</p><p class="note">Applies: ${esc(candidate.conditions)}${candidate.exceptions ? ` · Exceptions: ${esc(candidate.exceptions)}` : ""}</p></div></div>`).join("") || `<p class="notice">No background proposals for this conversation.</p>`}`;
+}
+
+function skillLearningHTML(id, skills, locked) {
+  if (!skills) return "";
+  return `<h4>Skill proposals and maintenance</h4><p class="note">Review the exact replacement before approval. Approval activates a local executable skill; repository promotion is separate.</p>
+    ${(skills.patches ?? []).map((patch) => `<div class="item"><div class="text"><b>${esc(patch.name)} · ${esc(patch.status)}</b><p class="note">Audience: ${esc(patch.audience)} · base: ${esc(patch.expectedRevision)} · current: ${esc(patch.currentRevision)}</p>${patch.reason ? `<p class="note">${esc(patch.reason)}</p>` : ""}${patch.checks ? `<p class="note"><b>Checks:</b> ${esc(patch.checks)}</p>` : ""}${patch.conditions ? `<p class="note"><b>Applies:</b> ${esc(patch.conditions)}</p>` : ""}${patch.evidenceRefs?.length ? `<details><summary>Evidence references</summary><pre>${esc(patch.evidenceRefs.join("\n"))}</pre></details>` : ""}</div><div class="acts">${patch.canApprove ? learningAction(id, "approve_patch", "Approve…", patch.id, patch.expectedRevision, locked) : ""}${["proposed", "pending"].includes(patch.status) ? learningAction(id, "reject_patch", "Reject", patch.id, "", locked) : ""}${patch.canRollback ? learningAction(id, "rollback_patch", "Roll back…", patch.id, patch.currentRevision, locked) : ""}</div><details class="learning-preview"><summary>Replacement preview</summary><b>Before</b><pre>${esc(patch.before)}</pre><b>After</b><pre>${esc(patch.after)}</pre></details></div>`).join("") || `<p class="notice">No skill patches to review.</p>`}
+    <p class="note">Maintenance ${skills.maintenanceEnabled ? "enabled" : "disabled"} · last scan: ${esc(skills.lastScanAt || "never")}</p>${learningAction(id, "scan_maintenance", "Scan maintenance", "", "", locked)}
+    ${(skills.maintenance ?? []).map((item) => `<div class="item"><div class="text"><b>${esc(item.name)} · ${esc(item.action)}</b><p class="note">${esc(item.reason)}</p></div><div class="acts">${item.action === "archive_review" ? learningAction(id, "archive_skill", "Archive…", item.name, item.revision, locked) : ""}</div></div>`).join("")}
+    <h4>Archived skills</h4>${(skills.archives ?? []).map((item) => `<div class="item"><div class="text">${esc(item.name)} · ${esc(item.status)}</div><div class="acts">${item.status === "archived" ? learningAction(id, "restore_skill", "Restore", item.id, "", locked) : ""}</div></div>`).join("") || `<p class="notice">No archived skills.</p>`}`;
+}
+
+app.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-learning-action]");
+  if (!button || busy) return;
+  const id = button.dataset.learningId, state = learningViews.get(id);
+  if (!state || state.loading || state.mutating) return;
+  const action = button.dataset.learningAction;
+  const confirmations = {
+    approve_patch: "Activate the previewed skill replacement? The base revision must still match.",
+    rollback_patch: "Restore the skill's previous revision? The current revision must still match.",
+    archive_skill: "Archive this skill? It will no longer be active. You can restore it from archives.",
+    retry_job: "Retry this job? This may spend another model call and reserved output tokens from the home budget."
+  };
+  if (confirmations[action] && !window.confirm(confirmations[action])) return;
+  const payload = { action };
+  if (button.dataset.targetId) payload.id = button.dataset.targetId;
+  if (button.dataset.revision) payload.expectedRevision = button.dataset.revision;
+  const session = state.session;
+  busy = true; state.mutating = true; state.error = "";
+  lockLearningControls(id, true);
+  try {
+    const result = await api("POST", learningPath(id, session), payload);
+    if (result.state !== "ready") throw new Error(result.message || "The learning action could not finish.");
+    state.envelope = result;
+    const operation = result.data?.operation;
+    if (operation?.ok === false) throw new Error(operation.message || "The action was refused. Refresh to review the current revision.");
+    toast(operation?.message || "Learning review updated.");
+  } catch (error) { state.error = error.message; toast(error.message, true); }
+  finally { busy = false; state.mutating = false; renderLearning(id); }
+});

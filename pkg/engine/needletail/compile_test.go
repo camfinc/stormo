@@ -384,3 +384,25 @@ func TestBackgroundLearningConfigOptIn(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillMaintenanceIndependentOptIn(t *testing.T) {
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"", "skill_maintenance: true\n"} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		ac, err := readAgentConfig(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+		if c.SkillMaintenance != (body != "") || c.BackgroundLearning || c.Reflection {
+			t.Fatalf("unexpected independent flags: %+v", c)
+		}
+	}
+}

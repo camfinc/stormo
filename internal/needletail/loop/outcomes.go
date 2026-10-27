@@ -106,8 +106,10 @@ func (a *Agent) outcomeSubject(c wire.ToolCall) *learning.OutcomeEvent {
 	if err != nil {
 		return nil
 	}
-	rev := skillRevision(a.Env.Skills, s)
-	if rev == "" {
+	// New observations use the versioned full-bundle algorithm, including modes.
+	// Legacy snapshot hashes remain readable evidence but cannot authorize drafts.
+	rev, err := a.Env.Skills.BundleRevision(s.Dir)
+	if err != nil || rev == "" {
 		return nil
 	}
 	// Opaque subject identity prevents names supplied by clients leaking into review metadata.

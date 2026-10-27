@@ -38,6 +38,8 @@ public struct LearningReviewData: Codable, Sendable, Equatable {
     public var candidates: [LearningCandidate]
     public var status: LearningReviewStatus
     public var operation: LearningReviewOperation?
+    public var background: BackgroundLearningReview?
+    public var skills: SkillLearningReview?
 }
 public struct LearningReviewOperation: Codable, Sendable, Equatable {
     public var ok: Bool
@@ -115,6 +117,13 @@ public struct LearningFeedback: Codable, Sendable, Equatable {
     public var origin: String?
     public var summary: String?
     public var exportId: String?
+    public var action: String?
+    public var id: String?
+    public var expectedRevision: String?
+
+    public static func control(_ action: String, id: String? = nil, revision: String? = nil) -> Self {
+        Self(action: action, id: id, expectedRevision: revision)
+    }
 
     public static func feedback(event: String, outcome: String, origin: String, summary: String) -> Self {
         Self(eventId: event, outcome: outcome, origin: origin, summary: summary)
@@ -133,4 +142,54 @@ public struct LearningFeedback: Codable, Sendable, Equatable {
         }
         return result
     }
+}
+
+public struct BackgroundLearningReview: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var pending, completed, failed, interrupted, callsUsed, tokensReserved: Int
+    public var callsLimit, tokensLimit: Int
+    public var jobs: [BackgroundLearningJob]?
+    public var candidates: [LearningCandidate]?
+    enum CodingKeys: String, CodingKey { case enabled, pending, completed, failed, interrupted, callsUsed, tokensReserved, callsLimit, tokensLimit, jobs, candidates }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        pending = try c.decode(Int.self, forKey: .pending)
+        completed = try c.decode(Int.self, forKey: .completed)
+        failed = try c.decode(Int.self, forKey: .failed)
+        interrupted = try c.decode(Int.self, forKey: .interrupted)
+        callsUsed = try c.decode(Int.self, forKey: .callsUsed)
+        tokensReserved = try c.decode(Int.self, forKey: .tokensReserved)
+        callsLimit = try c.decodeIfPresent(Int.self, forKey: .callsLimit) ?? 8
+        tokensLimit = try c.decodeIfPresent(Int.self, forKey: .tokensLimit) ?? 4096
+        jobs = try c.decodeIfPresent([BackgroundLearningJob].self, forKey: .jobs)
+        candidates = try c.decodeIfPresent([LearningCandidate].self, forKey: .candidates)
+    }
+}
+public struct BackgroundLearningJob: Codable, Sendable, Equatable, Identifiable {
+    public var id, kind, state: String
+    public var attempts, ownerRetries: Int
+    public var createdAt, updatedAt, next, resultCode: String
+    public var candidateId: String?
+}
+public struct SkillLearningReview: Codable, Sendable, Equatable {
+    public var patches: [LearningSkillPatch]?
+    public var maintenance: [LearningSkillMaintenance]?
+    public var archives: [LearningSkillArchive]?
+    public var lastScanAt: String?
+    public var maintenanceEnabled: Bool
+}
+public struct LearningSkillPatch: Codable, Sendable, Equatable, Identifiable {
+    public var id, name, status, before, after, expectedRevision, currentRevision, audience, createdAt: String
+    public var reason, checks, conditions: String?
+    public var evidenceRefs: [String]?
+    public var canApprove, canRollback: Bool
+}
+public struct LearningSkillMaintenance: Codable, Sendable, Equatable, Identifiable {
+    public var name, action, reason, revision: String
+    public var lastActivity: String?
+    public var id: String { name }
+}
+public struct LearningSkillArchive: Codable, Sendable, Equatable, Identifiable {
+    public var id, name, status, revision, createdAt: String
 }

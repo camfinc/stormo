@@ -2,9 +2,10 @@
 
 This is the implementation plan for learning that continues between foreground tasks,
 turns verified experience into reviewable improvements, and keeps skills current.
-The first implementation batch adds a durable background proposal queue and a worker,
-plus ownership-aware, dry-run skill maintenance foundations. It does not complete autonomous
-activation, maintenance scheduling, interface parity, or a measured production rollout.
+The implemented scope now includes background skill patch generation, owner review with
+activation and rollback, scheduled maintenance with reversible archival, queue controls,
+and browser/macOS presentation. Automatic activation and measured production rollout
+remain future work. Both background generation and maintenance are disabled by default.
 No deployment is implied by a local build, passing tests, or a commit.
 
 Read this alongside [the learning correctness plan](needletail-learning-improvements.md),
@@ -34,39 +35,52 @@ to edit a skill during a trusted requested task does not give a background model
 permission to rewrite every skill. Generated skills are read-only. Repository acceptance
 and runtime edits remain separate operations.
 
-## First batch implementation inventory
+## Implemented scope (items 1–5)
 
-The additive queue is `state/needletail/background-learning-v1.json` (0600, Raw),
-separate from legacy reflection. `EnqueueBackground` admits evidence-backed triggers;
-`ProcessBackground` handles one job; `RecoverBackground` marks startup reservations
-interrupted; `BackgroundSnapshot` returns scoped candidates and job counts together
-with home-wide rolling budget usage. The initial adapter uses only the selected bounded
-summary and opaque evidence references. Related-memory lookup and duplicate semantic
-search in this new adapter remain future work.
+1. **Automatic skill drafts.** Authorized corrections and observed failed skill commands
+   enter the idle worker. An agent-wide observation must match the current whole-bundle
+   revision before the model receives bounded `SKILL.md` context. One tool-free request
+   can return one exact-match text patch; the host assigns its target and revision.
+   Generic reflection without that evidence cannot nominate a skill. Drafts retain
+   checks, conditions, source candidate and opaque evidence references.
+2. **Owner decisions.** Review exposes before/after text and current/base revisions.
+   Approval applies an exact-revision patch; rejection preserves the decision; rollback
+   requires the activated revision still to be current. Private-audience drafts cannot
+   become agent-wide skills. Durable decision receipts reconcile interrupted operations
+   without blindly replaying writes. Generated/read-only skills remain protected.
+3. **Maintenance.** `skill_maintenance: true` starts a serve-owned idle scanner, polled
+   every minute and due daily. It makes no model calls. Owner refresh is available even
+   when the timer is disabled. Defaults are stale after 14 days and archive review after
+   30 days. Repository/generated/pinned/unknown-ownership skills and all schedule skill
+   references, including paused jobs, are protected. Only receipt-proven runtime skills
+   are eligible for explicit owner archival. Whole bundles move to a private archive;
+   scoped restore refuses collisions and restores executable modes after nap/rehydrate.
+4. **Queue controls.** Owner cancellation suppresses late results. Explicit retries are
+   bounded to two owner retries and three total attempts; charged reservations survive
+   failures. Owner pruning compacts terminal jobs older than 30 days while retaining
+   deduplication identities and scoped candidates. Capacity is 256 active records,
+   4,096 tombstones, and 16 MiB encoded state; exhaustion fails closed. Migration writes
+   an exact v1 backup, then v2 at `background-learning-v1.json`; older readers refuse v2.
+5. **Interfaces.** Browser and macOS review expose queue states, home-wide budget usage,
+   cancellation/retry/pruning, patch review/activation/rollback, and maintenance/archive
+   restoration. Private review uses the selected task root and authorized audience.
+   Legacy feedback/export remains separate; background candidates cannot use exportId.
 
-Current queue defaults are **8 calls and 4,096 reserved output tokens per rolling 24
-hours**, 512 tokens per call, a 30-second deadline, and **256 cumulative job identities**.
-A reservation is charged even on model failure. The maximum is two attempts only when
-an adapter explicitly identifies a failure as known safe to retry; ordinary provider
-errors are terminal. Stored states are `pending`, `reserved`, `complete`, `failed`, and
-`interrupted`. No terminal-job pruning or owner cancellation exists in this batch.
-Capacity exhaustion is deliberate and visible rather than silently losing deduplication.
-The richer lifecycle below is the roadmap, not the initial persisted format.
+`background_learning: true` remains independent of legacy `reflection`. The worker checks
+for foreground activity every 15 seconds. Limits remain eight calls and 4,096 reserved
+output tokens per rolling 24 hours, 512 tokens per request, and a 30-second deadline.
+Unknown or ambiguous model-call outcomes are not automatically replayed. Success/recovery
+and repeated verified-use triggers are not yet automatically integrated.
 
-`background_learning` is an engine runtime opt-in; only the serve process starts its
-worker. It checks for active foreground turns before each 15-second tick. Corrected
-authorized feedback and observed failed skill executions are first trigger integrations.
-Trusted success/recovery admission exists at the queue interface, while automatic runtime
-success attribution and delivery-recovery reflection remain deferred. Candidates are
-new review material with host-assigned scope and evidence references. They cannot
-activate skills, mutate hot memory, export themselves, or declare verified task success.
+All queue, patch, decision, maintenance and archive metadata is private Raw state, excluded
+from dream harvesting. Archive trees restore as private directories/files; their receipt
+mode manifest restores executable permissions only during an authorized skill restore.
+There is one runtime writer per home. Exact revision checks do not constitute an
+interprocess filesystem transaction against arbitrary concurrent terminal writers.
 
-The owner learning API adds a separate `background` field so these proposals are not
-confused with legacy exportable reflection candidates. Browser/native presentation,
-cancel/retry controls, retention controls, maintenance scheduling, automatic model-generated
-skill patches, activation, and production quality evaluation remain subsequent work.
-Final verification results must be reported by the implementation handoff; this document
-is not a passing test receipt.
+The remaining sections describe the broader design, including future quality evaluation,
+related-memory retrieval, additional triggers and optional narrow automatic activation.
+The historical first-batch validation receipt at the end applies only to that batch.
 
 ## Target architecture
 
@@ -183,7 +197,7 @@ Proposed operational defaults for the subsequent configurable scheduler are:
 | Paid calls per day | Current initial default: 8, independent of legacy reflection budget | Pause with explicit budget reason |
 | Model output per call | 512 tokens | Reject oversized/invalid result |
 | Summary/input | 2,000 / 8,000 bytes | Refuse rather than truncate meaning silently |
-| Queue capacity | Current initial default: 256 cumulative jobs | Reject new admissions; record bounded saturation metric |
+| Queue capacity | 256 active records plus 4,096 retained identities | Reject new admissions; record bounded saturation metric |
 | Attempts | 1 paid attempt | Interrupted calls remain reserved/uncertain |
 | Maintenance scan | Daily, bounded inventory, no paid call by default | Resume bounded cursor on later scan |
 | Terminal job detail | 30 days | Compact only after preserving required dedupe/decision data |
@@ -221,8 +235,8 @@ Runtime activation and repository promotion are separate decisions. Runtime acti
 changes the locally executable skill revision; repository promotion accepts a reviewed
 proposal into the instance source tree and follows its existing review workflow. Neither
 implies the other, a commit, deployment, restart, or permission for external actions.
-Activation is a later gated capability. Initial background output remains proposal-only;
-patch staging and a compare-and-swap foundation do not authorize automatic activation.
+Owner-reviewed activation is implemented. Background output remains proposal-only;
+patch staging does not authorize automatic activation.
 Human review remains required for executable scripts, schedules, capabilities, shared
 policy, secrets, external actions, audience widening, and changes to curator protections.
 A future owner-enabled automatic lane may cover narrowly defined agent-local procedural
@@ -265,7 +279,7 @@ receipt (`state/needletail/skill-origins-v1.json`) and returns `keep`, `stale`, 
 `archive_review`. Repository-owned, generated, pinned, scheduled/protected, ambiguously
 named, and legacy skills without matching ownership receipts are held. Missing, corrupt,
 or future-dated evidence cannot justify archival. Caller-supplied stale/archive durations
-must be positive and ordered; there is no automatic maintenance schedule or archival.
+must be positive and ordered; daily maintenance scheduling is opt-in; archival requires owner review.
 The separate `BundleRevision` and `StagePatch` primitives now provide a bounded
 whole-bundle revision check and an immutable unique-match `SKILL.md` patch candidate.
 `ListPatches` returns exact root/audience matches. Candidates are stored privately in
@@ -274,8 +288,8 @@ whole-bundle revision check and an immutable unique-match `SKILL.md` patch candi
 and the expected bundle revision before and after validation. It does not apply a patch
 or constitute a filesystem transaction against arbitrary concurrent terminal writes.
 The host must validate root/audience and use the source trust guard when wiring this
-primitive into a worker or owner operation. Automatic model patch generation, worker
-integration, activation compare-and-swap, and rollback remain subsequent work.
+primitive into a worker or owner operation. Automatic model patch generation, worker integration, owner activation and rollback
+are implemented as described above; unrestricted automatic activation remains deferred.
 Do not implement a free-running model that rewrites directories. Classify missing
 checks, repeated verified failures, expired review dates, obsolete dependencies, broken
 references, duplicate procedures, and inactivity separately. Low usage alone is not
@@ -424,3 +438,22 @@ These results validate local mechanics and additive client compatibility. They d
 not establish live learning quality, automatic patch generation or activation, new
 UI presentation, deployed behavior, or production readiness of unbounded operation.
 The worker remains disabled by default; no agent was restarted or opted in.
+
+## Items 1–5 validation receipt
+
+The follow-on implementation was checked locally with the full Go test suite and vet,
+race checks for runtimelearn/skills/fsx/loop, and Linux-targeted runtime vet. Synthetic
+integration cases cover generation through owner activation and rollback; stale revisions,
+private scope and late cancellation; queue migration/retention; protected maintenance;
+and actual archive → nap → rehydrate → restore with executable modes preserved.
+Browser tests cover escaped previews, exact revision submission and mutation controls.
+These checks establish local mechanics, not improved real-world learning quality.
+Automatic activation, additional success/recovery triggers, related-memory retrieval,
+held-out quality evaluation and production rollout remain outside this delivered scope.
+
+The updated macOS app builds successfully. All 97 StormoKit tests pass (RealCore and
+RealFiles run separately to avoid their overlapping random test-port ranges), including
+legacy background-response decoding. Browser desktop/narrow screenshots were inspected.
+Native visual verification remains incomplete: the snapshot harness captured the empty
+proposals tab rather than the populated task-outcomes controls. No live agent was enabled,
+restarted or deployed by this batch, and no learning-quality gain is claimed.

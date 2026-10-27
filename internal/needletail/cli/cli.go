@@ -248,6 +248,21 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		opts.OnSchedule = luau.Events{RT: lr}.OnSchedule // the agent's on_schedule handlers (§5.5)
 	}
 	s := sched.New(opts)
+	agent.MaintenancePolicy = func() (skills.MaintenancePolicy, error) {
+		refs, err := s.SkillReferences()
+		if err != nil {
+			return skills.MaintenancePolicy{}, err
+		}
+		policy := skills.MaintenancePolicy{StaleAfter: 14 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour}
+		for _, name := range refs {
+			skill, err := env.Skills.Find(name)
+			if err != nil {
+				return policy, fmt.Errorf("scheduled skill reference cannot be resolved")
+			}
+			policy.Protected = append(policy.Protected, skill.Dir)
+		}
+		return policy, nil
+	}
 	agent.Tools.Add(s.Tool(origin(store)))
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state,
@@ -663,6 +678,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		rt.agent.RunBackgroundLearning(ticks)
 	}()
 	defer func() { stopTicks(); <-learningDone }()
+	maintenanceDone := make(chan struct{})
+	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
+	defer func() { stopTicks(); <-maintenanceDone }()
 	rt.sched.Start(ticks)
 	rt.followUps.Start(fu) // what fell due while the agent was down fires now, marked late
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: rt.logger}

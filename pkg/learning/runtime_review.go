@@ -2,19 +2,20 @@ package learning
 
 // ReflectionCandidate is private owner review material, never active policy.
 type ReflectionCandidate struct {
-	ID              string   `json:"id"`
-	Text            string   `json:"text"`
-	PreviousMistake string   `json:"previousMistake,omitempty"`
-	Checks          string   `json:"checks"`
-	Conditions      string   `json:"conditions"`
-	Exceptions      string   `json:"exceptions"`
-	Audience        string   `json:"audience"`
-	Sensitivity     string   `json:"sensitivity"`
-	ReviewDate      string   `json:"reviewDate"`
-	Action          string   `json:"action"`
-	RelatedIDs      []string `json:"relatedIds"`
-	EventRefs       []string `json:"eventRefs"`
-	Root            string   `json:"root"`
+	SkillDraft      *SkillDraft `json:"skillDraft,omitempty"`
+	ID              string      `json:"id"`
+	Text            string      `json:"text"`
+	PreviousMistake string      `json:"previousMistake,omitempty"`
+	Checks          string      `json:"checks"`
+	Conditions      string      `json:"conditions"`
+	Exceptions      string      `json:"exceptions"`
+	Audience        string      `json:"audience"`
+	Sensitivity     string      `json:"sensitivity"`
+	ReviewDate      string      `json:"reviewDate"`
+	Action          string      `json:"action"`
+	RelatedIDs      []string    `json:"relatedIds"`
+	EventRefs       []string    `json:"eventRefs"`
+	Root            string      `json:"root"`
 }
 
 type RuntimeReviewStatus struct {
@@ -40,6 +41,7 @@ type RuntimeReviewOperation struct {
 }
 
 type RuntimeReviewData struct {
+	Skills     *SkillReviewData        `json:"skills,omitempty"`
 	Background *BackgroundReviewData   `json:"background,omitempty"`
 	Events     []OutcomeEvent          `json:"events"`
 	Candidates []ReflectionCandidate   `json:"candidates"`
@@ -50,6 +52,9 @@ type RuntimeReviewData struct {
 // BackgroundReviewData is owner-only, scoped proposal material. Candidates here
 // cannot be exported or activated through the legacy reflection operations.
 type BackgroundReviewData struct {
+	Jobs           []BackgroundJobView   `json:"jobs,omitempty"`
+	CallsLimit     int                   `json:"callsLimit"`
+	TokensLimit    int                   `json:"tokensLimit"`
 	Enabled        bool                  `json:"enabled"`
 	Pending        int                   `json:"pending"`
 	Completed      int                   `json:"completed"`
@@ -61,15 +66,36 @@ type BackgroundReviewData struct {
 }
 
 type RuntimeReviewRequest struct {
-	EventID  string `json:"eventId"`
-	Outcome  string `json:"outcome"`
-	Origin   string `json:"origin"`
-	Summary  string `json:"summary"`
-	ExportID string `json:"exportId"`
+	Action           string `json:"action,omitempty"`
+	ID               string `json:"id,omitempty"`
+	ExpectedRevision string `json:"expectedRevision,omitempty"`
+	EventID          string `json:"eventId"`
+	Outcome          string `json:"outcome"`
+	Origin           string `json:"origin"`
+	Summary          string `json:"summary"`
+	ExportID         string `json:"exportId"`
 }
 
 // Valid rejects ambiguous operations before any write. No credential belongs in this payload.
 func (r RuntimeReviewRequest) Valid() bool {
+	if r.Action != "" {
+		if r.EventID != "" || r.Outcome != "" || r.Origin != "" || r.Summary != "" || r.ExportID != "" || len(r.ID) > 256 || len(r.ExpectedRevision) > 128 {
+			return false
+		}
+		switch r.Action {
+		case "prune_jobs", "scan_maintenance":
+			return r.ID == "" && r.ExpectedRevision == ""
+		case "cancel_job", "retry_job", "reject_patch", "restore_skill":
+			return r.ID != "" && r.ExpectedRevision == ""
+		case "approve_patch", "rollback_patch", "archive_skill":
+			return r.ID != "" && r.ExpectedRevision != ""
+		default:
+			return false
+		}
+	}
+	if r.ID != "" || r.ExpectedRevision != "" {
+		return false
+	}
 	if r.ExportID != "" {
 		return len(r.ExportID) <= 128 && r.EventID == "" && r.Outcome == "" && r.Origin == "" && r.Summary == ""
 	}

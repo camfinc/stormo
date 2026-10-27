@@ -157,8 +157,9 @@ func (c *Core) handleRuntimeLearning(w http.ResponseWriter, r *http.Request, age
 				return 0, nil, err
 			}
 			defer res.Body.Close()
-			b, err := io.ReadAll(io.LimitReader(res.Body, learning.MaxEvidenceBytes+1))
-			if len(b) > learning.MaxEvidenceBytes {
+			const maxReviewBytes = 64 << 20 // bounded evidence, retained candidates and before/after skill previews
+			b, err := io.ReadAll(io.LimitReader(res.Body, maxReviewBytes+1))
+			if len(b) > maxReviewBytes {
 				return 0, nil, io.ErrShortBuffer
 			}
 			return res.StatusCode, b, err
@@ -203,7 +204,7 @@ func (c *Core) handleRuntimeLearning(w http.ResponseWriter, r *http.Request, age
 		return
 	}
 	var data learning.RuntimeReviewData
-	if json.Unmarshal(body, &data) != nil || len(data.Events) > learning.MaxOutcomeEvents || len(data.Candidates) > 100 || (data.Background != nil && len(data.Background.Candidates) > 256) {
+	if json.Unmarshal(body, &data) != nil || len(data.Events) > learning.MaxOutcomeEvents || len(data.Candidates) > 100 || (data.Background != nil && (len(data.Background.Candidates) > 4352 || len(data.Background.Jobs) > 256)) || (data.Skills != nil && (len(data.Skills.Patches) > 256 || len(data.Skills.Archives) > 256 || len(data.Skills.Maintenance) > 4096)) {
 		send("unavailable", "The runtime learning response could not be read.")
 		return
 	}
@@ -211,6 +212,9 @@ func (c *Core) handleRuntimeLearning(w http.ResponseWriter, r *http.Request, age
 	view.Data = &data
 	if operation != nil && c.DB != nil {
 		action := "feedback"
+		if operation.Action != "" {
+			action = operation.Action
+		}
 		if operation.ExportID != "" {
 			action = "export"
 		}
@@ -227,6 +231,14 @@ func safeLearningFailure(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &failure)
 	switch failure.Error.Code {
+	case "revision_conflict":
+		return "The skill changed since this proposal. Refresh before reviewing or restoring it."
+	case "protected_skill":
+		return "This skill or source is protected from that operation."
+	case "disabled":
+		return "Background learning is disabled. Enable it in the agent configuration before retrying."
+	case "retry_limit":
+		return "This job reached its retry limit. Review its evidence before creating new work."
 	case "untrusted_session":
 		return "This conversation cannot produce feedback or proposals."
 	case "budget_exhausted":

@@ -9,6 +9,8 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +20,9 @@ import (
 // reflection store and its unchanged 100-call lifetime ceiling.
 const BackgroundFile = "state/needletail/background-learning-v1.json"
 const backgroundCapacity = 256
+const backgroundTombstoneCapacity = 4096
+const backgroundBytes = 16 << 20
+const BackgroundBackupFile = "state/needletail/background-learning-v1.backup.json"
 
 var ErrBackgroundBudget = errors.New("background daily budget exhausted")
 
@@ -66,12 +71,17 @@ func (e *BackgroundRetryableError) Unwrap() error { return e.Err }
 
 type BackgroundReflector func(context.Context, BackgroundTrigger) (*Candidate, error)
 type backgroundJob struct {
-	ID        string            `json:"id"`
-	Trigger   BackgroundTrigger `json:"trigger"`
-	State     string            `json:"state"`
-	Attempts  int               `json:"attempts"`
-	Next      time.Time         `json:"next"`
-	Candidate *Candidate        `json:"candidate,omitempty"`
+	Created      time.Time         `json:"created"`
+	ID           string            `json:"id"`
+	Trigger      BackgroundTrigger `json:"trigger"`
+	State        string            `json:"state"`
+	Attempts     int               `json:"attempts"`
+	Next         time.Time         `json:"next"`
+	Updated      time.Time         `json:"updated"`
+	Generation   int               `json:"generation"`
+	OwnerRetries int               `json:"ownerRetries"`
+	ResultCode   string            `json:"resultCode,omitempty"`
+	Candidate    *Candidate        `json:"candidate,omitempty"`
 }
 type backgroundReservation struct {
 	At     time.Time `json:"at"`
@@ -81,13 +91,14 @@ type backgroundState struct {
 	Version      int                     `json:"version"`
 	Jobs         []backgroundJob         `json:"jobs"`
 	Reservations []backgroundReservation `json:"reservations"`
+	Tombstones   []backgroundTombstone   `json:"tombstones,omitempty"`
 }
 type BackgroundStatus struct{ Pending, Completed, Failed, Interrupted, CallsUsed, TokensReserved int }
 
 func (s *Store) background() (*backgroundState, error) {
-	b, err := fsx.ReadFileBelow(s.Home, BackgroundFile, 4<<20)
+	b, err := fsx.ReadFileBelow(s.Home, BackgroundFile, backgroundBytes)
 	if os.IsNotExist(err) {
-		return &backgroundState{Version: 1, Jobs: []backgroundJob{}, Reservations: []backgroundReservation{}}, nil
+		return &backgroundState{Version: 2, Jobs: []backgroundJob{}, Reservations: []backgroundReservation{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -96,12 +107,12 @@ func (s *Store) background() (*backgroundState, error) {
 	if err = json.Unmarshal(b, &v); err != nil {
 		return nil, err
 	}
-	if v.Version != 1 || len(v.Jobs) > backgroundCapacity || len(v.Reservations) > 32 {
+	if (v.Version != 1 && v.Version != 2) || (v.Version == 1 && len(b) > 4<<20) || len(v.Jobs) > backgroundCapacity || len(v.Reservations) > 32 || len(v.Tombstones) > backgroundTombstoneCapacity {
 		return nil, fmt.Errorf("unsupported background state")
 	}
 	seen := map[string]bool{}
 	for _, j := range v.Jobs {
-		if seen[j.ID] || j.ID != backgroundIdentity(j.Trigger) || validateTrigger(j.Trigger) != nil || j.Attempts < 0 || j.Attempts > 3 || j.Next.IsZero() {
+		if seen[j.ID] || j.ID != backgroundIdentity(j.Trigger) || validateTrigger(j.Trigger) != nil || j.Attempts < 0 || j.Attempts > 3 || j.OwnerRetries < 0 || j.OwnerRetries > 2 || j.Generation < 0 || j.Next.IsZero() {
 			return nil, fmt.Errorf("invalid background job")
 		}
 		if j.Candidate != nil {
@@ -112,7 +123,7 @@ func (s *Store) background() (*backgroundState, error) {
 		}
 		seen[j.ID] = true
 		switch j.State {
-		case "pending", "reserved", "complete", "failed", "interrupted":
+		case "pending", "reserved", "complete", "failed", "interrupted", "cancelled":
 		default:
 			return nil, fmt.Errorf("invalid background job state")
 		}
@@ -120,6 +131,37 @@ func (s *Store) background() (*backgroundState, error) {
 	for _, r := range v.Reservations {
 		if r.At.IsZero() || r.Tokens != 512 {
 			return nil, fmt.Errorf("invalid reservation")
+		}
+	}
+	for _, t := range v.Tombstones {
+		if !backgroundHash(t.ID) || !backgroundHash(t.Root) || t.Audience == "" || len(t.Audience) > 256 || seen[t.ID] || t.Attempts < 0 || t.Attempts > 3 || (t.State != "complete" && t.State != "failed" && t.State != "cancelled") {
+			return nil, fmt.Errorf("invalid background tombstone")
+		}
+		if c := t.Candidate; c != nil {
+			if t.State != "complete" || validateBackgroundCandidate(c) != nil || c.Root != t.Root || c.Audience != t.Audience || c.ID != Hash(t.ID+"\n"+c.Text) || validateTrigger(BackgroundTrigger{Session: "retained", Kind: t.Kind, Root: t.Root, Audience: t.Audience, EvidenceRefs: t.EvidenceRefs}) != nil || strings.Join(c.EventRefs, "\n") != strings.Join(t.EvidenceRefs, "\n") || backgroundIdentity(BackgroundTrigger{Kind: t.Kind, Root: t.Root, Audience: t.Audience, EvidenceRefs: t.EvidenceRefs}) != t.ID {
+				return nil, fmt.Errorf("invalid retained background candidate")
+			}
+			for _, ref := range t.EvidenceRefs {
+				if !backgroundHash(ref) {
+					return nil, fmt.Errorf("invalid retained evidence reference")
+				}
+			}
+		}
+		seen[t.ID] = true
+	}
+	if v.Version == 1 {
+		// Keep the previous exact document for explicit rollback. Updating the
+		// existing filename atomically makes older runtimes fail closed on v2.
+		if err := fsx.WriteAtomicBelow(s.Home, BackgroundBackupFile, filepath.Join(s.Home, fsx.TmpDir), b, 0600); err != nil {
+			return nil, err
+		}
+		v.Version = 2
+		for i := range v.Jobs {
+			v.Jobs[i].Updated = v.Jobs[i].Next
+			v.Jobs[i].Created = v.Jobs[i].Next
+		}
+		if err := s.writeBackground(&v); err != nil {
+			return nil, err
 		}
 	}
 	return &v, nil
@@ -214,11 +256,16 @@ func (s *Store) EnqueueBackground(t BackgroundTrigger, now time.Time) (string, e
 				return nil
 			}
 		}
+		for _, t := range v.Tombstones {
+			if t.ID == id {
+				return nil
+			}
+		}
 		if len(v.Jobs) >= backgroundCapacity {
 			return fmt.Errorf("background queue capacity exhausted")
 		}
-		v.Jobs = append(v.Jobs, backgroundJob{ID: id, Trigger: t, State: "pending", Next: now.UTC()})
-		return s.write(BackgroundFile, v)
+		v.Jobs = append(v.Jobs, backgroundJob{ID: id, Trigger: t, State: "pending", Next: now.UTC(), Updated: now.UTC(), Created: now.UTC()})
+		return s.writeBackground(v)
 	})
 	return id, err
 }
@@ -236,11 +283,13 @@ func (s *Store) RecoverBackground() error {
 	for i := range v.Jobs {
 		if v.Jobs[i].State == "reserved" {
 			v.Jobs[i].State = "interrupted"
+			v.Jobs[i].ResultCode = "uncertain_call"
+			v.Jobs[i].Generation++
 			changed = true
 		}
 	}
 	if changed {
-		return s.write(BackgroundFile, v)
+		return s.writeBackground(v)
 	}
 	return nil
 }
@@ -248,6 +297,12 @@ func (s *Store) RecoverBackground() error {
 // ProcessBackground handles at most one job. Calls on a Store are safe concurrently;
 // the runtime must remain the single writer of its home, as for outcome storage.
 func (s *Store) ProcessBackground(ctx context.Context, now time.Time, cfg BackgroundConfig, reflect BackgroundReflector, check func(string) error) (bool, error) {
+	return s.ProcessBackgroundWithResult(ctx, now, cfg, reflect, check, nil)
+}
+
+// ProcessBackgroundWithResult stages optional host-selected proposal output only
+// after final source trust and reservation checks. finish must not call this Store.
+func (s *Store) ProcessBackgroundWithResult(ctx context.Context, now time.Time, cfg BackgroundConfig, reflect BackgroundReflector, check func(string) error, finish func(BackgroundTrigger, *Candidate) error) (bool, error) {
 	s.backgroundMu.Lock()
 	defer s.backgroundMu.Unlock()
 	if reflect == nil {
@@ -274,7 +329,7 @@ func (s *Store) ProcessBackground(ctx context.Context, now time.Time, cfg Backgr
 	}
 	job := *selected
 	if err := s.backgroundTrusted(job.Trigger.Session, func() error { return nil }); err != nil {
-		if persistErr := s.interruptBackground(job.ID); persistErr != nil {
+		if persistErr := s.interruptBackground(job.ID, job.Generation); persistErr != nil {
 			return false, persistErr
 		}
 		return true, err
@@ -310,21 +365,23 @@ func (s *Store) ProcessBackground(ctx context.Context, now time.Time, cfg Backgr
 		for i := range v.Jobs {
 			j := &v.Jobs[i]
 			if j.ID == job.ID {
-				if j.State != "pending" || j.Next.After(now) {
+				if j.State != "pending" || j.Next.After(now) || j.Generation != job.Generation {
 					return fmt.Errorf("background job already reserved")
 				}
 				j.State = "reserved"
+				j.Generation++
+				j.Updated = now.UTC()
 				j.Attempts++
 				job = *j
 				v.Reservations = append(v.Reservations, backgroundReservation{now.UTC(), 512})
-				return s.write(BackgroundFile, v)
+				return s.writeBackground(v)
 			}
 		}
 		return fmt.Errorf("background job disappeared")
 	})
 	if err != nil {
 		if !errors.Is(err, ErrBackgroundBudget) {
-			_ = s.interruptBackground(job.ID)
+			_ = s.interruptBackground(job.ID, job.Generation)
 			return true, err
 		}
 		return false, err
@@ -359,11 +416,18 @@ func (s *Store) ProcessBackground(ctx context.Context, now time.Time, cfg Backgr
 			if j.ID != job.ID {
 				continue
 			}
-			if j.State != "reserved" {
+			if j.State != "reserved" || j.Generation != job.Generation {
 				return fmt.Errorf("background reservation lost")
 			}
+			if candidate != nil && callErr == nil && finish != nil {
+				if err := finish(job.Trigger, candidate); err != nil {
+					return err
+				}
+			}
+			j.Updated = now.UTC()
 			if callErr != nil {
 				j.State = "failed"
+				j.ResultCode = "model_failed"
 				var retryable *BackgroundRetryableError
 				if errors.As(callErr, &retryable) && j.Attempts < cfg.MaxAttempts && ctx.Err() == nil {
 					j.State = "pending"
@@ -371,23 +435,24 @@ func (s *Store) ProcessBackground(ctx context.Context, now time.Time, cfg Backgr
 				}
 			} else {
 				j.State = "complete"
+				j.ResultCode = "completed"
 				if candidate != nil {
 					j.Candidate = candidate
 				}
 			}
-			return s.write(BackgroundFile, v)
+			return s.writeBackground(v)
 		}
 		return fmt.Errorf("background job disappeared")
 	})
 	if err != nil {
-		_ = s.interruptBackground(job.ID)
+		_ = s.interruptBackground(job.ID, job.Generation)
 		return true, err
 	}
 	return true, callErr
 }
 
 // Terminal bookkeeping may proceed after quarantine; it contains no generated text.
-func (s *Store) interruptBackground(id string) error {
+func (s *Store) interruptBackground(id string, generation int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, err := s.background()
@@ -396,15 +461,24 @@ func (s *Store) interruptBackground(id string) error {
 	}
 	for i := range v.Jobs {
 		if v.Jobs[i].ID == id {
+			if v.Jobs[i].State == "cancelled" || v.Jobs[i].Generation != generation {
+				return nil
+			}
+			v.Jobs[i].ResultCode = "uncertain_call"
 			v.Jobs[i].State = "interrupted"
 			v.Jobs[i].Candidate = nil
-			return s.write(BackgroundFile, v)
+			return s.writeBackground(v)
 		}
 	}
 	return fmt.Errorf("background job disappeared")
 }
 
 func validateBackgroundCandidate(c *Candidate) error {
+	if d := c.SkillDraft; d != nil {
+		if d.Name == "" || len(d.Name) > 256 || path.Clean(d.Name) != d.Name || path.IsAbs(d.Name) || (d.Name == "." || d.Name == "..") || strings.HasPrefix(d.Name, "../") || strings.ContainsAny(d.Name, "\\\x00\r\n") || !backgroundHash(d.ExpectedRevision) || d.OldText == "" || len(d.OldText) > 1000 || len(d.NewText) > 1000 || d.OldText == d.NewText {
+			return fmt.Errorf("invalid bounded skill draft")
+		}
+	}
 	b, _ := json.Marshal(c)
 	if len(b) > 4000 || c.Text == "" || len(c.Text) > 1000 || c.Checks == "" || c.Conditions == "" || c.Sensitivity == "" || len(c.RelatedIDs) > 0 {
 		return fmt.Errorf("invalid background candidate")
@@ -441,8 +515,24 @@ func (s *Store) BackgroundSnapshot(root, audience string, now time.Time) (Backgr
 		if j.Candidate != nil {
 			copy := *j.Candidate
 			copy.EventRefs = append([]string(nil), copy.EventRefs...)
+			if copy.SkillDraft != nil {
+				draft := *copy.SkillDraft
+				copy.SkillDraft = &draft
+			}
 			c = append(c, copy)
 		}
+	}
+	for _, t := range v.Tombstones {
+		if t.Root != root || t.Audience != audience || t.Candidate == nil {
+			continue
+		}
+		copy := *t.Candidate
+		copy.EventRefs = append([]string(nil), copy.EventRefs...)
+		if copy.SkillDraft != nil {
+			draft := *copy.SkillDraft
+			copy.SkillDraft = &draft
+		}
+		c = append(c, copy)
 	}
 	for _, r := range v.Reservations {
 		if r.At.After(now.Add(-24 * time.Hour)) {
@@ -483,6 +573,9 @@ func NewBackgroundReflector(client *llm.Client) BackgroundReflector {
 			return nil, fmt.Errorf("background output must be JSON candidate or null")
 		}
 		if c != nil {
+			if c.SkillDraft != nil {
+				return nil, fmt.Errorf("generic reflection cannot select skill target")
+			}
 			c.ID, c.Root, c.Audience, c.EventRefs = "", "", "", nil
 			if err = validateBackgroundCandidate(c); err != nil {
 				return nil, err

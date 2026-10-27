@@ -131,7 +131,7 @@ func TestBackgroundCandidateScopeAndUnknownVersion(t *testing.T) {
 	if len(other) != 0 {
 		t.Fatal(other)
 	}
-	if err := s.write(BackgroundFile, map[string]any{"version": 2}); err != nil {
+	if err := s.write(BackgroundFile, map[string]any{"version": 3}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.EnqueueBackground(tr, now); err == nil {
@@ -227,7 +227,7 @@ func TestBackgroundCorruptCandidateAndOversizedStateRefused(t *testing.T) {
 	if _, _, err := s.BackgroundSnapshot(tr.Root, tr.Audience, now); err == nil {
 		t.Fatal("corrupted candidate scope exposed")
 	}
-	if err := os.WriteFile(filepath.Join(s.Home, BackgroundFile), make([]byte, (4<<20)+1), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.Home, BackgroundFile), make([]byte, backgroundBytes+1), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.BackgroundSnapshot(tr.Root, tr.Audience, now); err == nil {

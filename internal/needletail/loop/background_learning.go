@@ -41,13 +41,12 @@ func (a *Agent) RunBackgroundLearning(ctx context.Context) {
 		a.logf("background learning: recovery refused; worker disabled")
 		return
 	}
-	reflect := runtimelearn.NewBackgroundReflector(a.LLM)
 	guarded := func(ctx context.Context, t runtimelearn.BackgroundTrigger) (*runtimelearn.Candidate, error) {
 		root, ok := a.Store.Root(t.Session)
 		if !ok || runtimelearn.Hash(root) != t.Root || a.Store.Untrusted(t.Session) {
 			return nil, fmt.Errorf("source conversation unavailable")
 		}
-		return reflect(ctx, t)
+		return a.reflectWithSkill(ctx, t)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -59,7 +58,7 @@ func (a *Agent) RunBackgroundLearning(ctx context.Context) {
 			if a.activeTurns.Load() != 0 {
 				continue
 			}
-			if _, err := a.Learning.ProcessBackground(ctx, a.now(), runtimelearn.BackgroundConfig{}, guarded, tools.SecretCheck(a.Env.Redact)); err != nil && !errors.Is(err, runtimelearn.ErrBackgroundBudget) && ctx.Err() == nil {
+			if _, err := a.Learning.ProcessBackgroundWithResult(ctx, a.now(), runtimelearn.BackgroundConfig{}, guarded, tools.SecretCheck(a.Env.Redact), a.stageBackgroundSkill); err != nil && !errors.Is(err, runtimelearn.ErrBackgroundBudget) && ctx.Err() == nil {
 				a.logf("background learning: job deferred or refused; inspect owner learning status")
 			}
 		}

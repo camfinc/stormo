@@ -43,6 +43,7 @@ struct AgentLearningReview: View {
                     }
                     if let data = view.data, view.session == selectedSession {
                         status(data.status)
+                        LearningControls(agent: agent.id, session: selectedSession, data: data, busy: busy)
                         if let operation = data.operation {
                             Label(operation.message, systemImage: operation.ok ? "checkmark.circle" : "exclamationmark.triangle")
                                 .font(.callout).foregroundStyle(operation.ok ? Color.secondary : Color.orange)
@@ -211,5 +212,99 @@ struct LearningEvidenceNote: View {
                 Text("Evidence unknown; snapshot sightings do not confirm this lesson.")
             }
         }.font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct LearningControls: View {
+    @Environment(AppModel.self) private var model
+    let agent: String
+    let session: String
+    let data: LearningReviewData
+    let busy: Bool
+    @State private var confirmation: LearningFeedback?
+    @State private var confirmationText = ""
+
+    var body: some View {
+        Group {
+            if let background = data.background {
+                DisclosureGroup("Background jobs · \(background.enabled ? "enabled" : "disabled")") {
+                    Text("Home budget, rolling 24 hours: calls \(background.callsUsed)/\(background.callsLimit) · reserved output tokens \(background.tokensReserved)/\(background.tokensLimit)")
+                        .font(.caption).monospacedDigit()
+                    Text("Session jobs: \(background.pending) pending · \(background.completed) complete · \(background.failed) failed · \(background.interrupted) interrupted. Candidates below are scoped to this conversation and remain proposals.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(background.jobs ?? []) { job in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(job.kind) · \(job.state)").fontWeight(.medium)
+                            Text("\(job.id) · attempts \(job.attempts) · owner retries \(job.ownerRetries) · \(job.resultCode)").font(.caption).textSelection(.enabled)
+                            HStack {
+                                if ["pending", "reserved"].contains(job.state) { control("Cancel job", "cancel_job", id: job.id) }
+                                if ["failed", "interrupted", "cancelled"].contains(job.state) {
+                                    control("Retry job…", "retry_job", id: job.id, confirm: "Retrying may spend another model call and reserved output tokens from the home budget.")
+                                }
+                            }
+                        }.padding(.vertical, 4)
+                    }
+                    control("Prune terminal job details", "prune_jobs")
+                    ForEach(background.candidates ?? []) { candidate in
+                        Text(candidate.text).textSelection(.enabled)
+                        Text("Proposal only · \(candidate.audience) · \(candidate.checks)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let skills = data.skills {
+                DisclosureGroup("Skill proposals and maintenance") {
+                    Text("Review exact replacements before approving. Approval changes the local executable skill; repository promotion is separate.").font(.caption).foregroundStyle(.secondary)
+                    ForEach(skills.patches ?? []) { patch in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(patch.name) · \(patch.status)").fontWeight(.medium)
+                            Text("Audience: \(patch.audience) · base: \(patch.expectedRevision) · current: \(patch.currentRevision)").font(.caption).textSelection(.enabled)
+                            if let reason = patch.reason { Text(reason).font(.caption) }
+                            if let checks = patch.checks { LabeledContent("Checks", value: checks) }
+                            if let conditions = patch.conditions { LabeledContent("Applies when", value: conditions) }
+                            if let refs = patch.evidenceRefs, !refs.isEmpty {
+                                DisclosureGroup("Evidence references") { Text(refs.joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled) }
+                            }
+                            DisclosureGroup("Replacement preview") {
+                                Text("Before").fontWeight(.medium)
+                                Text(patch.before).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                Text("After").fontWeight(.medium)
+                                Text(patch.after).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            }
+                            HStack {
+                                if patch.canApprove { control("Approve…", "approve_patch", id: patch.id, revision: patch.expectedRevision, confirm: "Activate the previewed replacement for \(patch.name)? Its base revision must still match.") }
+                                if patch.status == "proposed" || patch.status == "pending" { control("Reject", "reject_patch", id: patch.id) }
+                                if patch.canRollback { control("Roll back…", "rollback_patch", id: patch.id, revision: patch.currentRevision, confirm: "Restore the previous revision of \(patch.name)? The current revision must still match.") }
+                            }
+                        }.padding(.vertical, 6)
+                    }
+                    control("Scan maintenance", "scan_maintenance")
+                    Text("Maintenance \(skills.maintenanceEnabled ? "enabled" : "disabled") · last scan: \(skills.lastScanAt ?? "never")").font(.caption).foregroundStyle(.secondary)
+                    ForEach(skills.maintenance ?? []) { item in
+                        Text("\(item.name) · \(item.action): \(item.reason)").font(.callout)
+                        if item.action == "archive_review" { control("Archive \(item.name)…", "archive_skill", id: item.name, revision: item.revision, confirm: "Archive \(item.name)? It will no longer be available as an active skill. You can restore it from archives.") }
+                    }
+                    ForEach(skills.archives ?? []) { item in
+                        HStack {
+                            Text("\(item.name) · \(item.status)")
+                            if item.status == "archived" { control("Restore", "restore_skill", id: item.id) }
+                        }
+                    }
+                }
+            }
+        }
+        .disabled(busy)
+        .confirmationDialog("Confirm learning change", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } })) {
+            Button("Confirm") { if let request = confirmation { send(request) }; confirmation = nil }
+            Button("Cancel", role: .cancel) { confirmation = nil }
+        } message: { Text(confirmationText) }
+    }
+    private func control(_ label: String, _ action: String, id: String? = nil, revision: String? = nil, confirm: String? = nil) -> some View {
+        Button(label) {
+            let request = LearningFeedback.control(action, id: id, revision: revision)
+            if let confirm { confirmationText = confirm; confirmation = request } else { send(request) }
+        }.disabled(busy)
+    }
+    private func send(_ request: LearningFeedback) {
+        Task { _ = await model.review.sendLearning(request, agent: agent, session: session) }
     }
 }

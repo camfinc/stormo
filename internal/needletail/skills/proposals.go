@@ -26,23 +26,32 @@ const proposalBytes = 16 << 20
 
 // PatchRequest scope comes from host-validated session provenance, never model arguments.
 type PatchRequest struct {
-	Root             string `json:"root"`
-	Audience         string `json:"audience"`
-	Name             string `json:"name"`
-	ExpectedRevision string `json:"expected_revision"`
-	OldText          string `json:"old_text"`
-	NewText          string `json:"new_text"`
+	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+	SourceCandidate  string   `json:"source_candidate,omitempty"`
+	Checks           string   `json:"checks,omitempty"`
+	Conditions       string   `json:"conditions,omitempty"`
+	Root             string   `json:"root"`
+	Audience         string   `json:"audience"`
+	Name             string   `json:"name"`
+	ExpectedRevision string   `json:"expected_revision"`
+	OldText          string   `json:"old_text"`
+	NewText          string   `json:"new_text"`
 }
 
 // SkillPatch is an immutable review candidate. ExpectedRevision binds the whole
 // bundle at staging time; activation would need a fresh revision check and review.
 type SkillPatch struct {
+	EvidenceRefs     []string  `json:"evidence_refs,omitempty"`
+	SourceCandidate  string    `json:"source_candidate,omitempty"`
+	Checks           string    `json:"checks,omitempty"`
+	Conditions       string    `json:"conditions,omitempty"`
 	ID               string    `json:"id"`
 	Root             string    `json:"root"`
 	Audience         string    `json:"audience"`
 	Dir              string    `json:"dir"`
 	ExpectedRevision string    `json:"expected_revision"`
 	Content          string    `json:"content"`
+	BaseContent      string    `json:"base_content,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 type patchStore struct {
@@ -63,7 +72,10 @@ func (l *Library) readPatches() (patchStore, error) {
 		return patchStore{}, fmt.Errorf("invalid skill proposal store")
 	}
 	for _, p := range out.Patches {
-		if p.ID == "" || p.Root == "" || p.Audience == "" || p.Dir == "" || p.ExpectedRevision == "" || len(p.Content) > MaxFile {
+		if err := validatePatchEvidence(p.EvidenceRefs, p.SourceCandidate, p.Checks, p.Conditions); err != nil {
+			return patchStore{}, err
+		}
+		if p.ID == "" || p.Root == "" || p.Audience == "" || p.Dir == "" || p.ExpectedRevision == "" || (len(p.Content) > MaxFile || len(p.BaseContent) > MaxFile) {
 			return patchStore{}, fmt.Errorf("invalid skill proposal")
 		}
 	}
@@ -157,6 +169,9 @@ func (l *Library) StagePatch(ctx context.Context, r PatchRequest) (SkillPatch, e
 	if strings.TrimSpace(r.Root) == "" || strings.TrimSpace(r.Audience) == "" || len(r.Root) > 256 || len(r.Audience) > 256 {
 		return SkillPatch{}, fmt.Errorf("root and audience scope required")
 	}
+	if err := validatePatchEvidence(r.EvidenceRefs, r.SourceCandidate, r.Checks, r.Conditions); err != nil {
+		return SkillPatch{}, err
+	}
 	if r.OldText == "" || r.ExpectedRevision == "" || len(r.OldText) > MaxFile || len(r.NewText) > MaxFile {
 		return SkillPatch{}, fmt.Errorf("bounded old text and expected revision required")
 	}
@@ -194,13 +209,14 @@ func (l *Library) StagePatch(ctx context.Context, r PatchRequest) (SkillPatch, e
 	if err := checkSkillMD([]byte(content), b, path.Base(s.Dir), s.Name, s.Description != "", false); err != nil {
 		return SkillPatch{}, err
 	}
-	if err := l.check("SKILL.md", []byte(content)); err != nil {
+	if err := l.check("SKILL.md and proposal evidence", []byte(content+"\n"+r.Checks+"\n"+r.Conditions)); err != nil {
 		return SkillPatch{}, err
 	}
-	p := SkillPatch{Root: r.Root, Audience: r.Audience, Dir: s.Dir, ExpectedRevision: rev, Content: content}
+	p := SkillPatch{EvidenceRefs: append([]string(nil), r.EvidenceRefs...), SourceCandidate: r.SourceCandidate, Checks: r.Checks, Conditions: r.Conditions, Root: r.Root, Audience: r.Audience, Dir: s.Dir, ExpectedRevision: rev, Content: content}
 	identity, _ := json.Marshal(p)
 	sum := sha256.Sum256(identity)
 	p.ID = hex.EncodeToString(sum[:])
+	p.BaseContent = string(b)
 	p.CreatedAt = l.now().UTC()
 	store, err := l.readPatches()
 	if err != nil {
@@ -258,4 +274,56 @@ func (l *Library) ListPatches(root, audience string) ([]SkillPatch, error) {
 		}
 	}
 	return out, nil
+}
+
+// SkillDraftContext reads bounded text and its full bundle revision without counting usage.
+type SkillDraftContext struct {
+	Name     string `json:"name"`
+	Dir      string `json:"dir"`
+	Content  string `json:"content"`
+	Revision string `json:"revision"`
+}
+
+func (l *Library) DraftContext(name string) (SkillDraftContext, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s, err := l.Find(name)
+	if err != nil {
+		return SkillDraftContext{}, err
+	}
+	if err = l.writable(s); err != nil {
+		return SkillDraftContext{}, err
+	}
+	rev, err := l.bundleRevision(s)
+	if err != nil {
+		return SkillDraftContext{}, err
+	}
+	b, cut, err := l.readRegular(filepath.Join(l.Home, s.Path), 16<<10)
+	if err != nil {
+		return SkillDraftContext{}, err
+	}
+	if cut {
+		return SkillDraftContext{}, fmt.Errorf("skill text exceeds draft limit")
+	}
+	after, err := l.bundleRevision(s)
+	if err != nil || after != rev {
+		return SkillDraftContext{}, fmt.Errorf("skill changed during draft read")
+	}
+	return SkillDraftContext{Name: s.Name, Dir: s.Dir, Content: string(b), Revision: rev}, nil
+}
+
+func validatePatchEvidence(refs []string, source, checks, conditions string) error {
+	if len(refs) > 8 || len(checks) > 2000 || len(conditions) > 2000 {
+		return fmt.Errorf("proposal evidence exceeds bounds")
+	}
+	hash := func(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == sha256.Size }
+	if source != "" && !hash(source) {
+		return fmt.Errorf("invalid source candidate identity")
+	}
+	for _, r := range refs {
+		if !hash(r) {
+			return fmt.Errorf("invalid evidence identity")
+		}
+	}
+	return nil
 }
