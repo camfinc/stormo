@@ -39,6 +39,15 @@ type DreamReport struct {
 	CronProposal   bool                  `json:"cronProposal"`
 	// Runtime settings changes proposed (learnings/proposals/settings.json).
 	SettingProposals int `json:"settingProposals"`
+	// Notices are what the dream skipped or could not take and went on without (a learning export
+	// it cannot read, an evidence store that refused the merge). They never carry lesson text.
+	Notices []string `json:"notices,omitempty"`
+}
+
+// notice records n in the report and the log.
+func (r *DreamReport) notice(n string) {
+	r.Notices = append(r.Notices, n)
+	log.Printf("[dream] %s: %s", r.Agent, n)
 }
 
 type SkillDecision struct {
@@ -236,39 +245,11 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		if err := ingestReflectionProposals(s, agentID, nap, eng, scrubber, &ledger, report); err != nil {
 			return nil, err
 		}
-		if source, ok := eng.(interface{ OutcomePath() string }); ok {
-			blob, err := learningBlob(s, agentID, nap, source.OutcomePath())
-			if err != nil {
-				return nil, err
-			}
-			if blob != nil {
-				if len(*blob) > learning.MaxEvidenceBytes {
-					return nil, fmt.Errorf("outcome evidence byte limit exceeded")
-				}
-				var outcomes learning.EvidenceStore
-				if err := json.Unmarshal([]byte(*blob), &outcomes); err != nil {
-					return nil, fmt.Errorf("outcome evidence: %w", err)
-				}
-				if outcomes.Version != learning.EvidenceVersion || len(outcomes.Events) > learning.MaxOutcomeEvents {
-					return nil, fmt.Errorf("unsupported or oversized outcome evidence")
-				}
-				for _, event := range outcomes.Events {
-					if err := event.Validate(); err != nil {
-						return nil, err
-					}
-					// References never cross into tracked evidence. Reject identifiers that
-					// the instance scrubber flags rather than storing sensitive provenance.
-					event.EvidenceRef = ""
-					if event.Audience != "agent" {
-						continue
-					}
-					if !learning.ExportableEvidence(event) {
-						continue
-					}
-					outcomeEvents = append(outcomeEvents, event)
-				}
-			}
+		events, err := outcomeEvidence(s, agentID, nap, eng, report)
+		if err != nil {
+			return nil, err
 		}
+		outcomeEvents = append(outcomeEvents, events...)
 		if hasSettings {
 			blob, err := learningBlob(s, agentID, nap, L.Config)
 			if err != nil {
@@ -452,8 +433,9 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	}
 
 	if len(outcomeEvents) > 0 {
+		// The runtime's export is cumulative: what is not merged now comes again with a later nap.
 		if err := learning.MergeEvidence(root, agentID, outcomeEvents); err != nil {
-			return nil, err
+			report.notice("outcome evidence not merged (" + err.Error() + "); a later nap's export carries it again")
 		}
 	}
 	if err := learning.SaveLedger(root, agentID, ledger); err != nil {
@@ -465,6 +447,52 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		return nil, err
 	}
 	return report, os.WriteFile(filepath.Join(learningsDir(root, agentID), "DREAM.md"), []byte(renderReport(report)), 0o644)
+}
+
+// outcomeEvidence are the agent-wide, exportable events of the nap's outcome export
+// (engine.OutcomeEvidence). Only a store error fails the dream: an export it cannot read, or an
+// event it cannot take, is skipped and reported in the dream's notices.
+func outcomeEvidence(s Store, agentID string, nap *Nap, eng engine.Engine, report *DreamReport) ([]learning.OutcomeEvent, error) {
+	source, ok := eng.(engine.OutcomeEvidence)
+	if !ok {
+		return nil, nil
+	}
+	blob, err := learningBlob(s, agentID, nap, source.OutcomePath())
+	if err != nil || blob == nil {
+		return nil, err
+	}
+	skip := func(why string) ([]learning.OutcomeEvent, error) {
+		report.notice(nap.ID + ": outcome evidence export " + why + ", skipped")
+		return nil, nil
+	}
+	if len(*blob) > learning.MaxEvidenceBytes {
+		return skip("over the evidence byte limit")
+	}
+	var outcomes learning.EvidenceStore
+	if err := json.Unmarshal([]byte(*blob), &outcomes); err != nil {
+		return skip("is not valid JSON")
+	}
+	if outcomes.Version != learning.EvidenceVersion || len(outcomes.Events) > learning.MaxOutcomeEvents {
+		return skip("has an unsupported version or too many events")
+	}
+	out, invalid := []learning.OutcomeEvent{}, 0
+	for _, event := range outcomes.Events {
+		if event.Validate() != nil {
+			invalid++
+			continue
+		}
+		// References never cross into tracked evidence; only deliberately agent-scoped events
+		// with opaque identities do (learning.ExportableEvidence).
+		event.EvidenceRef = ""
+		if event.Audience != "agent" || !learning.ExportableEvidence(event) {
+			continue
+		}
+		out = append(out, event)
+	}
+	if invalid > 0 {
+		report.notice(fmt.Sprintf("%s: outcome evidence export: %d invalid events skipped", nap.ID, invalid))
+	}
+	return out, nil
 }
 
 // repoSame: the nap's copy of a skill has exactly the repo's files with the same contents.
@@ -529,7 +557,14 @@ func renderReport(r *DreamReport) string {
 	if r.CronProposal {
 		cron = "yes (learnings/proposals/schedules.yaml, or cron/jobs.json for an engine-only job)"
 	}
-	lines = append(lines, "- cron proposal: "+cron, fmt.Sprintf("- settings changed at runtime: %d", r.SettingProposals), "",
+	lines = append(lines, "- cron proposal: "+cron, fmt.Sprintf("- settings changed at runtime: %d", r.SettingProposals))
+	if len(r.Notices) > 0 {
+		lines = append(lines, "- notices (skipped or not taken; the rest of the dream went through):")
+		for _, n := range r.Notices {
+			lines = append(lines, "  - "+n)
+		}
+	}
+	lines = append(lines, "",
 		"Review with `stormo learn list "+r.Agent+"`, `stormo learn skills "+r.Agent+"`, `stormo learn schedules "+r.Agent+
 			"` and `stormo learn settings "+r.Agent+"`.", "")
 	return strings.Join(lines, "\n")

@@ -23,6 +23,10 @@ type reflectionExport struct {
 	} `json:"proposals"`
 }
 
+// ingestReflectionProposals takes the nap's reflection export (engine.LearningProposals) into the
+// ledger as proposed memories. Only a store error fails the dream: an export or a proposal it
+// cannot take is skipped and reported in the dream's notices, and a proposal the scrubber flags
+// is kept scrubbed and flagged (held for a person, never promoted), like any flagged memory.
 func ingestReflectionProposals(s Store, agent string, nap *Nap, eng engine.Engine, scrub *learning.Scrubber, ledger *[]*learning.Learning, report *DreamReport) error {
 	provider, ok := eng.(engine.LearningProposals)
 	if !ok {
@@ -32,12 +36,12 @@ func ingestReflectionProposals(s Store, agent string, nap *Nap, eng engine.Engin
 	if err != nil || body == nil {
 		return err
 	}
-	texts, err := reflectionTexts(*body, scrub)
-	if err != nil {
-		return err
+	proposals, notices := reflectionTexts(*body, scrub)
+	for _, n := range notices {
+		report.notice(nap.ID + ": " + n)
 	}
-	for _, text := range texts {
-		_, created := learning.Upsert(ledger, learning.Sighting{Kind: learning.KindMemory, Text: text, Agent: agent, Unit: nap.Unit, Instance: nap.Instance, Nap: nap.ID, At: nap.TakenAt})
+	for _, p := range proposals {
+		_, created := learning.Upsert(ledger, learning.Sighting{Kind: learning.KindMemory, Text: p.Text, PII: p.PII, Agent: agent, Unit: nap.Unit, Instance: nap.Instance, Nap: nap.ID, At: nap.TakenAt})
 		if created {
 			report.NewLearnings++
 		} else {
@@ -47,36 +51,57 @@ func ingestReflectionProposals(s Store, agent string, nap *Nap, eng engine.Engin
 	return nil
 }
 
-func reflectionTexts(body string, scrub *learning.Scrubber) ([]string, error) {
-	if len(body) > 512<<10 {
-		return nil, fmt.Errorf("reflection export exceeds limit")
+// reflected is a proposal the dream takes: its scrubbed text and what the scrubber flagged.
+type reflected struct {
+	Text string
+	PII  []string
+}
+
+// Bounds of a reflection export.
+const (
+	maxReflectionExport    = 512 << 10
+	maxReflectionProposals = 100
+	maxReflectionText      = 2000
+)
+
+// reflectionTexts reads a reflection export: the proposals the dream takes, and notices (no
+// proposal text in them) for what it skipped or flagged. An export it cannot read is skipped whole.
+func reflectionTexts(body string, scrub *learning.Scrubber) ([]reflected, []string) {
+	if len(body) > maxReflectionExport {
+		return nil, []string{fmt.Sprintf("reflection proposals: over %d KB, skipped", maxReflectionExport>>10)}
 	}
 	var export reflectionExport
 	if err := json.Unmarshal([]byte(body), &export); err != nil {
-		return nil, fmt.Errorf("invalid reflection export")
+		return nil, []string{"reflection proposals: not valid JSON, skipped"}
 	}
-	if export.Version != 1 || len(export.Proposals) > 100 {
-		return nil, fmt.Errorf("unsupported reflection export version or size")
+	if export.Version != 1 {
+		return nil, []string{fmt.Sprintf("reflection proposals: version %d is not one this build reads, skipped", export.Version)}
 	}
-	texts := []string{}
+	if len(export.Proposals) > maxReflectionProposals {
+		return nil, []string{fmt.Sprintf("reflection proposals: %d, more than %d, skipped", len(export.Proposals), maxReflectionProposals)}
+	}
+	out, notices := []reflected{}, []string{}
 	seen := map[string]bool{}
-	for _, p := range export.Proposals {
+	for i, p := range export.Proposals {
+		n := i + 1
 		if p.Audience != "agent" || p.Kind != "procedure" || len(p.ID) == 0 || len(p.ID) > 128 || len(p.EventRefs) > 20 {
-			return nil, fmt.Errorf("invalid reflection proposal metadata")
+			notices = append(notices, fmt.Sprintf("reflection proposal %d: not an agent-wide procedure, skipped", n))
+			continue
 		}
 		text := strings.TrimSpace(p.Text)
-		if text == "" || len(text) > 2000 {
-			return nil, fmt.Errorf("invalid reflection proposal text length")
+		if text == "" || len(text) > maxReflectionText {
+			notices = append(notices, fmt.Sprintf("reflection proposal %d: empty or over %d characters, skipped", n, maxReflectionText))
+			continue
 		}
 		clean, flags := scrub.Scrub(text)
 		if len(flags) > 0 {
-			return nil, fmt.Errorf("reflection proposal requires private review")
+			notices = append(notices, fmt.Sprintf("reflection proposal %d: the scrubber flagged %s, kept scrubbed and flagged for a person", n, strings.Join(flags, ", ")))
 		}
 		key := learning.Normalize(clean)
 		if !seen[key] {
-			texts = append(texts, clean)
+			out = append(out, reflected{Text: clean, PII: flags})
 			seen[key] = true
 		}
 	}
-	return texts, nil
+	return out, notices
 }

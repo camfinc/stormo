@@ -11,34 +11,73 @@ import (
 
 func TestReflectionExportBoundary(t *testing.T) {
 	scrub := learning.NewScrubber(&instance.Instance{})
-	encode := func(version int, text, audience, kind string) string {
-		b, err := json.Marshal(map[string]any{"version": version, "proposals": []any{map[string]any{
-			"id": "candidate-a", "text": text, "eventRefs": []string{"opaque-event"}, "audience": audience, "kind": kind,
-		}}})
+	proposal := func(text, audience, kind string) map[string]any {
+		return map[string]any{"id": "candidate-a", "text": text, "eventRefs": []string{"opaque-event"}, "audience": audience, "kind": kind}
+	}
+	encode := func(version int, proposals ...map[string]any) string {
+		b, err := json.Marshal(map[string]any{"version": version, "proposals": proposals})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return string(b)
 	}
 	const procedure = "Check the quote currency before presenting a total."
-	texts, err := reflectionTexts(encode(1, procedure, "agent", "procedure"), scrub)
-	if err != nil || len(texts) != 1 || texts[0] != procedure {
-		t.Fatalf("%v %v", texts, err)
+	got, notices := reflectionTexts(encode(1, proposal(procedure, "agent", "procedure")), scrub)
+	if len(got) != 1 || got[0].Text != procedure || len(got[0].PII) != 0 || len(notices) != 0 {
+		t.Fatalf("%v %v", got, notices)
 	}
+
+	// A whole export this build cannot read is skipped with one notice; nothing from it is kept.
 	for name, body := range map[string]string{
-		"future version":     encode(2, procedure, "agent", "procedure"),
-		"private audience":   encode(1, procedure, "dm:private", "procedure"),
-		"user profile":       encode(1, procedure, "agent", "user"),
-		"personal data":      encode(1, "Send the quote to client@example.com", "agent", "procedure"),
-		"secret":             encode(1, "Token sk_abcdefghijklmnop", "agent", "procedure"),
-		"oversized text":     encode(1, strings.Repeat("a", 2001), "agent", "procedure"),
+		"future version": encode(2, proposal(procedure, "agent", "procedure")),
+		"too many proposals": encode(1, func() []map[string]any {
+			l := []map[string]any{}
+			for range 101 {
+				l = append(l, proposal(procedure, "agent", "procedure"))
+			}
+			return l
+		}()...),
 		"oversized document": strings.Repeat("a", (512<<10)+1),
 		"invalid JSON":       "{",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := reflectionTexts(body, scrub); err == nil {
-				t.Fatal("unsafe export accepted")
+			if got, notices := reflectionTexts(body, scrub); len(got) != 0 || len(notices) != 1 {
+				t.Fatalf("kept %v, notices %v", got, notices)
 			}
 		})
+	}
+
+	// One bad proposal is skipped with a notice; the others still come through. A flagged one is
+	// kept scrubbed and flagged (held for a person, never promoted), like any flagged memory.
+	got, notices = reflectionTexts(encode(1,
+		proposal(procedure, "dm:private", "procedure"),
+		proposal(procedure, "agent", "user"),
+		proposal(strings.Repeat("a", 2001), "agent", "procedure"),
+		proposal("Send the quote to client@example.com", "agent", "procedure"),
+		proposal("Token sk_abcdefghijklmnop", "agent", "procedure"),
+		proposal(procedure, "agent", "procedure"),
+	), scrub)
+	if len(notices) != 5 {
+		t.Errorf("notices %v", notices)
+	}
+	kept := map[string][]string{}
+	for _, g := range got {
+		kept[g.Text] = g.PII
+	}
+	if len(got) != 3 || kept[procedure] == nil && len(kept) != 3 {
+		t.Fatalf("kept %v", got)
+	}
+	for text, pii := range kept {
+		if text == procedure {
+			continue
+		}
+		if len(pii) == 0 || strings.Contains(text, "client@example.com") || strings.Contains(text, "sk_abcdefghijklmnop") {
+			t.Errorf("flagged proposal kept as %q %v", text, pii)
+		}
+	}
+	for _, n := range notices {
+		if strings.Contains(n, "example.com") || strings.Contains(n, "sk_") || strings.Contains(n, "dm:private") {
+			t.Errorf("a notice carries proposal text: %q", n)
+		}
 	}
 }
