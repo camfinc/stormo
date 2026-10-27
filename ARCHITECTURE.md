@@ -75,12 +75,26 @@ nap/dream machinery, the deployer and the bench only talk to that interface. Add
 new module plus one registry line; agents switch by changing `engine.kind` and porting their
 engine-specific files (`hermes/` today).
 
-Private learning storage also crosses this boundary through optional engine interfaces:
-`PrivateLearningState` identifies private files, and `PrivateLearningTrees` identifies
-private directory trees. Rehydrate restores those files as 0600 and tree directories as
-0700; their snapshot class stays Raw. Needletail uses this for review receipts and
-reversible skill archives. Archive mode manifests belong to the runtime and restore
-executable permissions only when the owner explicitly restores a skill.
+An engine may also implement optional learning interfaces (`pkg/engine`); engine-neutral code
+asserts them and does nothing when they are absent (Hermes implements none, so its naps, dreams,
+review and homes are as before them):
+- `OutcomeEvidence` (`OutcomePath()`): a home file, classified Learning, holding the runtime's
+  metadata-only outcome export (`learning.EvidenceStore` version 1, agent-audience events with
+  opaque ids). The dream merges it into `learnings/evidence-v1.json` (below).
+- `LearningProposals` (`LearningProposalsPath()`): a home file, classified Learning, holding the
+  reflection proposals an owner explicitly exported (version 1, at most 100 agent-wide procedures
+  of at most 2,000 characters). The dream scrubs each and upserts it into the ledger as a proposed
+  memory; private candidates never reach this file.
+- `PrivateLearningState` (`PrivateLearningPaths()`) and `PrivateLearningTrees`
+  (`PrivateLearningDirectories()`): runtime-owned private files and directory trees. Rehydrate
+  restores those files as 0600 and tree directories as 0700; their snapshot class stays Raw. Of the
+  two Learning exports above, the proposals export is restored too (0600, so a selection survives a
+  restart) and the outcome export is not (the runtime rebuilds it from its private store). Needletail
+  uses this for review receipts and reversible skill archives. Archive mode manifests belong to
+  the runtime and restore executable permissions only when the owner explicitly restores a skill.
+- `LearningRuntime` (on `engine.Runtime`: `LearningKeyName()`, `LearningPath(session)`): the
+  runtime's owner learning API, which only the core calls (`/api/agents/<id>/learning`, docs/api.md)
+  with a dedicated credential it resolves itself, distinct from the conversation key.
 
 ### Hermes specifics
 
@@ -386,6 +400,18 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   `config.yaml` blob stays in the nap store like any learning blob.
 - A proposal already decided (skills by content hash, schedules by proposal text, settings by
   value; all in `learnings/watermark.json`) is not made again.
+- With `engine.OutcomeEvidence`, each unseen nap's outcome export is merged into
+  `learnings/evidence-v1.json` (versioned, metadata only, 0600, at most 4,096 events, written under
+  a lock in `.swarm/learning-locks/`): events keyed to a subject's exact revision (a lesson's
+  kind and text, a skill's snapshot hash), deduplicated by task and source, with no source text.
+  Only task assertions and authorized feedback confirm; views, snapshots, model claims and a
+  clean exit never do. Its readers (ledger, compile, review) read an unreadable store as none and
+  warn; only the merge refuses it, so it is never overwritten. With `engine.LearningProposals`,
+  exported reflection proposals are scrubbed and upserted as proposed memories (a flagged one kept
+  flagged for a person).
+- What the dream cannot take from these exports (an unreadable export, a private or oversized
+  proposal, invalid events, an evidence store that refuses the merge) is a notice in its report and
+  `DREAM.md`, never a failure: the rest of the dream, watermark included, goes through.
 - It writes the working tree only. It never commits, branches or pushes.
 
 **Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),
@@ -401,7 +427,11 @@ accepted first.
 docs/core.md §6). Rules in code (`loop.ReviewCandidates`) hold for a person what must never be
 decided by a model: user-profile lessons, anything PII-flagged, skills with scripts or binaries,
 schedules that run a script, use another model or deliver to an explicit target, settings that
-widen what the agent may do, and every promotion. A model reads the rest and either approves it or
+widen what the agent may do, and every promotion. A lesson reaches the model once seen
+`auto_accept_min_seen` times. Outcome evidence is never a rule: where the engine records it, the
+model reads the summary for the change's exact version beside it (confirmations, failures and
+corrections, a warning first when any failure or correction is recorded) and judges whether the
+change is obvious. A model reads the rest and either approves it or
 passes it to a person; it never rejects (a reject purges, a wrong approve is undone with `learn
 reject`). The instance can append its own rules; agents can opt out (`learning.auto_review: false`).
 
