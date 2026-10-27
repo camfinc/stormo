@@ -194,6 +194,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	if err := mem.Open(); err != nil {
 		logf(fmt.Sprintf("memory: %v", err))
 	}
+	scrubber := cfg.Scrubber()
 	env := tools.Env{
 		Home:           cfg.Home,
 		Sandbox:        sandbox.Sandbox{Home: cfg.Home, Shared: cfg.SharedRoots()},
@@ -202,6 +203,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Memory:         mem,
 		Skills:         &skills.Library{Home: cfg.Home, Generated: cfg.Skills.Generated, Check: tools.SecretCheck(red.Redact)},
 		Redact:         red.Redact,
+		Flag:           func(text string) []string { _, found := scrubber.Scrub(text); return found },
 		LongestSecret:  red.Longest,
 		// a run that may not obey what it handles, or a conversation that took such words in,
 		// defers no work (docs/needletail.md §7)

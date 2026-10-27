@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -234,5 +235,30 @@ func TestLearningControlsRetryCancelPrunePreserveReservations(t *testing.T) {
 	out, err = a.LearningReview(context.Background(), "source", nil)
 	if err != nil || len(out.Background.Jobs) != 0 || out.Background.CallsUsed != 1 {
 		t.Fatal("prune lost dedupe", out.Background, err)
+	}
+}
+
+// An export is checked by the dream's scrubber (the instance's rules, Env.Flag) as well as for
+// secret values; the owner's feedback summary only for secret values.
+func TestExportCheckUsesTheInstanceScrubber(t *testing.T) {
+	a, _ := controlAgent(t)
+	a.Env.Redact = func(s string) string { return strings.ReplaceAll(s, "fixture-secret", "[SECRET]") }
+	a.Env.Flag = func(s string) []string {
+		if strings.Contains(s, "AB12CD34") {
+			return []string{"order-id"}
+		}
+		return nil
+	}
+	for text, refused := range map[string]bool{
+		"Check the order total before replying.": false,
+		"Order AB12CD34 needs a refund.":         true,
+		"Use fixture-secret for the CRM.":        true,
+	} {
+		if err := a.exportCheck(text); (err != nil) != refused {
+			t.Errorf("export %q: %v", text, err)
+		}
+	}
+	if err := a.secretCheck("Order AB12CD34 needs a refund."); err != nil {
+		t.Errorf("a feedback summary is checked for secrets only: %v", err)
 	}
 }

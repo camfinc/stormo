@@ -32,3 +32,12 @@ schedules:
     repo:
         - a1b2c3d4e5f6
 state_root: acme-state
+scrub:
+    token_prefixes:
+        - acme
+    rules:
+        - kind: order-id
+          pattern: \b[A-Z]{2}[0-9A-Z]{6}\b
+          require:
+            - \d
+            - '[A-Z]'

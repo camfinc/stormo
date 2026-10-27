@@ -9,11 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/learning"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -33,6 +36,19 @@ const (
 	DefaultMemoryLimit = 2200
 	DefaultUserLimit   = 1375
 )
+
+// Scrubber is the learning scrubber the dream runs with this instance's rules (needletail.yaml
+// scrub:, the engine's own rules alone when absent): what it flags must not be exported for the dream.
+func (c *Config) Scrubber() *learning.Scrubber {
+	inst := &instance.Instance{}
+	if c.Scrub != nil {
+		inst.ScrubTokenPrefixes = c.Scrub.TokenPrefixes
+		for _, r := range c.Scrub.Rules {
+			inst.ScrubRules = append(inst.ScrubRules, instance.ScrubRule{Kind: r.Kind, Pattern: r.Pattern, Require: r.Require})
+		}
+	}
+	return learning.NewScrubber(inst)
+}
 
 // Config is needletail.yaml plus what the environment says about this container.
 type Config struct {
@@ -82,6 +98,15 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	for _, secret := range c.Luau.HTTPSecrets {
 		if secret.Env == "NEEDLETAIL_LEARNING_KEY" {
 			return nil, fmt.Errorf("owner learning key is reserved")
+		}
+	}
+	if c.Scrub != nil {
+		for i, r := range c.Scrub.Rules {
+			for _, p := range append([]string{r.Pattern}, r.Require...) {
+				if _, err := regexp.Compile(p); err != nil || r.Pattern == "" || r.Kind == "" {
+					return nil, fmt.Errorf("%s: scrub.rules[%d]: invalid rule", File, i)
+				}
+			}
 		}
 	}
 	if c.Model.Primary.BaseURL == "" || c.Model.Primary.Model == "" {

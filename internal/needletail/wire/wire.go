@@ -277,6 +277,23 @@ type Config struct {
 	// StateRoot), relative to the home: part of the agent's workspace, which the uid split keeps
 	// reachable by the runtime.
 	StateRoot string `json:"state_root,omitempty" yaml:"state_root,omitempty"`
+	// Scrub is the instance's own scrub rules (stormo.yaml scrub:), so what the runtime exports for
+	// the dream is checked by the scrubber the dream uses. Absent when the instance has none.
+	Scrub *ScrubConfig `json:"scrub,omitempty" yaml:"scrub,omitempty"`
+}
+
+// ScrubConfig is stormo.yaml's scrub: (instance.Instance ScrubTokenPrefixes and ScrubRules).
+type ScrubConfig struct {
+	TokenPrefixes []string    `json:"token_prefixes,omitempty" yaml:"token_prefixes,omitempty"`
+	Rules         []ScrubRule `json:"rules,omitempty" yaml:"rules,omitempty"`
+}
+
+// ScrubRule is one of the instance's scrub rules: a finding of Kind where Pattern matches and
+// every Require pattern matches the same text.
+type ScrubRule struct {
+	Kind    string   `json:"kind" yaml:"kind"`
+	Pattern string   `json:"pattern" yaml:"pattern"`
+	Require []string `json:"require,omitempty" yaml:"require,omitempty"`
 }
 
 // SlackConfig is the agent's grants for Slack.

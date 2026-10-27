@@ -12,6 +12,27 @@ import (
 type LearningData = learning.RuntimeReviewData
 type LearningRequest = learning.RuntimeReviewRequest
 
+// secretCheck refuses text that holds one of the agent's secret values.
+func (a *Agent) secretCheck(text string) error {
+	if a.Env.Redact != nil && a.Env.Redact(text) != text {
+		return fmt.Errorf("secret values refused")
+	}
+	return nil
+}
+
+// exportCheck is secretCheck for what is exported to the dream, which scrubs it with the
+// instance's rules: it also refuses what that scrubber flags (Env.Flag), so the owner learns at
+// export, not at the next dream, that a candidate would be held back.
+func (a *Agent) exportCheck(text string) error {
+	if err := a.secretCheck(text); err != nil {
+		return err
+	}
+	if a.Env.Flag != nil && len(a.Env.Flag(text)) > 0 {
+		return fmt.Errorf("sensitive candidate refused by the instance's scrub rules")
+	}
+	return nil
+}
+
 func (a *Agent) LearningReview(ctx context.Context, session string, req *LearningRequest) (LearningData, error) {
 	if a.Learning == nil {
 		return LearningData{}, fmt.Errorf("learning unavailable")
@@ -29,12 +50,7 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 		if a.Store.Untrusted(session) {
 			return LearningData{}, fmt.Errorf("untrusted conversations cannot produce feedback or proposals")
 		}
-		check := func(text string) error {
-			if a.Env.Redact != nil && a.Env.Redact(text) != text {
-				return fmt.Errorf("secret values refused")
-			}
-			return nil
-		}
+		check := a.secretCheck
 		if req.Action != "" {
 			if err := a.learningControl(ctx, session, root, aud, req); err != nil {
 				return LearningData{}, err
@@ -51,7 +67,7 @@ func (a *Agent) LearningReview(ctx context.Context, session string, req *Learnin
 					exportAudience = "agent"
 				}
 			}
-			if err := a.Store.WithTrusted(session, func() error { return a.Learning.Export(root, exportAudience, req.ExportID, check) }); err != nil {
+			if err := a.Store.WithTrusted(session, func() error { return a.Learning.Export(root, exportAudience, req.ExportID, a.exportCheck) }); err != nil {
 				return LearningData{}, err
 			}
 		} else {

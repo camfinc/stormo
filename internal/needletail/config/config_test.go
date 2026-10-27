@@ -115,3 +115,28 @@ func TestBackgroundLearningDefaultsOff(t *testing.T) {
 		}
 	}
 }
+
+// The golden home carries the example instance's scrub rules: the runtime's scrubber flags what
+// the dream's does with them; without any, the engine's own rules still apply. A rule whose
+// pattern does not compile is refused at load.
+func TestScrubRulesFromTheInstance(t *testing.T) {
+	home := filepath.Join("..", "..", "..", "pkg", "engine", "needletail", "testdata", "home")
+	c, err := Load(home, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := c.Scrubber().Scrub("Order AB12CD34 shipped; token acme_abcdefghijkl."); strings.Join(found, ",") != "order-id,secret" {
+		t.Errorf("instance rules: found %v", found)
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, File), []byte("version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || c.Scrub != nil {
+		t.Fatalf("no scrub: %v %+v", err, c)
+	} else if _, found := c.Scrubber().Scrub("Order AB12CD34 to dana@example.com"); strings.Join(found, ",") != "email" {
+		t.Errorf("engine rules alone: found %v", found)
+	}
+	_ = os.WriteFile(filepath.Join(dir, File), []byte("version: 1\nmodel: {primary: {base_url: http://x, model: m}}\nscrub: {rules: [{kind: x, pattern: '(['}]}\n"), 0o644)
+	if _, err := Load(dir, env(nil)); err == nil {
+		t.Error("an invalid scrub pattern was accepted")
+	}
+}

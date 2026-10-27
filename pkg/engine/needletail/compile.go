@@ -140,6 +140,18 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	return c, nil
 }
 
+// scrubConfig is the instance's own scrub rules for the runtime, nil when it has none.
+func scrubConfig(inst *instance.Instance) *wire.ScrubConfig {
+	if len(inst.ScrubTokenPrefixes) == 0 && len(inst.ScrubRules) == 0 {
+		return nil
+	}
+	c := &wire.ScrubConfig{TokenPrefixes: inst.ScrubTokenPrefixes}
+	for _, r := range inst.ScrubRules {
+		c.Rules = append(c.Rules, wire.ScrubRule{Kind: r.Kind, Pattern: r.Pattern, Require: r.Require})
+	}
+	return c
+}
+
 // onCore: a local run routed through the swarm core (engine.local), as for Hermes.
 func onCore(a *manifest.Agent, target manifest.Target) bool {
 	return target == manifest.Local && a.Engine.Local != nil
@@ -281,6 +293,7 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
 	rendered.Skills.Generated = generatedSkills(ctx.Knowledge)
 	rendered.StateRoot = n.layout.StateRoot
+	rendered.Scrub = scrubConfig(ctx.Instance)
 	cfg, err := yaml.Marshal(rendered)
 	if err != nil {
 		return nil, err

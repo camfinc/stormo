@@ -49,6 +49,9 @@ type Env struct {
 	Skills *skills.Library
 	// Redact masks secret values in results.
 	Redact func(string) string
+	// Flag is what the dream's scrubber (the instance's scrub rules) finds in text: what is
+	// exported for the dream must have no finding. nil: no check beyond Redact.
+	Flag func(string) []string
 	// LongestSecret is the length of the longest text Redact masks: the terminal keeps that much
 	// overlap where it cuts output, so a cut never leaves part of a secret (nil: 0).
 	LongestSecret func() int
