@@ -180,3 +180,105 @@ func TestDreamReportsLearningExportsItCannotTake(t *testing.T) {
 		t.Errorf("the full store changed: %d events", len(after.Events))
 	}
 }
+
+// The Hermes path: a memory entry seen clean in one nap and flagged in another (the same scrubbed
+// text) is flagged in the ledger, whichever came first.
+func TestDreamLedgerKeepsFlagsAcrossHermesSightings(t *testing.T) {
+	inst := reviewInstance(t)
+	root := inst.Root
+	store := FsStore{Root: t.TempDir()}
+	putNap := func(id, memory string) {
+		t.Helper()
+		body := []byte(memory)
+		sha := build.Sha256(body)
+		if err := store.Put(BlobKey("atlas", engine.Learning, sha), body); err != nil {
+			t.Fatal(err)
+		}
+		nap := Nap{ID: id, Agent: "atlas", Unit: "sales", Engine: "hermes", Instance: "instance", TakenAt: "2026-10-26T10:00:00Z",
+			Files: []NapFile{{Path: "memories/MEMORY.md", Class: engine.Learning, Sha256: sha, Size: len(body)}}}
+		b, _ := json.Marshal(nap)
+		if err := store.Put(NapKey("atlas", id), b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putNap("nap-a", "Use the token [SECRET] for the CRM.")
+	putNap("nap-b", "Use the token sk_abcdefghijklmnop for the CRM.")
+	if _, err := Dream(inst, "atlas", store); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := learning.LoadLedger(root, "atlas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range ledger {
+		if strings.Contains(e.Text, "for the CRM") {
+			found = true
+			if !slices.Contains(e.PII, "secret") || e.SeenCount != 2 {
+				t.Errorf("entry %+v lost its flag across sightings", e)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no ledger entry: %+v", ledger)
+	}
+}
+
+// A merge the evidence store refuses does not lose the evidence: the evidence watermark stays
+// behind while the nap watermark moves, and the next dream (even with no new nap) merges it.
+func TestDreamRetriesUnmergedEvidence(t *testing.T) {
+	eng := withLearningEngine(t)
+	inst := reviewInstance(t)
+	root := inst.Root
+	store := FsStore{Root: t.TempDir()}
+	full := &learning.EvidenceStore{Version: learning.EvidenceVersion}
+	for i := range learning.MaxOutcomeEvents {
+		e := learning.OutcomeEvent{EventID: shaText(fmt.Sprint("full", i)), TaskRoot: shaText("t"), Origin: shaText("o"), SubjectKind: "lesson", SubjectID: "aaaaaaaaaaaa", SubjectRevision: shaText("r"), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+		if _, err := full.Ingest(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := learning.SaveEvidence(root, "atlas", full); err != nil {
+		t.Fatal(err)
+	}
+	event := learning.OutcomeEvent{EventID: shaText("pending"), TaskRoot: shaText("task"), Origin: shaText("check"), SubjectKind: "skill", SubjectID: shaText("notes/check"), SubjectRevision: shaText("rev"), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	body, _ := json.Marshal(learning.EvidenceStore{Version: 1, Events: []learning.OutcomeEvent{event}})
+	sha := build.Sha256(body)
+	if err := store.Put(BlobKey("atlas", engine.Learning, sha), body); err != nil {
+		t.Fatal(err)
+	}
+	nap := Nap{ID: "nap-a", Agent: "atlas", Unit: "sales", Engine: "hermes", Instance: "instance", TakenAt: "2026-10-26T10:00:00Z",
+		Files: []NapFile{{Path: eng.OutcomePath(), Class: engine.Learning, Sha256: sha, Size: len(body)}}}
+	b, _ := json.Marshal(nap)
+	if err := store.Put(NapKey("atlas", "nap-a"), b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Dream(inst, "atlas", store); err != nil {
+		t.Fatal(err)
+	}
+	wm, _ := LoadWatermark(root, "atlas")
+	if wm.LastNap == nil || *wm.LastNap != "nap-a" || wm.EvidenceNap == nil || *wm.EvidenceNap != "" {
+		t.Fatalf("watermarks after a refused merge: last %v evidence %v", wm.LastNap, wm.EvidenceNap)
+	}
+	// Pruning keeps the nap whose evidence is still pending.
+	if _, err := Prune(inst, "atlas", store, 1); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := ReadJSON(store, NapKey("atlas", "nap-a"), &Nap{}); !ok {
+		t.Fatal("prune dropped the nap whose evidence is pending")
+	}
+	// Room again: the next dream, with no new nap, merges the pending evidence.
+	if err := learning.SaveEvidence(root, "atlas", &learning.EvidenceStore{Version: learning.EvidenceVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Dream(inst, "atlas", store); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := learning.LoadEvidence(root, "atlas"); len(after.Events) != 1 || after.Events[0].EventID != event.EventID {
+		t.Fatalf("pending evidence not merged: %+v", after.Events)
+	}
+	wm, _ = LoadWatermark(root, "atlas")
+	if wm.EvidenceNap == nil || *wm.EvidenceNap != "nap-a" {
+		t.Fatalf("evidence watermark did not move after the merge: %v", wm.EvidenceNap)
+	}
+}

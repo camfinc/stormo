@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -62,7 +63,12 @@ type SkillDecision struct {
 
 // Watermark is learnings/watermark.json.
 type Watermark struct {
-	LastNap        *string                  `json:"lastNap"`
+	LastNap *string `json:"lastNap"`
+	// EvidenceNap is the newest nap whose outcome evidence (engine.OutcomeEvidence) is merged into
+	// the evidence store: it moves only after a merge succeeds, so a refused merge is tried again
+	// by the next dream, with or without a new nap, and Prune keeps the naps after it. Absent (nil):
+	// the same as LastNap (a watermark from before it); "" is before every nap.
+	EvidenceNap    *string                  `json:"evidenceNap,omitempty"`
 	SkillDecisions map[string]SkillDecision `json:"skillDecisions"`
 	// The last decision on the schedules proposal (Hash: its text), and the jobs the agent created
 	// at runtime that a reviewer rejected: rehydrate drops them (build.Info.RejectedJobs).
@@ -205,16 +211,35 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	if err != nil {
 		return nil, err
 	}
-	napIDs := []string{}
+	napIDs, evidenceIDs := []string{}, []string{}
+	evidenceMark := wm.evidenceMark()
 	for _, k := range keys {
 		id := strings.TrimSuffix(strings.TrimPrefix(k, agentID+"/naps/"), ".json")
 		if wm.LastNap == nil || id > *wm.LastNap {
 			napIDs = append(napIDs, id)
 		}
+		if evidenceMark == nil || id > *evidenceMark {
+			evidenceIDs = append(evidenceIDs, id)
+		}
 	}
 	sort.Strings(napIDs)
+	sort.Strings(evidenceIDs)
 	report := &DreamReport{Agent: agentID, Naps: napIDs, SkillProposals: []SkillProposalReport{}}
 	if len(napIDs) == 0 {
+		if len(evidenceIDs) == 0 {
+			return report, nil
+		}
+		// No new nap, but evidence a refused merge left behind: merge it alone.
+		events, err := pendingEvidence(s, agentID, evidenceIDs, nil, eng, report)
+		if err != nil {
+			return nil, err
+		}
+		if mergeOutcomes(root, agentID, events, report) {
+			wm.EvidenceNap = &evidenceIDs[len(evidenceIDs)-1]
+			if err := SaveWatermark(root, agentID, wm); err != nil {
+				return nil, err
+			}
+		}
 		return report, nil
 	}
 
@@ -432,21 +457,77 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		}
 	}
 
-	if len(outcomeEvents) > 0 {
-		// The runtime's export is cumulative: what is not merged now comes again with a later nap.
-		if err := learning.MergeEvidence(root, agentID, outcomeEvents); err != nil {
-			report.notice("outcome evidence not merged (" + err.Error() + "); a later nap's export carries it again")
-		}
+	// Evidence of earlier naps whose merge was refused comes first (the merge dedupes by event).
+	earlier, err := pendingEvidence(s, agentID, evidenceIDs, napIDs, eng, report)
+	if err != nil {
+		return nil, err
 	}
+	merged := mergeOutcomes(root, agentID, append(earlier, outcomeEvents...), report)
 	if err := learning.SaveLedger(root, agentID, ledger); err != nil {
 		return nil, err
 	}
 	lastID := napIDs[len(napIDs)-1]
+	if merged {
+		wm.EvidenceNap = nil // caught up: the same as LastNap
+	} else if wm.EvidenceNap == nil {
+		prev := ""
+		if wm.LastNap != nil {
+			prev = *wm.LastNap
+		}
+		wm.EvidenceNap = &prev
+	}
 	wm.LastNap = &lastID
 	if err := SaveWatermark(root, agentID, wm); err != nil {
 		return nil, err
 	}
 	return report, os.WriteFile(filepath.Join(learningsDir(root, agentID), "DREAM.md"), []byte(renderReport(report)), 0o644)
+}
+
+// evidenceMark is the newest nap whose evidence is merged (nil: none).
+func (w *Watermark) evidenceMark() *string {
+	if w.EvidenceNap == nil {
+		return w.LastNap
+	}
+	if *w.EvidenceNap == "" {
+		return nil
+	}
+	return w.EvidenceNap
+}
+
+// pendingEvidence are the outcome events of the naps in ids that skip does not list: naps the
+// nap watermark passed whose merge was refused.
+func pendingEvidence(s Store, agentID string, ids, skip []string, eng engine.Engine, report *DreamReport) ([]learning.OutcomeEvent, error) {
+	out := []learning.OutcomeEvent{}
+	for _, id := range ids {
+		if slices.Contains(skip, id) {
+			continue
+		}
+		nap := &Nap{}
+		if ok, err := ReadJSON(s, NapKey(agentID, id), nap); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		events, err := outcomeEvidence(s, agentID, nap, eng, report)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, events...)
+	}
+	return out, nil
+}
+
+// mergeOutcomes merges events into the evidence store; false (with a notice) when the store
+// refused them, so the evidence watermark stays behind and the next dream tries again.
+func mergeOutcomes(root, agentID string, events []learning.OutcomeEvent, report *DreamReport) bool {
+	if len(events) == 0 {
+		return true
+	}
+	if err := learning.MergeEvidence(root, agentID, events); err != nil {
+		report.notice("outcome evidence not merged (" + err.Error() + "); the next dream tries again")
+		return false
+	}
+	return true
 }
 
 // outcomeEvidence are the agent-wide, exportable events of the nap's outcome export
