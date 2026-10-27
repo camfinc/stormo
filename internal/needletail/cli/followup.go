@@ -63,6 +63,9 @@ func followUpOrigin(store *sessions.Store, where func(session string) memory.Aud
 // (the session store's mark), whoever wrote this turn.
 func untrustedRun(store *sessions.Store) func(ctx context.Context, session string) string {
 	return func(ctx context.Context, session string) string {
+		if messaging.Endorsed(ctx) != "" {
+			return "" // the runtime runs an approved action: the approval endorses it
+		}
 		if why := messaging.UntrustedWhy(ctx); why != "" {
 			return why
 		}

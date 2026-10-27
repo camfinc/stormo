@@ -73,11 +73,11 @@ func TestGuideGolden(t *testing.T) {
 			t.Errorf("the jailed guide lacks %q", want)
 		}
 	}
-	// a conversation with untrusted input schedules nothing, and the guide says why, with or
-	// without Luau and Slack
+	// a tainted conversation's writes go to its work directory and the rest waits for approval;
+	// the guide says so, with or without Luau and Slack
 	for _, g := range []string{got, min} {
-		if !strings.Contains(g, "untrusted input") || !strings.Contains(g, "nothing you do there is kept or forwarded") {
-			t.Errorf("the guide does not say what an untrusted conversation cannot schedule:\n%s", g)
+		if !strings.Contains(g, "## Untrusted input") || !strings.Contains(g, "work/<conversation>/") || !strings.Contains(g, "pending approval") {
+			t.Errorf("the guide does not say what a tainted conversation may do:\n%s", g)
 		}
 	}
 	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's

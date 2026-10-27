@@ -229,7 +229,10 @@ func (rt *runtime) askDelivery(ctx context.Context, d approvals.Delivery, why st
 	if svc == nil {
 		return "", errors.New("approvals are not available: the report is not delivered")
 	}
-	req, err := svc.Request(context.WithoutCancel(ctx), approvals.Ask{Action: approvals.Action{Kind: approvals.KindDelivery, Delivery: &d}, Session: d.Session,
+	// bounded: a gateway that never connects must not hold the run's finish (and its job) forever
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	req, err := svc.Request(actx, approvals.Ask{Action: approvals.Action{Kind: approvals.KindDelivery, Delivery: &d}, Session: d.Session,
 		Card: approvals.Card{Title: fmt.Sprintf("deliver the report of the scheduled job %s (%s)", orDefault(d.JobName, d.JobID), d.JobID), Target: strings.Join(d.Targets, ", "),
 			Payload: d.Text, PayloadKind: "text"}, Why: why, Taint: taint})
 	if err != nil {
@@ -310,6 +313,9 @@ func (rt *runtime) describe(env *tools.Env, tool string, raw json.RawMessage) (a
 		}
 	case tool == sched.CronJobTool:
 		card.Title = fmt.Sprintf("%s the scheduled job %s", orDefault(str("action"), "change"), orDefault(str("job_id"), str("name")))
+		if str("job_id") == "" && str("name") == "" {
+			card.Title = fmt.Sprintf("%s a scheduled job (%s)", orDefault(str("action"), "change"), orDefault(str("schedule"), "no schedule given"))
+		}
 		if id := str("job_id"); id != "" {
 			if cur, ok := rt.sched.JobJSON(id); ok {
 				after := map[string]any{}

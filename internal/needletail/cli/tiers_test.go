@@ -280,3 +280,102 @@ func TestServeSweepsTmpAtBoot(t *testing.T) {
 		t.Errorf("a work directory was swept: %v", err)
 	}
 }
+
+// Approved actions of a tainted thread run as approved, by the runtime: a job made, a skill
+// made, a file written, a prompt follow-up queued, a marked record pinned (endorsed).
+func TestServeApprovedActionsRun(t *testing.T) {
+	steps := map[string]tierStep{}
+	for _, s := range tierSteps {
+		steps[s.name] = s
+	}
+	recordID := ""
+	next := func(msgs []scriptMsg) (string, string, any) {
+		user, after := lastUser(msgs)
+		if after != nil {
+			return "Tool said: " + after.text(), "", nil
+		}
+		if strings.HasSuffix(strings.TrimSpace(user), "STEP pinmarked") {
+			return "Pinning.", "memory_manage", map[string]any{"action": "pin", "id": recordID}
+		}
+		for name, s := range steps {
+			if strings.HasSuffix(strings.TrimSpace(user), "STEP "+name) {
+				return "Doing " + name + ".", s.tool, s.args(taintedSID)
+			}
+		}
+		return "ok", "", nil
+	}
+	r := newApprovalRig(t, "approvals:\n    per_conversation: 20\n", next)
+	r.taintedThread()
+	r.start()
+	defer r.srv.stop()
+	ts := 400
+	run := func(step string) string {
+		t.Helper()
+		before := len(r.fake.Posts())
+		ts++
+		msgTS := fmt.Sprintf("1700000100.%06d", ts)
+		r.inThread("ev"+msgTS, teammate, "STEP "+step, msgTS)
+		var reply string
+		waitFor(t, "the reply to "+step, 15*time.Second, func() bool {
+			for _, p := range r.fake.Posts()[before:] {
+				if p.Channel == devChan && strings.HasPrefix(p.Text, "Tool said:") {
+					reply = p.Text
+					return true
+				}
+			}
+			return false
+		})
+		return reply
+	}
+	reply := run("memsave")
+	if i := strings.Index(reply, `"id":"m`); i >= 0 {
+		recordID = reply[i+6 : i+18]
+	}
+	if recordID == "" {
+		t.Fatalf("no record id in %s", reply)
+	}
+	for i, step := range []string{"jobcreate", "skill", "homewrite", "followprompt", "pinmarked"} {
+		if tier := tierOf(run(step)); tier != "approval" {
+			t.Fatalf("%s: %s", step, tier)
+		}
+		c := r.waitCards(i + 1)[i]
+		r.click("ap"+step, owner, c, "needletail_approve", c.hash)
+		waitFor(t, step+" decided", 15*time.Second, func() bool {
+			for _, u := range r.fake.Updates() {
+				if u.TS == c.post.TS {
+					return true
+				}
+			}
+			return false
+		})
+		for _, u := range r.fake.Updates() {
+			if u.TS == c.post.TS && !strings.Contains(u.Text, "done") {
+				t.Errorf("%s: %s", step, u.Text)
+			}
+		}
+	}
+	jobs := jobsIn(t, r.home)
+	made := false
+	for _, j := range jobs {
+		if j["prompt"] == "Check the quotes." {
+			made = true
+		}
+	}
+	if !made {
+		t.Errorf("the approved job was not made: %v", jobs)
+	}
+	if b, err := os.ReadFile(filepath.Join(r.home, "skills", "crm", "table-skill", "SKILL.md")); err != nil || !strings.Contains(string(b), "Do the table.") {
+		t.Errorf("the approved skill: %q %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(r.home, "notes.md")); err != nil || string(b) != "a note" {
+		t.Errorf("the approved file: %q %v", b, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(r.home, "state", "needletail", "followups.json")); !strings.Contains(string(b), "Check on the quote.") {
+		t.Errorf("the approved follow-up:\n%s", b)
+	}
+	hot, _ := os.ReadFile(filepath.Join(r.home, "memories", "MEMORY.md"))
+	recs, _ := os.ReadFile(filepath.Join(r.home, "memories", "RECORDS.md"))
+	if !strings.Contains(string(hot), "morning calls") || strings.Contains(string(recs), `"untrusted":true`) {
+		t.Errorf("the approved pin did not endorse the record:\nhot %s\nrecords %s", hot, recs)
+	}
+}

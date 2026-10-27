@@ -112,6 +112,9 @@ func message(m wire.Message) (engine.Message, bool) {
 	if m.Role == "user" && m.Kind == wire.KindFollowUp {
 		msg.Source = engine.SourceFollowUp // the agent's own follow-up started this turn: no one wrote it
 	}
+	if m.Role == "user" && m.Kind == wire.KindApproval {
+		msg.Role = "assistant" // the runtime's note of an approval's outcome: never shown as the person's words
+	}
 	for _, tc := range m.ToolCalls {
 		if tc.Name != "" {
 			msg.Tools = append(msg.Tools, tc.Name)

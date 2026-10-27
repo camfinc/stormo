@@ -236,7 +236,13 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 	turnIdentity := fmt.Sprintf("%s:%d", tip, len(history))
 	res = &Result{Session: tip}
 	ctx = messaging.WithSession(ctx, tip)
-	ctx = messaging.WithQuarantine(ctx, func(string) error { return a.Store.MarkUntrusted(res.Session) })
+	// a mark from data the turn reads keeps why (the approval card's provenance)
+	ctx = messaging.WithQuarantine(ctx, func(why string) error {
+		if why == messaging.UntrustedConversation {
+			why = "" // the conversation's own mark: nothing new to say
+		}
+		return a.Store.AddTaint(res.Session, wire.Taint{Why: why})
+	})
 	if a.Store.Untrusted(tip) {
 		if err := messaging.MarkUntrusted(ctx, messaging.UntrustedConversation); err != nil {
 			return res, err
