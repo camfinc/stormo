@@ -61,14 +61,14 @@ func TestOutcomeRestartAudienceAndFeedback(t *testing.T) {
 }
 func TestUnknownVersionPreserved(t *testing.T) {
 	s := &Store{Home: t.TempDir()}
-	if err := s.write(OutcomesFile, map[string]any{"version": 2}); err != nil {
+	if err := s.write(OutcomesFile, map[string]any{"version": 1 << 30}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Append(event()); err == nil {
 		t.Fatal("unknown version overwritten")
 	}
 	b, _ := os.ReadFile(filepath.Join(s.Home, OutcomesFile))
-	if string(b) != "{\"version\":2}" {
+	if string(b) != "{\"version\":1073741824}" {
 		t.Fatal(string(b))
 	}
 }

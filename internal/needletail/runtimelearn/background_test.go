@@ -131,7 +131,9 @@ func TestBackgroundCandidateScopeAndUnknownVersion(t *testing.T) {
 	if len(other) != 0 {
 		t.Fatal(other)
 	}
-	if err := s.write(BackgroundFile, map[string]any{"version": 3}); err != nil {
+	// Far past any version: a format bump (2 became valid in 13ff060) cannot turn this into a
+	// test of a valid file, as running the new reader against the old test once did.
+	if err := s.write(BackgroundFile, map[string]any{"version": 1 << 30}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.EnqueueBackground(tr, now); err == nil {
