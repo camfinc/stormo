@@ -72,6 +72,9 @@ func Prepare(home string, u Users, stateDir string, logf func(string)) error {
 	if err := tempDir(root, u, logf); err != nil {
 		return err
 	}
+	if err := workDir(root, u, logf); err != nil {
+		return err
+	}
 	if err := unix.Fchown(root, u.RuntimeUID, u.RuntimeGID); err != nil {
 		return &os.PathError{Op: "chown", Path: home, Err: err}
 	}
@@ -234,6 +237,42 @@ func tempDir(root int, u Users, logf func(string)) error {
 	}
 	if err := unix.Fchmod(fd, TempMode); err != nil {
 		return &os.PathError{Op: "chmod", Path: Temp, Err: err}
+	}
+	return nil
+}
+
+// workDir makes Work a directory when missing (moving aside what else holds the name) and gives it
+// to the runtime with WorkMode; what it holds is the workspace's, laid out before.
+func workDir(root int, u Users, logf func(string)) error {
+	var st unix.Stat_t
+	err := unix.Fstatat(root, Work, &st, unix.AT_SYMLINK_NOFOLLOW)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		if err := unix.Mkdirat(root, Work, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return &os.PathError{Op: "mkdir", Path: Work, Err: err}
+		}
+	case err != nil:
+		return &os.PathError{Op: "stat", Path: Work, Err: err}
+	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
+		aside := fmt.Sprintf("%s.moved-%d", Work, time.Now().Unix())
+		if err := unix.Renameat(root, Work, root, aside); err != nil {
+			return &os.PathError{Op: "rename", Path: Work, Err: err}
+		}
+		logf(fmt.Sprintf("uid split: %s was not a directory; moved aside to %s", Work, aside))
+		if err := unix.Mkdirat(root, Work, 0o700); err != nil {
+			return &os.PathError{Op: "mkdir", Path: Work, Err: err}
+		}
+	}
+	fd, err := unix.Openat(root, Work, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: Work, Err: err}
+	}
+	defer unix.Close(fd)
+	if err := unix.Fchown(fd, u.RuntimeUID, u.RuntimeGID); err != nil {
+		return &os.PathError{Op: "chown", Path: Work, Err: err}
+	}
+	if err := unix.Fchmod(fd, WorkMode); err != nil {
+		return &os.PathError{Op: "chmod", Path: Work, Err: err}
 	}
 	return nil
 }

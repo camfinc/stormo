@@ -77,7 +77,7 @@ func (s *Store) Recall(a Audience, input string, skip func(id string) bool, max,
 	hits := []*hit{}
 	for _, h := range st.idx.score(terms, max1(st.idx.n/100)) {
 		r := h.doc.rec
-		if r.Hot > 0 || r.Expired(now) || skip != nil && skip(r.ID) || !s.visible(r, a, false) {
+		if r.Hot > 0 || r.Untrusted || r.Expired(now) || skip != nil && skip(r.ID) || !s.visible(r, a, false) {
 			continue
 		}
 		hits = append(hits, h)

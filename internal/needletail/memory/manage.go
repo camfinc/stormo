@@ -34,6 +34,9 @@ type SaveOptions struct {
 	// is the least trusted that reaches recall), and a hot record with the same text is left as it
 	// is (exists, uncounted).
 	ArchiveOnly bool
+	// Untrusted: a tainted run's save (docs/needletail.md §7): the record is kept marked, in the
+	// archive only (never hot), and with its source (Src) as its provenance.
+	Untrusted bool
 }
 
 // Similar is a record a save found too close to its text.
@@ -123,6 +126,9 @@ func (s *Store) recordText(text string, strict bool) (string, error) {
 // Save makes a record, unless one with the same normalized text exists (exists) or, without
 // Force, similar ones do (similar: nothing saved).
 func (s *Store) Save(o SaveOptions) (SaveResult, error) {
+	if o.Untrusted {
+		o.Hot = false // marked data never enters the system prompt
+	}
 	c, err := s.recordText(o.Text, o.Hot || o.ArchiveOnly)
 	if err != nil {
 		return SaveResult{}, err
@@ -191,7 +197,7 @@ func (s *Store) Save(o SaveOptions) (SaveResult, error) {
 	}
 	r := st.create(kind, c, o.Src, now)
 	st.unbury(target, c)
-	r.Tags, r.Imp, r.Expires, r.Scope = tags, imp, exp, scope
+	r.Tags, r.Imp, r.Expires, r.Scope, r.Untrusted = tags, imp, exp, scope, o.Untrusted
 	if o.Hot {
 		r.Hot = len(st.hot(target)) + 1
 	}
@@ -402,6 +408,9 @@ func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
 	if r.Hot > 0 {
 		return st.view(r, now, 0, false), s.usage(t, before), nil
 	}
+	if r.Untrusted {
+		return View{}, Usage{}, ErrUntrustedRecord
+	}
 	// into every system prompt: checked as a hot save is (an older runtime's record, a hand edit)
 	if err := checkHot(r.Text); err != nil {
 		return View{}, Usage{}, err
@@ -419,6 +428,42 @@ func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
 	r.Hot = len(before) + 1
 	st.use.used(r.ID, now)
 	return st.view(r, now, 0, false), u, s.commit(st, t)
+}
+
+// ErrUntrustedRecord refuses to put a marked record (a tainted run's) into the system prompt: only
+// the owner's approval endorses it (Endorse).
+var ErrUntrustedRecord = errors.New("the record holds untrusted data (saved by a run that had taken in words you may not obey): it never enters the always-shown memory unless the owner approves")
+
+// Marked is whether the record id that a may see is marked untrusted.
+func (s *Store) Marked(a Audience, id string) (bool, error) {
+	defer s.lock()()
+	st, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return false, err
+	}
+	return r.Untrusted, nil
+}
+
+// Endorse clears a record's mark: the owner approved it (an approval card's pin).
+func (s *Store) Endorse(a Audience, id string) error {
+	defer s.lock()()
+	st, err := s.writable()
+	if err != nil {
+		return err
+	}
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return err
+	}
+	if !r.Untrusted {
+		return nil
+	}
+	r.Untrusted = false
+	return s.commit(st)
 }
 
 // Unpin moves a hot record back to the archive.

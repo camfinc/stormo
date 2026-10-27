@@ -78,6 +78,11 @@ type Runtime struct {
 	Now           func() time.Time
 	// Untrusted is the persisted conversation provenance, resolved by the host.
 	Untrusted func(context.Context, string) string
+	// Approve puts a tainted run's write a script asked for (a core write, a send to another
+	// conversation) to a person (the approvals service, docs/needletail.md §7) as the call of
+	// tool with args in session: the script gets "pending approval"; the runtime runs exactly
+	// that call if they approve. nil: refused.
+	Approve func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error)
 	// Observer, when set, gives the observer of handler runs (the core's hooks, which connect
 	// after boot): each run is a tool_start and tool_done named luau:<skill>__<name>#<event>.
 	Observer func() HookObserver
@@ -189,7 +194,7 @@ func quarantineWrite(name string, b Binding) bool {
 		return false
 	}
 	switch name {
-	case "core.call", "http.request", "message.send", "kv.set", "kv.delete", "followup.create", "followup.cancel":
+	case "core.call", "http.request", "message.send", "kv.set", "kv.delete", "followup.create", "followup.cancel", "memory.save":
 		return false
 	}
 	return true
@@ -816,7 +821,9 @@ func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 // core calls one of the core's tools: an object answer as it is, any other text as {result}.
 func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any, error) {
 	if why := c.quarantined(ctx); why != "" && !messaging.ReadOnlyCoreTool(tool) {
-		return nil, errf("refused", "%v", messaging.Deferred("core_call "+tool, why))
+		// a tainted run's core write: a person approves exactly this call, or it is refused
+		b, _ := json.Marshal(args)
+		return c.approval(ctx, "mcp_core_"+tool, b, &messaging.ApprovalNeeded{What: "core_call " + tool, Why: why, Trust: true})
 	}
 	if c.rt.Core == nil {
 		return nil, errf("unavailable", "%s: the agent is not on a swarm core", tool)
@@ -840,6 +847,19 @@ func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any,
 		return json.RawMessage(text), nil
 	}
 	return map[string]string{"result": text}, nil
+}
+
+// approval puts a script's call to a person (Runtime.Approve): its answer, "pending approval", is
+// what the script gets; without approvals (or in a dry run) it is refused.
+func (c *Call) approval(ctx context.Context, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error) {
+	if c.DryRun || c.rt.Approve == nil || c.Session == "" {
+		return nil, errf("refused", "%v", need)
+	}
+	v, err := c.rt.Approve(ctx, c.Session, tool, args, need)
+	if err != nil {
+		return nil, errf("refused", "%v", err)
+	}
+	return v, nil
 }
 
 func memoryRead(_ context.Context, c *Call, _ json.RawMessage) (any, error) {
@@ -937,6 +957,11 @@ func messageSend(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 		return nil, errf("unavailable", "send_message: no messaging gateway runs here (Slack is off)")
 	}
 	sent, err := c.rt.Messenger.Send(messaging.WithSession(ctx, c.Session), messaging.Request{Target: t.String(), Text: text})
+	if need, ok := messaging.AsApproval(err); ok {
+		// a tainted run's send to another conversation: a person approves exactly this message
+		b, _ := json.Marshal(map[string]string{"target": t.String(), "message": text})
+		return c.approval(ctx, messaging.SendTool, b, need)
+	}
 	switch {
 	case errors.Is(err, messaging.ErrRefused):
 		return nil, errf("refused", "send_message: %v", err)

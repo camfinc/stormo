@@ -607,7 +607,15 @@ func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history
 		return "", nil, errors.New("no point to cut the conversation at")
 	}
 	summary := a.summarise(ctx, turn, history[:cut], window)
-	newTip, err := a.Store.Compact(tip, summary, history[cut:])
+	// the summary keeps its inputs' marks: a marked row (after the owner's endorsement) summarised
+	// leaves the summary marked, so compaction never launders taint
+	endorsed, marked := a.Store.Endorsed(tip), false
+	for i, m := range history[:cut] {
+		if m.Untrusted && i >= endorsed {
+			marked = true
+		}
+	}
+	newTip, err := a.Store.CompactMarked(tip, summary, marked, history[cut:])
 	if err != nil {
 		return "", nil, err
 	}

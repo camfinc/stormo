@@ -173,10 +173,17 @@ func TestQuarantineReadOnlyJail(t *testing.T) {
 	if err != nil || abi < 3 {
 		t.Skip("requires Landlock ABI 3 or newer")
 	}
+	// the home's .tmp (as before) and a conversation's work directory (a tainted run's grant)
+	for _, writable := range []string{TmpDir, WorkDir + "/slack-C0DEV-1.2"} {
+		t.Run(writable, func(t *testing.T) { readOnlyJail(t, writable) })
+	}
+}
+
+func readOnlyJail(t *testing.T, writable string) {
 	home := t.TempDir()
 	shared := t.TempDir()
-	tmp := filepath.Join(home, TmpDir)
-	for _, dir := range []string{tmp, filepath.Join(home, "scripts"), filepath.Join(home, "memories")} {
+	tmp := filepath.Join(home, writable)
+	for _, dir := range []string{tmp, filepath.Join(home, "scripts"), filepath.Join(home, "memories"), filepath.Join(home, WorkDir, "other-conv")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -206,7 +213,7 @@ func TestQuarantineReadOnlyJail(t *testing.T) {
 			t.Errorf("allowed command %q: %v %s", command, err, out)
 		}
 	}
-	for _, command := range []string{"printf tainted > scripts/new.sh", "printf tainted > memories/note.txt", fmt.Sprintf("printf tainted > %q/new.txt", shared), "printf tainted > .tmp/escape/new.sh", "truncate -s 0 memories/note.txt", "(printf tainted > scripts/bg.sh) & wait $!"} {
+	for _, command := range []string{"printf tainted > scripts/new.sh", "printf tainted > memories/note.txt", fmt.Sprintf("printf tainted > %q/new.txt", shared), "printf tainted > \"$TMPDIR/escape/new.sh\"", "truncate -s 0 memories/note.txt", "(printf tainted > scripts/bg.sh) & wait $!", "printf tainted > work/other-conv/x"} {
 		if out, err := run(command); err == nil {
 			t.Errorf("persistent write allowed %q: %s", command, out)
 		}

@@ -10,10 +10,11 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/slack/slacktest"
 )
 
-// Thread context counts in what a run acts on: a verified author's mention in a thread whose
-// earlier messages hold an unverified author's words gives the handlers and the turn an Input
-// that names the context's authors and says one is unverified, and the turn's input is stored
-// marked (the conversation takes in words the agent must not obey). A verified DM is not marked.
+// Thread context counts in what a run acts on, minimized (docs/needletail.md §7): a verified
+// author's mention in a thread whose earlier messages hold an unverified author's words gives the
+// handlers every line (flagged), so their Input says one is unverified; the turn is given only the
+// verified lines, so its Input names those authors alone and its input row is not marked (it
+// reads the rest through thread_context, which marks it). A verified DM is not marked.
 func TestThreadContextInTheRunsInput(t *testing.T) {
 	h := &fakeHandlers{}
 	r := newRig(t, func(o *Options) { o.Handlers = h })
@@ -34,11 +35,11 @@ func TestThreadContextInTheRunsInput(t *testing.T) {
 	runs, opts := r.turns.runs[session], r.turns.opts[session]
 	dmOpts := r.turns.opts[DMSessionID(dm)]
 	r.turns.mu.Unlock()
-	if len(runs) != 1 || !runs[0].ContextUnverified || !slices.Contains(runs[0].Context, mallet) || !slices.Contains(runs[0].Context, alice) || !runs[0].Verified {
+	if len(runs) != 1 || runs[0].ContextUnverified || slices.Contains(runs[0].Context, mallet) || !slices.Contains(runs[0].Context, alice) || !runs[0].Verified {
 		t.Errorf("the turn's input %+v", runs)
 	}
-	if len(opts) != 1 || !opts[0].Untrusted {
-		t.Errorf("the turn's input row is not marked: %+v", opts)
+	if len(opts) != 1 || opts[0].Untrusted {
+		t.Errorf("the turn's input row is marked though the unverified lines were held back: %+v", opts)
 	}
 	if len(dmOpts) != 1 || dmOpts[0].Untrusted {
 		t.Errorf("a verified DM is marked: %+v", dmOpts)
@@ -49,8 +50,8 @@ func TestThreadContextInTheRunsInput(t *testing.T) {
 	if len(hruns) != 2 || !hruns[0].ContextUnverified || !slices.Contains(hruns[0].Context, mallet) || hruns[1].ContextUnverified {
 		t.Errorf("the handlers' inputs %+v", hruns)
 	}
-	if !runs[0].Untrusted() || hruns[1].Untrusted() {
-		t.Errorf("Untrusted(): turn %v, DM handler %v", runs[0].Untrusted(), hruns[1].Untrusted())
+	if runs[0].Untrusted() || !hruns[0].Untrusted() || hruns[1].Untrusted() {
+		t.Errorf("Untrusted(): turn %v, thread handler %v, DM handler %v", runs[0].Untrusted(), hruns[0].Untrusted(), hruns[1].Untrusted())
 	}
 }
 

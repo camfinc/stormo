@@ -123,7 +123,7 @@ func TestListenHandlers(t *testing.T) {
 			t.Errorf("%s: turn %q", ts, got)
 		}
 	}
-	if in := r.turns.got(SessionID(dev, "1700000302.000100")); len(in) != 1 || !strings.Contains(in[0], "[unverified] U0STRANGER: the parent") {
+	if in := r.turns.got(SessionID(dev, "1700000302.000100")); len(in) != 1 || strings.Contains(in[0], "the parent") || !strings.Contains(in[0], "1 earlier message(s)") {
 		t.Errorf("thread turn %q", in)
 	}
 	if n := len(r.fake.Calls("conversations.replies")); n != 1 {

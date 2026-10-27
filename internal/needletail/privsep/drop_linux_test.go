@@ -112,7 +112,7 @@ try "replace cron" 'mv cron cron.old'
 try "read /proc/runtime/environ" 'cat /proc/%d/environ >/dev/null'
 try "signal the runtime" 'kill -0 %d'
 try "write skills/demo/scripts/run.sh" 'mkdir -p skills/demo/scripts && echo "echo hi" > skills/demo/scripts/run.sh'
-try "make work/" 'mkdir work && echo x > work/f'
+try "make work/" 'mkdir -p work/mine && echo x > work/mine/f'
 sleep 30 &
 wait
 `, home, pid, pid)

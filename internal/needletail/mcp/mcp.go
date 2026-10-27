@@ -292,7 +292,8 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 			Schema:      info.InputSchema,
 			Run: func(ctx context.Context, env *tools.Env, args json.RawMessage) (any, error) {
 				if why := tools.UntrustedWhy(ctx, env); why != "" && !messaging.ReadOnlyCoreTool(name) {
-					return nil, messaging.Deferred("core tool "+name, why)
+					// a tainted run's core write (msg_send, fs_write, …): a person approves it
+					return nil, messaging.NeedsApproval("core tool "+name, why)
 				}
 				res, err := c.Call(ctx, name, args)
 				if err != nil {

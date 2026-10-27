@@ -29,7 +29,6 @@ func TestQuarantineRefusesLuauWrites(t *testing.T) {
 		{"fs.append", `{"path":"reports/new.md","content":"later instructions"}`},
 		{"fs.remove", `{"path":"reports/new.md"}`},
 		{"fs.write", `{"path":"/shared/group/new.md","content":"later instructions"}`},
-		{"memory.save", `{"text":"Persisted instruction"}`},
 		{"memory.update", `{"id":"m0123456789a","fields":{"text":"changed"}}`},
 		{"memory.delete", `{"id":"m0123456789a"}`},
 		{"core.call", `{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`},
@@ -51,6 +50,13 @@ func TestQuarantineRefusesLuauWrites(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rt.Home, "reports", "new.md")); !os.IsNotExist(err) {
 		t.Fatal("file write escaped")
+	}
+	// a tainted run's save is kept, marked (never hot, never recalled)
+	if raw := call.Call(ctx, "memory.save", []byte(`{"text":"The client prefers calls after noon."}`)); !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("a marked save: %s", raw)
+	}
+	if b, _ := os.ReadFile(filepath.Join(rt.Home, "memories", "RECORDS.md")); !strings.Contains(string(b), `"untrusted":true`) {
+		t.Fatalf("the record is not marked:\n%s", b)
 	}
 }
 
@@ -101,9 +107,9 @@ func TestQuarantineKVReadMarksBeforeResultAndSameRunWrites(t *testing.T) {
 	if !persisted || res.Untrusted == "" || call.UntrustedWhy() == "" || messaging.UntrustedWhy(ctx) == "" {
 		t.Fatal("provenance not propagated before return")
 	}
-	wantValue(t, res, `["quarantined data",false]`)
-	if _, err := os.Stat(filepath.Join(rt.Home, "memories", "RECORDS.md")); !os.IsNotExist(err) {
-		t.Fatal("same-run memory write escaped")
+	wantValue(t, res, `["quarantined data",true]`)
+	if b, _ := os.ReadFile(filepath.Join(rt2.Memory.Home, "memories", "RECORDS.md")); !strings.Contains(string(b), `"untrusted":true`) {
+		t.Fatalf("the same run's save is not marked:\n%s", b)
 	}
 }
 

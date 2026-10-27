@@ -169,10 +169,20 @@ func TestQuarantineRulesAndWritableValidation(t *testing.T) {
 	if err != nil || !parsed.ReadOnlyHome || len(parsed.Writable) != 1 {
 		t.Fatalf("quarantine launcher roundtrip %+v %v", parsed, err)
 	}
-	for _, path := range []string{"/opt/data", "/shared/group", "/opt/data/.tmp/child", "/opt/data/.tmp/../scripts"} {
+	for _, path := range []string{"/opt/data", "/shared/group", "/opt/data/.tmp/child", "/opt/data/.tmp/../scripts", "/opt/data/work", "/opt/data/work/a/b",
+		"/opt/data/work/..", "/opt/data/work/../scripts", "/opt/data/work/", "work/conv", "/opt/data/skills/conv"} {
 		_, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", path, "--", "/bin/sh", "sh"})
 		if err == nil {
-			t.Errorf("non-temp writable grant accepted: %s", path)
+			t.Errorf("a writable grant outside a conversation's work directory accepted: %s", path)
 		}
+	}
+	// a tainted run's grant: its conversation's work directory
+	for _, path := range []string{"/opt/data/work/slack-C0DEVCHAN1-1700000100.000100", "/opt/data/work/conv"} {
+		if _, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", path, "--", "/bin/sh", "sh"}); err != nil {
+			t.Errorf("a work directory grant refused: %s: %v", path, err)
+		}
+	}
+	if _, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", "/opt/data/work/a", "--writable", "/opt/data/work/b", "--", "/bin/sh", "sh"}); err == nil {
+		t.Error("two writable grants accepted")
 	}
 }

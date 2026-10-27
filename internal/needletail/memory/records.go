@@ -64,7 +64,10 @@ type Record struct {
 	// channel:<channel> (saved in a channel's thread), or agent (everyone). "": saved before
 	// scopes existed, read from Src (Store.scopeOf).
 	Scope string
-	Text  string
+	// Untrusted: saved by a tainted run (docs/needletail.md §7): never hot, never recalled, and a
+	// search that returns it marks its reader; the owner's approval of a pin endorses it.
+	Untrusted bool
+	Text      string
 
 	extra map[string]json.RawMessage // header keys this version does not know, kept
 
@@ -240,6 +243,9 @@ func (r *Record) header(b *bytes.Buffer) {
 	if r.Scope != "" {
 		b.WriteString(`,"scope":`)
 		jsonString(b, r.Scope)
+	}
+	if r.Untrusted {
+		b.WriteString(`,"untrusted":true`)
 	}
 	keys := make([]string, 0, len(r.extra))
 	for k := range r.extra {
@@ -527,17 +533,18 @@ func safeText(text string) string {
 
 // recordHeader is a header's known keys (the fast path: a header with no other key).
 type recordHeader struct {
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Tags    []string `json:"tags"`
-	Imp     int      `json:"imp"`
-	Hot     int      `json:"hot"`
-	Src     string   `json:"src"`
-	Created string   `json:"created"`
-	Updated string   `json:"updated"`
-	Expires string   `json:"expires"`
-	PII     []string `json:"pii"`
-	Scope   string   `json:"scope"`
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Tags      []string `json:"tags"`
+	Imp       int      `json:"imp"`
+	Hot       int      `json:"hot"`
+	Src       string   `json:"src"`
+	Created   string   `json:"created"`
+	Updated   string   `json:"updated"`
+	Expires   string   `json:"expires"`
+	PII       []string `json:"pii"`
+	Scope     string   `json:"scope"`
+	Untrusted bool     `json:"untrusted"`
 }
 
 func parseRecord(e string) (*Record, bool) {
@@ -557,7 +564,7 @@ func parseRecord(e string) (*Record, bool) {
 			return nil, false
 		}
 		h = recordHeader{}
-		for _, k := range []string{"id", "kind", "tags", "imp", "hot", "src", "created", "updated", "expires", "pii", "scope"} {
+		for _, k := range []string{"id", "kind", "tags", "imp", "hot", "src", "created", "updated", "expires", "pii", "scope", "untrusted"} {
 			delete(all, k)
 		}
 		if json.Unmarshal([]byte(m[1]), &h) != nil {
@@ -566,7 +573,7 @@ func parseRecord(e string) (*Record, bool) {
 		extra = all
 	}
 	r := &Record{ID: h.ID, Kind: h.Kind, Tags: h.Tags, Imp: h.Imp, Hot: h.Hot, Src: h.Src, Created: h.Created, Updated: h.Updated,
-		Expires: h.Expires, PII: h.PII, Scope: h.Scope, Text: trim(text)}
+		Expires: h.Expires, PII: h.PII, Scope: h.Scope, Untrusted: h.Untrusted, Text: trim(text)}
 	if !ValidID(r.ID) || !slices.Contains(Kinds, r.Kind) || r.Text == "" {
 		return nil, false
 	}

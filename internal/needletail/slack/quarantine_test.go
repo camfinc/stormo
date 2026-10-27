@@ -133,9 +133,18 @@ func TestHandlerInitialQuarantineFailureStopsExecution(t *testing.T) {
 		o.Handlers = h
 		o.Quarantine = func(string) error { return errors.New("forced initial mark failure") }
 	})
-	jobs := []job{{channel: dev, verified: true, ev: Message{User: alice, Text: "verified question"}}}
-	left := r.g.dispatch(SessionID(dev, "1700000100.000100"), jobs, []messaging.ContextLine{{Text: "unverified context", Unverified: true}})
+	// an unverified author: the conversation is marked before the handler runs; a failed mark
+	// runs nothing
+	jobs := []job{{channel: dev, verified: false, ev: Message{User: mallet, Text: "unverified question"}}}
+	left := r.g.dispatch(SessionID(dev, "1700000100.000100"), jobs, nil)
 	if calls != 0 || len(left) != 0 || len(r.fake.Posts()) != 0 {
 		t.Fatalf("initial mark failure executed handler: calls=%d left=%d", calls, len(left))
+	}
+	// unverified thread context alone: the handler runs, but a reply that carries the context
+	// into the conversation needs the mark first; a failed mark posts nothing
+	jobs = []job{{channel: dev, verified: true, ev: Message{User: alice, Text: "verified question"}}}
+	left = r.g.dispatch(SessionID(dev, "1700000100.000100"), jobs, []messaging.ContextLine{{Text: "unverified context", Unverified: true}})
+	if calls != 1 || len(left) != 0 || len(r.fake.Posts()) != 0 {
+		t.Fatalf("a context-carrying reply escaped a failed mark: calls=%d left=%d posts=%v", calls, len(left), r.fake.Posts())
 	}
 }

@@ -239,8 +239,14 @@ func (g *Gateway) SendTool() tools.Tool {
 			}
 			switch strings.ToLower(strings.TrimSpace(a.Action)) {
 			case "channels":
+				if err := discoveryRefused(ctx, env); err != nil {
+					return nil, err
+				}
 				return g.discover(ctx, a.Query, a.Cursor, a.ChannelType)
 			case "channel_info":
+				if err := discoveryRefused(ctx, env); err != nil {
+					return nil, err
+				}
 				return g.inspectChannel(ctx, a.Target)
 			case "list":
 				return map[string]any{"targets": g.targets()}, nil

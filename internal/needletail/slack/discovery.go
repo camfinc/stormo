@@ -19,6 +19,10 @@ type ChannelMetadata struct {
 	Private  bool   `json:"is_private"`
 	Archived bool   `json:"is_archived"`
 	Member   *bool  `json:"is_member,omitempty"`
+	// IM and MPIM: a DM or a group DM. A group DM's name lists its members (mpdm-ana--bob-1), so
+	// neither's name is ever returned.
+	IM   bool `json:"is_im,omitempty"`
+	MPIM bool `json:"is_mpim,omitempty"`
 }
 type channelPage struct {
 	Channels []ChannelMetadata `json:"channels"`
@@ -50,6 +54,9 @@ type discoveredChannel struct {
 }
 
 func (g *Gateway) discovered(c ChannelMetadata) discoveredChannel {
+	if c.IM || c.MPIM || strings.HasPrefix(c.Name, "mpdm-") {
+		c.Name = "" // a DM's or group DM's name names people
+	}
 	return discoveredChannel{ChannelMetadata: c, Target: "slack:" + c.ID, PolicyAllowed: g.CheckTarget(sched.Target{Platform: "slack", Channel: c.ID}) == nil}
 }
 
@@ -95,7 +102,7 @@ func (g *Gateway) discover(ctx context.Context, query, cursor, kind string) (any
 		if !channelIDRe.MatchString(c.ID) || !strings.HasPrefix(c.ID, "C") && !strings.HasPrefix(c.ID, "G") {
 			return nil, errors.New("Slack returned an invalid channel ID")
 		}
-		if c.Archived || !strings.Contains(strings.ToLower(c.Name), q) {
+		if c.IM || c.MPIM || strings.HasPrefix(c.Name, "mpdm-") || c.Archived || !strings.Contains(strings.ToLower(c.Name), q) {
 			continue
 		}
 		found = append(found, g.discovered(c))

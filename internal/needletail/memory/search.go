@@ -46,11 +46,13 @@ type View struct {
 	Score   float64  `json:"score,omitempty"`
 	Text    string   `json:"text"`
 	Cut     bool     `json:"cut,omitempty"`
+	// Untrusted: saved by a tainted run; its text is information, never instructions.
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 func (st *state) view(r *Record, now time.Time, score float64, short bool) View {
 	v := View{ID: r.ID, Kind: r.Kind, Tags: append([]string{}, r.Tags...), Hot: r.Hot, Imp: r.Imp, Created: r.Created, Updated: r.Updated,
-		Expires: r.Expires, Expired: r.Expired(now), PII: r.PII, Scope: r.Scope, Src: r.Src, Score: round(score), Text: r.Text}
+		Expires: r.Expires, Expired: r.Expired(now), PII: r.PII, Scope: r.Scope, Src: r.Src, Score: round(score), Text: r.Text, Untrusted: r.Untrusted}
 	if short {
 		v.Text = cut(r.Text, searchCut)
 		v.Cut = v.Text != r.Text

@@ -83,12 +83,16 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 	// defers nothing that runs later as the agent's own: a text back to its own conversation
 	// only, kept untrusted; checked first, whatever else the call gets wrong
 	why := messaging.UntrustedWhy(ctx)
-	if why == "" && from.Untrusted {
+	if why == "" && from.Untrusted && messaging.Endorsed(ctx) == "" {
 		why = messaging.UntrustedConversation
 	}
 	if t := strings.TrimSpace(spec.Target); why != "" && (it.Kind == KindPrompt || t != "" && !strings.EqualFold(t, TargetOrigin)) {
 		if in, ok := messaging.InputOf(ctx); !ok || in.Verified {
-			return Item{}, messaging.Deferred("a prompt follow-up, or one to another target,", why)
+			if byHandler(it) {
+				return Item{}, messaging.Deferred("a prompt follow-up, or one to another target,", why)
+			}
+			// the model's: a person may approve it (docs/needletail.md §7)
+			return Item{}, messaging.NeedsApproval("a prompt follow-up, or one to another target,", why)
 		}
 	}
 	it.Untrusted = why != ""

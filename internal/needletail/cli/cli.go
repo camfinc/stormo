@@ -216,6 +216,12 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		Untrusted: untrustedRun(store),
 		// SharedWrite (the core's fs_note after a /shared write) is set by connectCore.
 	}
+	// A tainted run's commands get neither the core's credentials (they would write to the core
+	// directly) nor the Luau http_secrets (docs/needletail.md §7).
+	env.TaintedDrop = append([]string{}, secrets.Passthrough...)
+	for _, h := range cfg.Luau.HTTPSecrets {
+		env.TaintedDrop = append(env.TaintedDrop, h.Env)
+	}
 	// Background processes (terminal background: true): the conversation's (its root), killed
 	// when it is deleted or ends for good, at their lifetime, and at shutdown.
 	procs := &tools.Processes{Lifetime: cfg.BackgroundLifetime(), Log: logf}
@@ -282,6 +288,14 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	rt.risky = riskyCommands(cfg.Approvals, logf)
 	agent.Env.Approve = rt.approve
 	agent.Env.Risky = rt.risky.Match
+	if lr != nil {
+		// a script's core write or send from a tainted run, put to a person as the same call
+		lr.Approve = func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error) {
+			env := rt.agent.Env
+			env.Session = session
+			return rt.approve(ctx, &env, tool, args, need)
+		}
+	}
 	// the guide comes first among the sections, before a channel's guidance
 	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)
 	return rt, nil
@@ -581,6 +595,17 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 		Log:          func(s string) { rt.logger.Println(s) },
 		Handlers:     handlers,
 		Listen:       slackListen(rt.cfg.Slack),
+		RelayBots:    slackRelayBots(rt.cfg.Slack),
+		Taint: func(session string, t wire.Taint) error {
+			if _, ok := store.Root(session); !ok {
+				if _, err := store.Create(wire.Session{ID: session, Source: slack.Source, Title: "Slack conversation", Untrusted: true}); err != nil {
+					if _, exists := store.Root(session); !exists {
+						return err
+					}
+				}
+			}
+			return store.AddTaint(session, t)
+		},
 	})
 	if err != nil {
 		rt.logger.Printf("slack: %v: the gateway is off", err)
@@ -620,6 +645,15 @@ func slackListen(c *wire.SlackConfig) []string {
 		return nil
 	}
 	return c.Listen
+}
+
+// slackRelayBots are the bots whose messages mark the conversation (needletail.yaml
+// slack.relay_bots).
+func slackRelayBots(c *wire.SlackConfig) []string {
+	if c == nil {
+		return nil
+	}
+	return c.RelayBots
 }
 
 // slackChannels are the channels the agent has Slack conversations in (send_message's targets).
@@ -665,6 +699,18 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	var gw *slack.Gateway
 	srv, err := api.New(api.Options{Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, Jail: rt.jail,
+		Trust: func(conv string) error {
+			// the owner (the API's key is theirs) endorses a conversation: kept with an audit record
+			if err := rt.store.Trust(conv, "owner (API)"); err != nil {
+				return err
+			}
+			if svc := rt.approvals.Load(); svc != nil {
+				svc.Audit("trusted", conv, "owner (API)")
+			} else {
+				approvals.AppendAudit(filepath.Join(rt.cfg.StateDir(), "approvals-audit.jsonl"), map[string]string{"at": time.Now().UTC().Format(time.RFC3339Nano), "event": "trusted", "conversation": conv, "by": "owner (API)"}, nil)
+			}
+			return nil
+		},
 		Platforms: func() map[string]wire.Platform {
 			if gw == nil {
 				return nil

@@ -60,25 +60,31 @@ func under(rel string, names []string) bool {
 	return false
 }
 
-// writable resolves p for a write: inside the sandbox and not a protected runtime file, and not
-// what the runtime runs later as the agent's own (skills/, scripts/) when the call may defer no
-// work (UntrustedWhy).
+// writable resolves p for a write: inside the sandbox, not a protected runtime file and not
+// another conversation's work directory. A tainted run (UntrustedWhy) writes only in its own
+// work directory (work/<conversation>/, made when missing): anywhere else (the home, skills/ and
+// scripts/, which run later as the agent's own, /shared) needs a person's approval
+// (docs/needletail.md §7).
 func writable(ctx context.Context, env *Env, p string) (string, error) {
 	real, err := env.Sandbox.Resolve(p)
 	if err != nil {
 		return "", err
 	}
+	rel, home := env.Sandbox.HomeRel(real)
+	if home && isProtected(rel) {
+		return "", fmt.Errorf("%s is the runtime's own file and cannot be written with the file tools", rel)
+	}
+	if home && otherWork(env, rel) {
+		return "", fmt.Errorf("%s is another conversation's work directory (yours is %s/)", rel, WorkRel(conversationOf(env)))
+	}
 	if why := UntrustedWhy(ctx, env); why != "" {
-		rel, home := env.Sandbox.HomeRel(real)
-		if !home || !under(rel, []string{".tmp"}) {
-			return "", messaging.Deferred("a persistent file write (only .tmp is writable in quarantine)", why)
+		if !home || !ownWork(env, rel) {
+			return "", messaging.NeedsApproval(fmt.Sprintf("a write to %s (outside this conversation's work directory %s/, where its writes go)", env.Sandbox.Display(real), WorkRel(conversationOf(env))), why)
 		}
 	}
-	if rel, ok := env.Sandbox.HomeRel(real); ok && isProtected(rel) {
-		return "", fmt.Errorf("%s is the runtime's own file and cannot be written with the file tools", rel)
-	} else if ok && runLater(rel) {
-		if why := UntrustedWhy(ctx, env); why != "" {
-			return "", messaging.Deferred("a write to "+rel+" (skills and job scripts run later)", why)
+	if home && ownWork(env, rel) {
+		if _, err := EnsureWork(env); err != nil {
+			return "", err
 		}
 	}
 	if info, err := os.Stat(real); err == nil && info.IsDir() {
@@ -106,6 +112,9 @@ func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
 	}
 	if runtimeDir(env, real) {
 		return nil, nil, fmt.Errorf("%s is private runtime data; use session_search for conversation history or cronjob_manage list for job status", display)
+	}
+	if rel, home := env.Sandbox.HomeRel(real); home && otherWork(env, rel) {
+		return nil, nil, fmt.Errorf("%s is another conversation's work directory: each conversation reads only its own (%s/)", display, WorkRel(conversationOf(env)))
 	}
 	info, err := os.Lstat(real)
 	if err != nil {
@@ -496,6 +505,9 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 	if runtimeDir(env, root) {
 		return nil, fmt.Errorf("%s is the runtime's own directory and is not searched", env.Sandbox.Display(root))
 	}
+	if otherWorkPath(env, root) {
+		return nil, fmt.Errorf("%s is another conversation's work directory and is not searched", env.Sandbox.Display(root))
+	}
 	var re *regexp.Regexp
 	switch a.Target {
 	case "content":
@@ -519,7 +531,7 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] || runtimeDir(env, p) {
+			if skipDirs[d.Name()] || runtimeDir(env, p) || otherWorkPath(env, p) {
 				return fs.SkipDir
 			}
 			return nil
@@ -578,6 +590,16 @@ func runtimeDir(env *Env, p string) bool {
 }
 
 func inRuntimeDir(rel string) bool { return under(rel, runtimeDirs) }
+
+// otherWorkPath: p is in another conversation's work directory (search_files skips it).
+func otherWorkPath(env *Env, p string) bool {
+	rel, ok := env.Sandbox.HomeRel(p)
+	if !ok {
+		return false
+	}
+	conv, in := inWork(rel)
+	return in && conv != "" && conv != conversationOf(env)
+}
 
 func nameMatch(pattern, name string) bool {
 	if !strings.ContainsAny(pattern, "*?[") {

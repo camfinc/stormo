@@ -129,7 +129,7 @@ func (a *Agent) memoryOutcomeSubjects(c wire.ToolCall, out string, failed bool) 
 	}
 	events := []*learning.OutcomeEvent{}
 	for _, r := range result.Results {
-		if r.Cut || !memory.ValidID(r.ID) {
+		if r.Cut || r.Untrusted || !memory.ValidID(r.ID) {
 			continue
 		}
 		body, _ := json.Marshal(struct{ Kind, Text, Updated, Expires, Scope string }{r.Kind, r.Text, r.Updated, r.Expires, r.Scope})

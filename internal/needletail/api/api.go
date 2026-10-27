@@ -111,6 +111,7 @@ type Server struct {
 	jobs        func() ([]string, time.Time)
 	platform    func() map[string]wire.Platform
 	jail        string
+	trust       func(conversation string) error
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -154,6 +155,10 @@ type Options struct {
 	Platforms func() map[string]wire.Platform
 	// Jail is the activity's jail: how the agent's commands are confined.
 	Jail string
+	// Trust is the owner's endorsement of a conversation (POST /v1/sessions/{id}/trust): its
+	// marked rows no longer taint it, recorded with an audit entry (docs/needletail.md §7). nil:
+	// the route answers 501.
+	Trust func(conversation string) error
 }
 
 // New builds the server.
@@ -163,7 +168,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -204,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/sessions/{id}/messages", s.auth(s.messages))
 	mux.Handle("POST /v1/sessions/{id}/chat", s.auth(s.chat))
 	mux.Handle("DELETE /v1/sessions/{id}", s.auth(s.remove))
+	mux.Handle("POST /v1/sessions/{id}/trust", s.auth(s.trustConversation))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("%s %s is not served", r.Method, r.URL.Path))
 	})
@@ -658,6 +664,32 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, wire.Deleted{Deleted: n})
+}
+
+// trustConversation is the owner endorsing a conversation (its marked rows no longer taint it),
+// with the API's key: the owner's. Refused while a turn runs in it.
+func (s *Server) trustConversation(w http.ResponseWriter, r *http.Request) {
+	if s.trust == nil {
+		writeError(w, http.StatusNotImplemented, "trusting a conversation is not available")
+		return
+	}
+	id := r.PathValue("id")
+	root, ok := s.store.Root(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no such session")
+		return
+	}
+	release, err := s.Hold(root)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	defer release()
+	if err := s.trust(root); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"trusted": root})
 }
 
 func randHex(n int) string {

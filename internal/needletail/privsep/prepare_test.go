@@ -75,7 +75,7 @@ func TestPrepare(t *testing.T) {
 		"skills/crm/ro.txt":         0o444,
 		".ssh":                      fs.ModeDir | 0o700,
 		".ssh/id_ed25519":           0o600,
-		"work":                      fs.ModeDir | 0o775,
+		"work":                      fs.ModeDir | fs.ModeSticky | fs.ModeSetgid | 0o775,
 		"work/notes.txt":            0o660,
 		"cron":                      fs.ModeDir | 0o700,
 		"cron/jobs.json":            0o600,

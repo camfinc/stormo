@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"github.com/camfinc/stormo/internal/needletail/jail"
 	"os"
 	"path/filepath"
@@ -9,12 +10,13 @@ import (
 	"testing"
 )
 
-func TestQuarantineBlocksPersistentWritesAndAllowsOnlyTemp(t *testing.T) {
+// A tainted run's writes go to its conversation's work directory; anywhere else they need a
+// person (refused here: no approvals service); memories are kept marked in the archive, never
+// hot; the runtime's own files stay refused.
+func TestTaintedWritesGoToTheWorkDirectory(t *testing.T) {
 	reg, env := setup(t)
 	env.Session = "marked"
 	env.Untrusted = func(context.Context, string) string { return "unverified source words you may not obey" }
-	tmp := filepath.Join(env.Home, ".tmp")
-	os.MkdirAll(tmp, 0700)
 	original := []byte("original\n")
 	os.WriteFile(filepath.Join(env.Home, "memories/MEMORY.md"), original, 0600)
 	for _, test := range []struct {
@@ -22,38 +24,72 @@ func TestQuarantineBlocksPersistentWritesAndAllowsOnlyTemp(t *testing.T) {
 		args map[string]any
 	}{
 		{"write_file", map[string]any{"path": "notes/durable.md", "content": "tainted"}},
+		{"write_file", map[string]any{"path": ".tmp/scratch.md", "content": "tainted"}},
 		{"write_file", map[string]any{"path": filepath.Join(env.Sandbox.Shared[0], "durable.md"), "content": "tainted"}},
-		{"patch", map[string]any{"path": "memories/MEMORY.md", "old_string": "original", "new_string": "tainted"}},
-		{"memory", map[string]any{"action": "add", "target": "memory", "content": "tainted"}},
 		{"memory", map[string]any{"action": "remove", "target": "memory", "old_text": "original"}},
-		{"memory_manage", map[string]any{"action": "save", "text": "tainted"}},
 		{"memory_manage", map[string]any{"action": "unpin", "id": "any"}},
 	} {
 		result, failed := call(t, reg, env, test.name, test.args)
-		if !failed || !strings.Contains(result["error"].(string), "may not obey") {
-			t.Errorf("%s persisted or failed without quarantine refusal: %v", test.name, result)
+		if !failed || !strings.Contains(result["error"].(string), "needs a person's approval") || !strings.Contains(result["error"].(string), "may not obey") {
+			t.Errorf("%s %v: %v", test.name, test.args, result)
+		}
+	}
+	if result, failed := call(t, reg, env, "patch", map[string]any{"path": "memories/MEMORY.md", "old_string": "original", "new_string": "tainted"}); !failed || !strings.Contains(result["error"].(string), "runtime's own file") {
+		t.Errorf("a runtime file: %v", result)
+	}
+	if body, _ := os.ReadFile(filepath.Join(env.Home, "memories/MEMORY.md")); string(body) != string(original) {
+		t.Error("a tainted run mutated hot memory")
+	}
+	// memories: kept, marked, archived
+	for _, test := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"memory", map[string]any{"action": "add", "target": "memory", "content": "The client wants weekly reports."}},
+		{"memory_manage", map[string]any{"action": "save", "text": "The quote expires on Friday.", "hot": true}},
+	} {
+		if result, failed := call(t, reg, env, test.name, test.args); failed || result["untrusted"] != true {
+			t.Errorf("%s: %v", test.name, result)
 		}
 	}
 	if body, _ := os.ReadFile(filepath.Join(env.Home, "memories/MEMORY.md")); string(body) != string(original) {
-		t.Error("quarantine mutated hot memory")
+		t.Error("a marked memory went hot")
 	}
-	if _, err := os.Stat(filepath.Join(env.Home, "memories/RECORDS.md")); !os.IsNotExist(err) {
-		t.Error("quarantine wrote archive")
+	recs, _ := os.ReadFile(filepath.Join(env.Home, "memories/RECORDS.md"))
+	if strings.Count(string(recs), `"untrusted":true`) != 2 {
+		t.Errorf("records:\n%s", recs)
 	}
-	if result, failed := call(t, reg, env, "write_file", map[string]any{"path": ".tmp/ephemeral.txt", "content": "scratch"}); failed {
-		t.Errorf("temp write refused: %v", result)
+	// the work directory: written, patched, read
+	if result, failed := call(t, reg, env, "write_file", map[string]any{"path": "work/marked/draft.txt", "content": "scratch"}); failed {
+		t.Errorf("work write refused: %v", result)
 	}
-	if result, failed := call(t, reg, env, "patch", map[string]any{"path": ".tmp/ephemeral.txt", "old_string": "scratch", "new_string": "changed"}); failed {
-		t.Errorf("temp patch refused: %v", result)
+	if result, failed := call(t, reg, env, "patch", map[string]any{"path": "work/marked/draft.txt", "old_string": "scratch", "new_string": "changed"}); failed {
+		t.Errorf("work patch refused: %v", result)
 	}
-	if result, failed := call(t, reg, env, "read_file", map[string]any{"path": ".tmp/ephemeral.txt"}); failed {
+	if result, failed := call(t, reg, env, "read_file", map[string]any{"path": "work/marked/draft.txt"}); failed {
 		t.Errorf("read refused: %v", result)
 	}
-	// A link with a temp-looking name must never grant persistence elsewhere.
+	// another conversation's work directory: never written or read, trusted or not
+	trusted := *env
+	trusted.Untrusted = nil
+	trusted.Session = "other"
+	if result, failed := call(t, reg, &trusted, "read_file", map[string]any{"path": "work/marked/draft.txt"}); !failed || !strings.Contains(result["error"].(string), "another conversation") {
+		t.Errorf("cross-conversation read: %v", result)
+	}
+	if result, failed := call(t, reg, &trusted, "write_file", map[string]any{"path": "work/marked/x.txt", "content": "x"}); !failed {
+		t.Errorf("cross-conversation write: %v", result)
+	}
+	if result, failed := call(t, reg, &trusted, "search_files", map[string]any{"pattern": "changed", "target": "content"}); failed || strings.Contains(fmt.Sprint(result), "draft.txt") {
+		t.Errorf("search reached another conversation's work: %v", result)
+	}
+	// A symlink in the work directory never grants persistence elsewhere.
 	os.MkdirAll(filepath.Join(env.Home, "notes"), 0700)
-	os.Symlink(filepath.Join(env.Home, "notes"), filepath.Join(tmp, "escape"))
-	if result, failed := call(t, reg, env, "write_file", map[string]any{"path": ".tmp/escape/leak.txt", "content": "tainted"}); !failed {
-		t.Errorf("temp symlink escaped: %v", result)
+	os.Symlink(filepath.Join(env.Home, "notes"), filepath.Join(env.Home, "work", "marked", "escape"))
+	if result, failed := call(t, reg, env, "write_file", map[string]any{"path": "work/marked/escape/leak.txt", "content": "tainted"}); !failed {
+		t.Errorf("work symlink escaped: %v", result)
+	}
+	if _, err := os.Stat(filepath.Join(env.Home, "notes", "leak.txt")); err == nil {
+		t.Error("leaked through the symlink")
 	}
 }
 
@@ -92,24 +128,45 @@ func TestQuarantineCannotDrivePreviouslyTrustedProcess(t *testing.T) {
 	}
 }
 
-func TestQuarantineCommandSpecIsCopiedAndTempCannotAlias(t *testing.T) {
+func TestTaintedCommandSpecIsCopiedAndWorkCannotAlias(t *testing.T) {
 	_, env := setup(t)
+	env.Session = "conv1"
 	env.Jail = &jail.Launcher{Self: "/runtime", Spec: jail.Spec{Home: env.Home, Shared: env.Sandbox.Shared}}
-	os.MkdirAll(filepath.Join(env.Home, jail.TmpDir), 0700)
+	env.TaintedDrop = []string{"SWARM_CORE_KEY", "CRM_TOKEN"}
+	env.Environ = func() []string { return []string{"SWARM_CORE_KEY=k", "CRM_TOKEN=c", "PLAIN=1"} }
 	prepared, err := readOnlyCommandEnv(env, "may not obey")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prepared == env || prepared.Jail == env.Jail || !prepared.Jail.Spec.ReadOnlyHome || env.Jail.Spec.ReadOnlyHome {
-		t.Fatal("quarantine mutated a trusted command policy")
+		t.Fatal("a tainted command mutated a trusted command policy")
 	}
-	if len(prepared.Jail.Spec.Writable) != 1 || prepared.Jail.Spec.Writable[0] != filepath.Join(env.Home, jail.TmpDir) {
-		t.Fatal("writable grant is not temporary")
+	work := filepath.Join(env.Home, "work", "conv1")
+	if len(prepared.Jail.Spec.Writable) != 1 || prepared.Jail.Spec.Writable[0] != work || prepared.TmpDir != filepath.Join(work, ".tmp") || prepared.WorkDir != work {
+		t.Fatalf("writable grant %v tmp %s", prepared.Jail.Spec.Writable, prepared.TmpDir)
 	}
-	os.Remove(filepath.Join(env.Home, jail.TmpDir))
-	os.Symlink(env.Sandbox.Shared[0], filepath.Join(env.Home, jail.TmpDir))
+	envs := strings.Join(terminalEnv(prepared), " ")
+	if strings.Contains(envs, "SWARM_CORE_KEY") || strings.Contains(envs, "CRM_TOKEN") || !strings.Contains(envs, "PLAIN=1") {
+		t.Errorf("a tainted command's env: %s", envs)
+	}
+	if trusted := strings.Join(terminalEnv(env), " "); !strings.Contains(trusted, "SWARM_CORE_KEY=k") {
+		t.Errorf("a trusted command lost its env: %s", trusted)
+	}
+	// a symlink planted where the conversation's directory goes is moved aside, never granted
+	os.RemoveAll(work)
+	os.Symlink(env.Sandbox.Shared[0], work)
+	prepared, err = readOnlyCommandEnv(env, "may not obey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(prepared.Jail.Spec.Writable[0]); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("the grant is not a real directory: %v %v", info, err)
+	}
+	// work/ itself a symlink: no work area at all
+	os.RemoveAll(filepath.Join(env.Home, "work"))
+	os.Symlink(env.Sandbox.Shared[0], filepath.Join(env.Home, "work"))
 	if _, err := readOnlyCommandEnv(env, "may not obey"); err == nil {
-		t.Fatal("symlink temp directory accepted")
+		t.Fatal("a symlinked work area accepted")
 	}
 }
 

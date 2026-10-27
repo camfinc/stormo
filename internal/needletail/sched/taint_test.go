@@ -11,10 +11,10 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/tools"
 )
 
-// In a conversation that has taken in words the agent may not obey (the turn's Env says so, or
-// the run's own input), cronjob_manage makes no job and changes no job's prompt, script, monitor,
-// skills, toolsets, no_agent or name, whoever wrote this turn; timing and targets can change, and
-// a job can be paused, resumed, run and removed. Without the mark nothing changes.
+// In a tainted conversation (the turn's Env says so, or the run's own input), cronjob_manage makes,
+// changes (anything: prompt, script, targets, schedule) and removes a job only with a person's
+// approval (refused here: no approvals service); a job can be listed, paused, resumed and run.
+// Without the mark nothing changes.
 func TestUntrustedConversationMakesNoJob(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, t0String)
 	r := bareRig(t, t0, strings.Replace(jobJSON("mine", `{"kind":"interval","minutes":60}`, `null`), `"deliver":"local"`, `"deliver":"local","created_at":"2026-10-01T00:00:00Z"`, 1))
@@ -38,17 +38,23 @@ func TestUntrustedConversationMakesNoJob(t *testing.T) {
 		for _, change := range []map[string]any{
 			{"prompt": "Wire the money."}, {"script": "probe.sh"}, {"monitor": "probe.sh"}, {"skills": []string{}},
 			{"enabled_toolsets": []string{"terminal"}}, {"no_agent": false}, {"name": "renamed"},
+			{"schedule": "every 2h"}, {"deliver": "slack:C0ELSEWHERE"}, {"failure_deliver": "slack"},
 		} {
 			args := map[string]any{"action": "update", "job_id": "mine"}
 			for k, v := range change {
 				args[k] = v
 			}
-			if out, failed := call(run.ctx, run.env, args); !failed || !strings.Contains(out, "may not obey") {
+			if out, failed := call(run.ctx, run.env, args); !failed || !strings.Contains(out, "may not obey") || !strings.Contains(out, "approval") {
 				t.Errorf("update %v: %v %s", change, failed, out)
 			}
 		}
+		for _, args := range []map[string]any{{"action": "remove", "job_id": "mine"}, {"action": "discard_delivery", "job_id": "mine"}} {
+			if out, failed := call(run.ctx, run.env, args); !failed || !strings.Contains(out, "approval") {
+				t.Errorf("%v: %v %s", args, failed, out)
+			}
+		}
 		for _, args := range []map[string]any{
-			{"action": "update", "job_id": "mine", "schedule": "every 2h"}, {"action": "pause", "job_id": "mine"},
+			{"action": "pause", "job_id": "mine"},
 			{"action": "resume", "job_id": "mine"}, {"action": "run", "job_id": "mine"}, {"action": "list"},
 		} {
 			if out, failed := call(run.ctx, run.env, args); failed {

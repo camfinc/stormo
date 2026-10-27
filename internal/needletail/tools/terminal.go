@@ -99,6 +99,9 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	}
 	timeout = min(timeout, maxTimeout)
 	dir := env.Home
+	if env.WorkDir != "" {
+		dir = env.WorkDir // a tainted run's commands start where they may write
+	}
 	if a.Workdir != "" {
 		d, err := env.Sandbox.Resolve(a.Workdir)
 		if err != nil {
@@ -223,12 +226,22 @@ func CommandContext(ctx context.Context, cmd *exec.Cmd, env *Env) error {
 		return err
 	}
 	if prepared != env {
-		cmd.Env = append(cmd.Env, "TMPDIR="+prepared.TmpDir, "TMP="+prepared.TmpDir, "TEMP="+prepared.TmpDir)
+		kept := cmd.Env[:0:0]
+		for _, kv := range cmd.Env {
+			if !dropForTainted(prepared, kv) && !strings.HasPrefix(kv, "TMPDIR=") && !strings.HasPrefix(kv, "TMP=") && !strings.HasPrefix(kv, "TEMP=") {
+				kept = append(kept, kv)
+			}
+		}
+		cmd.Env = append(kept, "TMPDIR="+prepared.TmpDir, "TMP="+prepared.TmpDir, "TEMP="+prepared.TmpDir)
 	}
 	command(cmd, prepared)
 	return nil
 }
 
+// quarantineEnv is env for a tainted run's command (docs/needletail.md §7): jailed read-only but
+// for the conversation's work directory (work/<conversation>, its TMPDIR inside), started there,
+// without the core's credentials or the Luau http_secrets in its environment. Without a jail that
+// can hold it (Landlock ABI 3 or newer: truncation too) the command is refused: fail closed.
 func quarantineEnv(ctx context.Context, env *Env) (*Env, error) {
 	why := UntrustedWhy(ctx, env)
 	if why == "" {
@@ -239,13 +252,13 @@ func quarantineEnv(ctx context.Context, env *Env) (*Env, error) {
 	}
 	abi, err := jail.ABI()
 	if err != nil || abi < 3 {
-		return nil, messaging.Deferred("terminal execution: quarantine requires Landlock ABI 3 or newer (including truncation protection)", why)
+		return nil, messaging.Deferred("terminal execution: a tainted run requires Landlock ABI 3 or newer (including truncation protection)", why)
 	}
 	return readOnlyCommandEnv(env, why)
 }
 
-// readOnlyCommandEnv copies the launcher, so a quarantined background command
-// retains its restriction and cannot alter another trusted command's policy.
+// readOnlyCommandEnv copies the launcher, so a tainted background command retains its
+// restriction and cannot alter another trusted command's policy.
 func readOnlyCommandEnv(env *Env, why string) (*Env, error) {
 	home, err := filepath.Abs(env.Home)
 	if err != nil {
@@ -255,21 +268,19 @@ func readOnlyCommandEnv(env *Env, why string) (*Env, error) {
 	if err != nil || filepath.Clean(jailHome) != filepath.Clean(home) {
 		return nil, messaging.Deferred("terminal execution: the jail does not match the home", why)
 	}
-	tmp := filepath.Join(home, jail.TmpDir)
-	if env.TmpDir != "" && filepath.Clean(env.TmpDir) != tmp {
-		return nil, messaging.Deferred("terminal execution: only the home's .tmp may be writable", why)
-	}
-	info, err := os.Lstat(tmp)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, messaging.Deferred("terminal execution: .tmp must be an existing directory, never a symlink", why)
+	work, err := EnsureWork(env)
+	if err != nil {
+		return nil, messaging.Deferred("terminal execution: the conversation's work directory: "+err.Error(), why)
 	}
 	copy := *env
 	launcher := *env.Jail
 	launcher.Spec = env.Jail.Spec
 	launcher.Spec.ReadOnlyHome = true
-	launcher.Spec.Writable = []string{tmp}
+	launcher.Spec.Writable = []string{work}
 	copy.Jail = &launcher
-	copy.TmpDir = tmp
+	copy.TmpDir = filepath.Join(work, ".tmp")
+	copy.WorkDir = work
+	copy.tainted = true
 	return &copy, nil
 }
 
@@ -295,6 +306,9 @@ func terminalEnv(env *Env) []string {
 	out := make([]string, 0, len(base)+2)
 	path := ""
 	for _, kv := range base {
+		if env.tainted && dropForTainted(env, kv) {
+			continue // a tainted run's command gets no credential to act elsewhere as the agent
+		}
 		switch {
 		case strings.HasPrefix(kv, "HOME="):
 		case strings.HasPrefix(kv, "PATH="):
@@ -345,6 +359,18 @@ func trustRepos(env []string) []string {
 	n = max(n, 0)
 	i := strconv.Itoa(n)
 	return append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(n+1), "GIT_CONFIG_KEY_"+i+"=safe.directory", "GIT_CONFIG_VALUE_"+i+"=*")
+}
+
+// dropForTainted: kv is a credential a tainted run's command must not hold (Env.TaintedDrop: the
+// core's URL and key, which would let it write to the core directly, and the Luau http_secrets).
+func dropForTainted(env *Env, kv string) bool {
+	name, _, _ := strings.Cut(kv, "=")
+	for _, n := range env.TaintedDrop {
+		if name == n {
+			return true
+		}
+	}
+	return false
 }
 
 // absolutePath is a PATH value with its relative entries dropped.

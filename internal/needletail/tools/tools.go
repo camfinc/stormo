@@ -91,6 +91,13 @@ type Env struct {
 	// Risky is the risky-command rule a terminal command matches ("" when none,
 	// approvals.commands): it needs approval in any conversation. nil: none is risky.
 	Risky func(command string) string
+	// TaintedDrop are env names a tainted run's command never gets (the core's credentials,
+	// secrets.Passthrough, and the Luau http_secrets).
+	TaintedDrop []string
+	// WorkDir is set on a tainted run's command env (quarantineEnv): its work directory, where
+	// it starts and may write.
+	WorkDir string
+	tainted bool
 }
 
 // User is a uid and gid a command runs as.

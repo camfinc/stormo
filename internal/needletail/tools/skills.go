@@ -157,8 +157,8 @@ func runSkillManage(ctx context.Context, env *Env, raw json.RawMessage) (any, er
 	}
 	if why := UntrustedWhy(ctx, env); why != "" {
 		// a skill's SKILL.md is loaded later as instructions (a job's skills, skill_view), its
-		// tools and handlers run later: none of it changes on words the agent may not obey
-		return nil, messaging.Deferred("a change to your skills", why)
+		// tools and handlers run later: from a tainted run, a person approves the exact change
+		return nil, messaging.NeedsApproval("a change to your skills (skill_manage "+a.Action+")", why)
 	}
 	lib, err := skillsOf(env)
 	if err != nil {

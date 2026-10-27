@@ -52,7 +52,15 @@ var (
 	// group-writable (TempMode) for the commands; what they make in it is theirs, as in the rest
 	// of the workspace.
 	Temp = jail.TmpDir
+	// Work is the work area (tools.WorkRoot): work/<conversation>/ is where a tainted run's
+	// writes go. The runtime's (WorkMode: sticky, so a command never renames or removes a
+	// conversation's directory the runtime made, nor swaps it for a symlink); what the commands
+	// make in it is theirs, as in the rest of the workspace.
+	Work = "work"
 )
+
+// WorkMode is Work's own mode.
+const WorkMode = 0o3775
 
 // TempMode is Temp's own mode: the runtime's group may make entries there (setgid: they keep it).
 const TempMode = 0o2770

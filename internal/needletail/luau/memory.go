@@ -130,7 +130,7 @@ func memorySearch(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	return res, nil
 }
 
-func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+func memorySave(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	mem, err := c.memory("memory.save", "write")
 	if err != nil {
 		return nil, err
@@ -167,7 +167,7 @@ func memorySave(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 		return nil, err
 	}
 	res, err := mem.Save(memory.SaveOptions{Text: text, Kind: o.Kind, Tags: tags, Importance: o.Importance, Expires: o.Expires, Force: o.Force,
-		Src: "luau:" + c.Tool, ArchiveOnly: true, Audience: c.audience(mem), Scope: o.Scope})
+		Src: "luau:" + c.Tool, ArchiveOnly: true, Audience: c.audience(mem), Scope: o.Scope, Untrusted: c.quarantined(ctx) != ""})
 	if err != nil {
 		return nil, memoryErr("save_memory", err)
 	}

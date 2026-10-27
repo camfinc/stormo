@@ -187,6 +187,19 @@ func view(j *Job) jobView {
 
 func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string) (any, error) {
 	action := strings.ToLower(strings.TrimSpace(a.Action))
+	// Information flow (docs/needletail.md §7): from a tainted run, making, changing or removing a
+	// job (its prompt, script, skills, targets, schedule), and repairing or dropping a held report,
+	// need a person's approval; list, run, pause and resume do not.
+	if untrusted != "" {
+		switch action {
+		case "create", "update", "remove", "retry_delivery", "discard_delivery":
+			what := "a scheduled job (cronjob_manage " + action + ")"
+			if a.JobID != "" {
+				what = "a change to the scheduled job " + a.JobID + " (cronjob_manage " + action + ")"
+			}
+			return nil, messaging.NeedsApproval(what, untrusted)
+		}
+	}
 	switch action {
 	case "retry_delivery", "discard_delivery":
 		a.Action = action

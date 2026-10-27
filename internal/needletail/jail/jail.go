@@ -199,6 +199,24 @@ func (s Spec) Args() []string {
 	return append(out, "--")
 }
 
+// WorkDir is the home's work area: a tainted run's commands may write only in its own
+// work/<conversation> directory (docs/needletail.md §7).
+const WorkDir = "work"
+
+// writableBelow is whether dir may be a read-only home's one writable directory: the home's .tmp,
+// or a directory right below its work/ (a conversation's), given clean and absolute.
+func writableBelow(home, dir string) bool {
+	home = filepath.Clean(home)
+	if dir != filepath.Clean(dir) || !filepath.IsAbs(dir) {
+		return false
+	}
+	if dir == filepath.Join(home, TmpDir) {
+		return true
+	}
+	parent, name := filepath.Split(dir)
+	return filepath.Clean(parent) == filepath.Join(home, WorkDir) && name != "" && name != "." && name != ".."
+}
+
 // Launcher starts commands jailed: Self is the runtime's binary.
 type Launcher struct {
 	Self string
@@ -244,8 +262,8 @@ func parse(args []string) (Spec, string, []string, error) {
 		return Spec{}, "", nil, errors.New("--home must be an absolute path")
 	}
 	if s.ReadOnlyHome {
-		if len(s.Writable) != 1 || filepath.Clean(s.Writable[0]) != filepath.Join(filepath.Clean(s.Home), TmpDir) {
-			return Spec{}, "", nil, errors.New("read-only home requires only its .tmp directory writable")
+		if len(s.Writable) != 1 || !writableBelow(s.Home, s.Writable[0]) {
+			return Spec{}, "", nil, errors.New("read-only home allows one writable directory: a conversation's work/<conversation> (or the home's .tmp)")
 		}
 	} else if len(s.Writable) != 0 {
 		return Spec{}, "", nil, errors.New("writable overrides require read-only home")
