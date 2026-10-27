@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/api"
+	"github.com/camfinc/stormo/internal/needletail/approvals"
 	"github.com/camfinc/stormo/internal/needletail/config"
 	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
@@ -120,6 +121,11 @@ type runtime struct {
 	// operators are the owner's own conversations (the memory's audiences): a oneshot's, marked
 	// by this process when it creates it
 	operators *operators
+	// approvals are serve's human approvals (approvals.go; nil in a oneshot, and until serve
+	// starts them): what a tainted run or a risky command needs a person for
+	approvals atomic.Pointer[approvals.Service]
+	// risky are the risky-command rules (approvals.commands over the defaults)
+	risky *approvals.Commands
 }
 
 // operators are the conversations (their roots) this process started for the owner: a oneshot's.
@@ -271,6 +277,11 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
 	rt.setGuide()
+	// what a gate holds for a person goes to the approvals (serve's; refused without them), and a
+	// risky command needs one in any conversation (docs/needletail.md §7)
+	rt.risky = riskyCommands(cfg.Approvals, logf)
+	agent.Env.Approve = rt.approve
+	agent.Env.Risky = rt.risky.Match
 	// the guide comes first among the sections, before a channel's guidance
 	agent.Sections = append([]func() string{func() string { return *rt.guideText.Load() }}, agent.Sections...)
 	return rt, nil
@@ -683,6 +694,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
 	defer func() { stopTicks(); <-maintenanceDone }()
+	// approvals (docs/needletail.md §7): the cards go through the gateway, which takes their buttons
+	if svc := startApprovals(ticks, rt, srv, gw); svc != nil && gw != nil {
+		gw.SetDecider(svc)
+	}
 	rt.sched.Start(ticks)
 	rt.followUps.Start(fu) // what fell due while the agent was down fires now, marked late
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: rt.logger}

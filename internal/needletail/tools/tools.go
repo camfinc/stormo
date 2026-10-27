@@ -27,6 +27,9 @@ import (
 // UntrustedWhy is why a call may defer no work ("" when it may): its run's context
 // (messaging.UntrustedWhy), else env's Untrusted for its session.
 func UntrustedWhy(ctx context.Context, env *Env) string {
+	if messaging.Endorsed(ctx) != "" {
+		return "" // an approved action: the approval endorses it, whatever the conversation's mark
+	}
 	if why := messaging.UntrustedWhy(ctx); why != "" {
 		return why
 	}
@@ -81,6 +84,13 @@ type Env struct {
 	// Conversation is the conversation (its root session) a session belongs to, which owns the
 	// background processes its turns start; nil or "": the session itself.
 	Conversation func(session string) string
+	// Approve puts a call a gate answered with messaging.ApprovalNeeded to a person (the
+	// approvals service, docs/needletail.md §7): the tool's answer is then "pending approval",
+	// and the runtime runs exactly that call if they approve. nil: such a call is refused.
+	Approve func(ctx context.Context, env *Env, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error)
+	// Risky is the risky-command rule a terminal command matches ("" when none,
+	// approvals.commands): it needs approval in any conversation. nil: none is risky.
+	Risky func(command string) string
 }
 
 // User is a uid and gid a command runs as.
@@ -223,6 +233,11 @@ func (r *Registry) Call(ctx context.Context, env *Env, name, args string) (strin
 			err = fmt.Errorf("arguments are not valid JSON")
 		} else {
 			out, err = safeRun(ctx, t, env, raw)
+			// a gate's "a person must approve this": put to the approvers, never run now; an
+			// approved call (endorsed) that asks again is refused, never put twice
+			if need, ok := messaging.AsApproval(err); ok && env != nil && env.Approve != nil && messaging.Endorsed(ctx) == "" {
+				out, err = env.Approve(ctx, env, name, raw, need)
+			}
 		}
 	}
 	failed := err != nil

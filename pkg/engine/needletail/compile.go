@@ -26,6 +26,12 @@ var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 // DMs are always answered.
 var listenRe = regexp.MustCompile(`^[CG][A-Z0-9]{8,}$`)
 
+// relayRe is a bot slack.relay_bots may name (its bot id, or its user id); userRe an approver.
+var (
+	relayRe = regexp.MustCompile(`^[BUW][A-Z0-9]{8,}$`)
+	userRe  = regexp.MustCompile(`^[UW][A-Z0-9]{8,}$`)
+)
+
 // agentConfig is engine/needletail/config.yaml.
 type agentConfig struct {
 	BackgroundLearning bool `yaml:"background_learning"`
@@ -48,7 +54,13 @@ type agentConfig struct {
 		// ids, or "*" alone for every channel the bot is in. Every other message there reaches
 		// the agent's on_message handlers only (docs/needletail.md §4.9).
 		Listen []string `yaml:"listen"`
+		// RelayBots are allowed bots whose messages still mark the conversation (needletail.yaml
+		// slack.relay_bots): they relay other people's words.
+		RelayBots []string `yaml:"relay_bots"`
 	} `yaml:"slack"`
+	// Approvals are who decides what a tainted run or a risky command needs a person for, how
+	// long a request waits, the caps and extra risky-command patterns (needletail.yaml approvals).
+	Approvals *wire.ApprovalsConfig `yaml:"approvals"`
 	Schedules struct {
 		// Turns is how many scheduled runs may hold a turn at once (needletail.yaml
 		// schedules.turns; the runtime's 1 when 0).
@@ -120,6 +132,35 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: slack.listen is [\"*\"] (every channel the bot is in) or a list of channel ids (C…, G…), not %q", ConfigFile, ch)
 		}
 	}
+	for _, b := range c.Slack.RelayBots {
+		if !relayRe.MatchString(b) {
+			return nil, fmt.Errorf("%s: slack.relay_bots names bots by id (B…, or their user id U…), not %q", ConfigFile, b)
+		}
+	}
+	if a := c.Approvals; a != nil {
+		for _, u := range a.Approvers {
+			if !userRe.MatchString(u) {
+				return nil, fmt.Errorf("%s: approvals.approvers are Slack user ids (U…, W…) within allowed_users, not %q", ConfigFile, u)
+			}
+		}
+		switch {
+		case a.Timeout < 0 || a.Timeout > 24*3600:
+			return nil, fmt.Errorf("%s: approvals.timeout %d must be seconds, 60 to %d (0 or unset: 1800)", ConfigFile, a.Timeout, 24*3600)
+		case a.Timeout > 0 && a.Timeout < 60:
+			return nil, fmt.Errorf("%s: approvals.timeout %d must be seconds, 60 to %d (0 or unset: 1800)", ConfigFile, a.Timeout, 24*3600)
+		case a.DeliveryExpiryDays < 0 || a.DeliveryExpiryDays > 30:
+			return nil, fmt.Errorf("%s: approvals.delivery_expiry_days %d must be 1 to 30 (0 or unset: 3)", ConfigFile, a.DeliveryExpiryDays)
+		case a.PerConversation < 0 || a.PerConversation > 20:
+			return nil, fmt.Errorf("%s: approvals.per_conversation %d must be 1 to 20 (0 or unset: 3)", ConfigFile, a.PerConversation)
+		case a.PerDay < 0 || a.PerDay > 500:
+			return nil, fmt.Errorf("%s: approvals.per_day %d must be 1 to 500 (0 or unset: 20)", ConfigFile, a.PerDay)
+		}
+		for _, r := range a.Commands {
+			if _, err := regexp.Compile(`(?i)` + r.Pattern); err != nil || strings.TrimSpace(r.Pattern) == "" {
+				return nil, fmt.Errorf("%s: approvals.commands pattern %q is not a regular expression", ConfigFile, r.Pattern)
+			}
+		}
+	}
 	if c.Schedules.Turns < 0 || c.Schedules.Turns > maxScheduleTurns {
 		return nil, fmt.Errorf("%s: schedules.turns %d must be 1 to %d (0 or unset: the runtime's 1)", ConfigFile, c.Schedules.Turns, maxScheduleTurns)
 	}
@@ -187,9 +228,10 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	}
 	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
 	c.Timezone = ac.Timezone
-	if ac.Slack.Broadcast || len(ac.Slack.Listen) > 0 {
-		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen}
+	if ac.Slack.Broadcast || len(ac.Slack.Listen) > 0 || len(ac.Slack.RelayBots) > 0 {
+		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen, RelayBots: ac.Slack.RelayBots}
 	}
+	c.Approvals = ac.Approvals
 	c.Schedules.Turns = ac.Schedules.Turns
 	for _, s := range a.Schedules {
 		c.Schedules.Repo = append(c.Schedules.Repo, s.ID)

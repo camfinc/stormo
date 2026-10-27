@@ -353,6 +353,13 @@ func (s *Sender) ToolDone(session string, c wire.ToolCall, _ string, failed bool
 		Status: status, DurationMS: took.Milliseconds()})
 }
 
+// Approval is approval_waiting (a request put to the approvers) or approval_answered (decided,
+// expired, run): the request's id and status only, never its payload, so the core and the review
+// can count approvals.
+func (s *Sender) Approval(event, session, id, status string) {
+	s.emit(wire.Hook{Event: event, Session: session, ApprovalID: id, Status: status})
+}
+
 // Text is not sent: an assistant's words are client data and no hook carries them.
 func (s *Sender) Text(string, string) {}
 

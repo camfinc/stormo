@@ -35,22 +35,39 @@ type Call struct {
 // Post is one chat.postMessage.
 type Post struct {
 	Channel, Thread, Text, TS string
+	// Blocks are the message's Block Kit blocks (an approval card's), as JSON; "" for none.
+	Blocks string
 }
+
+// Update is one chat.update.
+type Update struct {
+	Channel, TS, Text, Blocks string
+}
+
+// Ephemeral is one chat.postEphemeral.
+type Ephemeral struct {
+	Channel, User, Text string
+}
+
+// WorkspaceURL is the workspace address auth.test gives (permalinks).
+const WorkspaceURL = "https://acme-test.slack.com/"
 
 // Server is the fake Slack.
 type Server struct {
 	*httptest.Server
 	t *testing.T
 
-	mu     sync.Mutex
-	calls  []Call
-	posts  []Post
-	acks   []string
-	opens  int
-	conn   *websocket.Conn
-	wmu    sync.Mutex
-	nextTS int
-	connCh chan struct{}
+	mu         sync.Mutex
+	calls      []Call
+	posts      []Post
+	updates    []Update
+	ephemerals []Ephemeral
+	acks       []string
+	opens      int
+	conn       *websocket.Conn
+	wmu        sync.Mutex
+	nextTS     int
+	connCh     chan struct{}
 	// Names are users.info's display names; Replies conversations.replies' threads
 	// (channel:thread_ts → messages); Fail makes a method answer {"ok":false,"error":code}.
 	Names   map[string]string
@@ -117,7 +134,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	switch method {
 	case "auth.test":
-		reply(map[string]any{"ok": true, "user_id": BotUser, "bot_id": BotID, "team_id": Team, "user": "agent"})
+		reply(map[string]any{"ok": true, "user_id": BotUser, "bot_id": BotID, "team_id": Team, "user": "agent", "url": WorkspaceURL})
 	case "apps.connections.open":
 		s.mu.Lock()
 		s.opens++
@@ -128,7 +145,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		ts := fmt.Sprintf("1800000000.%06d", s.nextTS)
 		s.nextTS++
-		s.posts = append(s.posts, Post{Channel: params["channel"], Thread: params["thread_ts"], Text: params["text"], TS: ts})
+		s.posts = append(s.posts, Post{Channel: params["channel"], Thread: params["thread_ts"], Text: params["text"], TS: ts, Blocks: params["blocks"]})
 		s.mu.Unlock()
 		reply(map[string]any{"ok": true, "channel": params["channel"], "ts": ts})
 	case "users.info":
@@ -162,7 +179,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		reply(map[string]any{"ok": true, "channel": map[string]any{"id": ch, "is_im": true, "user": user}})
 	case "conversations.open":
 		reply(map[string]any{"ok": true, "channel": map[string]any{"id": "D0" + strings.TrimPrefix(params["users"], "U")}})
-	case "chat.update", "reactions.add", "reactions.remove", "assistant.threads.setStatus":
+	case "chat.update":
+		s.mu.Lock()
+		s.updates = append(s.updates, Update{Channel: params["channel"], TS: params["ts"], Text: params["text"], Blocks: params["blocks"]})
+		s.mu.Unlock()
+		reply(map[string]any{"ok": true, "channel": params["channel"], "ts": params["ts"]})
+	case "chat.postEphemeral":
+		s.mu.Lock()
+		s.ephemerals = append(s.ephemerals, Ephemeral{Channel: params["channel"], User: params["user"], Text: params["text"]})
+		s.mu.Unlock()
+		reply(map[string]any{"ok": true, "message_ts": "1.0"})
+	case "reactions.add", "reactions.remove", "assistant.threads.setStatus":
 		reply(map[string]any{"ok": true})
 	default:
 		reply(map[string]any{"ok": false, "error": "unknown_method"})
@@ -244,6 +271,52 @@ func (s *Server) Send(id string, e Event) {
 		s.t.Fatal("slacktest: no connection")
 	}
 	s.write(conn, env)
+}
+
+// Click sends an interactive envelope as Slack does when user clicks a button of a message the
+// bot posted (channel, ts): a block_actions payload with the button's action id and value.
+func (s *Server) Click(id, user, channel, ts, actionID, value string) {
+	s.t.Helper()
+	payload := map[string]any{"type": "block_actions", "team": map[string]any{"id": Team}, "user": map[string]any{"id": user, "team_id": Team},
+		"container": map[string]any{"type": "message", "message_ts": ts, "channel_id": channel, "is_ephemeral": false},
+		"channel":   map[string]any{"id": channel}, "trigger_id": "1.2.3",
+		"actions": []map[string]any{{"type": "button", "action_id": actionID, "block_id": "needletail_approval", "value": value, "action_ts": "1800000000.000001"}}}
+	env := map[string]any{"envelope_id": id, "type": "interactive", "accepts_response_payload": false, "payload": payload}
+	s.mu.Lock()
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		s.t.Fatal("slacktest: no connection")
+	}
+	s.write(conn, env)
+}
+
+// Updates are the chat.update calls so far.
+func (s *Server) Updates() []Update {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Update{}, s.updates...)
+}
+
+// Ephemerals are the chat.postEphemeral calls so far.
+func (s *Server) Ephemerals() []Ephemeral {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Ephemeral{}, s.ephemerals...)
+}
+
+// WaitUpdates waits until at least n chat.update calls came and returns them.
+func (s *Server) WaitUpdates(n int, timeout time.Duration) []Update {
+	s.t.Helper()
+	end := time.Now().Add(timeout)
+	for time.Now().Before(end) {
+		if u := s.Updates(); len(u) >= n {
+			return u
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.t.Fatalf("slacktest: %d updates after %s, want %d", len(s.Updates()), timeout, n)
+	return nil
 }
 
 // Disconnect sends Slack's disconnect message (reason refresh_requested, say) and closes.

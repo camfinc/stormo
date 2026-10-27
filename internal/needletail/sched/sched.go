@@ -124,6 +124,8 @@ type Scheduler struct {
 	// checkTarget is the messaging policy for a deliver or failure_deliver target the tool
 	// sets (the gateway's; nil: any)
 	checkTarget func(Target) error
+	// askDelivery puts a tainted run's report to the approvers (SetApprovals; nil: none)
+	askDelivery DeliveryAsker
 }
 
 // New builds a scheduler; Start runs it.
@@ -564,10 +566,12 @@ func (s *Scheduler) trusted(j *Job) bool {
 // took in makes none); a job without the key, as every job made before it, is trusted as before,
 // and a repo job always is.
 func (s *Scheduler) runContext(j *Job) context.Context {
+	// no person is in the loop of a scheduled run: what would need approval is refused there
+	ctx := messaging.WithScheduled(s.runCtx)
 	if !s.trusted(j) && j.Bool("untrusted") {
-		return messaging.WithQuarantine(messaging.WithUntrusted(s.runCtx, "this scheduled run's job was made from words you may not obey"), nil)
+		return messaging.WithQuarantine(messaging.WithUntrusted(ctx, "this scheduled run's job was made from words you may not obey"), nil)
 	}
-	return messaging.WithQuarantine(s.runCtx, nil)
+	return messaging.WithQuarantine(ctx, nil)
 }
 
 // Start ticks until ctx ends: at once, then every Tick, and when the tool asks for a run.
@@ -1215,9 +1219,9 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 	if o.pause != "" {
 		o.text = fmt.Sprintf("⚠ Job '%s' was paused: %s", j.Name(), o.pause)
 	}
-	deliveryErr := ""
+	deliveryErr, heldNote := "", ""
 	if o.text != "" && (o.status == wire.StatusOK || o.failed()) {
-		deliveryErr = s.deliver(ctx, j, o)
+		deliveryErr, heldNote = s.deliver(ctx, j, o)
 	}
 	s.record(j, o, now)
 	// Detailed diagnostics stay in the private Raw run record. The public job
@@ -1255,9 +1259,12 @@ func (s *Scheduler) finish(ctx context.Context, j *Job, o outcome) {
 			live.Set("last_error", nil)
 			live.Set("failure_streak", 0)
 		}
-		if deliveryErr != "" {
+		switch {
+		case deliveryErr != "":
 			live.Set("last_delivery_error", publicDeliveryError)
-		} else {
+		case heldNote != "":
+			live.Set("last_delivery_error", heldNote) // held for approval: the job keeps its schedule
+		default:
 			live.Set("last_delivery_error", nil)
 		}
 		times, completed := live.Repeat()
@@ -1312,8 +1319,10 @@ func clip(s string, n int) string {
 }
 
 // deliver sends the output to the lane's targets: failure_deliver for a failure when the job has
-// one, else deliver. "" when every target took it.
-func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
+// one, else deliver. "" when every target took it (or there is none: a local job's report is its
+// run record). A tainted run's report is held for the owner's approval instead (hold): held is
+// then the job's public note, and the job keeps its schedule.
+func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) (errText, held string) {
 	lane := j.Str("deliver")
 	if o.failed() {
 		if fd := strings.TrimSpace(j.Str("failure_deliver")); fd != "" {
@@ -1326,12 +1335,15 @@ func (s *Scheduler) deliver(ctx context.Context, j *Job, o outcome) string {
 	}
 	targets, err := Targets(lane, origin)
 	if err != nil {
-		return err.Error()
+		return err.Error(), ""
 	}
-	if len(targets) == 0 && messaging.UntrustedWhy(ctx) != "" {
-		return messaging.Deferred("scheduled forwarding", messaging.UntrustedWhy(ctx)).Error()
+	if len(targets) == 0 {
+		return "", "" // local: the run record is the delivery, tainted or not
 	}
-	return s.enqueueDelivery(ctx, j, o, targets)
+	if messaging.UntrustedWhy(ctx) != "" {
+		return "", s.hold(ctx, j, o, targets)
+	}
+	return s.enqueueDelivery(ctx, j, o, targets), ""
 }
 
 // record keeps the run's output in state/needletail/jobs/<id>/<time>.md (the newest

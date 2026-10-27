@@ -63,6 +63,7 @@ type meta struct {
 	carried    int // rows copied from the parent at compaction
 	lastActive string
 	preview    string // first user row
+	rows       int    // rows in the file
 }
 
 // Store is the sessions directory. Safe for concurrent use; the caller serialises turns per
@@ -171,8 +172,11 @@ func repair(path string) {
 }
 
 func (m *meta) observe(r wire.Message) {
-	if r.Untrusted {
-		m.Untrusted = true // a row written before its header's mark (a crash between): marked all the same
+	m.rows++
+	if r.Untrusted && m.rows > m.Endorsed {
+		// a row written before its header's mark (a crash between): marked all the same; a row
+		// the owner endorsed (before Endorsed) no longer counts
+		m.Untrusted = true
 	}
 	if r.Role != "system" {
 		m.visible++
@@ -330,9 +334,11 @@ func (s *Store) Tip(id string) (string, bool) {
 	return l[len(l)-1], true
 }
 
-// Untrusted is whether the conversation id belongs to has taken in content the agent must not
-// obey (any session of its lineage marked, wire.Session.Untrusted). Never cleared: the owner
-// starts a fresh conversation (a new thread, a new API conversation) to defer work again.
+// Untrusted is whether the conversation id belongs to holds marked data in its active context:
+// its live session (the tip) has a marked row after the owner's endorsement, or took in marked
+// data some other way (a read; the header's mark, a cache of the rows). A compaction's summary
+// keeps the marks of the rows it summarised, and its session the header's, so the tip alone
+// decides. Cleared only by the owner's endorsement (Trust).
 func (s *Store) Untrusted(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,17 +346,19 @@ func (s *Store) Untrusted(id string) bool {
 	if !ok {
 		return false
 	}
-	for _, sid := range l {
-		if s.metas[sid].Untrusted {
-			return true
-		}
-	}
-	return false
+	return s.metas[l[len(l)-1]].Untrusted
 }
 
 // MarkUntrusted durably marks the current tip before marked content can escape.
 // It does not add a synthetic message and never clears an existing mark.
 func (s *Store) MarkUntrusted(id string) error {
+	return s.AddTaint(id, wire.Taint{})
+}
+
+// AddTaint durably marks the current tip, keeping t (who and what brought the marked data in) in
+// its header when it says something new (at most wire.MaxTaint entries, the first kept); an
+// empty t only marks.
+func (s *Store) AddTaint(id string, t wire.Taint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	line, ok := s.lineage(id)
@@ -358,8 +366,19 @@ func (s *Store) MarkUntrusted(id string) error {
 		return ErrNotFound
 	}
 	m := s.metas[line[len(line)-1]]
-	if !m.Untrusted {
-		if err := s.rewriteHeader(m, func(h *wire.Session) { h.Untrusted = true }); err != nil {
+	add := t.Why != "" && len(m.Taint) < wire.MaxTaint && !slices.ContainsFunc(m.Taint, func(x wire.Taint) bool {
+		return x.Why == t.Why && slices.Equal(x.Users, t.Users) && x.Channel == t.Channel && x.Thread == t.Thread
+	})
+	if t.At == "" {
+		t.At = Stamp(s.now())
+	}
+	if !m.Untrusted || add {
+		if err := s.rewriteHeader(m, func(h *wire.Session) {
+			h.Untrusted = true
+			if add {
+				h.Taint = append(append([]wire.Taint{}, h.Taint...), t)
+			}
+		}); err != nil {
 			return err
 		}
 	}
@@ -369,9 +388,63 @@ func (s *Store) MarkUntrusted(id string) error {
 	return s.writeIndex()
 }
 
+// Taint is who and what brought the marked data of the conversation id belongs to in (its tip's
+// header): nil when it is not marked.
+func (s *Store) Taint(id string) []wire.Taint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lineage(id)
+	if !ok {
+		return nil
+	}
+	m := s.metas[l[len(l)-1]]
+	if !m.Untrusted {
+		return nil
+	}
+	return append([]wire.Taint{}, m.Taint...)
+}
+
+// Trust is the owner's endorsement of the conversation id belongs to (an approver's "Approve &
+// trust thread", the app's trust action): the rows its live session holds now no longer taint it
+// (Endorsed), its mark and taint are cleared, and who endorsed it and when are kept in the header.
+// Rows marked after it taint it again. The caller keeps the audit record.
+func (s *Store) Trust(id, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return ErrNotFound
+	}
+	m := s.metas[line[len(line)-1]]
+	if m.EndReason != "" {
+		return ErrEnded
+	}
+	rows := m.rows
+	if err := s.rewriteHeader(m, func(h *wire.Session) {
+		h.Untrusted, h.Taint, h.Endorsed, h.EndorsedBy, h.EndorsedAt = false, nil, rows, by, Stamp(s.now())
+	}); err != nil {
+		return err
+	}
+	if err := s.syncFile(m.ID); err != nil {
+		return err
+	}
+	return s.writeIndex()
+}
+
+// Endorsed is how many rows of session id the owner endorsed (Trust): their marks no longer count.
+func (s *Store) Endorsed(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.metas[id]; ok {
+		return m.Endorsed
+	}
+	return 0
+}
+
 // WithTrusted runs a short persistence operation while holding the session authority
 // lock. The callback must not call session methods. This closes races with handlers
-// appending untrusted rows outside the main agent loop.
+// appending untrusted rows outside the main agent loop. A conversation holding marked data in its
+// active context (Untrusted) is refused: what it learned is never exported.
 func (s *Store) WithTrusted(id string, fn func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -379,10 +452,8 @@ func (s *Store) WithTrusted(id string, fn func() error) error {
 	if !ok {
 		return fmt.Errorf("session not found")
 	}
-	for _, sid := range line {
-		if s.metas[sid].Untrusted {
-			return fmt.Errorf("untrusted conversation cannot persist learning")
-		}
+	if s.metas[line[len(line)-1]].Untrusted {
+		return fmt.Errorf("untrusted conversation cannot persist learning")
 	}
 	return fn()
 }
@@ -530,6 +601,14 @@ func (s *Store) rewriteHeader(m *meta, change func(*wire.Session)) error {
 // Compact ends id (end_reason compression) and continues it in a new session whose parent is id:
 // a system row with the summary, then the carried rows verbatim. It returns the new session.
 func (s *Store) Compact(id, summary string, carry []wire.Message) (string, error) {
+	return s.CompactMarked(id, summary, false, carry)
+}
+
+// CompactMarked is Compact with the summary row marked when marked (a summarised row was): the
+// summary keeps its inputs' marks. The carried rows keep theirs, but for rows the owner endorsed
+// in id (they are id's last rows, so their place is known), and the new session takes id's mark
+// and taint.
+func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Message) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, ok := s.metas[id]
@@ -539,13 +618,19 @@ func (s *Store) Compact(id, summary string, carry []wire.Message) (string, error
 	if m.child != "" || m.EndReason != "" {
 		return "", ErrEnded
 	}
-	child, err := s.create(wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted})
+	carry = append([]wire.Message{}, carry...)
+	for i := range carry {
+		if m.rows-len(carry)+i < m.Endorsed {
+			carry[i].Untrusted = false
+		}
+	}
+	child, err := s.create(wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted || marked, Taint: m.Taint})
 	if err != nil {
 		return "", err
 	}
 	c := s.metas[child.ID]
 	now := Stamp(s.now())
-	rows := append([]wire.Message{{Role: "system", Content: summary, At: now}}, carry...)
+	rows := append([]wire.Message{{Role: "system", Content: summary, At: now, Untrusted: marked}}, carry...)
 	_, err = s.append(c, rows, true)
 	if err == nil {
 		// the new session is durable before the old one ends: a crash in between leaves the old

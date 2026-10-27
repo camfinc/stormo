@@ -182,7 +182,7 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 func untrustedText(it followup.Item) bool { return it.Untrusted || it.ByHandler() }
 
 func (f *followUps) appendReply(tip, text string, untrusted bool) error {
-	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Content: text, Untrusted: untrusted}); err != nil {
+	if _, err := f.store.Append(tip, wire.Message{Role: "assistant", Kind: wire.KindFollowUp, Content: text, Untrusted: untrusted}); err != nil {
 		if errors.Is(err, sessions.ErrNotFound) || errors.Is(err, sessions.ErrEnded) {
 			return followup.ErrGone // deleted, or ended (a oneshot's, once the command exited)
 		}

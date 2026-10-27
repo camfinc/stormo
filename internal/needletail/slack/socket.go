@@ -42,13 +42,16 @@ type socket struct {
 	// is full: left for Slack to send again); ack decides first whether to take it at all (false:
 	// left for Slack to send again, as during a shutdown).
 	handle func(payload json.RawMessage) bool
-	ack    func() bool
-	state  func(string)
-	logf   func(string, ...any)
-	mu     sync.Mutex
-	conn   *websocket.Conn
-	wmu    sync.Mutex // one writer at a time on conn
-	sleep  func(context.Context, time.Duration) error
+	// interact gets every interactive payload (a button clicked on an approval card) after its
+	// envelope is acked; it must not block the reader (it hands the work off). nil: ignored.
+	interact func(payload json.RawMessage)
+	ack      func() bool
+	state    func(string)
+	logf     func(string, ...any)
+	mu       sync.Mutex
+	conn     *websocket.Conn
+	wmu      sync.Mutex // one writer at a time on conn
+	sleep    func(context.Context, time.Duration) error
 }
 
 // run connects and reconnects (backoff from 1 s doubling to 1 min, reset by a hello) until ctx
@@ -190,9 +193,21 @@ func (s *socket) serve(ctx context.Context, link string) (hello bool, err error)
 			if err := s.write(conn, websocket.TextMessage, ackFrame(e.EnvelopeID)); err != nil {
 				return hello, err
 			}
+		case "interactive":
+			// a button on an approval card: acked at once (Slack wants it within 3 s), then handed
+			// to the gateway, which decides off the reader; the clicker is the payload's user, as
+			// Slack's authenticated socket gives it
+			if e.EnvelopeID != "" {
+				if err := s.write(conn, websocket.TextMessage, ackFrame(e.EnvelopeID)); err != nil {
+					return hello, err
+				}
+			}
+			if s.interact != nil && s.ack() {
+				s.interact(e.Payload)
+			}
 		default:
-			// slash commands, interactivity, options: acked so Slack does not retry them;
-			// needletail serves none of them (docs/needletail.md §1 non-goals)
+			// slash commands, options: acked so Slack does not retry them; needletail serves
+			// none of them (docs/needletail.md §1 non-goals)
 			if e.EnvelopeID != "" {
 				if err := s.write(conn, websocket.TextMessage, ackFrame(e.EnvelopeID)); err != nil {
 					return hello, err

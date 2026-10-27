@@ -158,6 +158,8 @@ type Identity struct {
 	BotID  string `json:"bot_id"`
 	TeamID string `json:"team_id"`
 	User   string `json:"user"`
+	// URL is the workspace's address (https://<workspace>.slack.com/), for permalinks.
+	URL string `json:"url"`
 }
 
 // AuthTest is who the bot token is.
@@ -198,6 +200,30 @@ func (w *Web) PostMessage(ctx context.Context, channel, thread, text string) (st
 // Update replaces a message's text (unused until replies stream: Hermes' edit fallback).
 func (w *Web) Update(ctx context.Context, channel, ts, text string) error {
 	return w.call(ctx, "chat.update", w.BotToken, url.Values{"channel": {channel}, "ts": {ts}, "text": {text}}, nil)
+}
+
+// PostBlocks posts a Block Kit message (blocks, a JSON array) with text as its notification and
+// fallback; it returns the message's ts. Never unfurled.
+func (w *Web) PostBlocks(ctx context.Context, channel, thread, text string, blocks json.RawMessage) (string, error) {
+	p := url.Values{"channel": {channel}, "text": {text}, "blocks": {string(blocks)}, "unfurl_links": {"false"}, "unfurl_media": {"false"}}
+	if thread != "" {
+		p.Set("thread_ts", thread)
+	}
+	var out struct {
+		TS string `json:"ts"`
+	}
+	err := w.call(ctx, "chat.postMessage", w.BotToken, p, &out)
+	return out.TS, err
+}
+
+// UpdateBlocks replaces a message's text and blocks (an approval card once decided).
+func (w *Web) UpdateBlocks(ctx context.Context, channel, ts, text string, blocks json.RawMessage) error {
+	return w.call(ctx, "chat.update", w.BotToken, url.Values{"channel": {channel}, "ts": {ts}, "text": {text}, "blocks": {string(blocks)}}, nil)
+}
+
+// Ephemeral shows text to one user in a channel (chat.postEphemeral): why their click did nothing.
+func (w *Web) Ephemeral(ctx context.Context, channel, user, text string) error {
+	return w.call(ctx, "chat.postEphemeral", w.BotToken, url.Values{"channel": {channel}, "user": {user}, "text": {text}}, nil)
 }
 
 // React adds (or with remove, removes) an emoji reaction to a message.

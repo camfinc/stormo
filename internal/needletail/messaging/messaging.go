@@ -321,6 +321,10 @@ type Input struct {
 	// bot ids for a bot with none); ContextUnverified: one of them is not in allowed_users.
 	Context           []string
 	ContextUnverified bool
+	// Unverified are the authors (of Users) allowed_users does not list, ContextUnverifiedUsers
+	// those of the context's [unverified] lines: who brought untrusted words in (wire.Taint).
+	Unverified             []string
+	ContextUnverifiedUsers []string
 }
 
 // Untrusted is whether the run handles content the agent must not obey: an author allowed_users
@@ -352,6 +356,9 @@ const UntrustedConversation = "this conversation has taken in words you may not 
 // UntrustedWhy is why the run ctx belongs to may defer no work ("" when it may): a mark
 // (WithUntrusted), or an Input the agent may not obey.
 func UntrustedWhy(ctx context.Context) string {
+	if Endorsed(ctx) != "" {
+		return "" // the runtime runs an action a person approved (WithEndorsed)
+	}
 	if q, ok := ctx.Value(quarantineKey{}).(*quarantine); ok {
 		q.state.mu.Lock()
 		why := q.state.why

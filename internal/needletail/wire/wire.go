@@ -103,9 +103,36 @@ type Session struct {
 	// author's words, overheard input, unverified thread context, a follow-up text made from
 	// such input or by a handler). Set on the session that took it in and every session a
 	// compaction continues it in, never cleared: such a conversation defers no work
-	// (docs/needletail.md §7). Absent in files from before it: not marked.
+	// (docs/needletail.md §7). Absent in files from before it: not marked. A cache of the rows:
+	// true when a row after Endorsed is marked (or marked data was read into the conversation);
+	// cleared only by the owner's endorsement (Endorsed).
 	Untrusted bool `json:"untrusted,omitempty"`
+	// Taint is who and what brought the marked data in (at most MaxTaint, the first kept): no
+	// author named here may approve the conversation's actions. Added with approvals.
+	Taint []Taint `json:"taint,omitempty"`
+	// Endorsed is how many of the session file's rows the owner endorsed ("trust thread"): their
+	// marks no longer taint the conversation; EndorsedBy and EndorsedAt say who and when. Added
+	// with approvals; absent: none.
+	Endorsed   int    `json:"endorsed,omitempty"`
+	EndorsedBy string `json:"endorsed_by,omitempty"`
+	EndorsedAt string `json:"endorsed_at,omitempty"`
 }
+
+// Taint is one source of a conversation's marked data (Session.Taint): the people (Slack user or
+// bot ids) whose words it is, whether they passed allowed_users (a relay bot did, and still
+// marks), when, and where (a Slack channel and thread) or what (a marked memory record, a key, a
+// conversation read).
+type Taint struct {
+	Why      string   `json:"why"`
+	Users    []string `json:"users,omitempty"`
+	Verified bool     `json:"verified,omitempty"`
+	At       string   `json:"at,omitempty"`
+	Channel  string   `json:"channel,omitempty"`
+	Thread   string   `json:"thread,omitempty"`
+}
+
+// MaxTaint is the most Taint entries a session header keeps.
+const MaxTaint = 8
 
 // EndCompression is Session.EndReason for a session a compaction continued elsewhere.
 const EndCompression = "compression"
@@ -161,8 +188,13 @@ type Message struct {
 	Untrusted bool `json:"untrusted,omitempty"`
 }
 
-// KindFollowUp is a Message's Kind for a follow-up's turn input (docs/needletail.md §4.12).
+// KindFollowUp is a Message's Kind for a follow-up's turn input (docs/needletail.md §4.12), and
+// for the assistant row a delivered follow-up text leaves.
 const KindFollowUp = "follow_up"
+
+// KindApproval is a Message's Kind for the runtime's note of an approval's outcome (a user row no
+// one wrote, docs/needletail.md §7).
+const KindApproval = "approval"
 
 // Transcript is GET /v1/sessions/{id}/messages: the conversation's messages, oldest first,
 // following its compactions; SessionID is its live tip.
@@ -280,6 +312,35 @@ type Config struct {
 	// Scrub is the instance's own scrub rules (stormo.yaml scrub:), so what the runtime exports for
 	// the dream is checked by the scrubber the dream uses. Absent when the instance has none.
 	Scrub *ScrubConfig `json:"scrub,omitempty" yaml:"scrub,omitempty"`
+	// Approvals is engine/needletail/config.yaml's approvals: who decides, how long a request
+	// waits, the caps and the risky commands (docs/needletail.md §7). Absent: the defaults (the
+	// first allowed user decides). An image older than it refuses a needletail.yaml that has it.
+	Approvals *ApprovalsConfig `json:"approvals,omitempty" yaml:"approvals,omitempty"`
+}
+
+// ApprovalsConfig is the agent's approvals settings.
+type ApprovalsConfig struct {
+	// Approvers are the Slack user ids who decide (within allowed_users); empty: the first user
+	// allowed_users names.
+	Approvers []string `json:"approvers,omitempty" yaml:"approvers,omitempty"`
+	// Timeout is how long a request waits for a decision, in seconds (0: 1800); past it, denied.
+	Timeout int `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// DeliveryExpiryDays is how long a tainted scheduled run's held report waits (0: 3 days).
+	DeliveryExpiryDays int `json:"delivery_expiry_days,omitempty" yaml:"delivery_expiry_days,omitempty"`
+	// PerConversation is the most pending requests of one conversation (0: 3); PerDay of the
+	// agent in 24 hours (0: 20). Past them a request is refused.
+	PerConversation int `json:"per_conversation,omitempty" yaml:"per_conversation,omitempty"`
+	PerDay          int `json:"per_day,omitempty" yaml:"per_day,omitempty"`
+	// Commands are risky-command patterns added to the defaults: a terminal command one matches
+	// needs approval in any conversation and is refused in a scheduled run.
+	Commands []CommandRule `json:"commands,omitempty" yaml:"commands,omitempty"`
+}
+
+// CommandRule is one risky-command pattern (a Go regular expression, matched case insensitively)
+// and what it means.
+type CommandRule struct {
+	Name    string `json:"name,omitempty" yaml:"name,omitempty"`
+	Pattern string `json:"pattern" yaml:"pattern"`
 }
 
 // ScrubConfig is stormo.yaml's scrub: (instance.Instance ScrubTokenPrefixes and ScrubRules).
@@ -306,6 +367,10 @@ type SlackConfig struct {
 	// mention, not a thread it is in) is ambient: it reaches the on_message handlers only, and
 	// a turn follows only when one passes it on.
 	Listen []string `json:"listen,omitempty" yaml:"listen,omitempty"`
+	// RelayBots are bots (bot ids B…, or their user ids) allowed_users lets talk to the agent whose
+	// messages still mark the conversation: they relay others' words (a form, an email bridge), so
+	// passing allowed_users says who posted, not who wrote.
+	RelayBots []string `json:"relay_bots,omitempty" yaml:"relay_bots,omitempty"`
 }
 
 // SchedulesConfig is what the runtime is told about the agent's scheduled jobs.

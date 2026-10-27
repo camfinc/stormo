@@ -74,6 +74,14 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 	if strings.TrimSpace(a.Command) == "" {
 		return nil, errors.New("command is empty")
 	}
+	// a risky command (approvals.commands) needs a person, in any conversation; a scheduled run has
+	// none, so there it is refused. An approved call (endorsed) runs as it was approved.
+	if rule := riskyRule(env, a.Command); rule != "" && messaging.Endorsed(ctx) == "" {
+		if messaging.Scheduled(ctx) {
+			return nil, fmt.Errorf("refused: the command matches the risky-command rule %q, and a scheduled run has no person to approve it", rule)
+		}
+		return nil, messaging.NeedsApprovalRisky("the terminal command", "it matches the risky-command rule \""+rule+"\"")
+	}
 	if a.Background && UntrustedWhy(ctx, env) != "" && conversationOf(env) == "" {
 		return nil, messaging.Deferred("a background process without a known conversation", UntrustedWhy(ctx, env))
 	}
@@ -144,6 +152,13 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 		}
 	}
 	return res, nil
+}
+
+func riskyRule(env *Env, command string) string {
+	if env == nil || env.Risky == nil {
+		return ""
+	}
+	return env.Risky(command)
 }
 
 // usesDirVar matches a command that expands SKILL_DIR ($SKILL_DIR or ${SKILL_DIR}), not one that

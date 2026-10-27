@@ -478,7 +478,7 @@ func TestRunsCarryTheirInput(t *testing.T) {
 	r.fake.Send("e3", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "the booking moved", TS: "1700001400.000400"})
 	r.fake.WaitPosts(3, 5*time.Second)
 	want := map[string]messaging.Input{
-		SessionID(dev, "1700001400.000100"): {Ambient: true, Users: []string{mallet}},
+		SessionID(dev, "1700001400.000100"): {Ambient: true, Users: []string{mallet}, Unverified: []string{mallet}},
 		DMSessionID(dm):                     {Verified: true, Users: []string{alice}, Thread: "1700001400.000200"},
 		SessionID(dev, "1700001400.000400"): {Verified: true, Ambient: true, Users: []string{alice}},
 	}

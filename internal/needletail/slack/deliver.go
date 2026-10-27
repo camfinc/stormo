@@ -188,7 +188,7 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
-	if err := g.quarantineSend(ctx, t); err != nil {
+	if err := g.quarantineSend(ctx, t, r.Broadcast); err != nil {
 		return messaging.Sent{}, err
 	}
 	// the agent's before_send handlers first (they change only the text); the messaging policy
@@ -197,7 +197,7 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
-	if err := g.quarantineSend(ctx, t); err != nil {
+	if err := g.quarantineSend(ctx, t, r.Broadcast); err != nil {
 		return messaging.Sent{}, err
 	}
 	broadcast, err := g.Policy().Check(t, r.Broadcast)
@@ -306,8 +306,13 @@ func (g *Gateway) targets() []map[string]string {
 var _ sched.Deliverer = (*Gateway)(nil)
 var _ messaging.Messenger = (*Gateway)(nil)
 
-// Quarantined content can only be answered in the runtime's own originating DM/thread.
-func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target) error {
+// quarantineSend is the information-flow rule for a message the agent sends on its own from a
+// tainted run (docs/needletail.md §7): back to its own conversation (the runtime-known origin) it
+// is a reply, allowed; anywhere else it needs a person's approval; a broadcast is refused.
+func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target, broadcast bool) error {
+	if messaging.Endorsed(ctx) != "" {
+		return nil // a send a person approved: the approval endorses it
+	}
 	session := messaging.SessionOf(ctx)
 	why := messaging.UntrustedWhy(ctx)
 	if why == "" && g.o.Untrusted != nil && g.o.Untrusted(session) {
@@ -316,9 +321,13 @@ func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target) e
 	if why == "" {
 		return nil
 	}
+	if broadcast {
+		return messaging.Deferred("a broadcast", why)
+	}
+	elsewhere := messaging.NeedsApproval("send_message to "+target.String()+" (outside this conversation)", why)
 	channel, thread, ok := Origin(g.root(session))
 	if !ok {
-		return messaging.Deferred("send_message outside its own conversation", why)
+		return elsewhere
 	}
 	dest := target.Channel
 	if strings.HasPrefix(channel, "D") {
@@ -328,23 +337,26 @@ func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target) e
 	}
 	if target.User != "" {
 		if !strings.HasPrefix(channel, "D") {
-			return messaging.Deferred("send_message outside its own conversation", why)
+			return elsewhere
 		}
 		person, err := g.dmUser(channel)
 		if err != nil || person != target.User {
-			return messaging.Deferred("send_message outside its own conversation", why)
+			return elsewhere
 		}
 		dest = channel
 	} else if dest == "" {
 		dest = g.o.HomeChannel
 	}
 	if dest != channel || target.Thread != thread {
-		return messaging.Deferred("send_message outside its own conversation", why)
+		return elsewhere
 	}
 	return nil
 }
 
 func (g *Gateway) deliveryQuarantine(ctx context.Context, session string) string {
+	if messaging.Endorsed(ctx) != "" {
+		return "" // a held report a person approved
+	}
 	if why := messaging.UntrustedWhy(ctx); why != "" {
 		return why
 	}

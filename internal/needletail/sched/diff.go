@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// UnifiedDiff is old → new as unifiedDiff writes it (an approval card's diff of a file or a job).
+func UnifiedDiff(old, new string) string { return unifiedDiff(old, new) }
+
 // unifiedDiff is old → new as a unified diff of lines with 3 lines of context, headed
 // "--- previous" / "+++ current" as Hermes' monitor writes it ("" when equal). Inputs too large
 // for the line-by-line comparison come out as one hunk replacing everything.

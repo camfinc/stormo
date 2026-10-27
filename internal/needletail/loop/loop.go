@@ -108,6 +108,10 @@ type Agent struct {
 	// front of the turn's user message in every request of the turn, never in the system prompt
 	// (which would change every turn and defeat the prompt cache) nor in the session file.
 	Recall func(session, input string, job bool) string
+	// Notes, when set, are rows the runtime keeps for a conversation's next turn (an approval's
+	// outcome that could not be written while a turn ran): appended before the turn's input, then
+	// done is called.
+	Notes func(conversation string) (rows []wire.Message, done func())
 }
 
 // Options shape one turn.
@@ -121,8 +125,12 @@ type Options struct {
 	// follow-up's turn, which no one wrote; "" for a person's message.
 	InputKind string
 	// Untrusted marks the turn's input row (wire.Message.Untrusted): it carries content the
-	// agent must not obey, which marks its conversation for good.
+	// agent must not obey, which marks its conversation until the owner endorses it.
 	Untrusted bool
+	// Taint, with Untrusted, is who and what brought it in (the gateway's: the unverified authors,
+	// a relay bot, where): kept in the conversation's header, so no author of it may approve
+	// what the conversation asks for.
+	Taint *wire.Taint
 }
 
 // Result is a finished turn.
@@ -202,6 +210,23 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 		history = append(history, stored...)
 		a.logf("session=%s: %d tool calls of an interrupted turn answered as interrupted", tip, len(calls))
+	}
+	if opts.Untrusted && opts.Taint != nil {
+		if err := a.Store.AddTaint(tip, *opts.Taint); err != nil {
+			return nil, err
+		}
+	}
+	if a.Notes != nil {
+		if root, ok := a.Store.Root(tip); ok {
+			if rows, done := a.Notes(root); len(rows) > 0 {
+				stored, err := a.Store.Append(tip, rows...)
+				if err != nil {
+					return nil, err
+				}
+				history = append(history, stored...)
+				done()
+			}
+		}
 	}
 	stored, err := a.Store.Append(tip, wire.Message{Role: "user", Content: input, Kind: opts.InputKind, Untrusted: opts.Untrusted || messaging.UntrustedWhy(ctx) != ""})
 	if err != nil {
@@ -292,7 +317,9 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		if final {
 			calls = nil
 		}
-		msg := wire.Message{Role: "assistant", Content: resp.Content, ToolCalls: calls}
+		// the agent's own words in a tainted run carry its marks (read back as thread context or
+		// found by session_search, they are marked data too)
+		msg := wire.Message{Role: "assistant", Content: resp.Content, ToolCalls: calls, Untrusted: messaging.UntrustedWhy(ctx) != ""}
 		if msg.Content == "" && len(calls) == 0 {
 			msg.Content = "(no answer)"
 		}
@@ -320,7 +347,8 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			var touched []string
 			env.Touched = func(p string) { touched = append(touched, p) }
 			if allowed[c.Name] {
-				out, failed = a.Tools.Call(ctx, &env, c.Name, c.Arguments)
+				// the step's own text is the agent's reason, should a gate put the call to a person
+				out, failed = a.Tools.Call(messaging.WithReason(ctx, resp.Content), &env, c.Name, c.Arguments)
 			} else {
 				out, failed = fmt.Sprintf(`{"error":"tool %q is not available in this turn"}`, c.Name), true
 			}
@@ -471,7 +499,7 @@ func toLLM(system string, history []wire.Message) []llm.Message {
 		}
 		flush()
 		content := m.Content
-		if m.Untrusted && m.Role == "assistant" {
+		if m.Untrusted && m.Role == "assistant" && m.Kind == wire.KindFollowUp {
 			content = untrustedSaid + content
 		}
 		out = append(out, llm.Message{Role: m.Role, Content: content, ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID})

@@ -153,6 +153,8 @@ type Gateway struct {
 	base      context.Context
 	cancel    context.CancelFunc
 	statusOn  atomic.Bool
+	// decider takes the approval cards' buttons (SetDecider); nil: approvals off
+	decider Decider
 }
 
 // job is one message for a conversation's worker, routed but not yet prepared: the worker reads
@@ -234,7 +236,7 @@ func New(o Options) (*Gateway, error) {
 		handlers: make(chan struct{}, o.AmbientHandlers), botTurns: map[string][]time.Time{}}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
-	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
+	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, interact: g.interact, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
 	return g, nil
 }
 
@@ -1292,7 +1294,37 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, inp
 		g.status(j.channel, orDefault(j.thread, j.ts), "")
 	}()
 	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
-	return slot.Turn(messaging.WithSession(messaging.WithInput(g.base, in), root), input, loop.Options{Observer: used, Untrusted: in.Untrusted()})
+	opts := loop.Options{Observer: used, Untrusted: in.Untrusted()}
+	if opts.Untrusted {
+		opts.Taint = g.taintOf(j, in)
+	}
+	return slot.Turn(messaging.WithSession(messaging.WithInput(g.base, in), root), input, opts)
+}
+
+// taintOf is who brought the untrusted input of a turn in (in.Untrusted): the authors
+// allowed_users does not list, and the unverified authors of the thread context it was given,
+// with where (the conversation's channel and thread): kept in the conversation, so none of them
+// may approve what it asks for.
+func (g *Gateway) taintOf(j job, in messaging.Input) *wire.Taint {
+	t := &wire.Taint{Channel: j.channel, Thread: j.threadTS, At: time.Now().UTC().Format(time.RFC3339)}
+	if j.dm {
+		t.Thread = j.thread
+	}
+	why := []string{}
+	if !in.Verified {
+		why = append(why, "a message from someone allowed_users does not list")
+	}
+	if in.ContextUnverified {
+		why = append(why, "thread context with [unverified] lines")
+	}
+	t.Why = strings.Join(why, "; ")
+	t.Users = append(t.Users, in.Unverified...)
+	for _, u := range in.ContextUnverifiedUsers {
+		if !slices.Contains(t.Users, u) {
+			t.Users = append(t.Users, u)
+		}
+	}
+	return t
 }
 
 // inputOf is what a run handling jobs, given the thread context lines, acts on (messaging.Input):
@@ -1308,9 +1340,15 @@ func inputOf(jobs []job, lines []messaging.ContextLine) messaging.Input {
 		if l.User != "" && !slices.Contains(in.Context, l.User) {
 			in.Context = append(in.Context, l.User)
 		}
+		if l.Unverified && l.User != "" && !slices.Contains(in.ContextUnverifiedUsers, l.User) {
+			in.ContextUnverifiedUsers = append(in.ContextUnverifiedUsers, l.User)
+		}
 	}
 	for _, j := range jobs {
 		in.Verified = in.Verified && j.verified
+		if who := orDefault(j.ev.User, j.ev.BotID); !j.verified && who != "" && !slices.Contains(in.Unverified, who) {
+			in.Unverified = append(in.Unverified, who)
+		}
 		in.Ambient = in.Ambient || j.ambient
 		if who := orDefault(j.ev.User, j.ev.BotID); who != "" && !slices.Contains(in.Users, who) {
 			in.Users = append(in.Users, who)
