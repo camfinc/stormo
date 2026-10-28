@@ -288,6 +288,9 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	agent.Tools.Add(files.Tool(slack.Neutralise))
 	// the public web (§4.5): a page's readable text; what it says marks the run (§7)
 	agent.Tools.Add(web.ExtractTool(&web.Fetcher{CoreURLs: coreURLs(cfg)}, slack.Neutralise))
+	if s := startSearch(cfg, sec, os.Getenv, logf); s != nil {
+		agent.Tools.Add(web.SearchTool(s, slack.Neutralise))
+	}
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state, files: files,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
@@ -413,6 +416,26 @@ func searchable(who func(session string) memory.Audience, sourceOf func(session 
 			return a.Scope == "" && a.Conv == "" && (source == followup.SourceCron) == cron
 		}
 	}
+}
+
+// startSearch is web_search's provider (needletail.yaml web.search): nil when there is none, its
+// key is missing, or the test override (web.SearchURLEnv) is not a loopback address.
+func startSearch(cfg *config.Config, sec *secrets.Secrets, getenv func(string) string, logf func(string)) *web.Searcher {
+	if cfg.Web == nil || cfg.Web.Search == nil {
+		return nil
+	}
+	p := cfg.Web.Search.Provider
+	key := sec.Get(wire.SearchKeyEnv(p))
+	if key == "" {
+		logf(fmt.Sprintf("web search: no web_search: %s is missing", wire.SearchKeyEnv(p)))
+		return nil
+	}
+	base := getenv(web.SearchURLEnv)
+	if err := web.CheckSearchURL(base); err != nil {
+		logf(fmt.Sprintf("web search: no web_search: %v", err))
+		return nil
+	}
+	return &web.Searcher{Provider: p, Key: key, BaseURL: base, MaxResults: cfg.Web.Search.MaxResults}
 }
 
 // coreURLs are the core's and its relay's addresses (SWARM_CORE_URL, the MCP and ingest URLs):

@@ -187,3 +187,19 @@ func TestLoadChatTurns(t *testing.T) {
 		}
 	}
 }
+
+// web.search: a provider this runtime has (brave, tavily), at most 20 results.
+func TestLoadWebSearch(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base+"web: {search: {provider: tavily, max_results: 3}}\n"), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || c.Web.Search.Provider != "tavily" || c.Web.Search.MaxResults != 3 {
+		t.Fatalf("%v %+v", err, c)
+	}
+	for _, bad := range []string{"web: {search: {provider: bing}}\n", "web: {search: {provider: brave, max_results: 50}}\n"} {
+		_ = os.WriteFile(filepath.Join(dir, File), []byte(base+bad), 0o644)
+		if _, err := Load(dir, env(nil)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

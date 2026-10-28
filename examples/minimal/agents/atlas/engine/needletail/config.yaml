@@ -17,6 +17,12 @@ luau:
 #   broadcast: true             # send_message may ping @channel, @here and user groups when it asks to
 #   listen: [C0000000001]       # channels whose every message reaches on_message handlers; off by default
 
+# web:
+#   search: {provider: brave, max_results: 5}   # web_search (brave or tavily); declare BRAVE_SEARCH_API_KEY (or TAVILY_API_KEY) in agent.yaml
+
+# limits:
+#   chat_turns: 2               # chat turns (the API's and Slack's) at once (1 to 16)
+
 # schedules:
 #   turns: 2                    # scheduled runs that may hold a turn at once (1 to 4; unset: 1)
 

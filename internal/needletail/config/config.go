@@ -119,6 +119,14 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	if s := c.STT; s != nil && s.Provider != "" && s.Provider != "elevenlabs" {
 		return nil, fmt.Errorf("%s: stt.provider %q is not one this runtime has (elevenlabs)", File, s.Provider)
 	}
+	if w := c.Web; w != nil && w.Search != nil {
+		if wire.SearchKeyEnv(w.Search.Provider) == "" {
+			return nil, fmt.Errorf("%s: web.search.provider %q is not one this runtime has (brave, tavily)", File, w.Search.Provider)
+		}
+		if w.Search.MaxResults < 0 || w.Search.MaxResults > wire.MaxSearchResults {
+			return nil, fmt.Errorf("%s: web.search.max_results %d must be 1 to %d", File, w.Search.MaxResults, wire.MaxSearchResults)
+		}
+	}
 	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > MaxChatTurns {
 		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d", File, c.Limits.ChatTurns, MaxChatTurns)
 	}

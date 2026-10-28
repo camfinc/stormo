@@ -66,6 +66,9 @@ func Owned(cfg *wire.Config) []string {
 	if cfg.STT != nil && cfg.STT.Enabled {
 		add(STTKey)
 	}
+	if cfg.Web != nil && cfg.Web.Search != nil {
+		add(wire.SearchKeyEnv(cfg.Web.Search.Provider))
+	}
 	return names
 }
 

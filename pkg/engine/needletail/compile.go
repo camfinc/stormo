@@ -79,7 +79,11 @@ type agentConfig struct {
 	Files *wire.FilesConfig `yaml:"files"`
 	// STT transcribes voice notes (needletail.yaml stt): enabled, provider (elevenlabs), language
 	// (an ISO 639 code), model. Its key is ELEVENLABS_API_KEY, which agent.yaml must declare.
-	STT    *wire.STTConfig `yaml:"stt"`
+	STT *wire.STTConfig `yaml:"stt"`
+	// Web is the agent's web search (needletail.yaml web): search {provider (brave, tavily),
+	// max_results (1 to 20; 5 when unset)}. Its key (BRAVE_SEARCH_API_KEY, TAVILY_API_KEY) must be
+	// among agent.yaml's secrets.
+	Web    *wire.WebConfig `yaml:"web"`
 	Memory struct {
 		// Recall is the per-turn recall from the memory archive (needletail.yaml memory.recall;
 		// omitted when unset: on for user turns, off for scheduled runs).
@@ -123,6 +127,19 @@ func checkSTTKey(a *manifest.Agent, ac *agentConfig) error {
 		}
 	}
 	return fmt.Errorf("%s: stt is enabled but agent.yaml does not declare %s among its secrets", ConfigFile, sttKeyEnv)
+}
+
+// checkSearchKey: a web search provider needs its key among the agent's secrets (agent.yaml
+// secrets or optional_secrets), or the runtime would have none.
+func checkSearchKey(a *manifest.Agent, ac *agentConfig) error {
+	if ac.Web == nil || ac.Web.Search == nil {
+		return nil
+	}
+	key := wire.SearchKeyEnv(ac.Web.Search.Provider)
+	if slices.Contains(a.Secrets, key) || slices.ContainsFunc(a.OptionalSecrets, func(o manifest.OptionalSecret) bool { return o.Name == key }) {
+		return nil
+	}
+	return fmt.Errorf("%s: web.search uses %s but agent.yaml does not declare %s among its secrets", ConfigFile, ac.Web.Search.Provider, key)
 }
 
 // maxScheduleTurns is the most turns scheduled runs may hold at once.
@@ -231,6 +248,14 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	if l := c.Limits.BackgroundLifetime; l < 0 || l > maxBackgroundLifetime {
 		return nil, fmt.Errorf("%s: limits.background_lifetime %d must be seconds, 1 to %d (0 or unset: the runtime's 7200, 2 h)", ConfigFile, l, maxBackgroundLifetime)
 	}
+	if w := c.Web; w != nil && w.Search != nil {
+		if wire.SearchKeyEnv(w.Search.Provider) == "" {
+			return nil, fmt.Errorf("%s: web.search.provider %q: brave or tavily", ConfigFile, w.Search.Provider)
+		}
+		if w.Search.MaxResults < 0 || w.Search.MaxResults > wire.MaxSearchResults {
+			return nil, fmt.Errorf("%s: web.search.max_results %d must be 1 to %d (0 or unset: 5)", ConfigFile, w.Search.MaxResults, wire.MaxSearchResults)
+		}
+	}
 	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > maxChatTurns {
 		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d (0 or unset: the runtime's 2)", ConfigFile, c.Limits.ChatTurns, maxChatTurns)
 	}
@@ -298,6 +323,9 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	}
 	c.Approvals = ac.Approvals
 	c.Files, c.STT = ac.Files, ac.STT
+	if ac.Web != nil && ac.Web.Search != nil {
+		c.Web = ac.Web
+	}
 	c.Schedules.Turns = ac.Schedules.Turns
 	for _, s := range a.Schedules {
 		c.Schedules.Repo = append(c.Schedules.Repo, s.ID)
@@ -399,6 +427,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	if err := checkSTTKey(a, ac); err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
+	if err := checkSearchKey(a, ac); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)

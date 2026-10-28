@@ -330,7 +330,43 @@ type Config struct {
 	// Absent or not enabled: none are (the note is kept as a file). An image older than it
 	// refuses a needletail.yaml that has it.
 	STT *STTConfig `json:"stt,omitempty" yaml:"stt,omitempty"`
+	// Web is engine/needletail/config.yaml's web: the search provider web_search asks. Absent:
+	// no web_search (web_extract needs no key). An image older than it refuses a needletail.yaml
+	// that has it.
+	Web *WebConfig `json:"web,omitempty" yaml:"web,omitempty"`
 }
+
+// WebConfig is the agent's reach into the web.
+type WebConfig struct {
+	Search *WebSearchConfig `json:"search,omitempty" yaml:"search,omitempty"`
+}
+
+// WebSearchConfig is web_search's provider: brave (its key BRAVE_SEARCH_API_KEY) or tavily
+// (TAVILY_API_KEY), and how many results a search gives (0: 5; at most 20).
+type WebSearchConfig struct {
+	Provider   string `json:"provider" yaml:"provider"`
+	MaxResults int    `json:"max_results,omitempty" yaml:"max_results,omitempty"`
+}
+
+// Search providers and their keys' env names.
+const (
+	SearchBrave  = "brave"
+	SearchTavily = "tavily"
+)
+
+// SearchKeyEnv is the env var holding provider's key ("" for a provider this runtime has not).
+func SearchKeyEnv(provider string) string {
+	switch provider {
+	case SearchBrave:
+		return "BRAVE_SEARCH_API_KEY"
+	case SearchTavily:
+		return "TAVILY_API_KEY"
+	}
+	return ""
+}
+
+// MaxSearchResults is the most results web.search.max_results may ask for.
+const MaxSearchResults = 20
 
 // FilesConfig is what the runtime does with the files people send.
 type FilesConfig struct {

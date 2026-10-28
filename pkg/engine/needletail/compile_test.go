@@ -514,3 +514,39 @@ func TestChatTurnsRender(t *testing.T) {
 		}
 	}
 }
+
+// web.search names a search provider (brave, tavily) and how many results a search gives (1 to
+// 20); Compile refuses it without the provider's key among the agent's secrets.
+func TestWebSearchRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("web:\n  search:\n    provider: brave\n    max_results: 8\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+	if c.Web == nil || c.Web.Search == nil || c.Web.Search.Provider != "brave" || c.Web.Search.MaxResults != 8 {
+		t.Fatalf("web = %+v", c.Web)
+	}
+	if err := checkSearchKey(a, ac); err == nil || !strings.Contains(err.Error(), "BRAVE_SEARCH_API_KEY") {
+		t.Errorf("no key declared: %v", err)
+	}
+	a.OptionalSecrets = append(a.OptionalSecrets, manifest.OptionalSecret{Name: "BRAVE_SEARCH_API_KEY"})
+	if err := checkSearchKey(a, ac); err != nil {
+		t.Errorf("optional key: %v", err)
+	}
+	unset := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{})
+	if raw, _ := yaml.Marshal(unset); unset.Web != nil || strings.Contains(string(raw), "web:") {
+		t.Errorf("rendered without config:\n%s", raw)
+	}
+	for _, bad := range []string{"web:\n  search:\n    provider: google\n", "web:\n  search:\n    provider: brave\n    max_results: 21\n",
+		"web:\n  search:\n    max_results: 3\n", "web:\n  search:\n    provider: tavily\n    max_results: -1\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

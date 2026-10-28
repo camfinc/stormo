@@ -140,8 +140,9 @@ In this order:
    which the core's hooks show as the platform), ended after the turn. Tools: every tool when
    `enabled_toolsets` is empty, else the tools of each toolset named (`terminal`, `file`
    = read_file, write_file, patch, search_files, `skills` = skills_list, skill_view, skill_manage,
-   `memory`, …; a tool's own name stands for itself, a toolset the engine has no tool for offers
-   nothing), plus the core's MCP tools unless `no_mcp` is named. A scheduled run is never offered
+   `memory`, `web` = web_search (with a search provider) and web_extract, …; a tool's own name stands for itself, a toolset the engine has no tool for offers
+   nothing). A run that reads the web is marked (information flow): its report is held for the
+   owner's approval unless the job delivers only `local`, plus the core's MCP tools unless `no_mcp` is named. A scheduled run is never offered
    the scheduling tool (a job that makes jobs loops) nor `send_message` (its reply is what is
    delivered), nor needletail's `no_reply`. `model`/`provider` pin the job's model (Hermes).
 

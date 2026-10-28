@@ -123,3 +123,17 @@ func TestSTTKeyOwned(t *testing.T) {
 		t.Errorf("stt on: owned %q, env %v", on.Get(STTKey), on.Clean(environ))
 	}
 }
+
+// With a web search provider, its key is the runtime's (read, redacted, out of the terminal's
+// env); without one, it is left alone.
+func TestSearchKeyOwned(t *testing.T) {
+	environ := []string{"BRAVE_SEARCH_API_KEY=brave-key-0123456789", "TAVILY_API_KEY=tvly-key-0123456789", "PATH=/bin"}
+	off := Load(&wire.Config{}, environ)
+	if off.Get("BRAVE_SEARCH_API_KEY") != "" || len(off.Clean(environ)) != 3 {
+		t.Errorf("no provider: env %v", off.Clean(environ))
+	}
+	on := Load(&wire.Config{Web: &wire.WebConfig{Search: &wire.WebSearchConfig{Provider: "tavily"}}}, environ)
+	if on.Get("TAVILY_API_KEY") != "tvly-key-0123456789" || on.Get("BRAVE_SEARCH_API_KEY") != "" || len(on.Clean(environ)) != 2 {
+		t.Errorf("tavily: env %v", on.Clean(environ))
+	}
+}
