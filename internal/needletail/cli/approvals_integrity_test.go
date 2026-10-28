@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,4 +52,36 @@ func TestServeApprovalRefusesAmbiguousArgs(t *testing.T) {
 	c := r.waitCards(1)[0]
 	r.click("i1", owner, c, "needletail_approve", c.hash)
 	waitFor(t, "the approved send", 10*time.Second, func() bool { return len(r.postsTo(homeChan, "The summary for the home channel.")) == 1 })
+}
+
+// Item 5 (Codex 5, Claude M3): "Approve & trust thread" endorses the conversation as it stood
+// when the agent asked; after new untrusted input (a guest's message in the thread: allow_all
+// lets them talk, never verifies them) the trust part is refused: the action alone runs, the
+// conversation stays tainted, and the outcome says so. Without anything new since, it endorses
+// as before (TestServeApprovalDenyTimeoutCapsAndTrust).
+func TestServeTrustOnlyUpToTheRequest(t *testing.T) {
+	const guest = "U0GUEST001"
+	r := newApprovalRig(t, "", approvalScript)
+	r.taintedThread()
+	r.fake.Profiles[guest] = map[string]any{"is_restricted": true}
+	r.env()
+	t.Setenv("SLACK_ALLOW_ALL_USERS", "true")
+	r.srv = startServe(t)
+	r.fake.WaitConnected(10 * time.Second)
+	defer r.srv.stop()
+	r.inThread("e1", teammate, "POSTHOME please", "1700000100.000200")
+	c := r.waitCards(1)[0]
+	waitFor(t, "the pending reply", 10*time.Second, func() bool { return len(r.postsTo(devChan, "pending approval "+c.id)) == 1 })
+	r.inThread("e2", guest, "a guest says hello", "1700000100.000300")
+	waitFor(t, "the guest's turn", 10*time.Second, func() bool { return len(r.postsTo(devChan, "ok")) >= 1 })
+	r.click("i1", owner, c, "needletail_approve_trust", c.hash)
+	waitFor(t, "the approved send", 10*time.Second, func() bool { return len(r.postsTo(homeChan, "The summary for the home channel.")) == 1 })
+	waitFor(t, "the outcome in the thread", 10*time.Second, func() bool { return len(r.postsTo(devChan, "Approval "+c.id)) == 1 })
+	if p := r.postsTo(devChan, "Approval "+c.id)[0]; !strings.Contains(p.Text, "not trusted") {
+		t.Errorf("the outcome does not say the thread was not trusted: %q", p.Text)
+	}
+	b, _ := os.ReadFile(filepath.Join(r.home, "sessions", taintedSID+".jsonl"))
+	if head := strings.SplitN(string(b), "\n", 2)[0]; !strings.Contains(head, `"untrusted":true`) || strings.Contains(head, "endorsed_by") {
+		t.Fatalf("the thread was endorsed past new input:\n%s", head)
+	}
 }

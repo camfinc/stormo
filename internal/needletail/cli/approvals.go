@@ -13,6 +13,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/approvals"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
@@ -89,8 +90,18 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 	c := rt.cfg.Approvals
 	o := approvals.Options{StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(), Approvers: approvers(c, slackAllowedUsers(), rt.logf), Log: rt.logf,
 		Execute: map[string]approvals.Executor{approvals.KindTool: rt.runApproved, approvals.KindDelivery: rt.sched.DeliverApproved},
-		Trust: func(conv, by string) error {
-			return rt.store.Trust(conv, by)
+		// "trust thread": serialized with the conversation's turns (as the API's trust), and only
+		// as the conversation stood when the agent asked (sessions.Store.TrustAt)
+		Trust: func(r *approvals.Request, by string) error {
+			if r.TrustAt == nil {
+				return errors.New("the request kept no record of where the conversation stood")
+			}
+			release, err := holdWithin(srv, r.Conversation, trustWait)
+			if err != nil {
+				return fmt.Errorf("a turn kept running in it (%v)", err)
+			}
+			defer release()
+			return rt.store.TrustAt(r.Conversation, by, sessions.TrustPoint{Session: r.TrustAt.Session, Marks: r.TrustAt.Marks, Epoch: r.TrustAt.Epoch})
 		},
 		Note: func(r *approvals.Request, text string) error {
 			release, err := srv.Hold(r.Conversation)
@@ -102,7 +113,12 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 			if !ok {
 				return sessions.ErrNotFound
 			}
-			if _, err := rt.store.Append(tip, wire.Message{Role: "user", Kind: wire.KindApproval, Content: text}); err != nil {
+			if approvals.NoteMarked(r) {
+				if err := rt.store.MarkUntrusted(tip); err != nil {
+					return err // no mark, no data
+				}
+			}
+			if _, err := rt.store.Append(tip, wire.Message{Role: "user", Kind: wire.KindApproval, Content: text, Untrusted: approvals.NoteMarked(r)}); err != nil {
 				return err
 			}
 			return rt.store.Sync(tip)
@@ -155,6 +171,23 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 
 func (rt *runtime) logf(s string) { rt.logger.Println(s) }
 
+// trustWait is how long a "trust thread" waits for a turn running in its conversation (the
+// requesting one finishing) before the trust part is refused.
+var trustWait = 2 * time.Minute
+
+// holdWithin holds conversation's turn slot (api.Server.Hold), waiting up to d for a turn
+// running there.
+func holdWithin(srv *api.Server, conversation string, d time.Duration) (func(), error) {
+	end := time.Now().Add(d)
+	for {
+		release, err := srv.Hold(conversation)
+		if err == nil || !errors.Is(err, api.ErrSessionBusy) || time.Now().After(end) {
+			return release, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // approve puts a call a gate held for a person (tools.Env.Approve) to the approvers: a card from
 // the structured call, in their DMs; the tool answers "pending approval <id>" at once. In a
 // scheduled run (no person in the loop), or with approvals off, it is refused.
@@ -191,13 +224,23 @@ func (rt *runtime) approve(ctx context.Context, env *tools.Env, tool string, arg
 	if err != nil {
 		return nil, fmt.Errorf("%v; its arguments were not put to a person: %v", need, err)
 	}
-	card, err := rt.describe(env, tool, args)
+	if len(need.Payload) > 0 {
+		// the gate bound what runs (a send as before_send left it): that, canonical, is put
+		if args, err = approvals.Canonical(need.Payload, props); err != nil {
+			return nil, fmt.Errorf("%v; its arguments were not put to a person: %v", need, err)
+		}
+	}
+	card, bind, err := rt.describeBound(env, tool, args)
 	if err != nil {
 		return nil, fmt.Errorf("%v; the request could not be shown to a person (%v), so it is refused", need, err)
 	}
 	tainted := rt.store.Untrusted(root) || messaging.UntrustedWhy(ctx) != ""
-	req, err := svc.Request(ctx, approvals.Ask{Action: approvals.Action{Kind: approvals.KindTool, Tool: tool, Args: args}, Conversation: root, Session: session,
-		Origin: origin, Card: card, Why: need.Why, Reason: messaging.ReasonOf(ctx), Taint: rt.store.Taint(root), Trust: need.Trust && tainted})
+	var trustAt *approvals.TrustPoint
+	if p, ok := rt.store.Point(root); ok && need.Trust && tainted {
+		trustAt = &approvals.TrustPoint{Session: p.Session, Marks: p.Marks, Epoch: p.Epoch}
+	}
+	req, err := svc.Request(ctx, approvals.Ask{Action: approvals.Action{Kind: approvals.KindTool, Tool: tool, Args: args, Filtered: need.Filtered, Bind: bind}, Conversation: root, Session: session,
+		Origin: origin, Card: card, Why: need.Why, Reason: messaging.ReasonOf(ctx), Taint: rt.store.Taint(root), Trust: need.Trust && tainted && trustAt != nil, TrustAt: trustAt})
 	if err != nil {
 		return nil, fmt.Errorf("%v; it was not put to a person: %v", need, err)
 	}
@@ -223,6 +266,10 @@ func (rt *runtime) runApproved(ctx context.Context, r *approvals.Request) (strin
 	env := rt.agent.Env
 	env.Session = session
 	ctx = messaging.WithSession(messaging.WithQuarantine(ctx, nil), session)
+	if r.Action.Filtered {
+		ctx = messaging.WithFiltered(ctx) // posted exactly as approved: before_send already ran
+	}
+	ctx = messaging.WithBindings(ctx, r.Action.Bind) // only on the state the card showed
 	out, failed := rt.agent.Tools.Call(ctx, &env, r.Action.Tool, string(r.Action.Args))
 	if failed {
 		return "", errors.New(clipText(out, 1000))
@@ -258,9 +305,112 @@ func orDefault(s, d string) string {
 	return s
 }
 
-// describe is a call as its card shows it, from the call alone: a title, its target, and exactly
-// what runs (the text sent, a diff for a file, skill, script or job, the command).
+// describe is a call as its card shows it (describeBound without the bindings).
 func (rt *runtime) describe(env *tools.Env, tool string, raw json.RawMessage) (approvals.Card, error) {
+	c, _, err := rt.describeBound(env, tool, raw)
+	return c, err
+}
+
+// describeBound is a call as its card shows it, from the call alone: a title, its target, and
+// exactly what runs (the text sent, a diff for a file, skill, script, job or memory record, the
+// command), and what the card showed of the state the call changes (a memory record's revision,
+// the hot entry it replaces, a kept report's hash): the approval binds them.
+func (rt *runtime) describeBound(env *tools.Env, tool string, raw json.RawMessage) (approvals.Card, map[string]string, error) {
+	card, err := rt.describeCall(env, tool, raw)
+	if err != nil {
+		return card, nil, err
+	}
+	var a map[string]any
+	_ = json.Unmarshal(raw, &a)
+	str := func(k string) string { s, _ := a[k].(string); return s }
+	bind := map[string]string{}
+	switch {
+	case tool == "memory_manage" && str("id") != "" && env != nil && env.Memory != nil:
+		rec, rev, err := env.Memory.Record(env.Memory.AudienceOf(env.Session), str("id"))
+		if err != nil {
+			break // not found here: the call fails the same way when it runs
+		}
+		bind["record_revision"] = rev
+		card.Target = fmt.Sprintf("memory record %s (revision %s)", rec.ID, rev)
+		head := fmt.Sprintf("kind %s, importance %d, scope %s", rec.Kind, rec.Imp, orDefault(rec.Scope, "from its source"))
+		if rec.Untrusted {
+			head += ", marked untrusted (saved from words the agent may not obey)"
+		}
+		switch str("action") {
+		case "update":
+			after := rec.Text
+			if t, ok := a["text"].(string); ok {
+				after = t
+			}
+			card.Payload, card.PayloadKind = sched.UnifiedDiff(rec.Text, after), "diff"
+			if rest := pretty(without(a, "action", "id", "text")); rest != "{}" {
+				card.Payload += "\nother changes: " + rest
+			}
+		case "delete":
+			card.Payload, card.PayloadKind = sched.UnifiedDiff(rec.Text, ""), "diff"
+		default: // pin, unpin
+			card.Payload, card.PayloadKind = rec.Text, "text"
+		}
+		card.Payload = "(" + head + ")\n" + card.Payload
+	case tool == "memory" && env != nil && env.Memory != nil && (str("action") == "replace" || str("action") == "remove"):
+		entries, err := env.Memory.Entries(str("target"))
+		if err != nil {
+			break
+		}
+		i, err := memory.Match(entries, str("old_text"))
+		if err != nil {
+			break // ambiguous or missing: the call fails the same way when it runs
+		}
+		bind["memory_entry"] = entries[i]
+		card.Target = "the always-shown memory (" + str("target") + ")"
+		after := ""
+		if str("action") == "replace" {
+			after = str("content")
+		}
+		card.Payload, card.PayloadKind = sched.UnifiedDiff(entries[i], after), "diff"
+	case tool == sched.CronJobTool && (str("action") == "retry_delivery" || str("action") == "discard_delivery") && str("job_id") != "" && rt.sched != nil:
+		text, targets, ok := rt.sched.KeptReport(str("job_id"))
+		if !ok {
+			break
+		}
+		bind["report_sha256"] = sched.ReportHash(text)
+		card.Target = strings.Join(targets, ", ")
+		if d := str("deliver"); d != "" {
+			card.Target = d + " (replacing " + card.Target + ")"
+		}
+		card.Payload, card.PayloadKind = text, "text"
+	}
+	if len(card.Payload) > approvals.MaxPayload {
+		return card, nil, approvals.ErrTooLarge
+	}
+	if len(bind) == 0 {
+		bind = nil
+	}
+	return card, bind, nil
+}
+
+func pretty(v any) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+	return strings.TrimSpace(b.String())
+}
+
+// without is m less keys.
+func without(m map[string]any, keys ...string) map[string]any {
+	out := map[string]any{}
+	for k, v := range m {
+		if !slices.Contains(keys, k) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// describeCall is a call's card from its arguments alone.
+func (rt *runtime) describeCall(env *tools.Env, tool string, raw json.RawMessage) (approvals.Card, error) {
 	var a map[string]any
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return approvals.Card{}, fmt.Errorf("its arguments are not an object")

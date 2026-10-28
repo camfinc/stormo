@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -465,6 +466,9 @@ func (s *Scheduler) deliveryAction(a cronArgs, untrusted string) (any, error) {
 		return nil, e
 	}
 	p := f.Pending[a.JobID]
+	if a.expectReport != "" && (p == nil || ReportHash(p.Text) != a.expectReport) {
+		return nil, errors.New("the kept report changed since the approval card showed it: nothing was done; ask again")
+	}
 	if a.Action == "discard_delivery" {
 		delete(f.Pending, a.JobID)
 		if e := s.writeDeliveries(f); e != nil {
@@ -605,4 +609,32 @@ func (s *Scheduler) clearDeliveryHold(id string) bool {
 		return false
 	}
 	return true
+}
+
+// ReportHash is a kept report's text as an approval card binds it.
+func ReportHash(text string) string {
+	h := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(h[:])
+}
+
+// KeptReport is the report kept for job id's delivery (its text and targets), for an approval
+// card of its retry or discard.
+func (s *Scheduler) KeptReport(id string) (string, []string, bool) {
+	s.deliveryMu.Lock()
+	defer s.deliveryMu.Unlock()
+	f, err := s.readDeliveries()
+	if err != nil {
+		return "", nil, false
+	}
+	p := f.Pending[id]
+	if p == nil {
+		return "", nil, false
+	}
+	var targets []string
+	for _, t := range p.Targets {
+		if !t.Sent {
+			targets = append(targets, t.Target.String())
+		}
+	}
+	return p.Text, targets, true
 }

@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -278,7 +280,35 @@ func (s *Store) byID(st *state, a Audience, id string) (*Record, error) {
 	if r == nil || !s.visible(r, a, a.Operator) {
 		return nil, ErrNotFound
 	}
+	if a.Revision != "" && RecordRevision(r) != a.Revision {
+		return nil, ErrRevision
+	}
 	return r, nil
+}
+
+// ErrRevision refuses an approved change to a record that changed since its card was shown.
+var ErrRevision = errors.New("the record changed since the approval card showed it: nothing was changed; ask again")
+
+// RecordRevision is a record's revision: a hash of everything a card shows of it (its text, kind,
+// tags, importance, place, scope, expiry and mark) and when it last changed.
+func RecordRevision(r *Record) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\n%s\n%q\n%d\n%d\n%s\n%s\n%s\n%t\n%s", r.ID, r.Kind, r.Tags, r.Imp, r.Hot, r.Scope, r.Expires, r.Updated, r.Untrusted, r.Text)
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// Record is the record id that a may see, as it is now, and its revision (an approval card's).
+func (s *Store) Record(a Audience, id string) (Record, string, error) {
+	defer s.lock()()
+	st, err := s.load()
+	if err != nil {
+		return Record{}, "", err
+	}
+	r, err := s.byID(st, a, id)
+	if err != nil {
+		return Record{}, "", err
+	}
+	return *r.clone(), RecordRevision(r), nil
 }
 
 // Update changes a record a may see. A hot record is checked against its budget and re-rendered;
@@ -393,6 +423,16 @@ func (s *Store) Delete(a Audience, id string, archiveOnly bool) error {
 // Pin moves an archive record a may see to the end of its hot file (refused over budget), where
 // every conversation sees it; Unpin moves a hot one back to the archive (its scope's again).
 func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
+	return s.pin(a, id, false)
+}
+
+// EndorsePin is the owner's approved pin of a record (a.Revision, when set, the one its card
+// showed): its mark cleared and the record pinned in one step, under the lock, or nothing done.
+func (s *Store) EndorsePin(a Audience, id string) (View, Usage, error) {
+	return s.pin(a, id, true)
+}
+
+func (s *Store) pin(a Audience, id string, endorse bool) (View, Usage, error) {
 	defer s.lock()()
 	st, err := s.writable()
 	if err != nil {
@@ -408,7 +448,7 @@ func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
 	if r.Hot > 0 {
 		return st.view(r, now, 0, false), s.usage(t, before), nil
 	}
-	if r.Untrusted {
+	if r.Untrusted && !endorse {
 		return View{}, Usage{}, ErrUntrustedRecord
 	}
 	// into every system prompt: checked as a hot save is (an older runtime's record, a hand edit)
@@ -426,6 +466,7 @@ func (s *Store) Pin(a Audience, id string) (View, Usage, error) {
 		return View{}, u, fmt.Errorf("%w (now %s); unpin or shorten another first", err, u)
 	}
 	r.Hot = len(before) + 1
+	r.Untrusted = false // only an endorsed pin reaches here with a marked record: its mark goes with it
 	st.use.used(r.ID, now)
 	return st.view(r, now, 0, false), u, s.commit(st, t)
 }

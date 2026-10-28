@@ -365,7 +365,8 @@ type Verdict = messaging.Verdict
 // change would otherwise go out as it was. serves, when set, picks the handlers that apply
 // (on_schedule: the job's).
 func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[string]any, serves func(*Header) bool) (v Verdict) {
-	ctx = messaging.WithQuarantine(ctx, nil)
+	// an approval endorses the action a person saw, never the agent's handlers around it
+	ctx = messaging.WithQuarantine(messaging.WithoutEndorsed(ctx), nil)
 	defer func() { v.Untrusted = messaging.UntrustedWhy(ctx) }()
 	v = Verdict{Action: actions[event][0]}
 	if messaging.HandlerEvent(ctx) == BeforeSend && event == BeforeSend {

@@ -142,9 +142,10 @@ func memoryTool() Tool {
 			case "add":
 				u, err = mem.AddAs(audience(env, mem), memorySource(env), a.Target, a.Content)
 			case "replace":
-				u, err = mem.Replace(a.Target, a.OldText, a.Content)
+				// an approved change: only on the entry its card showed
+				u, err = mem.ReplaceEntry(a.Target, a.OldText, messaging.Bound(ctx, "memory_entry"), a.Content)
 			case "remove":
-				u, err = mem.Remove(a.Target, a.OldText)
+				u, err = mem.RemoveEntry(a.Target, a.OldText, messaging.Bound(ctx, "memory_entry"))
 			default:
 				return nil, errors.New(`action must be "add", "replace" or "remove"`)
 			}
@@ -303,6 +304,8 @@ func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, e
 		return nil, err
 	}
 	aud := audience(env, mem)
+	// an approved change runs only on the record its card showed (its revision)
+	aud.Revision = messaging.Bound(ctx, "record_revision")
 	id := strings.TrimSpace(a.ID)
 	needID := func() error {
 		if id == "" {
@@ -326,14 +329,9 @@ func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, e
 		if why != "" {
 			return nil, messaging.NeedsApproval(fmt.Sprintf("a memory %s of %s", a.Action, id), why)
 		}
-		if a.Action == "pin" && id != "" {
+		if a.Action == "pin" && id != "" && !endorsed {
 			if marked, err := mem.Marked(aud, id); err == nil && marked {
-				if !endorsed {
-					return nil, messaging.NeedsApprovalRisky(fmt.Sprintf("a pin of %s into the always-shown memory", id), "the record holds untrusted data: the owner's approval endorses it")
-				}
-				if err := mem.Endorse(aud, id); err != nil {
-					return nil, err
-				}
+				return nil, messaging.NeedsApprovalRisky(fmt.Sprintf("a pin of %s into the always-shown memory", id), "the record holds untrusted data: the owner's approval endorses it")
 			}
 		}
 	}
@@ -409,8 +407,11 @@ func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, e
 			return nil, err
 		}
 		pin := mem.Pin
-		if a.Action == "unpin" {
+		switch {
+		case a.Action == "unpin":
 			pin = mem.Unpin
+		case endorsed:
+			pin = mem.EndorsePin // the owner's approval: endorsed and pinned in one step
 		}
 		v, u, err := pin(aud, id)
 		if err != nil {

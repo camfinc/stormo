@@ -21,6 +21,8 @@ type fakeNotifier struct {
 	updated []string
 	told    []string
 	fail    bool
+	// block, when set, holds Update until it is closed
+	block chan struct{}
 }
 
 func (f *fakeNotifier) Ask(_ context.Context, r *Request, who string) (Posted, error) {
@@ -34,6 +36,12 @@ func (f *fakeNotifier) Ask(_ context.Context, r *Request, who string) (Posted, e
 }
 
 func (f *fakeNotifier) Update(_ context.Context, r *Request, p Posted) error {
+	f.mu.Lock()
+	block := f.block
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updated = append(f.updated, r.ID+":"+r.Status)
@@ -72,7 +80,7 @@ func (w *world) service() *Service {
 			w.runs = append(w.runs, r.Action.Tool+string(r.Action.Args))
 			return `{"ok":true}`, nil
 		}},
-		Trust: func(conv, by string) error { w.trust = append(w.trust, conv+":"+by); return nil },
+		Trust: func(r *Request, by string) error { w.trust = append(w.trust, r.Conversation+":"+by); return nil },
 	})
 	s.SetNotifier(w.n)
 	return s

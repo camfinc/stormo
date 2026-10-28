@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
@@ -53,5 +54,28 @@ func TestApprovalWritesRefuseSymlinks(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.Home, "skills", "crm", "SKILL.md")); err == nil {
 		t.Fatal("written through the symlink")
+	}
+}
+
+// Item 4: the approved memory change runs only on the record its card showed.
+func TestApprovedMemoryPinBindsTheRevision(t *testing.T) {
+	r, env := setup(t)
+	env.Memory.Limits = map[string]int{"memory": 2000, "user": 2000}
+	res, err := env.Memory.Save(memory.SaveOptions{Text: "Fares are quoted in USD.", Kind: memory.KindFact, Src: "chat", Scope: memory.ScopeAgent, Untrusted: true, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rev, _ := env.Memory.Record(memory.Audience{}, res.ID)
+	args, _ := json.Marshal(map[string]any{"action": "pin", "id": res.ID})
+	ctx := messaging.WithBindings(messaging.WithEndorsed(context.Background(), "ap_1"), map[string]string{"record_revision": "0000000000000000"})
+	if out, failed := r.Call(ctx, env, "memory_manage", string(args)); !failed || !strings.Contains(out, "changed since") {
+		t.Fatalf("a pin bound to another revision: %s", out)
+	}
+	ctx = messaging.WithBindings(messaging.WithEndorsed(context.Background(), "ap_1"), map[string]string{"record_revision": rev})
+	if out, failed := r.Call(ctx, env, "memory_manage", string(args)); failed {
+		t.Fatalf("the approved pin: %s", out)
+	}
+	if rec, _, _ := env.Memory.Record(memory.Audience{}, res.ID); rec.Untrusted || rec.Hot == 0 {
+		t.Fatalf("not endorsed and pinned: %+v", rec)
 	}
 }

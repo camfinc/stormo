@@ -336,8 +336,14 @@ func TestServeApprovalDenyTimeoutCapsAndTrust(t *testing.T) {
 	if len(r.cards()) != 4 {
 		t.Fatalf("over the cap: %d cards", len(r.cards()))
 	}
-	// approve & trust thread: the send runs and the conversation is endorsed
-	c := r.cards()[3]
+	// approve & trust thread on a request with nothing new since: the send runs and the
+	// conversation is endorsed (card 4's thread took another turn since: e5's)
+	third := r.cards()[2]
+	r.click("i4", owner, third, "needletail_deny", third.hash)
+	waitFor(t, "the third denied", 10*time.Second, func() bool { return len(r.fake.Updates()) == 3 })
+	r.inThread("e6", teammate, "POSTHOME six", "1700000100.000700")
+	c := r.waitCards(5)[4]
+	waitFor(t, "the pending reply", 10*time.Second, func() bool { return len(r.postsTo(devChan, "pending approval "+c.id)) == 1 })
 	r.click("i5", owner, c, "needletail_approve_trust", c.hash)
 	waitFor(t, "the approved send", 10*time.Second, func() bool { return len(r.postsTo(homeChan, "The summary for the home channel.")) == 1 })
 	waitFor(t, "the endorsement", 10*time.Second, func() bool {

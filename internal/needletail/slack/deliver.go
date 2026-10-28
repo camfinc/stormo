@@ -39,9 +39,14 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		mt = messaging.Target{Platform: "slack", User: u[1]}
 	}
 	// a failure (or auto-pause) notice is the runtime's: a broken handler does not keep it back
-	text, err := g.beforeSendAs(ctx, messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt, d.Failure)
+	text, err := g.beforeSendAs(messaging.WithoutEndorsed(ctx), messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt, d.Failure)
 	if err != nil {
 		return err
+	}
+	if messaging.Endorsed(ctx) != "" && text != g.o.Redact(d.Text) {
+		// a held report a person approved is posted as approved or not at all: the handlers
+		// (which never act under the endorsement) would change it
+		return fmt.Errorf("%w: the agent's before_send handlers would change the report the owner approved; it is not delivered altered", messaging.ErrBlocked)
 	}
 	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
 		return messaging.Deferred("scheduled Slack delivery", why)
@@ -214,14 +219,32 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
-	if err := g.quarantineSend(ctx, t, r.Broadcast); err != nil {
-		return messaging.Sent{}, err
+	gate := g.quarantineSend(ctx, t, r.Broadcast)
+	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
+		return messaging.Sent{}, gate
 	}
 	// the agent's before_send handlers first (they change only the text); the messaging policy
-	// decides after them
-	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindSend, Session: messaging.SessionOf(ctx), Text: r.Text, Broadcast: r.Broadcast}, t)
-	if err != nil {
-		return messaging.Sent{}, err
+	// decides after them. An approved send that already went through them (Filtered) is posted
+	// exactly as approved: they never run under the endorsement.
+	text := r.Text
+	if !messaging.Filtered(ctx) {
+		if text, err = g.beforeSend(messaging.WithoutEndorsed(ctx), messaging.Outgoing{Kind: messaging.KindSend, Session: messaging.SessionOf(ctx), Text: r.Text, Broadcast: r.Broadcast}, t); err != nil {
+			return messaging.Sent{}, err
+		}
+	}
+	if messaging.Endorsed(ctx) != "" && !messaging.Filtered(ctx) && text != g.o.Redact(r.Text) {
+		// an approved send from before the handlers bound it: posted as approved or not at all
+		return messaging.Sent{}, fmt.Errorf("%w: the agent's before_send handlers would change the message the owner approved; it is not sent altered", messaging.ErrBlocked)
+	}
+	if need, ok := messaging.AsApproval(gate); ok {
+		// what a person approves is the message as the handlers left it: bound, and posted so
+		bound := map[string]any{"target": r.Target, "message": text}
+		if r.Broadcast {
+			bound["broadcast"] = true
+		}
+		need.Payload, _ = json.Marshal(bound)
+		need.Filtered = true
+		return messaging.Sent{}, need
 	}
 	if err := g.quarantineSend(ctx, t, r.Broadcast); err != nil {
 		return messaging.Sent{}, err

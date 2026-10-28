@@ -622,6 +622,16 @@ func (s *Store) hotText(content string) (string, error) {
 
 // Replace swaps the one entry containing old for content.
 func (s *Store) Replace(target, old, content string) (Usage, error) {
+	return s.ReplaceEntry(target, old, "", content)
+}
+
+// ErrEntryChanged refuses an approved change of the always-shown memory whose entry is no longer
+// the one its card showed.
+var ErrEntryChanged = errors.New("the memory entry changed since the approval card showed it: nothing was changed; ask again")
+
+// ReplaceEntry is Replace of the entry old matches, refused (ErrEntryChanged) when entry is set
+// and that entry is no longer exactly it (an approval binds what its card showed).
+func (s *Store) ReplaceEntry(target, old, entry, content string) (Usage, error) {
 	if _, err := s.path(target); err != nil {
 		return Usage{}, err
 	}
@@ -639,6 +649,9 @@ func (s *Store) Replace(target, old, content string) (Usage, error) {
 	i, err := match(before, old)
 	if err != nil {
 		return s.usage(target, before), err
+	}
+	if entry != "" && before[i] != entry {
+		return s.usage(target, before), ErrEntryChanged
 	}
 	after := slices.Clone(before)
 	after[i] = c
@@ -658,6 +671,12 @@ func (s *Store) Replace(target, old, content string) (Usage, error) {
 
 // Remove deletes the one entry containing old (its record goes too).
 func (s *Store) Remove(target, old string) (Usage, error) {
+	return s.RemoveEntry(target, old, "")
+}
+
+// RemoveEntry is Remove of the entry old matches, refused (ErrEntryChanged) when entry is set and
+// that entry is no longer exactly it.
+func (s *Store) RemoveEntry(target, old, entry string) (Usage, error) {
 	if _, err := s.path(target); err != nil {
 		return Usage{}, err
 	}
@@ -671,6 +690,9 @@ func (s *Store) Remove(target, old string) (Usage, error) {
 	i, err := match(before, old)
 	if err != nil {
 		return s.usage(target, before), err
+	}
+	if entry != "" && before[i] != entry {
+		return s.usage(target, before), ErrEntryChanged
 	}
 	st.remove(list[i])
 	st.bury(target, list[i].key(), s.now())
@@ -688,6 +710,9 @@ func clean(content string) (string, error) {
 	}
 	return c, nil
 }
+
+// Match is the entry of entries old_text names (unique), as the memory tool finds it.
+func Match(entries []string, old string) (int, error) { return match(entries, old) }
 
 func match(entries []string, old string) (int, error) {
 	old = trim(old)

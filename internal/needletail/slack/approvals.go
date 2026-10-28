@@ -130,6 +130,9 @@ func outcomeLine(r *approvals.Request, who, code func(string) string) string {
 		if r.Trusted {
 			trust = " The conversation is trusted again."
 		}
+		if r.TrustNote != "" {
+			trust = " The conversation was not trusted (it stays marked): " + strings.TrimPrefix(r.TrustNote, "the conversation was not trusted: ") + "."
+		}
 		return fmt.Sprintf("Approval %s: approved by %s at %s; done: %s.%s", r.ID, who(r.DecidedBy), at, title, trust)
 	case approvals.StatusFailed:
 		if r.DecidedBy == "" {
@@ -385,19 +388,35 @@ func (g *Gateway) interact(payload json.RawMessage) {
 	if json.Unmarshal(payload, &in) != nil || in.Type != "block_actions" || len(in.Actions) == 0 || in.User.ID == "" {
 		return
 	}
-	g.mu.Lock()
-	d := g.decider
-	g.mu.Unlock()
-	if d == nil {
-		g.logf("slack: an approval button was clicked but approvals are off")
-		return
-	}
 	a := in.Actions[0]
 	if a.ActionID != actionApprove && a.ActionID != actionDeny && a.ActionID != actionApproveTrust {
 		return
 	}
 	id, hash, ok := strings.Cut(a.Value, "|")
 	if !ok {
+		return
+	}
+	g.mu.Lock()
+	d, closing := g.decider, g.closing
+	g.mu.Unlock()
+	if d == nil || closing {
+		// not taken now (approvals not wired yet, or the runtime stopping): the clicker is told,
+		// never left with a silent button; nothing is decided
+		why := "the agent's approvals are not running right now (it is starting)"
+		if closing {
+			why = "the agent is restarting"
+		}
+		g.logf("slack: a click on %s from %s was not taken: %s", id, in.User.ID, why)
+		channel := orDefault(in.Container.ChannelID, in.Channel.ID)
+		g.wg.Add(1)
+		go func() {
+			defer g.wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := g.o.Web.Ephemeral(ctx, channel, in.User.ID, "Not taken: "+why+". Nothing was decided: try again in a minute."); err != nil {
+				g.logf("slack: %s: could not tell %s to try again: %v", id, in.User.ID, err)
+			}
+		}()
 		return
 	}
 	g.notes.Add(1)
@@ -417,8 +436,11 @@ func (g *Gateway) interact(payload json.RawMessage) {
 		}
 		g.logf("slack: %s: the decision of %s was not taken: %v", id, in.User.ID, err)
 		why := err.Error()
-		if errors.Is(err, approvals.ErrDecided) {
+		switch {
+		case errors.Is(err, approvals.ErrDecided):
 			why = "this request was already decided"
+		case errors.Is(err, approvals.ErrExpired):
+			why = "this request was past its deadline, so it was denied"
 		}
 		ectx, ecancel := context.WithTimeout(g.base, 10*time.Second)
 		defer ecancel()

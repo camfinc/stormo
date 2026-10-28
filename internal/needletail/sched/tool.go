@@ -46,6 +46,9 @@ const toolSchema = `{"type":"object","properties":{
 },"required":["action"]}`
 
 type cronArgs struct {
+	// expectReport, set by the runtime (never the model) on an approved retry_delivery or
+	// discard_delivery, is the hash of the kept report the card showed (ReportHash).
+	expectReport    string
 	Action          string    `json:"action"`
 	JobID           string    `json:"job_id"`
 	Prompt          *string   `json:"prompt"`
@@ -94,6 +97,7 @@ func (s *Scheduler) Tool(origin func(session string) json.RawMessage) tools.Tool
 			if why == "" && env != nil && env.Untrusted != nil {
 				why = env.Untrusted(ctx, env.Session)
 			}
+			a.expectReport = messaging.Bound(ctx, "report_sha256")
 			return s.manage(a, from, why)
 		}}
 }

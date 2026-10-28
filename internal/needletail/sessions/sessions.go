@@ -64,6 +64,11 @@ type meta struct {
 	lastActive string
 	preview    string // first user row
 	rows       int    // rows in the file
+	// marks counts the marked data this process saw come into the session (AddTaint with who or
+	// what: a read of marked data, an unverified author's words; not the plain mark of a turn
+	// in a marked conversation): an approval's trust part endorses only when none came after its
+	// request (TrustAt)
+	marks int
 }
 
 // Store is the sessions directory. Safe for concurrent use; the caller serialises turns per
@@ -74,6 +79,9 @@ type Store struct {
 	redact func(string) string
 	now    func() time.Time
 	fsync  func(*os.File) error // (*os.File).Sync; tests watch or fail it
+
+	// epoch tells this process's mark counts from another's (TrustPoint)
+	epoch string
 
 	mu    sync.Mutex
 	metas map[string]*meta
@@ -109,7 +117,7 @@ func Open(dir string, redact func(string) string) (*Store, error) {
 	if redact == nil {
 		redact = func(s string) string { return s }
 	}
-	s := &Store{dir: dir, tmp: filepath.Join(filepath.Dir(dir), fsx.TmpDir), redact: redact, now: time.Now, fsync: (*os.File).Sync, metas: map[string]*meta{}}
+	s := &Store{dir: dir, tmp: filepath.Join(filepath.Dir(dir), fsx.TmpDir), redact: redact, now: time.Now, fsync: (*os.File).Sync, metas: map[string]*meta{}, epoch: newEpoch()}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -366,6 +374,9 @@ func (s *Store) AddTaint(id string, t wire.Taint) error {
 		return ErrNotFound
 	}
 	m := s.metas[line[len(line)-1]]
+	if t.Why != "" || len(t.Users) > 0 {
+		m.marks++ // new marked data (a plain mark, a turn in a marked conversation, is none)
+	}
 	add := t.Why != "" && len(m.Taint) < wire.MaxTaint && !slices.ContainsFunc(m.Taint, func(x wire.Taint) bool {
 		return x.Why == t.Why && slices.Equal(x.Users, t.Users) && x.Channel == t.Channel && x.Thread == t.Thread
 	})
@@ -415,7 +426,11 @@ func (s *Store) Trust(id, by string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	m := s.metas[line[len(line)-1]]
+	return s.trustLocked(s.metas[line[len(line)-1]], by)
+}
+
+// trustLocked endorses m, the live session, by by (s.mu held).
+func (s *Store) trustLocked(m *meta, by string) error {
 	if m.EndReason != "" {
 		return ErrEnded
 	}
@@ -429,6 +444,56 @@ func (s *Store) Trust(id, by string) error {
 		return err
 	}
 	return s.writeIndex()
+}
+
+// TrustPoint is where a conversation stood when an approval was asked in it: its live session
+// and the marks added to it so far (in this process, Epoch).
+type TrustPoint struct {
+	Session string `json:"session"`
+	Marks   int    `json:"marks"`
+	Epoch   string `json:"epoch"`
+}
+
+// Point is the conversation id belongs to as it stands now (TrustAt's boundary).
+func (s *Store) Point(id string) (TrustPoint, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lineage(id)
+	if !ok {
+		return TrustPoint{}, false
+	}
+	tip := l[len(l)-1]
+	return TrustPoint{Session: tip, Marks: s.metas[tip].marks, Epoch: s.epoch}, true
+}
+
+// ErrTrustMoved: the conversation took in more marked data, was compacted, or the runtime
+// restarted since the approval was asked: its trust part is refused (the action alone runs).
+var ErrTrustMoved = errors.New("the conversation changed since the request")
+
+// TrustAt is an approval's "trust thread" (docs/needletail.md §7): the owner endorses the
+// conversation as it stood at the request (p), never marked data that came after it. When none
+// came since (no read of marked data, no unverified author's words, no marked thread context:
+// each counts), in the same live session and the same process, the conversation is endorsed as
+// Trust does (its rows since only build on what the owner endorses: the requesting turn's own,
+// a verified person's later turns); otherwise it is refused (ErrTrustMoved, why).
+func (s *Store) TrustAt(id, by string, p TrustPoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return ErrNotFound
+	}
+	tip := line[len(line)-1]
+	m := s.metas[tip]
+	switch {
+	case p.Epoch != s.epoch:
+		return fmt.Errorf("%w: the runtime restarted since the request", ErrTrustMoved)
+	case tip != p.Session:
+		return fmt.Errorf("%w: the conversation was compacted since the request", ErrTrustMoved)
+	case m.marks != p.Marks:
+		return fmt.Errorf("%w: new untrusted input came into the conversation after the request", ErrTrustMoved)
+	}
+	return s.trustLocked(m, by)
 }
 
 // Endorsed is how many rows of session id the owner endorsed (Trust): their marks no longer count.
@@ -818,4 +883,11 @@ func (s *Store) writeIndex() error {
 		return err
 	}
 	return fsx.WriteAtomicIn(filepath.Join(s.dir, "index.json"), s.tmp, append(body, '\n'), 0o600)
+}
+
+// newEpoch is a random id for this process's mark counts.
+func newEpoch() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

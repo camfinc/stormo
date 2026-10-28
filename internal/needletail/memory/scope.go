@@ -31,6 +31,9 @@ type Audience struct {
 	// Operator: the owner's own turn (a oneshot, from the command line), which may search every
 	// scope and save personal data agent-wide.
 	Operator bool
+	// Revision, when set, is the revision of the record an approval card showed (RecordRevision):
+	// a change by id to a record that is no longer that one is refused (ErrRevision).
+	Revision string
 }
 
 // Errors of the scopes.

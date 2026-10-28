@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -22,6 +23,12 @@ type ApprovalNeeded struct {
 	// Trust: approving may also endorse the conversation ("Approve & trust thread"): offered
 	// when the approval is needed only because the conversation is tainted.
 	Trust bool
+	// Payload, when set, is the call's arguments as the gate bound them (a send after the
+	// agent's before_send handlers): what is put to a person and run, in place of the call's.
+	Payload json.RawMessage
+	// Filtered: the before_send handlers already ran on Payload; the approved call posts it as
+	// it is, without running them again (WithFiltered).
+	Filtered bool
 }
 
 func (e *ApprovalNeeded) Error() string {
@@ -55,6 +62,49 @@ func WithEndorsed(ctx context.Context, approval string) context.Context {
 
 // Endorsed is the approval the run ctx belongs to executes ("" for any other run).
 func Endorsed(ctx context.Context) string { s, _ := ctx.Value(endorsedKey{}).(string); return s }
+
+// WithoutEndorsed is ctx for code the approval does not cover (the agent's handlers): an
+// endorsement never reaches them.
+func WithoutEndorsed(ctx context.Context) context.Context {
+	if Endorsed(ctx) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, endorsedKey{}, "")
+}
+
+type filteredKey struct{}
+
+// WithFiltered marks an approved send whose text already went through the before_send handlers
+// (ApprovalNeeded.Filtered): it is posted exactly so.
+func WithFiltered(ctx context.Context) context.Context {
+	return context.WithValue(ctx, filteredKey{}, true)
+}
+
+// Filtered is whether ctx is such a send (and endorsed: nothing else skips the handlers).
+func Filtered(ctx context.Context) bool {
+	b, _ := ctx.Value(filteredKey{}).(bool)
+	return b && Endorsed(ctx) != ""
+}
+
+type bindingsKey struct{}
+
+// WithBindings carries what an approval card showed of the state its action changes
+// (approvals.Action.Bind): the approved call checks it (Bound) and runs only on that.
+func WithBindings(ctx context.Context, bind map[string]string) context.Context {
+	if len(bind) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, bindingsKey{}, bind)
+}
+
+// Bound is the approval's binding key on an endorsed run ("" for none, or any other run).
+func Bound(ctx context.Context, key string) string {
+	if Endorsed(ctx) == "" {
+		return ""
+	}
+	m, _ := ctx.Value(bindingsKey{}).(map[string]string)
+	return m[key]
+}
 
 type reasonKey struct{}
 

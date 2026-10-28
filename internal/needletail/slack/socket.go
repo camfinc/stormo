@@ -202,7 +202,9 @@ func (s *socket) serve(ctx context.Context, link string) (hello bool, err error)
 					return hello, err
 				}
 			}
-			if s.interact != nil && s.ack() {
+			// handed over even while the gateway stops taking events: the clicker is told to try
+			// again rather than left with a button that does nothing
+			if s.interact != nil {
 				s.interact(e.Payload)
 			}
 		default:
