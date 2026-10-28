@@ -109,3 +109,17 @@ func TestLearningOwnerKeyNeverShared(t *testing.T) {
 		t.Fatal("owner credential exposed to command")
 	}
 }
+
+// With voice notes transcribed, the speech-to-text key is the runtime's: read, redacted, and out of
+// the terminal's env; without, it is left alone.
+func TestSTTKeyOwned(t *testing.T) {
+	environ := []string{"ELEVENLABS_API_KEY=el-key-0123456789abcdef", "PATH=/bin"}
+	off := Load(&wire.Config{}, environ)
+	if off.Get(STTKey) != "" || len(off.Clean(environ)) != 2 {
+		t.Errorf("stt off: owned %q, env %v", off.Get(STTKey), off.Clean(environ))
+	}
+	on := Load(&wire.Config{STT: &wire.STTConfig{Enabled: true}}, environ)
+	if on.Get(STTKey) != "el-key-0123456789abcdef" || len(on.Clean(environ)) != 1 {
+		t.Errorf("stt on: owned %q, env %v", on.Get(STTKey), on.Clean(environ))
+	}
+}

@@ -4,7 +4,13 @@
 // needs a new version and a migration.
 package wire
 
-import "regexp"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	"go.yaml.in/yaml/v3"
+)
 
 // Capability is the Luau capability grammar (docs/needletail.md §5.4): what a tool's header
 // declares and what engine/needletail/config.yaml grants, read by the adapter and the runtime.
@@ -316,6 +322,53 @@ type Config struct {
 	// waits, the caps and the risky commands (docs/needletail.md §7). Absent: the defaults (the
 	// first allowed user decides). An image older than it refuses a needletail.yaml that has it.
 	Approvals *ApprovalsConfig `json:"approvals,omitempty" yaml:"approvals,omitempty"`
+	// Files is engine/needletail/config.yaml's files: how long people's uploads are kept and
+	// whether images reach the model. Absent: 14 days, vision auto. An image older than it
+	// refuses a needletail.yaml that has it.
+	Files *FilesConfig `json:"files,omitempty" yaml:"files,omitempty"`
+	// STT is engine/needletail/config.yaml's stt: voice notes transcribed before the turn.
+	// Absent or not enabled: none are (the note is kept as a file). An image older than it
+	// refuses a needletail.yaml that has it.
+	STT *STTConfig `json:"stt,omitempty" yaml:"stt,omitempty"`
+}
+
+// FilesConfig is what the runtime does with the files people send.
+type FilesConfig struct {
+	// RetentionDays is how long an upload is kept in files/<conversation>/ (0: 14).
+	RetentionDays int `json:"retention_days,omitempty" yaml:"retention_days,omitempty"`
+	// Vision is whether images reach the model: auto ("" too: sent, unless the model refuses
+	// them), on or off.
+	Vision Vision `json:"vision,omitempty" yaml:"vision,omitempty"`
+}
+
+// Vision is a vision setting: auto, on or off ("" is auto). YAML's true and false read as on and
+// off.
+type Vision string
+
+// UnmarshalYAML reads auto, on, off, true or false.
+func (v *Vision) UnmarshalYAML(n *yaml.Node) error {
+	switch strings.ToLower(strings.TrimSpace(n.Value)) {
+	case "", "auto":
+		*v = "auto"
+	case "on", "true":
+		*v = "on"
+	case "off", "false":
+		*v = "off"
+	default:
+		return fmt.Errorf("vision %q is auto, on or off", n.Value)
+	}
+	return nil
+}
+
+// STTConfig is the speech-to-text of voice notes.
+type STTConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Provider is elevenlabs (the only one; "" is it). Its key is the env ELEVENLABS_API_KEY.
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	// Language is the notes' language, an ISO 639-1 or 639-3 code ("": detected).
+	Language string `json:"language,omitempty" yaml:"language,omitempty"`
+	// Model is the provider's model id ("": the runtime's default).
+	Model string `json:"model,omitempty" yaml:"model,omitempty"`
 }
 
 // ApprovalsConfig is the agent's approvals settings.

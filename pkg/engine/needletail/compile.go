@@ -71,6 +71,12 @@ type agentConfig struct {
 		// run, in seconds (needletail.yaml limits.background_lifetime; the runtime's 2 h when 0).
 		BackgroundLifetime int `yaml:"background_lifetime"`
 	} `yaml:"limits"`
+	// Files are what the runtime does with the files people send (needletail.yaml files):
+	// retention_days (1 to 365; 14 when unset) and vision (auto, on/true, off/false).
+	Files *wire.FilesConfig `yaml:"files"`
+	// STT transcribes voice notes (needletail.yaml stt): enabled, provider (elevenlabs), language
+	// (an ISO 639 code), model. Its key is ELEVENLABS_API_KEY, which agent.yaml must declare.
+	STT    *wire.STTConfig `yaml:"stt"`
 	Memory struct {
 		// Recall is the per-turn recall from the memory archive (needletail.yaml memory.recall;
 		// omitted when unset: on for user turns, off for scheduled runs).
@@ -84,6 +90,37 @@ const (
 	minRecallBudget  = 200
 	maxRecallBudget  = 4000
 )
+
+// maxRetentionDays is the longest files.retention_days.
+const maxRetentionDays = 365
+
+// The speech-to-text provider, its key and the shapes of stt.language and stt.model.
+const (
+	sttProvider = "elevenlabs"
+	sttKeyEnv   = "ELEVENLABS_API_KEY"
+)
+
+var (
+	languageRe = regexp.MustCompile(`^[a-z]{2,3}$`)
+	sttModelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+)
+
+// checkSTTKey: speech-to-text needs its key among the agent's secrets (agent.yaml secrets or
+// optional_secrets), or the runtime would have none.
+func checkSTTKey(a *manifest.Agent, ac *agentConfig) error {
+	if ac.STT == nil || !ac.STT.Enabled {
+		return nil
+	}
+	if slices.Contains(a.Secrets, sttKeyEnv) {
+		return nil
+	}
+	for _, o := range a.OptionalSecrets {
+		if o.Name == sttKeyEnv {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: stt is enabled but agent.yaml does not declare %s among its secrets", ConfigFile, sttKeyEnv)
+}
 
 // maxScheduleTurns is the most turns scheduled runs may hold at once.
 const maxScheduleTurns = 4
@@ -172,6 +209,19 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: memory.recall.budget %d must be %d to %d UTF-16 units (0 or unset: the runtime's 1200)", ConfigFile, r.Budget, minRecallBudget, maxRecallBudget)
 		}
 	}
+	if f := c.Files; f != nil && (f.RetentionDays < 0 || f.RetentionDays > maxRetentionDays) {
+		return nil, fmt.Errorf("%s: files.retention_days %d must be 1 to %d (0 or unset: 14)", ConfigFile, f.RetentionDays, maxRetentionDays)
+	}
+	if s := c.STT; s != nil {
+		switch {
+		case s.Provider != "" && s.Provider != sttProvider:
+			return nil, fmt.Errorf("%s: stt.provider %q: the only one is %s", ConfigFile, s.Provider, sttProvider)
+		case s.Language != "" && !languageRe.MatchString(s.Language):
+			return nil, fmt.Errorf("%s: stt.language %q is an ISO 639-1 or 639-3 code (es, en, spa)", ConfigFile, s.Language)
+		case s.Model != "" && !sttModelRe.MatchString(s.Model):
+			return nil, fmt.Errorf("%s: stt.model %q is not a model id", ConfigFile, s.Model)
+		}
+	}
 	if l := c.Limits.BackgroundLifetime; l < 0 || l > maxBackgroundLifetime {
 		return nil, fmt.Errorf("%s: limits.background_lifetime %d must be seconds, 1 to %d (0 or unset: the runtime's 7200, 2 h)", ConfigFile, l, maxBackgroundLifetime)
 	}
@@ -232,6 +282,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen, RelayBots: ac.Slack.RelayBots}
 	}
 	c.Approvals = ac.Approvals
+	c.Files, c.STT = ac.Files, ac.STT
 	c.Schedules.Turns = ac.Schedules.Turns
 	for _, s := range a.Schedules {
 		c.Schedules.Repo = append(c.Schedules.Repo, s.ID)
@@ -330,6 +381,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	}
 	ac, err := readAgentConfig(dir)
 	if err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
+	if err := checkSTTKey(a, ac); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)

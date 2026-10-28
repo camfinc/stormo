@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -138,5 +139,30 @@ func TestScrubRulesFromTheInstance(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, File), []byte("version: 1\nmodel: {primary: {base_url: http://x, model: m}}\nscrub: {rules: [{kind: x, pattern: '(['}]}\n"), 0o644)
 	if _, err := Load(dir, env(nil)); err == nil {
 		t.Error("an invalid scrub pattern was accepted")
+	}
+}
+
+// files and stt: defaults when absent (14 days, vision auto, no speech-to-text), read when set,
+// refused out of bounds.
+func TestLoadFilesAndSTT(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base), 0o644)
+	c, err := Load(dir, env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FileRetention() != 14*24*time.Hour || c.VisionMode() != "auto" || c.STTEnabled() {
+		t.Errorf("defaults: %v %q %v", c.FileRetention(), c.VisionMode(), c.STTEnabled())
+	}
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base+"files: {retention_days: 3, vision: off}\nstt: {enabled: true, provider: elevenlabs, language: es}\n"), 0o644)
+	if c, err = Load(dir, env(nil)); err != nil || c.FileRetention() != 3*24*time.Hour || c.VisionMode() != "off" || !c.STTEnabled() || c.STT.Language != "es" {
+		t.Errorf("set: %v %+v", err, c)
+	}
+	for _, bad := range []string{"files: {retention_days: 900}\n", "files: {vision: maybe}\n", "stt: {enabled: true, provider: other}\n"} {
+		_ = os.WriteFile(filepath.Join(dir, File), []byte(base+bad), 0o644)
+		if _, err := Load(dir, env(nil)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

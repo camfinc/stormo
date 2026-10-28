@@ -27,6 +27,8 @@ const (
 	CoreKey     = "SWARM_CORE_KEY"
 	SlackBot    = "SLACK_BOT_TOKEN"
 	SlackApp    = "SLACK_APP_TOKEN"
+	// STTKey is the speech-to-text provider's key (ElevenLabs'), the runtime's when stt is on.
+	STTKey      = "ELEVENLABS_API_KEY"
 	minRedacted = 8 // shorter values are too likely to be ordinary words
 )
 
@@ -42,7 +44,8 @@ type Secrets struct {
 }
 
 // Owned are the env names the runtime reads for cfg: its API key, the core key, the Slack tokens,
-// each model endpoint's key and each http_secrets env (Luau never sees those).
+// each model endpoint's key, each http_secrets env (Luau never sees those) and, when voice notes
+// are transcribed, the speech-to-text key (then out of the terminal's env).
 func Owned(cfg *wire.Config) []string {
 	names := []string{APIKey, CoreKey, SlackBot, SlackApp, LearningKey}
 	add := func(n string) {
@@ -59,6 +62,9 @@ func Owned(cfg *wire.Config) []string {
 	}
 	for _, h := range cfg.Luau.HTTPSecrets {
 		add(h.Env)
+	}
+	if cfg.STT != nil && cfg.STT.Enabled {
+		add(STTKey)
 	}
 	return names
 }

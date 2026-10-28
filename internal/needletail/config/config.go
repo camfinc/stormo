@@ -109,6 +109,12 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 			}
 		}
 	}
+	if f := c.Files; f != nil && (f.RetentionDays < 0 || f.RetentionDays > 365) {
+		return nil, fmt.Errorf("%s: files.retention_days %d must be 1 to 365", File, f.RetentionDays)
+	}
+	if s := c.STT; s != nil && s.Provider != "" && s.Provider != "elevenlabs" {
+		return nil, fmt.Errorf("%s: stt.provider %q is not one this runtime has (elevenlabs)", File, s.Provider)
+	}
 	if c.Model.Primary.BaseURL == "" || c.Model.Primary.Model == "" {
 		return nil, fmt.Errorf("%s: model.primary needs base_url and model", File)
 	}
@@ -160,6 +166,28 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	}
 	return c, nil
 }
+
+// DefaultFileRetention is how long uploads are kept when files.retention_days is unset.
+const DefaultFileRetention = 14 * 24 * time.Hour
+
+// FileRetention is how long people's uploads are kept (files.retention_days).
+func (c *Config) FileRetention() time.Duration {
+	if c.Files != nil && c.Files.RetentionDays > 0 {
+		return time.Duration(c.Files.RetentionDays) * 24 * time.Hour
+	}
+	return DefaultFileRetention
+}
+
+// VisionMode is files.vision: auto, on or off (llm.Client.Vision).
+func (c *Config) VisionMode() string {
+	if c.Files != nil && c.Files.Vision != "" {
+		return string(c.Files.Vision)
+	}
+	return "auto"
+}
+
+// STTEnabled is whether voice notes are transcribed (stt.enabled; the key must be there too).
+func (c *Config) STTEnabled() bool { return c.STT != nil && c.STT.Enabled }
 
 // Endpoints are the model endpoints in the order they are tried: primary, then fallbacks.
 func (c *Config) Endpoints() []wire.Endpoint {

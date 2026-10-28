@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -436,6 +437,50 @@ func TestApprovalsRender(t *testing.T) {
 	for _, bad := range []string{"approvals:\n  approvers: [owner]\n", "approvals:\n  approvers: [B0BOT00001]\n", "approvals:\n  timeout: 10\n",
 		"approvals:\n  per_day: 1000\n", "approvals:\n  delivery_expiry_days: 60\n", "approvals:\n  commands: [{pattern: '('}]\n",
 		"approvals:\n  unknown: 1\n", "slack:\n  relay_bots: [formbot]\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+// engine/needletail/config.yaml's files and stt reach needletail.yaml; bad values are refused; with
+// neither, nothing is rendered (older images keep working); stt needs its key declared.
+func TestFilesAndSTTRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	body := "files:\n  retention_days: 7\n  vision: false\nstt:\n  enabled: true\n  provider: elevenlabs\n  language: es\n"
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac)
+	raw, _ := yaml.Marshal(c)
+	for _, want := range []string{"retention_days: 7", "vision: \"off\"", "enabled: true", "provider: elevenlabs", "language: es"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("needletail.yaml lacks %q:\n%s", want, raw)
+		}
+	}
+	if err := checkSTTKey(a, ac); err != nil { // the example declares it
+		t.Error(err)
+	}
+	declared := a.Secrets
+	a.Secrets = slices.DeleteFunc(slices.Clone(a.Secrets), func(s string) bool { return s == "ELEVENLABS_API_KEY" })
+	if err := checkSTTKey(a, ac); err == nil {
+		t.Error("stt enabled without ELEVENLABS_API_KEY among the secrets")
+	}
+	a.Secrets = declared
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("timezone: UTC\n"), 0o644)
+	ac, _ = readAgentConfig(dir)
+	raw, _ = yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac))
+	if strings.Contains(string(raw), "files:") || strings.Contains(string(raw), "stt:") {
+		t.Errorf("rendered without config:\n%s", raw)
+	}
+	for _, bad := range []string{"files:\n  retention_days: 400\n", "files:\n  retention_days: -1\n", "files:\n  vision: maybe\n",
+		"stt:\n  enabled: true\n  provider: whisper\n", "stt:\n  language: Spanish\n", "stt:\n  model: 'a b'\n", "stt:\n  unknown: 1\n"} {
 		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
 		if _, err := readAgentConfig(dir); err == nil {
 			t.Errorf("%q accepted", bad)
