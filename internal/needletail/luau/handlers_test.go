@@ -79,7 +79,14 @@ func TestParseDecision(t *testing.T) {
 		{OnMessage, `{"action":"pass","context":"vip customer"}`, "pass vip customer", ""},
 		{OnMessage, `{"action":"reply","text":"on it"}`, "reply on it", ""},
 		{OnMessage, `{"action":"reply"}`, "", "reply needs a text"},
-		{OnMessage, `{"action":"route","to":"x"}`, "", `not "route"`},
+		{OnMessage, `{"action":"route","to":"x","text":"ok"}`, "route ok", ""},
+		{OnMention, `{"action":"route","to":"slack:C0HOME0001"}`, "route", ""},
+		{OnMessage, `{"action":"route"}`, "", "route needs to"},
+		{OnMessage, `{"action":"route","to":"group"}`, "", "never a broadcast"},
+		{OnMessage, `{"action":"route","to":"unit:sales"}`, "", "never a broadcast"},
+		{OnMessage, `{"action":"route","to":"slack:#general"}`, "", "could not resolve"},
+		{OnSchedule, `{"action":"route","to":"x"}`, "", `not "route"`},
+		{BeforeSend, `{"action":"route","to":"x"}`, "", `not "route"`},
 		{OnMessage, `{"action":"allow"}`, "", `not "allow"`},
 		{OnMessage, `{"action":3}`, "", "action must be a string"},
 		{OnMessage, `42`, "", "a handler returns nil or a table"},
@@ -162,7 +169,7 @@ end`),
 	joined := strings.Join(logs, "\n")
 	mu.Unlock()
 	for _, want := range []string{"handler first__crash (on_message) skipped: runtime:", "boom", "handler first__loop (on_message) skipped: timeout",
-		`handler first__weird (on_message) skipped: on_message returns an action of pass, reply, silent, not "route"`, "handler first__none (on_mention) skipped: entry"} {
+		`handler first__weird (on_message) skipped: route needs to (an agent id or slack:<target>)`, "handler first__none (on_mention) skipped: entry"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("log lacks %q:\n%s", want, joined)
 		}
@@ -428,6 +435,63 @@ func TestDispatchExplicitPass(t *testing.T) {
 		v := rt.Dispatch(context.Background(), OnMessage, "s", map[string]any{"text": "hi"}, nil)
 		if v.Action != "pass" || v.Ran != 1 || v.Skipped != 0 || v.Passed != passed {
 			t.Errorf("%s: verdict %+v, want Passed %d", body, v, passed)
+		}
+	}
+}
+
+// route hands a message on with no turn: to an agent (by id) or a Slack target, within the
+// handler's route: caps (declared ∩ granted); a route outside them, to a broadcast target (group,
+// unit:*), or from an event other than on_message/on_mention is skipped like any failing handler.
+func TestDispatchRoute(t *testing.T) {
+	rt, _ := newRuntime(t)
+	rt.LuauTimeout = 2 * time.Second
+	var logs []string
+	var mu sync.Mutex
+	rt.Log = func(s string) { mu.Lock(); logs = append(logs, s); mu.Unlock() }
+	rt.Grants = []string{"route:atlas", "route:beta", "route:slack:C0HOME0001"}
+	skill(t, rt.Home, "ops/triage", map[string]string{
+		"handlers/fwd.luau": handler("fwd", "on_message, on_schedule", "caps: [route:atlas, route:slack:*, route:group]\njobs: [\"*\"]\n", `
+function on_message(ev)
+  if string.find(ev.text, "bill") then return {action = "route", to = "atlas", note = "billing", text = "Passed to Atlas."} end
+  if string.find(ev.text, "post") then return {action = "route", to = "slack:C0HOME0001"} end
+  if string.find(ev.text, "other") then return {action = "route", to = "slack:C0OTHER0001"} end
+  if string.find(ev.text, "beta") then return {action = "route", to = "beta"} end
+  if string.find(ev.text, "all") then return {action = "route", to = "group"} end
+  return "pass"
+end
+function on_schedule(ev) return {action = "route", to = "atlas"} end`),
+	})
+	ev := func(text string) map[string]any { return map[string]any{"text": text} }
+	if v := rt.Dispatch(context.Background(), OnMessage, "s", ev("my bill"), nil); v.Action != "route" || v.To != "atlas" || v.Note != "billing" || v.Text != "Passed to Atlas." || v.By != "triage__fwd" {
+		t.Fatalf("route to an agent: %+v", v)
+	}
+	if v := rt.Dispatch(context.Background(), OnMessage, "s", ev("post it"), nil); v.Action != "route" || v.To != "slack:C0HOME0001" {
+		t.Fatalf("route to Slack: %+v", v)
+	}
+	for _, text := range []string{"other channel", "beta please", "all of you"} {
+		if v := rt.Dispatch(context.Background(), OnMessage, "s", ev(text), nil); v.Action != "pass" || v.Skipped != 1 {
+			t.Errorf("%q: %+v", text, v)
+		}
+	}
+	if v := rt.Dispatch(context.Background(), OnSchedule, "cron-x", map[string]any{"job": map[string]any{"id": "x"}}, func(*Header) bool { return true }); v.Action != "pass" || v.Skipped != 1 {
+		t.Errorf("route from on_schedule: %+v", v)
+	}
+	mu.Lock()
+	joined := strings.Join(logs, "\n")
+	mu.Unlock()
+	for _, want := range []string{"needs route:slack:C0OTHER0001", "needs route:beta", "group", "on_schedule returns an action of pass, reply, silent"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("log lacks %q:\n%s", want, joined)
+		}
+	}
+	for _, c := range []string{"route:atlas", "route:*", "route:slack", "route:slack:*", "route:slack:C0HOME0001", "route:slack:C0HOME0001:*", "route:slack:U0ALLOWED1"} {
+		if !wire.Capability.MatchString(c) {
+			t.Errorf("%s is not a capability", c)
+		}
+	}
+	for _, c := range []string{"route:", "route:Atlas", "route:slack:#general", "route:unit:sales"} {
+		if wire.Capability.MatchString(c) {
+			t.Errorf("%s is a capability", c)
 		}
 	}
 }

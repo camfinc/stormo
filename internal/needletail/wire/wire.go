@@ -22,7 +22,8 @@ import (
 //	memory:read  memory:write   (the memory archive: search_memory; save, update, delete_memory)
 //	kv:read  kv:write           (the agent's key-value store: kv_get; kv_set, kv_delete)
 //	followup:read  followup:write  (one-time follow-ups: nt.followup.list; follow_up, nt.followup.cancel)
-var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?|message:(\*|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?)|memory:(read|write)|kv:(read|write)|followup:(read|write))$`)
+//	route:<agent id>  route:slack[:<channel>[:<thread_ts>|:*]|:<user>|:*]  route:*  (a handler's route action)
+var Capability = regexp.MustCompile(`^(fs\.read:(home|shared)|fs\.write:(home(/[^\s]+)?|shared)|http:(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|core:[a-z][a-z0-9_]*\*?|message:(\*|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?)|memory:(read|write)|kv:(read|write)|followup:(read|write)|route:(\*|[a-z][a-z0-9-]{0,63}|slack(:\*|:[A-Z0-9]+(:\*|:[0-9]+\.[0-9]+)?)?))$`)
 
 // Contract versions.
 const (

@@ -251,13 +251,23 @@ type Decision struct {
 	Text      string `json:"text,omitempty"`
 	Context   string `json:"context,omitempty"`
 	Reason    string `json:"reason,omitempty"`
-	Explicit  bool   `json:"-"`
+	// To and Note are a route's (on_message, on_mention): where the message goes and a note for
+	// the recipient; Text is then an optional acknowledgement in the original conversation.
+	To       string `json:"to,omitempty"`
+	Note     string `json:"note,omitempty"`
+	Explicit bool   `json:"-"`
 }
+
+// Bounds of a route's note and acknowledgement (characters).
+const (
+	MaxRouteNote = 1000
+	MaxRouteAck  = 1000
+)
 
 // actions are each event's actions; the first is the default (what nil means).
 var actions = map[string][]string{
-	OnMessage:  {"pass", "reply", "silent"},
-	OnMention:  {"pass", "reply", "silent"},
+	OnMessage:  {"pass", "reply", "silent", "route"},
+	OnMention:  {"pass", "reply", "silent", "route"},
 	OnSchedule: {"pass", "reply", "silent"},
 	BeforeSend: {"allow", "rewrite", "block"},
 }
@@ -307,6 +317,12 @@ func ParseDecision(event string, value json.RawMessage) (Decision, error) {
 		if d.Reason, err = str("reason"); err != nil {
 			return Decision{}, err
 		}
+		if d.To, err = str("to"); err != nil {
+			return Decision{}, err
+		}
+		if d.Note, err = str("note"); err != nil {
+			return Decision{}, err
+		}
 		if d.Explicit = d.Action != ""; !d.Explicit {
 			d.Action = allowed[0]
 		}
@@ -330,8 +346,23 @@ func ParseDecision(event string, value json.RawMessage) (Decision, error) {
 		if len(d.Context) > MaxHandlerContext {
 			return Decision{}, fmt.Errorf("the context is over %d bytes", MaxHandlerContext)
 		}
+	case "route":
+		if strings.TrimSpace(d.To) == "" {
+			return Decision{}, fmt.Errorf("route needs to (an agent id or slack:<target>)")
+		}
+		_, _, canonical, err := messaging.ParseRoute(d.To)
+		if err != nil {
+			return Decision{}, err
+		}
+		d.To = canonical
+		if utf8.RuneCountInString(d.Note) > MaxRouteNote || utf8.RuneCountInString(d.Text) > MaxRouteAck {
+			return Decision{}, fmt.Errorf("a route's note and acknowledgement (text) are at most %d characters each", MaxRouteNote)
+		}
 	}
-	if d.Action != "reply" && d.Action != "rewrite" {
+	if d.Action != "route" {
+		d.To, d.Note = "", ""
+	}
+	if d.Action != "reply" && d.Action != "rewrite" && d.Action != "route" {
 		d.Text = ""
 	}
 	if d.Action != "pass" {
@@ -400,6 +431,15 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 			v.Skipped++
 			continue
 		}
+		if d.Action == "route" {
+			// a route needs the handler's route:<target> cap (declared ∩ granted), else it is
+			// skipped as a failing handler is
+			if caps, err := NewCaps(hf.Header.Caps, rt.Grants); err != nil || !caps.Route(d.To) {
+				rt.logf("handler %s (%s) skipped: route to %s needs route:%s, which this handler does not have (its caps, as granted)", hf.Name, event, d.To, d.To)
+				v.Skipped++
+				continue
+			}
+		}
 		switch d.Action {
 		case "pass":
 			if d.Explicit {
@@ -411,8 +451,8 @@ func (rt *Runtime) Dispatch(ctx context.Context, event, session string, ev map[s
 		case "allow":
 		case "rewrite":
 			ev["text"], v.Action, v.Text, v.By = d.Text, "rewrite", d.Text, hf.Name
-		default: // reply, silent, block
-			v.Action, v.Text, v.Reason, v.By = d.Action, d.Text, d.Reason, hf.Name
+		default: // reply, silent, block, route
+			v.Action, v.Text, v.Reason, v.By, v.To, v.Note = d.Action, d.Text, d.Reason, hf.Name, d.To, d.Note
 			return v
 		}
 	}
@@ -515,11 +555,12 @@ var EventDocs = []EventDoc{
 		"With slack.listen, also every other message in a channel the agent listens to (ambient: true): then nothing happens unless a handler answers an explicit pass (\"pass\" or {action = \"pass\"}; nil is no pass there) for a turn that may stay silent, or replies; " +
 		"from a person allowed_users does not list (verified: false) only silent or pass, never a reply",
 		"text, user, user_name, bot, verified, ambient, channel, thread_ts, ts, dm, mentioned, reply, session, thread_context[] {name, text, assistant, parent, unverified}",
-		"pass (optional context: a note for the model, under the message), reply {text} (posted in the conversation, no turn), silent (nothing posted)"},
+		"pass (context?: a note for the model), reply {text} (posted here, no turn), silent (nothing posted), " +
+			"route {to, note?, text?} (no turn: to an agent id or slack:<target>, with who wrote it; cap route:<to>; unverified: the owner approves first; text: an acknowledgement)"},
 	{OnMention, "the same, for a message that mentions the agent (instead of on_message)", "as on_message", "as on_message"},
 	{OnSchedule, "a scheduled job's run, after its monitor and pre-run script, before its turn; only for the jobs the header's jobs: names (id, name or \"*\")",
 		"job {id, name, schedule, prompt, skills, deliver, repo}, script_output, run_context, time",
-		"pass (optional context: notes in the run's prompt), reply {text} (the run's output, no turn), silent (a silent run)"},
+		"pass (context?: notes in the run's prompt), reply {text} (the run's output, no turn), silent (a silent run)"},
 	{BeforeSend, "every message the agent posts (kind: reply, handler_reply, send, delivery, notice); the messaging policy still decides after it",
 		"text, target, channel, thread_ts, kind, session, broadcast",
 		"allow, rewrite {text} (the text only; never the target, never a broadcast), block {reason?}"},

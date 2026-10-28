@@ -81,7 +81,7 @@ func TestGuideGolden(t *testing.T) {
 		}
 	}
 	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's
-	if !strings.Contains(got, "30 s for tools and the other handlers (luau_timeout)") || !strings.Contains(got, "900 s for on_schedule handlers and .luau job scripts (script_timeout)") {
+	if !strings.Contains(got, "30 s (tools, handlers; luau_timeout)") || !strings.Contains(got, "900 s (on_schedule, .luau job scripts; script_timeout)") {
 		t.Error("the guide does not tell luau_timeout from script_timeout")
 	}
 }

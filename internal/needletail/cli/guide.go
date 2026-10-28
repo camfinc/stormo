@@ -109,21 +109,20 @@ func (g guide) render() string {
 			"```lua\n--[[needletail\nformat: 1\nname: fare_quote\ndescription: Quote a route's fare.\n" +
 			"args: {type: object, properties: {route: {type: string}}, required: [route]}\ncaps: [http:api.example.com]\n]]\n" +
 			"return function(args)\n  local r = http_request{url = \"https://api.example.com/fares?route=\" .. args.route}\n  return json_decode(r.body)\nend\n```\n" +
-			"A **handler**, `skills/<skill>/handlers/<name>.luau`, runs before or instead of a turn; it declares `events:` (no args) and " +
-			"defines a function per event:\n" +
+			"A **handler**, `skills/<skill>/handlers/<name>.luau`, runs before (or instead of) a turn: `events:`, no args, " +
+			"a function per event:\n" +
 			"```lua\n--[[needletail\nformat: 1\nname: hours\ndescription: Answers opening hours.\nevents: [on_message]\n]]\n" +
 			"function on_message(ev)\n  if string.find(ev.text, \"hours\") then return {action = \"reply\", text = \"We open at 9.\"} end\n" +
 			"  return \"pass\" -- you answer (nil is no pass when ambient)\nend\n```\n")
 		for _, d := range luau.EventDocs {
 			fmt.Fprintf(&b, "- `%s`: answers %s.\n", d.Event, d.Actions)
 		}
-		b.WriteString("Handlers run in order (skill dir, then name); one that fails is skipped, but a failing before_send blocks the message. on_schedule names its jobs " +
-			"(`jobs: [<id or name>]`). Event fields and the rest: luau_reference.\n")
+		b.WriteString("Handlers run in order (skill dir, name); a failing one is skipped, a failing before_send blocks. on_schedule lists " +
+			"`jobs: [<id or name>]`. Fields: luau_reference.\n")
 		grants := grantList(g.Grants)
-		fmt.Fprintf(&b, "A call needs a cap the header's `caps:` declares and you are granted (your grants: %s; http:, message:, memory: and "+
-			"fs.*:shared need one from your owner). A run may take %d s for tools and the other handlers (luau_timeout), %d s for "+
-			"on_schedule handlers and .luau job scripts (script_timeout); a header's `timeout:` may only lower it. 48 MiB, 8 MiB read "+
-			"and 4 MiB written. Functions:\n", grants, g.LuauTimeout, g.ScriptTimeout)
+		fmt.Fprintf(&b, "A call needs a cap the header's `caps:` declares and you are granted (your grants: %s; http:, message:, memory:, route: and "+
+			"fs.*:shared need one from your owner). Time: %d s (tools, handlers; luau_timeout), %d s (on_schedule, .luau job "+
+			"scripts; script_timeout); `timeout:` only lowers it. 48 MiB, 8 MiB read and 4 MiB written. Functions:\n", grants, g.LuauTimeout, g.ScriptTimeout)
 		ref.WriteString(compactReference())
 		ref.WriteString("\n")
 	}

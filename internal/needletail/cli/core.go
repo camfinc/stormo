@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
@@ -46,6 +49,7 @@ func connectCore(rt *runtime) *coreLink {
 	// Not the serve context: hooks and notes outlive SIGTERM while running turns drain.
 	ctx, cancel := context.WithCancel(context.Background())
 	client := mcp.New(c.MCPURL, key, logf)
+	rt.core.Store(client) // a handler's route to another agent (coreForward)
 	go client.Register(ctx, rt.agent.Tools, toolsFirstRetry, toolsMaxRetry)
 	if rt.luau != nil {
 		rt.luau.Core = client // nt.core and shared writes from Luau go through the core
@@ -99,5 +103,25 @@ func sharedPath(cfg *config.Config) func(real string) (string, bool) {
 			return "", false
 		}
 		return path.Join(config.DefaultSharedDir, filepath.ToSlash(rel)), true
+	}
+}
+
+// coreForward is the Slack gateway's route to another agent (a handler's route action): the core's
+// msg_send as the agent, through its relay. A tool error is the route's error.
+func coreForward(client func() *mcp.Client) func(ctx context.Context, to, subject, body string) error {
+	return func(ctx context.Context, to, subject, body string) error {
+		c := client()
+		if c == nil {
+			return errors.New("the agent is not connected to a swarm core")
+		}
+		args, _ := json.Marshal(map[string]string{"to": to, "subject": subject, "body": body})
+		res, err := c.Call(ctx, "msg_send", args)
+		if err != nil {
+			return err
+		}
+		if res.IsError {
+			return fmt.Errorf("the core refused it: %s", clipText(res.Text, 300))
+		}
+		return nil
 	}
 }

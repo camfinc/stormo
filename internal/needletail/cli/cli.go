@@ -32,6 +32,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/luau"
+	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/memory"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/privsep"
@@ -131,6 +132,8 @@ type runtime struct {
 	risky *approvals.Commands
 	// files are people's uploads (files/<conversation>/; view_file, the Slack gateway's)
 	files *attach.Store
+	// core is the core's MCP client once serve connects (nil: not on a core)
+	core atomic.Pointer[mcp.Client]
 }
 
 // operators are the conversations (their roots) this process started for the owner: a oneshot's.
@@ -641,6 +644,12 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 		Files:        rt.files,
 		STT:          startSTT(rt),
 		Sees:         func() bool { return rt.agent.LLM.Sees(0) },
+		Forward:      coreForward(rt.core.Load),
+		Approve: func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error) {
+			env := rt.agent.Env
+			env.Session = session
+			return rt.approve(ctx, &env, tool, args, need)
+		},
 		Taint: func(session string, t wire.Taint) error {
 			if _, ok := store.Root(session); !ok {
 				if _, err := store.Create(wire.Session{ID: session, Source: slack.Source, Title: "Slack conversation", Untrusted: true}); err != nil {

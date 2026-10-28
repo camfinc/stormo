@@ -134,6 +134,12 @@ type Options struct {
 	Files *attach.Store
 	STT   Transcriber
 	Sees  func() bool
+	// Forward sends a message to another agent of the swarm over the core's bus (msg_send), for a
+	// handler's route (nil: not on a core, such a route is refused).
+	Forward func(ctx context.Context, to, subject, body string) error
+	// Approve puts an action to the approvers as the tool call that would run (the approvals
+	// service, as for a tool): a handler's route of an unverified message. nil: refused.
+	Approve func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error)
 }
 
 // Gateway is the agent's Slack app: it hears messages over Socket Mode, runs a turn per thread
@@ -1113,7 +1119,7 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 		} else {
 			v = g.o.Handlers.Inbound(hctx, event, in)
 		}
-		contextCarried := hin.ContextUnverified && (v.Action == "reply" || len(v.Context) > 0)
+		contextCarried := hin.ContextUnverified && (v.Action == "reply" || v.Action == "route" || len(v.Context) > 0)
 		if v.Untrusted != "" || contextCarried && !persisted {
 			if g.o.Quarantine == nil {
 				g.logf("slack: marked handler result refused: durable quarantine unavailable")
@@ -1132,6 +1138,8 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			// that failed, or returned nil or a table with no action, is no pass here, or a
 			// broken or careless one would turn every message, a stranger's too, into a turn)
 			switch {
+			case v.Action == "route":
+				g.routeMessage(hctx, session, j, v)
 			case v.Action == "reply" && j.verified:
 				if err := g.handlerReply(session, j, v); err != nil {
 					g.logf("slack: %s: %s's reply not posted: %v", session, v.By, err)
@@ -1149,6 +1157,8 @@ func (g *Gateway) dispatch(session string, jobs []job, lines []messaging.Context
 			if err := g.handlerReply(session, j, v); err != nil {
 				g.logf("slack: %s: %s's reply not posted: %v", session, v.By, err)
 			}
+		case "route":
+			g.routeMessage(hctx, session, j, v)
 		case "silent":
 			if j.react {
 				g.logf("slack: %s: the agent's handler %s chose not to answer a direct message; nothing posted", session, v.By)

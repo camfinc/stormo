@@ -20,7 +20,7 @@ func (c Cap) String() string { return c.Kind + ":" + c.Arg }
 func ParseCap(s string) (Cap, error) {
 	s = strings.TrimSpace(s)
 	if !wire.Capability.MatchString(s) {
-		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>, message:<target>, memory:read, memory:write, kv:read, kv:write, followup:read, followup:write)", s)
+		return Cap{}, fmt.Errorf("%q is not a capability (fs.read:home, fs.write:home[/glob], fs.read:shared, fs.write:shared, http:<host>, core:<tool>, message:<target>, memory:read, memory:write, kv:read, kv:write, followup:read, followup:write, route:<agent>|route:slack:<target>)", s)
 	}
 	kind, arg, _ := strings.Cut(s, ":")
 	return Cap{Kind: kind, Arg: arg}, nil
@@ -135,6 +135,12 @@ func (c Caps) KV(op string) bool {
 // conversation needs that target's message: cap besides.
 func (c Caps) FollowUp(op string) bool {
 	return c.allow("followup", func(a string) bool { return a == op })
+}
+
+// Route: a handler's route action to target (an agent id, or a Slack target in Target.String's
+// form): route:<agent>, route:slack:<target>, a <prefix>:* form, or route:*.
+func (c Caps) Route(target string) bool {
+	return c.allow("route", func(a string) bool { return messaging.GrantMatches(a, target) })
 }
 
 // Core: calling the core's tool.

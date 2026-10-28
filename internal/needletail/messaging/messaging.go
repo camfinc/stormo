@@ -271,13 +271,17 @@ type Verdict struct {
 	Untrusted string // marked data read by a handler; persist before using its output
 	Action    string
 	Text      string
-	Context   []string
-	Reason    string
-	By        string
-	Ran       int
-	Skipped   int
-	Passed    int
-	Failed    bool
+	// To and Note are a route's: where the message goes (an agent id, or a Slack target) and the
+	// handler's note for the recipient; Text is then its optional acknowledgement.
+	To      string
+	Note    string
+	Context []string
+	Reason  string
+	By      string
+	Ran     int
+	Skipped int
+	Passed  int
+	Failed  bool
 }
 
 // Handlers are the agent's event handlers as a gateway calls them.
@@ -408,4 +412,27 @@ func (e *deferredError) Is(target error) bool {
 func InputOf(ctx context.Context) (Input, bool) {
 	in, ok := ctx.Value(inputKey{}).(Input)
 	return in, ok
+}
+
+// Route targets (a handler's route action, docs/needletail.md §5.5).
+var routeAgentRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+
+// ParseRoute reads a route's to: an agent of the swarm by id (never group or unit:<id>, which reach
+// many agents at once), or a Slack target in send_message's grammar (slack, slack:<channel>[:<thread>],
+// slack:<user>). It answers the agent, or the Slack target, and the canonical form route: caps match.
+func ParseRoute(to string) (agent string, t Target, canonical string, err error) {
+	to = strings.TrimSpace(to)
+	if p, _, _ := strings.Cut(to, ":"); strings.EqualFold(p, "slack") {
+		if t, err = Parse(to); err != nil {
+			return "", Target{}, "", err
+		}
+		return "", t, t.String(), nil
+	}
+	switch {
+	case to == "group" || to == "*" || strings.HasPrefix(to, "unit:"):
+		return "", Target{}, "", fmt.Errorf("route to %q refused: a route goes to one agent or one conversation, never a broadcast (group, unit:<id>)", to)
+	case !routeAgentRe.MatchString(to):
+		return "", Target{}, "", fmt.Errorf("route to %q: an agent id (lowercase letters, digits, -) or slack:<target>", to)
+	}
+	return to, Target{}, to, nil
 }
