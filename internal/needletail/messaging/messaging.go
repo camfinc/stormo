@@ -56,15 +56,18 @@ var (
 
 // Parse reads a target as send_message takes it: "slack" or "home" (or "") for the home
 // channel, "slack:<channel id>", "slack:<channel id>:<thread ts>", "slack:<user id>" (also as
-// <@U…>). Channel names (#general) and other platforms are refused.
+// <@U…>); "telegram", "telegram:<chat id>[:<topic id>]". Channel names (#general) and other
+// platforms are refused.
 func Parse(target string) (Target, error) {
 	t := strings.TrimSpace(target)
 	platform, rest, _ := strings.Cut(t, ":")
 	switch p := strings.ToLower(platform); {
 	case t == "" || p == "home" && rest == "":
 		return Target{Platform: "slack"}, nil
+	case p == "telegram":
+		return parseTelegram(target, rest)
 	case p != "slack":
-		return Target{}, fmt.Errorf("%q: only Slack targets are served (slack, slack:<channel>[:<thread_ts>], slack:<user>)", target)
+		return Target{}, fmt.Errorf("%q: only Slack and Telegram targets are served (slack, slack:<channel>[:<thread_ts>], slack:<user>, telegram, telegram:<chat id>)", target)
 	}
 	if rest == "" || strings.EqualFold(rest, "home") {
 		return Target{Platform: "slack"}, nil
@@ -80,6 +83,28 @@ func Parse(target string) (Target, error) {
 		return Target{}, fmt.Errorf("%q: a thread is a message ts (1700000000.000100)", target)
 	}
 	return Target{Platform: "slack", Channel: channel, Thread: thread}, nil
+}
+
+var (
+	telegramChatRe  = regexp.MustCompile(`^-?[0-9]{1,20}$`)
+	telegramTopicRe = regexp.MustCompile(`^[0-9]{1,10}$`)
+)
+
+// parseTelegram reads a Telegram target: "telegram" (the home chat), "telegram:<chat id>" (a
+// person's private chat has their user id; a group's is negative), "telegram:<chat id>:<topic id>"
+// (a forum topic).
+func parseTelegram(target, rest string) (Target, error) {
+	if rest == "" || strings.EqualFold(rest, "home") {
+		return Target{Platform: "telegram"}, nil
+	}
+	chat, topic, _ := strings.Cut(rest, ":")
+	if !telegramChatRe.MatchString(chat) {
+		return Target{}, fmt.Errorf("%q: a Telegram target is telegram:<chat id> (a number; a group's is negative)", target)
+	}
+	if topic != "" && !telegramTopicRe.MatchString(topic) {
+		return Target{}, fmt.Errorf("%q: a Telegram topic is a number (telegram:<chat id>:<topic id>)", target)
+	}
+	return Target{Platform: "telegram", Channel: chat, Thread: topic}, nil
 }
 
 // Policy is who the agent may message on its own. By default: the home channel (and a thread in

@@ -153,7 +153,8 @@ func TestCreateBounds(t *testing.T) {
 		{Spec{At: "today 9am", Text: "x"}, "has passed"},
 		{Spec{In: "10s", Text: strings.Repeat("a", MaxText+1)}, "at most 4096"},
 		{Spec{In: "10s", Text: "x", Target: "slack"}, "Slack is off"},
-		{Spec{In: "10s", Text: "x", Target: "telegram:1"}, "only Slack"},
+		{Spec{In: "10s", Text: "x", Target: "telegram:1"}, "no messaging gateway runs here"},
+		{Spec{In: "10s", Text: "x", Target: "discord:1"}, "only Slack and Telegram"},
 	} {
 		if _, err := q.Create(ctx, "chat-1", c.spec); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%+v: %v, want %q", c.spec, err, c.want)

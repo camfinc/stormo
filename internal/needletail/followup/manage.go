@@ -119,9 +119,9 @@ func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, er
 			return Item{}, errors.New("this run has no conversation to follow up in (a scheduled run, a script): give a target ('slack', 'slack:<channel>[:<thread_ts>]', 'slack:<user>')")
 		}
 		it.Target = TargetOrigin
-		if from.Source == "slack" {
+		if from.Source == "slack" || from.Source == "telegram" {
 			if check == nil {
-				return Item{}, errors.New("Slack is not connected: a follow-up in this conversation could not be delivered")
+				return Item{}, fmt.Errorf("%s is not connected: a follow-up in this conversation could not be delivered", map[string]string{"slack": "Slack", "telegram": "Telegram"}[from.Source])
 			}
 			if err := check(TargetOrigin, from); err != nil {
 				return Item{}, err
@@ -217,6 +217,13 @@ func audienceKey(c Conversation) string {
 		if channel, _, _ := strings.Cut(rest, "-"); channel != "" {
 			return "channel:" + channel
 		}
+	}
+	if rest, ok := strings.CutPrefix(c.Session, "telegram-"); ok && rest != "" {
+		chat := rest
+		if i := strings.Index(rest[1:], "-"); i >= 0 { // a forum topic's: telegram-<chat>-<topic>
+			chat = rest[:i+1]
+		}
+		return "channel:telegram:" + chat
 	}
 	return c.Session
 }

@@ -16,13 +16,16 @@ func TestParse(t *testing.T) {
 		"slack:U0ALLOWED1":                   "slack:U0ALLOWED1",
 		"slack:<@U0ALLOWED1>":                "slack:U0ALLOWED1",
 		"slack:D0DMCHAN01":                   "slack:D0DMCHAN01",
+		"telegram":                           "telegram",
+		"telegram:-1001234567890":            "telegram:-1001234567890",
+		"telegram:42:7":                      "telegram:42:7",
 	} {
 		got, err := Parse(in)
 		if err != nil || got.String() != want {
 			t.Errorf("%q: %v %v, want %s", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"slack:#general", "telegram:1", "slack:C0DEVCHAN1:<!channel>", "slack:c0lower", "discord"} {
+	for _, bad := range []string{"slack:#general", "telegram:abc", "telegram:-100:x", "slack:C0DEVCHAN1:<!channel>", "slack:c0lower", "discord"} {
 		if got, err := Parse(bad); err == nil {
 			t.Errorf("%q parsed as %v", bad, got)
 		}
