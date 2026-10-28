@@ -23,6 +23,9 @@ type fakeHandlers struct {
 	outgoing []messaging.Outgoing
 	in       func(event string, m messaging.Inbound) messaging.Verdict
 	out      func(o messaging.Outgoing) messaging.Verdict
+	// outCtx, when set, is out given the handler's context (it may mark the run, as reading
+	// marked data does)
+	outCtx func(ctx context.Context, o messaging.Outgoing) messaging.Verdict
 }
 
 func (f *fakeHandlers) Inbound(ctx context.Context, event string, m messaging.Inbound) messaging.Verdict {
@@ -38,11 +41,14 @@ func (f *fakeHandlers) Inbound(ctx context.Context, event string, m messaging.In
 	return in(event, m)
 }
 
-func (f *fakeHandlers) BeforeSend(_ context.Context, o messaging.Outgoing) messaging.Verdict {
+func (f *fakeHandlers) BeforeSend(ctx context.Context, o messaging.Outgoing) messaging.Verdict {
 	f.mu.Lock()
 	f.outgoing = append(f.outgoing, o)
-	out := f.out
+	out, outCtx := f.out, f.outCtx
 	f.mu.Unlock()
+	if outCtx != nil {
+		return outCtx(ctx, o)
+	}
 	if out == nil {
 		return messaging.Verdict{Action: "allow"}
 	}

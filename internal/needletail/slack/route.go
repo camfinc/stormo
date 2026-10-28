@@ -19,12 +19,14 @@ const (
 // routeMessage carries out a handler's route (docs/needletail.md §5.5): the message j is forwarded, with
 // no model turn, to another agent over the core's bus or to another Slack conversation the
 // messaging policy allows, with its provenance (who wrote it, whether they are verified, where).
-// Forwarding an unverified author's words (or a relay bot's, or a note made from unverified
-// thread context or marked data) is an outbound forward of words the agent may not obey: it is put
-// to the approvers as the call that would run (send_message, mcp_core_msg_send), never sent at
-// once. Never a broadcast. The handler's text, if any, is a short acknowledgement in the original
-// conversation, posted as a handler's reply is, once the message was passed on (none while it
-// waits for the owner).
+// Forwarding words the agent may not obey is an outbound forward: it is put to the approvers as
+// the call that would run (send_message, mcp_core_msg_send), never sent at once. Such words are
+// an unverified author's (or a relay bot's), a note made from unverified thread context or marked
+// data, anything in a conversation marked for good (its durable taint), and, to Slack, a text the
+// before_send handlers rewrote from marked data: the decision is taken again on the text they
+// leave, which is what is posted or put to the approvers. Never a broadcast. The handler's text,
+// if any, is a short acknowledgement in the original conversation, posted as a handler's reply
+// is, once the message was passed on (none while it waits for the owner).
 func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v messaging.Verdict) {
 	agent, target, canonical, err := messaging.ParseRoute(v.To)
 	if err != nil {
@@ -32,10 +34,28 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 		return
 	}
 	body, subject := g.forwardText(j, v)
-	marked := !j.verified || j.relay || j.notesMarked || v.Untrusted != ""
+	why := g.routeTaint(hctx, session, j, v)
+	text := body
+	if agent == "" {
+		// to Slack: the policy first, then before_send once, sharing the handler's run mark, so
+		// what it reads (marked data) or rewrites is weighed before anything is posted
+		if _, err := g.Policy().Check(target, false); err != nil {
+			g.logf("slack: %s: %s's route to %s not carried out: %v", session, v.By, canonical, err)
+			return
+		}
+		sctx := messaging.ShareQuarantine(messaging.WithSession(g.base, session), hctx)
+		if text, err = g.beforeSend(sctx, messaging.Outgoing{Kind: messaging.KindSend, Session: session, Text: body}, target); err != nil {
+			g.logf("slack: %s: %s's route to %s not carried out: %v", session, v.By, canonical, err)
+			return
+		}
+		if why == "" {
+			why = g.routeTaint(sctx, session, j, v)
+		}
+	}
+	marked := why != ""
 	switch {
 	case marked:
-		err = g.routeForApproval(hctx, session, agent, target, canonical, subject, body, v)
+		err = g.routeForApproval(hctx, session, agent, target, canonical, subject, body, text, why, v)
 	case agent != "":
 		if g.o.Forward == nil {
 			err = fmt.Errorf("the agent is not on a swarm core: no route to another agent")
@@ -43,7 +63,7 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 			err = g.o.Forward(messaging.WithSession(g.base, session), agent, subject, body)
 		}
 	default:
-		err = g.routeToSlack(session, target, body)
+		err = g.routeToSlack(session, target, text)
 	}
 	if err != nil {
 		g.logf("slack: %s: %s's route to %s not carried out: %v", session, v.By, canonical, err)
@@ -56,6 +76,29 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 			g.logf("slack: %s: %s's acknowledgement not posted: %v", session, v.By, err)
 		}
 	}
+}
+
+// routeTaint is why a route of message j carries words the agent may not obey ("" when it does
+// not): the run ctx's mark (the handler's, or before_send's when ctx shares its run), an
+// unverified or relay author, a verdict made from marked data or unverified context, or the
+// conversation's durable mark.
+func (g *Gateway) routeTaint(ctx context.Context, session string, j job, v messaging.Verdict) string {
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return why
+	}
+	switch {
+	case !j.verified:
+		return "the message is from someone who may not instruct the agent"
+	case j.relay:
+		return "the message is a relay bot's: it posts others' words"
+	case v.Untrusted != "":
+		return v.Untrusted
+	case j.notesMarked:
+		return "the handler's answer was made from unverified thread context or marked data"
+	case g.o.Untrusted != nil && g.o.Untrusted(session):
+		return messaging.UntrustedConversation
+	}
+	return ""
 }
 
 // forwardText is a routed message as its recipient reads it: its provenance first, then the
@@ -100,18 +143,15 @@ func (g *Gateway) forwardText(j job, v messaging.Verdict) (body, subject string)
 	return head + msg, subject
 }
 
-// routeToSlack posts a routed message to target under the messaging policy (never a broadcast),
-// after the agent's before_send handlers.
-func (g *Gateway) routeToSlack(session string, t messaging.Target, body string) error {
+// routeToSlack posts a routed message's final text (before_send already ran on it) to target
+// under the messaging policy (never a broadcast).
+func (g *Gateway) routeToSlack(session string, t messaging.Target, text string) error {
 	ctx := messaging.WithSession(g.base, session)
-	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindSend, Session: session, Text: body}, t)
-	if err != nil {
-		return err
-	}
 	if _, err := g.Policy().Check(t, false); err != nil {
 		return err
 	}
 	channel := t.Channel
+	var err error
 	switch {
 	case t.User != "":
 		if channel, err = g.o.Web.OpenDM(ctx, t.User); err != nil {
@@ -125,15 +165,11 @@ func (g *Gateway) routeToSlack(session string, t messaging.Target, body string) 
 }
 
 // routeForApproval puts a marked route to the approvers as the tool call that would run: to an
-// agent, the core's msg_send; to Slack, send_message with the text as before_send left it (bound:
-// the approved send posts exactly it).
-func (g *Gateway) routeForApproval(hctx context.Context, session, agent string, t messaging.Target, canonical, subject, body string, v messaging.Verdict) error {
+// agent, the core's msg_send with the forward's body; to Slack, send_message with text, the
+// final text before_send left (bound: the approved send posts exactly it). why is the mark.
+func (g *Gateway) routeForApproval(hctx context.Context, session, agent string, t messaging.Target, canonical, subject, body, text, why string, v messaging.Verdict) error {
 	if g.o.Approve == nil {
 		return fmt.Errorf("it forwards words the agent may not obey, which needs the owner's approval, and approvals are not available")
-	}
-	why := messaging.UntrustedWhy(hctx)
-	if why == "" {
-		why = "the message is from someone who may not instruct the agent"
 	}
 	need := &messaging.ApprovalNeeded{What: "a handler's route of a message to " + canonical, Why: why, Trust: true}
 	tool := "mcp_core_msg_send"
@@ -145,13 +181,6 @@ func (g *Gateway) routeForApproval(hctx context.Context, session, agent string, 
 		payload = map[string]any{"to": agent, "subject": subject, "body": body}
 	} else {
 		tool = messaging.SendTool
-		if _, err := g.Policy().Check(t, false); err != nil {
-			return err
-		}
-		text, err := g.beforeSend(messaging.WithSession(g.base, session), messaging.Outgoing{Kind: messaging.KindSend, Session: session, Text: body}, t)
-		if err != nil {
-			return err
-		}
 		payload = map[string]any{"target": t.String(), "message": text}
 		need.Filtered = true
 	}

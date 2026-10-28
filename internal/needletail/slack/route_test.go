@@ -160,3 +160,74 @@ func TestHandlerRouteGuestNoAck(t *testing.T) {
 		t.Errorf("forwarded %+v asked %+v", fw, asked)
 	}
 }
+
+// waitAsked waits until the router was asked n times.
+func (r *router) waitAsked(n int) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, asked := r.seen(); len(asked) >= n || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Codex finding (step 4): a verified message in a conversation marked for good (durable taint)
+// routes only with the owner's approval, and gets no acknowledgement while it waits.
+func TestHandlerRouteDurableTaintNeedsApproval(t *testing.T) {
+	rt := &router{}
+	h := &fakeHandlers{in: func(event string, m messaging.Inbound) messaging.Verdict {
+		if strings.Contains(m.Text, "agent") {
+			return messaging.Verdict{Action: "route", To: "atlas", Text: "Passed on.", By: "ops__triage"}
+		}
+		return messaging.Verdict{Action: "route", To: "slack:" + home, Text: "Passed on.", By: "ops__triage"}
+	}}
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Forward = rt.forward; o.Approve = rt.approve },
+		func(g *Gateway) { _ = g.o.Quarantine(DMSessionID(dm)) })
+	r.fake.Send("e1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "tell the agent", TS: "1700000700.000100"})
+	r.fake.Send("e2", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "post this to home", TS: "1700000700.000200"})
+	rt.waitAsked(2)
+	r.quiet(0)
+	fw, asked := rt.seen()
+	if len(fw) != 0 || len(asked) != 2 {
+		t.Fatalf("forwarded %+v asked %+v", fw, asked)
+	}
+}
+
+// Codex finding (step 4): before_send runs on a route to Slack, and what it leaves decides: a
+// rewrite made from marked data (the verdict says so, or the handler's run was marked) is put to
+// the approvers as the final text, never posted, and before_send runs once.
+func TestHandlerRouteBeforeSendTaintNeedsApproval(t *testing.T) {
+	for _, viaCtx := range []bool{false, true} {
+		rt := &router{}
+		h := &fakeHandlers{in: func(event string, m messaging.Inbound) messaging.Verdict {
+			return messaging.Verdict{Action: "route", To: "slack:" + home, Text: "Passed on.", By: "ops__triage"}
+		}}
+		if viaCtx {
+			h.outCtx = func(ctx context.Context, o messaging.Outgoing) messaging.Verdict {
+				if err := messaging.MarkUntrusted(ctx, "marked KV read"); err != nil {
+					return messaging.Verdict{Action: "block", Failed: true}
+				}
+				return messaging.Verdict{Action: "rewrite", Text: "rewritten from marked data"}
+			}
+		} else {
+			h.out = func(o messaging.Outgoing) messaging.Verdict {
+				return messaging.Verdict{Action: "rewrite", Text: "rewritten from marked data", Untrusted: "marked KV read"}
+			}
+		}
+		r := newRig(t, func(o *Options) { o.Handlers = h; o.Forward = rt.forward; o.Approve = rt.approve })
+		r.fake.Send("e1", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "there is an outage", TS: "1700000800.000100"})
+		rt.waitAsked(1)
+		r.quiet(0)
+		fw, asked := rt.seen()
+		if len(fw) != 0 || len(asked) != 1 || asked[0]["tool"] != messaging.SendTool {
+			t.Fatalf("viaCtx %v: forwarded %+v asked %+v", viaCtx, fw, asked)
+		}
+		if p := asked[0]["payload"].(map[string]any); p["message"] != "rewritten from marked data" || p["target"] != "slack:"+home || asked[0]["filtered"] != true {
+			t.Errorf("viaCtx %v: approval %+v", viaCtx, asked[0])
+		}
+		if _, _, out := h.seen(); len(out) != 1 {
+			t.Errorf("viaCtx %v: before_send ran %d times", viaCtx, len(out))
+		}
+	}
+}
