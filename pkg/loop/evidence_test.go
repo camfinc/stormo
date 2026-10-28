@@ -282,3 +282,54 @@ func TestDreamRetriesUnmergedEvidence(t *testing.T) {
 		t.Fatalf("evidence watermark did not move after the merge: %v", wm.EvidenceNap)
 	}
 }
+
+// Item 19 (Claude L5): evidence whose merge keeps being refused does not hold every later nap
+// forever: after MaxEvidenceRetries dreams (or MaxEvidenceAge since the first refusal) the
+// evidence watermark catches up with a loud notice, and pruning goes on. Hermes has no outcome
+// evidence and never gets here.
+func TestDreamGivesUpOnStuckEvidence(t *testing.T) {
+	eng := withLearningEngine(t)
+	inst := reviewInstance(t)
+	root := inst.Root
+	store := FsStore{Root: t.TempDir()}
+	full := &learning.EvidenceStore{Version: learning.EvidenceVersion}
+	for i := range learning.MaxOutcomeEvents {
+		e := learning.OutcomeEvent{EventID: shaText(fmt.Sprint("full", i)), TaskRoot: shaText("t"), Origin: shaText("o"), SubjectKind: "lesson", SubjectID: "aaaaaaaaaaaa", SubjectRevision: shaText("r"), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+		if _, err := full.Ingest(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := learning.SaveEvidence(root, "atlas", full); err != nil {
+		t.Fatal(err)
+	}
+	event := learning.OutcomeEvent{EventID: shaText("stuck"), TaskRoot: shaText("task"), Origin: shaText("check"), SubjectKind: "skill", SubjectID: shaText("notes/check"), SubjectRevision: shaText("rev"), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	body, _ := json.Marshal(learning.EvidenceStore{Version: 1, Events: []learning.OutcomeEvent{event}})
+	sha := build.Sha256(body)
+	if err := store.Put(BlobKey("atlas", engine.Learning, sha), body); err != nil {
+		t.Fatal(err)
+	}
+	nap := Nap{ID: "nap-a", Agent: "atlas", Unit: "sales", Engine: "hermes", Instance: "instance", TakenAt: "2026-10-26T10:00:00Z",
+		Files: []NapFile{{Path: eng.OutcomePath(), Class: engine.Learning, Sha256: sha, Size: len(body)}}}
+	b, _ := json.Marshal(nap)
+	if err := store.Put(NapKey("atlas", "nap-a"), b); err != nil {
+		t.Fatal(err)
+	}
+	var notices []string
+	for range MaxEvidenceRetries + 1 {
+		r, err := Dream(inst, "atlas", store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		notices = append(notices, r.Notices...)
+	}
+	wm, _ := LoadWatermark(root, "atlas")
+	if wm.EvidenceNap != nil && *wm.EvidenceNap != "nap-a" {
+		t.Fatalf("the evidence watermark is still stuck after %d dreams: %v", MaxEvidenceRetries+1, *wm.EvidenceNap)
+	}
+	if !slices.ContainsFunc(notices, func(n string) bool { return strings.Contains(n, "OUTCOME EVIDENCE DROPPED") }) {
+		t.Errorf("no loud notice: %v", notices)
+	}
+	if dream := read(t, filepath.Join(root, "agents", "atlas", "learnings", "DREAM.md")); !strings.Contains(dream, "OUTCOME EVIDENCE DROPPED") {
+		t.Errorf("DREAM.md does not say so:\n%s", dream)
+	}
+}

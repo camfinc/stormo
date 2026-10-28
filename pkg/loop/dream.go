@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/engine"
@@ -68,8 +69,13 @@ type Watermark struct {
 	// the evidence store: it moves only after a merge succeeds, so a refused merge is tried again
 	// by the next dream, with or without a new nap, and Prune keeps the naps after it. Absent (nil):
 	// the same as LastNap (a watermark from before it); "" is before every nap.
-	EvidenceNap    *string                  `json:"evidenceNap,omitempty"`
-	SkillDecisions map[string]SkillDecision `json:"skillDecisions"`
+	EvidenceNap *string `json:"evidenceNap,omitempty"`
+	// EvidenceRetries and EvidenceSince are how many dreams a merge has been refused in a row,
+	// and since when (RFC 3339): past MaxEvidenceRetries or MaxEvidenceAge the dream gives up on
+	// that evidence (a loud notice) and the evidence watermark catches up, so pruning goes on.
+	EvidenceRetries int                      `json:"evidenceRetries,omitempty"`
+	EvidenceSince   string                   `json:"evidenceSince,omitempty"`
+	SkillDecisions  map[string]SkillDecision `json:"skillDecisions"`
 	// The last decision on the schedules proposal (Hash: its text), and the jobs the agent created
 	// at runtime that a reviewer rejected: rehydrate drops them (build.Info.RejectedJobs).
 	ScheduleDecision *SkillDecision `json:"scheduleDecision,omitempty"`
@@ -234,11 +240,21 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		if err != nil {
 			return nil, err
 		}
-		if mergeOutcomes(root, agentID, events, report) {
+		switch {
+		case mergeOutcomes(root, agentID, events, report):
 			wm.EvidenceNap = &evidenceIDs[len(evidenceIDs)-1]
-			if err := SaveWatermark(root, agentID, wm); err != nil {
+			wm.EvidenceRetries, wm.EvidenceSince = 0, ""
+		case evidenceRefused(wm, evidenceIDs, report, time.Now()):
+			wm.EvidenceNap = nil // given up: caught up with the nap watermark
+			dreamMD := filepath.Join(learningsDir(root, agentID), "DREAM.md")
+			prev, _ := os.ReadFile(dreamMD)
+			note := strings.TrimRight(string(prev), "\n") + "\n\n- " + report.Notices[len(report.Notices)-1] + "\n"
+			if err := os.WriteFile(dreamMD, []byte(strings.TrimLeft(note, "\n")), 0o644); err != nil {
 				return nil, err
 			}
+		}
+		if err := SaveWatermark(root, agentID, wm); err != nil {
+			return nil, err
 		}
 		return report, nil
 	}
@@ -469,6 +485,9 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	lastID := napIDs[len(napIDs)-1]
 	if merged {
 		wm.EvidenceNap = nil // caught up: the same as LastNap
+		wm.EvidenceRetries, wm.EvidenceSince = 0, ""
+	} else if evidenceRefused(wm, evidenceIDs, report, time.Now()) {
+		wm.EvidenceNap = nil // given up: caught up with the nap watermark, said loudly
 	} else if wm.EvidenceNap == nil {
 		prev := ""
 		if wm.LastNap != nil {
@@ -481,6 +500,34 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 		return nil, err
 	}
 	return report, os.WriteFile(filepath.Join(learningsDir(root, agentID), "DREAM.md"), []byte(renderReport(report)), 0o644)
+}
+
+// Bounds on outcome evidence whose merge keeps being refused (Watermark.EvidenceRetries).
+const (
+	MaxEvidenceRetries = 20
+	MaxEvidenceAge     = 7 * 24 * time.Hour
+)
+
+// evidenceRefused counts a dream whose evidence merge was refused (wm's retries, since when);
+// past MaxEvidenceRetries dreams or MaxEvidenceAge it gives the evidence of pending up, with a
+// loud notice, so the evidence watermark catches up and pruning goes on: true then.
+func evidenceRefused(wm *Watermark, pending []string, report *DreamReport, now time.Time) bool {
+	if wm.EvidenceSince == "" {
+		wm.EvidenceSince = now.UTC().Format(time.RFC3339)
+	}
+	wm.EvidenceRetries++
+	since, err := time.Parse(time.RFC3339, wm.EvidenceSince)
+	if wm.EvidenceRetries < MaxEvidenceRetries && err == nil && now.Sub(since) < MaxEvidenceAge {
+		return false
+	}
+	span := "none"
+	if len(pending) > 0 {
+		span = pending[0] + " to " + pending[len(pending)-1]
+	}
+	report.notice(fmt.Sprintf("OUTCOME EVIDENCE DROPPED: the outcome evidence of %d nap(s) (%s) could not be merged in %d dreams since %s; "+
+		"it is given up so those naps can be pruned (check learnings/evidence-v1.json)", len(pending), span, wm.EvidenceRetries, wm.EvidenceSince))
+	wm.EvidenceRetries, wm.EvidenceSince = 0, ""
+	return true
 }
 
 // evidenceMark is the newest nap whose evidence is merged (nil: none).

@@ -378,7 +378,9 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   instance's own `scrub.rules`) and upserted into `learnings/ledger.jsonl` by content hash. The same lesson seen by
   several instances or naps merges into one entry with `seenCount`, `instances` and `naps`
   (provenance and corroboration), and the union of every sighting's `pii` flags: an entry flagged
-  once stays flagged (reflection proposals that scrub to one text keep every flag too).
+  once stays flagged (reflection proposals that scrub to one text keep every flag too), while its
+  text is the sighting's: a reviewer's rewrite that dropped the personal data (and cleared the
+  flags) is not flagged again by later sightings of the old text, which keep its id.
 - Changed or new skills in the newest nap become scrubbed copies under
   `learnings/proposals/skills/` (a skill already decided at that content hash is not re-proposed).
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
@@ -415,7 +417,11 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   `DREAM.md`, never a failure: the rest of the dream, watermark included, goes through. A refused
   evidence merge is not lost: `watermark.json`'s `evidenceNap` (additive; absent means the same as
   `lastNap`, `""` before every nap) stays at the last nap whose evidence merged, the next dream
-  (even with no new nap) merges the naps after it again, and Prune keeps those naps.
+  (even with no new nap) merges the naps after it again, and Prune keeps those naps. It is bounded:
+  `evidenceRetries` and `evidenceSince` (additive) count the dreams refused in a row and since
+  when; after 20 dreams or 7 days the dream gives that evidence up with a loud notice
+  (`OUTCOME EVIDENCE DROPPED`, in `DREAM.md`) and the watermark catches up, so pruning goes on.
+  An engine without outcome evidence (Hermes) never gets there.
 - It writes the working tree only. It never commits, branches or pushes.
 
 **Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),

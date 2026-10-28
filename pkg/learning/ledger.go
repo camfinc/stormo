@@ -166,8 +166,13 @@ func Upsert(ledger *[]*Learning, s Sighting) (*Learning, bool) {
 			e.LastSeen = s.At
 		}
 		// A text flagged on any sighting stays flagged (promotion refuses it): the flags are a
-		// union, never the latest sighting's.
-		e.PII = unionFlags(e.PII, s.PII)
+		// union, never the latest sighting's, while the entry's text is the sighting's
+		// (normalized). A reviewer's rewrite (Decide) changed the text and cleared its flags on
+		// purpose: a later sighting of the old text (the same id) flags what is no longer
+		// there, and is not taken.
+		if Normalize(e.Text) == Normalize(s.Text) {
+			e.PII = unionFlags(e.PII, s.PII)
+		}
 		return e, false
 	}
 	pii := s.PII
