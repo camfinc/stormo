@@ -8,7 +8,7 @@ import (
 	"os/exec"
 )
 
-func start(*exec.Cmd, *User) {}
+func start(*exec.Cmd, *User, []uint32) {}
 
 func killGroup(int, bool) error { return errors.New("process groups need unix") }
 

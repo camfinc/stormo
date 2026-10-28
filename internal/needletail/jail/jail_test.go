@@ -1,7 +1,9 @@
 package jail
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -158,8 +160,8 @@ func TestQuarantineRulesAndWritableValidation(t *testing.T) {
 	for _, r := range spec.Rules() {
 		rules[r.Path] = r
 	}
-	if rules[spec.Home].Access != RX || rules["/shared/group"].Access != RO {
-		t.Fatal("home/shared are writable in quarantine")
+	if rules[spec.Home].Access != 0 || !rules[spec.Home].Required || rules["/shared/group"].Access != RO {
+		t.Fatal("home/shared are granted in quarantine (the home's own entries are, one by one)")
 	}
 	tmp := rules["/opt/data/.tmp"]
 	if tmp.Access != RW || !tmp.Required || !tmp.NoFollow {
@@ -184,5 +186,54 @@ func TestQuarantineRulesAndWritableValidation(t *testing.T) {
 	}
 	if _, _, _, err := parse([]string{"--home", "/opt/data", "--read-only-home", "--writable", "/opt/data/work/a", "--writable", "/opt/data/work/b", "--", "/bin/sh", "sh"}); err == nil {
 		t.Error("two writable grants accepted")
+	}
+}
+
+// Items 12 and 14 (Codex 1, Claude H4): a tainted command's jail grants the home's entries one by
+// one, read-only: never the home itself (whose rights every entry below would inherit), never
+// work/ (other conversations' work directories), never a hidden entry (.ssh, .gnupg, .config,
+// .netrc, .git-credentials, …) and never a symlink (it would grant what it points to); its own
+// work directory read-write.
+func TestTaintedRulesEnumerateTheHome(t *testing.T) {
+	home := t.TempDir()
+	for _, d := range []string{"skills/crm", ".ssh", ".config/gh", "work/conv-a", "work/conv-b"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"notes.md", ".netrc", ".git-credentials", ".ssh/id_ed25519"} {
+		if err := os.WriteFile(filepath.Join(home, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(home, "keys")); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(home, "work", "conv-a")
+	spec := Spec{Home: home, ReadOnlyHome: true, Writable: []string{work}}
+	rules := map[string]Rule{}
+	for _, r := range spec.Rules() {
+		rules[r.Path] = r
+	}
+	if r := rules[filepath.Join(home, "skills")]; r.Access != RX || !r.NoFollow {
+		t.Errorf("skills/: %+v", r)
+	}
+	if r := rules[filepath.Join(home, "notes.md")]; r.Access&WriteFile != 0 || r.Access&ReadFile == 0 || !r.NoFollow {
+		t.Errorf("notes.md: %+v", r)
+	}
+	for _, no := range []string{".ssh", ".config", ".netrc", ".git-credentials", "work", "keys", "work/conv-b"} {
+		if r, ok := rules[filepath.Join(home, no)]; ok {
+			t.Errorf("%s is granted: %+v", no, r)
+		}
+	}
+	if r := rules[home]; r.Access != 0 {
+		t.Errorf("the home itself: %+v", r)
+	}
+	if r := rules[work]; r.Access != RW || !r.NoFollow || !r.Required {
+		t.Errorf("its work directory: %+v", r)
+	}
+	// a trusted command's jail is the home whole, as before
+	if r := (Spec{Home: home}).Rules()[0]; r.Path != home || r.Access != RW {
+		t.Errorf("trusted home %+v", r)
 	}
 }

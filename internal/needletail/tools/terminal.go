@@ -17,6 +17,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/jail"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
+	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
 // Terminal output is capped: the head and the tail are kept, the middle is elided.
@@ -86,7 +87,7 @@ func runTerminal(ctx context.Context, env *Env, raw json.RawMessage) (any, error
 		return nil, messaging.Deferred("a background process without a known conversation", UntrustedWhy(ctx, env))
 	}
 	var prepErr error
-	env, prepErr = quarantineEnv(ctx, env)
+	env, prepErr = commandEnv(ctx, env)
 	if prepErr != nil {
 		return nil, prepErr
 	}
@@ -221,7 +222,7 @@ func Command(cmd *exec.Cmd, env *Env) { command(cmd, env) }
 // CommandContext prepares a context-aware command, refusing quarantine when the
 // filesystem policy cannot be enforced. Callers must check the error before Start.
 func CommandContext(ctx context.Context, cmd *exec.Cmd, env *Env) error {
-	prepared, err := quarantineEnv(ctx, env)
+	prepared, err := commandEnv(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -238,12 +239,15 @@ func CommandContext(ctx context.Context, cmd *exec.Cmd, env *Env) error {
 	return nil
 }
 
-// quarantineEnv is env for a tainted run's command (docs/needletail.md §7): jailed read-only but
-// for the conversation's work directory (work/<conversation>, its TMPDIR inside), started there,
+// commandEnv is env for a tainted run's command (docs/needletail.md §7): jailed read-only but for
+// the conversation's work directory (work/<conversation>, its TMPDIR inside), started there, in the
+// work area's group, with no network and none of the home's hidden entries (.ssh, .config, …),
 // without the core's credentials or the Luau http_secrets in its environment. Without a jail that
-// can hold it (Landlock ABI 3 or newer: truncation too) the command is refused: fail closed.
-func quarantineEnv(ctx context.Context, env *Env) (*Env, error) {
-	why := UntrustedWhy(ctx, env)
+// can hold it (Landlock ABI 4 or newer: truncation and TCP too) the command is refused: fail
+// closed. The taint is the run's and its conversation's, whatever approval let the command
+// through: an approval lifts the gate (a risky command's), never the jail.
+func commandEnv(ctx context.Context, env *Env) (*Env, error) {
+	why := jailWhy(ctx, env)
 	if why == "" {
 		return env, nil
 	}
@@ -251,10 +255,23 @@ func quarantineEnv(ctx context.Context, env *Env) (*Env, error) {
 		return nil, messaging.Deferred("terminal execution: a read-only Landlock jail is unavailable", why)
 	}
 	abi, err := jail.ABI()
-	if err != nil || abi < 3 {
-		return nil, messaging.Deferred("terminal execution: a tainted run requires Landlock ABI 3 or newer (including truncation protection)", why)
+	if err != nil || abi < jail.TaintedABI {
+		return nil, messaging.Deferred(fmt.Sprintf("terminal execution: a tainted run requires Landlock ABI %d or newer (truncation and TCP denied)", jail.TaintedABI), why)
 	}
 	return readOnlyCommandEnv(env, why)
+}
+
+// jailWhy is why a command must run in the tainted jail ("" when not): its run's taint or its
+// conversation's mark, whether or not an approval endorses the command.
+func jailWhy(ctx context.Context, env *Env) string {
+	ctx = messaging.WithoutEndorsed(ctx)
+	if why := messaging.UntrustedWhy(ctx); why != "" {
+		return why
+	}
+	if env != nil && env.Untrusted != nil {
+		return env.Untrusted(ctx, env.Session)
+	}
+	return ""
 }
 
 // readOnlyCommandEnv copies the launcher, so a tainted background command retains its
@@ -284,9 +301,14 @@ func readOnlyCommandEnv(env *Env, why string) (*Env, error) {
 	return &copy, nil
 }
 
-// command is Command; on unix it also jails cmd (env.Jail).
+// command is Command; on unix it also jails cmd (env.Jail). A tainted run's command also gets the
+// work area's group (its own work directory is reachable only through it).
 func command(cmd *exec.Cmd, env *Env) {
-	start(cmd, env.Agent)
+	var groups []uint32
+	if env.tainted {
+		groups = []uint32{wire.WorkGID}
+	}
+	start(cmd, env.Agent, groups)
 	if env.Jail != nil {
 		env.Jail.Wrap(cmd)
 	}

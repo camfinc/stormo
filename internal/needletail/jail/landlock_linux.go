@@ -35,10 +35,21 @@ func ABI() (int, error) {
 
 // Restrict confines the calling thread, and what it executes from now on, to rules: a ruleset
 // handling every right the ABI knows, one path-beneath rule per existing path (a missing
-// Required one is an error), no_new_privs, then landlock_restrict_self. Landlock and no_new_privs
-// are per thread: the caller locks its goroutine to the thread and execs from it.
-func Restrict(rules []Rule, abi int) error {
+// Required one is an error), no_new_privs, then landlock_restrict_self. noNet also handles TCP
+// connect and bind with no port allowed (ABI 4: refused below it) and, from ABI 6, scopes
+// abstract unix sockets and signals to the domain (no signal to a process outside it). Landlock
+// and no_new_privs are per thread: the caller locks its goroutine to the thread and execs from it.
+func Restrict(rules []Rule, abi int, noNet bool) error {
 	attr := unix.LandlockRulesetAttr{Access_fs: Handled(abi)}
+	if noNet {
+		if abi < TaintedABI {
+			return fmt.Errorf("landlock ABI %d cannot deny the network (ABI %d)", abi, TaintedABI)
+		}
+		attr.Access_net = unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP
+		if abi >= 6 {
+			attr.Scoped = unix.LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | unix.LANDLOCK_SCOPE_SIGNAL
+		}
+	}
 	fd, _, e := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
 	runtime.KeepAlive(&attr)
 	if e != 0 {
@@ -111,15 +122,15 @@ func Main(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "needletail jail: %v\n", err)
 		return ExitJail
 	}
-	if spec.ReadOnlyHome && abi < 3 {
-		fmt.Fprintln(stderr, "needletail jail: quarantine requires Landlock ABI 3 or newer to deny truncation")
+	if spec.ReadOnlyHome && abi < TaintedABI {
+		fmt.Fprintf(stderr, "needletail jail: a tainted command requires Landlock ABI %d or newer (truncation and TCP denied)\n", TaintedABI)
 		return ExitJail
 	}
 	// best effort: the runtime makes it at boot; a command may have removed it since
 	if err := os.Mkdir(filepath.Join(spec.Home, TmpDir), 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		fmt.Fprintf(stderr, "needletail jail: %v\n", err)
 	}
-	if err := Restrict(spec.Rules(), abi); err != nil {
+	if err := Restrict(spec.Rules(), abi, spec.ReadOnlyHome); err != nil {
 		fmt.Fprintf(stderr, "needletail jail: %v\n", err)
 		return ExitJail
 	}

@@ -12,7 +12,7 @@ import (
 func ABI() (int, error) { return 0, errors.New("Landlock is Linux only") }
 
 // Restrict is Linux only.
-func Restrict([]Rule, int) error { return errors.New("Landlock is Linux only") }
+func Restrict([]Rule, int, bool) error { return errors.New("Landlock is Linux only") }
 
 // Main is Linux only: the runtime never wraps a command elsewhere.
 func Main(_ []string, stderr io.Writer) int {

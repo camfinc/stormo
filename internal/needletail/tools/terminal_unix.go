@@ -13,10 +13,10 @@ import (
 // pipe), and, with the uid split, as the agent's user with no supplementary group. The runtime
 // keeps CAP_SETUID/CAP_SETGID to start it so and CAP_KILL to kill its group; the command itself
 // starts with no capability.
-func start(cmd *exec.Cmd, agent *User) {
+func start(cmd *exec.Cmd, agent *User, groups []uint32) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if agent != nil {
-		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: agent.UID, Gid: agent.GID, Groups: []uint32{}}
+		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: agent.UID, Gid: agent.GID, Groups: append([]uint32{}, groups...)}
 	}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {

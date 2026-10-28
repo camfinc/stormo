@@ -32,7 +32,8 @@ func TestDropAsRoot(t *testing.T) {
 	}
 	for rel, body := range map[string]string{"cron/jobs.json": `{"jobs":[]}`, "state/needletail/idem.json": "{}", "needletail.yaml": "version: 1\n",
 		".swarm/booted.json": "{}", "memories/MEMORY.md": "a note",
-		"memories/RECORDS.md": "<!-- needletail-records v1 -->\n§\nan archived client fact", "state/needletail/memory-usage.json": "{}", "skills/demo/SKILL.md": "---\nname: demo\n---\n", "SOUL.md": "me"} {
+		"memories/RECORDS.md": "<!-- needletail-records v1 -->\n§\nan archived client fact", "state/needletail/memory-usage.json": "{}", "skills/demo/SKILL.md": "---\nname: demo\n---\n", "SOUL.md": "me",
+		"work/conv-a/notes.txt": "a tainted run's notes"} {
 		p := filepath.Join(home, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -66,7 +67,12 @@ func TestDropAsRoot(t *testing.T) {
 		"exec: read /proc/runtime/environ: denied",
 		"exec: signal the runtime: denied",
 		"exec: write skills/demo/scripts/run.sh: ok",
-		"exec: make work/: ok",
+		"exec: make work/: denied",
+		"exec: list work/: denied",
+		"exec: read work/conv-a/notes.txt: denied",
+		"tainted: read work/conv-a/notes.txt: ok",
+		"tainted: list work/: denied",
+		"tainted: make work/: denied",
 		"runtime: wrote skills/demo/scripts/run.sh: ok",
 		"runtime: killed the command's group: ok",
 	} {
@@ -113,9 +119,25 @@ try "read /proc/runtime/environ" 'cat /proc/%d/environ >/dev/null'
 try "signal the runtime" 'kill -0 %d'
 try "write skills/demo/scripts/run.sh" 'mkdir -p skills/demo/scripts && echo "echo hi" > skills/demo/scripts/run.sh'
 try "make work/" 'mkdir -p work/mine && echo x > work/mine/f'
+try "list work/" 'ls work >/dev/null'
+try "read work/conv-a/notes.txt" 'cat work/conv-a/notes.txt >/dev/null'
 sleep 30 &
 wait
 `, home, pid, pid)
+	// a tainted run's command: the work area's group, so its conversation's directory (the jail
+	// grants it no other)
+	tainted := exec.Command("sh", "-c", fmt.Sprintf(`cd %q
+try() { if eval "$2" 2>/dev/null; then echo "tainted: $1: ok"; else echo "tainted: $1: denied"; fi; }
+try "read work/conv-a/notes.txt" 'cat work/conv-a/notes.txt >/dev/null'
+try "list work/" 'ls work >/dev/null'
+try "make work/" 'mkdir work/mine'
+`, home))
+	tainted.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: &syscall.Credential{Uid: uint32(Default.ExecUID), Gid: uint32(Default.RuntimeGID), Groups: []uint32{uint32(Default.WorkGID)}}}
+	tainted.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + home}
+	tainted.Stdout, tainted.Stderr = os.Stdout, os.Stdout
+	if err := tainted.Run(); err != nil {
+		fail("a tainted command: %v", err)
+	}
 	cmd := exec.Command("sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: &syscall.Credential{Uid: uint32(Default.ExecUID), Gid: uint32(Default.RuntimeGID), Groups: []uint32{}}}
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + home}

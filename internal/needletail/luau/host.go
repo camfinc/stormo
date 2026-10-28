@@ -78,6 +78,9 @@ type Runtime struct {
 	Now           func() time.Time
 	// Untrusted is the persisted conversation provenance, resolved by the host.
 	Untrusted func(context.Context, string) string
+	// Conversation is a session's conversation (its root): a script reaches only its own
+	// conversation's work/<conversation>/ (nil: the session itself).
+	Conversation func(session string) string
 	// Approve puts a tainted run's write a script asked for (a core write, a send to another
 	// conversation) to a person (the approvals service, docs/needletail.md §7) as the call of
 	// tool with args in session: the script gets "pending approval"; the runtime runs exactly
@@ -485,6 +488,9 @@ func (c *Call) readPlace(name string, in json.RawMessage) (place, error) {
 				return place{}, errf("refused", "%s is private runtime data: use the model's session_search for history, search_memory for memory, or kv_get for KV so provenance is preserved", display(p))
 			}
 		}
+		if err := c.otherWork(p); err != nil {
+			return place{}, err
+		}
 	}
 	if !c.Caps.FSRead(scope(p)) {
 		return place{}, c.deny(name, "fs.read:"+scope(p))
@@ -507,10 +513,37 @@ func (c *Call) writePlace(name string, a pathArgs) (place, error) {
 		return place{}, errf("protected", "%s is protected: Luau never writes the runtime's files, memories/, skills/, cron/, scripts/, logs/, "+
 			"the home's hidden entries (.profile, .config, …) or a .git directory", a.Path)
 	}
+	if err := c.otherWork(p); err != nil {
+		return place{}, err
+	}
 	if !c.Caps.FSWrite("home", p.rel) {
 		return place{}, c.deny(name, "fs.write:home/"+p.rel)
 	}
 	return p, nil
+}
+
+// otherWork refuses a home path in the work area but in the run's own conversation's directory:
+// another conversation's work/<conversation>/ holds what its tainted runs wrote (docs/needletail.md
+// §7), and the list of them names every conversation.
+func (c *Call) otherWork(p place) error {
+	if p.shared {
+		return nil
+	}
+	first, rest, _ := strings.Cut(p.rel, "/")
+	if !strings.EqualFold(first, "work") {
+		return nil
+	}
+	conv, _, _ := strings.Cut(rest, "/")
+	own := c.Session
+	if c.rt.Conversation != nil && own != "" {
+		if r := c.rt.Conversation(own); r != "" {
+			own = r
+		}
+	}
+	if conv == "" || own == "" || conv != own {
+		return errf("refused", "%s is not this conversation's work directory: a script reaches only its own (work/<this conversation>/)", display(p))
+	}
+	return nil
 }
 
 // readLeft is what the run may still read.

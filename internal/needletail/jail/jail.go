@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -158,7 +159,10 @@ var System = []Rule{
 	{Path: "/dev/tty", Access: Dev},
 }
 
-// Spec is one agent's jail: its home and its shared layers.
+// Spec is one agent's jail: its home and its shared layers. ReadOnlyHome is a tainted run's
+// command's (docs/needletail.md §7): the home read-only, entry by entry, but for its hidden
+// entries and work/; its one Writable directory (its conversation's work/<conversation>, or the
+// home's .tmp) read-write; the shared layers read-only; no TCP (TaintedABI).
 type Spec struct {
 	Home         string
 	Shared       []string
@@ -166,22 +170,57 @@ type Spec struct {
 	Writable     []string
 }
 
-// Rules are the spec's rules: the home (required), each shared layer and System.
+// TaintedABI is the Landlock ABI a tainted command's jail needs: 3 denies truncation, 4 TCP
+// connect and bind. Below it a tainted run's command is refused (fail closed).
+const TaintedABI = 4
+
+// Rules are the spec's rules: the home (required), each shared layer and System. A read-only
+// home's are its entries (homeEntries), read now: the launcher calls it as the command's user,
+// right before it restricts itself.
 func (s Spec) Rules() []Rule {
-	access, shared := uint64(RW), uint64(RW)
-	if s.ReadOnlyHome {
-		access, shared = RX, RO
-	}
-	out := []Rule{{Path: s.Home, Access: access, Required: true}}
-	for _, d := range s.Shared {
-		out = append(out, Rule{Path: d, Access: shared})
-	}
-	if s.ReadOnlyHome {
-		for _, d := range s.Writable {
-			out = append(out, Rule{Path: d, Access: RW, Required: true, NoFollow: true})
+	if !s.ReadOnlyHome {
+		out := []Rule{{Path: s.Home, Access: RW, Required: true}}
+		for _, d := range s.Shared {
+			out = append(out, Rule{Path: d, Access: RW})
 		}
+		return append(out, System...)
+	}
+	// the home itself is required but granted nothing: a right on it would reach every entry
+	// below it (Landlock grants beneath a path, and has no rule that takes a right away)
+	out := []Rule{{Path: s.Home, Required: true}}
+	out = append(out, homeEntries(s.Home)...)
+	for _, d := range s.Shared {
+		out = append(out, Rule{Path: d, Access: RO})
+	}
+	for _, d := range s.Writable {
+		out = append(out, Rule{Path: d, Access: RW, Required: true, NoFollow: true})
 	}
 	return append(out, System...)
+}
+
+// homeEntries are a tainted command's read rules in the home: each top-level entry, read-only
+// (and executable: a skill's script), but work/ (other conversations' work directories), any
+// hidden entry (.ssh, .gnupg, .config, .netrc, .git-credentials, .aws, .swarm, …: credentials
+// and the runtime's own) and any symlink (a rule follows nothing: NoFollow, and a link is
+// skipped). An entry made after the launcher read the home is not granted (fail closed).
+func homeEntries(home string) []Rule {
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		return nil
+	}
+	var out []Rule
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || name == WorkDir || e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		access := RX
+		if !e.IsDir() {
+			access = ReadFile | Execute
+		}
+		out = append(out, Rule{Path: filepath.Join(home, name), Access: access, NoFollow: true})
+	}
+	return out
 }
 
 // Args are the launcher's arguments before the command: `jail --home H --shared S… --`.

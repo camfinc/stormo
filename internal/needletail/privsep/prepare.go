@@ -268,7 +268,11 @@ func workDir(root int, u Users, logf func(string)) error {
 		return &os.PathError{Op: "open", Path: Work, Err: err}
 	}
 	defer unix.Close(fd)
-	if err := unix.Fchown(fd, u.RuntimeUID, u.RuntimeGID); err != nil {
+	gid := u.WorkGID
+	if gid == 0 {
+		gid = u.RuntimeGID
+	}
+	if err := unix.Fchown(fd, u.RuntimeUID, gid); err != nil {
 		return &os.PathError{Op: "chown", Path: Work, Err: err}
 	}
 	if err := unix.Fchmod(fd, WorkMode); err != nil {

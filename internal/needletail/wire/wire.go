@@ -473,4 +473,8 @@ const (
 	RuntimeUID = 10000
 	RuntimeGID = 10000
 	ExecUID    = 10001
+	// WorkGID is the work area's group: work/ is the runtime's, mode 0710, in this group, so
+	// only a tainted run's commands (started with it as a supplementary group) reach their own
+	// work/<conversation>/ (the jail grants no other), and no trusted command reaches any.
+	WorkGID = 10002
 )

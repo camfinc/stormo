@@ -21,10 +21,11 @@ import (
 // WorkRoot is the work area's directory in the home.
 const WorkRoot = "work"
 
-// Modes: work/ sticky and group-writable (commands that used to keep their files there still
-// can), a conversation's directory group-writable with new entries in the group.
+// Modes: work/ the runtime's, entered only by its group (the boot gives it wire.WorkGID: a tainted
+// run's commands), listed and written by no command; a conversation's directory group-writable
+// with new entries in the group.
 const (
-	workRootMode = 0o3775
+	workRootMode = 0o710
 	workConvMode = 0o2770
 )
 

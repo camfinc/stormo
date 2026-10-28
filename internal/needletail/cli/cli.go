@@ -424,7 +424,7 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 	}
 	lr := &luau.Runtime{Runner: eng, Home: cfg.Home, SharedDir: cfg.SharedDir, Layers: layers, Grants: cfg.Luau.Grants,
 		HTTPSecrets: cfg.Luau.HTTPSecrets, Secret: sec.Get, Memory: mem, Redact: red.Redact, Log: logf,
-		Untrusted:   agent.Env.Untrusted,
+		Untrusted: agent.Env.Untrusted, Conversation: agent.Env.Conversation,
 		LuauTimeout: time.Duration(cfg.Limits.LuauTimeout) * time.Second, ScriptTimeout: time.Duration(cfg.Limits.ScriptTimeout) * time.Second}
 	if u := os.Getenv("SWARM_CORE_URL"); u != "" {
 		lr.CoreURLs = append(lr.CoreURLs, u)

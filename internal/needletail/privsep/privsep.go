@@ -21,10 +21,13 @@ import (
 // Users are the two users of the split.
 type Users struct {
 	RuntimeUID, RuntimeGID, ExecUID int
+	// WorkGID is the work area's group (wire.WorkGID; 0: the runtime's group, as a test without
+	// root has it).
+	WorkGID int
 }
 
 // Default is the image's: wire.RuntimeUID (the shared space's owner) and wire.ExecUID.
-var Default = Users{RuntimeUID: wire.RuntimeUID, RuntimeGID: wire.RuntimeGID, ExecUID: wire.ExecUID}
+var Default = Users{RuntimeUID: wire.RuntimeUID, RuntimeGID: wire.RuntimeGID, ExecUID: wire.ExecUID, WorkGID: wire.WorkGID}
 
 // The home's layout, relative to the home. Every other entry is the agent's workspace (skills/,
 // scripts/, the manifest's state dir, what its commands make): the exec user's, group-writable,
@@ -53,14 +56,15 @@ var (
 	// of the workspace.
 	Temp = jail.TmpDir
 	// Work is the work area (tools.WorkRoot): work/<conversation>/ is where a tainted run's
-	// writes go. The runtime's (WorkMode: sticky, so a command never renames or removes a
-	// conversation's directory the runtime made, nor swaps it for a symlink); what the commands
-	// make in it is theirs, as in the rest of the workspace.
+	// writes go. The runtime's, in the work group (Users.WorkGID), WorkMode: no command lists it
+	// or makes anything in it (so none renames, removes or swaps a conversation's directory),
+	// and only a command started in the work group (a tainted run's, jailed to its own
+	// conversation's directory) enters it: a trusted command reaches no conversation's work.
 	Work = "work"
 )
 
-// WorkMode is Work's own mode.
-const WorkMode = 0o3775
+// WorkMode is Work's own mode: the runtime's, entered by its group.
+const WorkMode = 0o710
 
 // TempMode is Temp's own mode: the runtime's group may make entries there (setgid: they keep it).
 const TempMode = 0o2770
