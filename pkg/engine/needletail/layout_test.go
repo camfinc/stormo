@@ -37,9 +37,10 @@ func TestClassify(t *testing.T) {
 		t.Fatalf("fixture state dir %q, cases written for %q", inst.Names.StateDir, want.StateDir)
 	}
 	rules := New(inst).Layout().Rules
+	// The runtime keeps no SQLite: only the skill scripts' databases in the state dir are copied as such.
 	for _, r := range rules {
-		if r.SQLite {
-			t.Errorf("%s: needletail keeps no SQLite", r.Glob)
+		if r.SQLite != (r.Glob == inst.Names.StateDir+"/**/*.{db,sqlite}") {
+			t.Errorf("%s: SQLite %v", r.Glob, r.SQLite)
 		}
 	}
 	for _, c := range want.Cases {

@@ -97,6 +97,21 @@
    "glob": "acme-state/**"
   },
   {
+   "path": "acme-state/news-radar/news_radar.db",
+   "class": "state",
+   "glob": "acme-state/**/*.{db,sqlite}"
+  },
+  {
+   "path": "acme-state/metrics/history.sqlite",
+   "class": "state",
+   "glob": "acme-state/**/*.{db,sqlite}"
+  },
+  {
+   "path": "acme-state/news-radar/news_radar.db-wal",
+   "class": "state",
+   "glob": "acme-state/**"
+  },
+  {
    "path": "state/needletail/idem.json",
    "class": "state",
    "glob": "state/needletail/**"

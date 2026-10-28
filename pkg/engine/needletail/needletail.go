@@ -95,7 +95,10 @@ func New(inst *instance.Instance) *Needletail {
 			{Class: engine.Raw, Glob: "state/needletail/skill-origins-v1.json"},
 			{Class: engine.Raw, Glob: "state/needletail/skill-proposals-v1.json"},
 			{Class: engine.Raw, Glob: "state/needletail/outcomes-v1.json"},
-			// state: tool state and the runtime's own state
+			// state: tool state and the runtime's own state. The runtime keeps no SQLite, but the
+			// agent's skill scripts may (Python's sqlite3, as on Hermes): their databases under the
+			// state dir are copied with VACUUM INTO, so a nap never captures a half-written page.
+			{Class: engine.State, Glob: sd + "/**/*.{db,sqlite}", SQLite: true},
 			{Class: engine.State, Glob: sd + "/**"},
 			{Class: engine.State, Glob: "state/needletail/**"},
 		},
