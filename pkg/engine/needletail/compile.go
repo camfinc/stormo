@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/commands"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -57,6 +58,9 @@ type agentConfig struct {
 		// RelayBots are allowed bots whose messages still mark the conversation (needletail.yaml
 		// slack.relay_bots): they relay other people's words.
 		RelayBots []string `yaml:"relay_bots"`
+		// Commands name the slash commands (needletail.yaml slack.commands, and the app manifest
+		// stormo slack manifest renders): a prefix, and per-command names.
+		Commands *wire.SlackCommands `yaml:"commands"`
 	} `yaml:"slack"`
 	// Approvals are who decides what a tainted run or a risky command needs a person for, how
 	// long a request waits, the caps and extra risky-command patterns (needletail.yaml approvals).
@@ -192,6 +196,11 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: slack.listen is [\"*\"] (every channel the bot is in) or a list of channel ids (C…, G…), not %q", ConfigFile, ch)
 		}
 	}
+	if c.Slack.Commands != nil {
+		if _, err := commands.SlackNames(c.Slack.Commands.Prefix, c.Slack.Commands.Names); err != nil {
+			return nil, fmt.Errorf("%s: slack.commands: %w", ConfigFile, err)
+		}
+	}
 	for _, b := range c.Slack.RelayBots {
 		if !relayRe.MatchString(b) {
 			return nil, fmt.Errorf("%s: slack.relay_bots names bots by id (B…, or their user id U…), not %q", ConfigFile, b)
@@ -318,8 +327,8 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	}
 	c.Luau = wire.LuauConfig{Grants: grants, HTTPSecrets: ac.Luau.HTTPSecrets}
 	c.Timezone = ac.Timezone
-	if ac.Slack.Broadcast || len(ac.Slack.Listen) > 0 || len(ac.Slack.RelayBots) > 0 {
-		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen, RelayBots: ac.Slack.RelayBots}
+	if ac.Slack.Broadcast || len(ac.Slack.Listen) > 0 || len(ac.Slack.RelayBots) > 0 || ac.Slack.Commands != nil {
+		c.Slack = &wire.SlackConfig{Broadcast: ac.Slack.Broadcast, Listen: ac.Slack.Listen, RelayBots: ac.Slack.RelayBots, Commands: ac.Slack.Commands}
 	}
 	c.Approvals = ac.Approvals
 	c.Files, c.STT = ac.Files, ac.STT

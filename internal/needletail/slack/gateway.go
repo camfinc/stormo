@@ -175,6 +175,10 @@ type Gateway struct {
 	statusOn  atomic.Bool
 	// decider takes the approval cards' buttons (SetDecider); nil: approvals off
 	decider Decider
+	// commands are the chat commands (SetCommands; nil until serve sets them), slashes how many
+	// are being answered
+	commands *Commands
+	slashes  int
 }
 
 // job is one message for a conversation's worker, routed but not yet prepared: the worker reads
@@ -263,7 +267,7 @@ func New(o Options) (*Gateway, error) {
 		handlers: make(chan struct{}, o.AmbientHandlers), botTurns: map[string][]time.Time{}}
 	g.statusOn.Store(true)
 	g.base, g.cancel = context.WithCancel(context.Background())
-	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, interact: g.interact, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
+	g.sock = &socket{web: o.Web, dialer: o.Dialer, handle: g.handle, interact: g.interact, slash: g.slash, ack: g.accepting, state: g.setState, logf: g.logf, sleep: sleepCtx}
 	return g, nil
 }
 
@@ -1398,6 +1402,12 @@ func (g *Gateway) turn(session string, jobs []job, lines []messaging.ContextLine
 	g.mu.Lock()
 	noReply := state.noReply
 	g.mu.Unlock()
+	if err != nil && errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		// a person's /stop (api.Server.Cancel): no error note, the command answered them
+		g.logf("slack: %s: the turn was stopped", session)
+		finish(false)
+		return
+	}
 	if err != nil {
 		g.logf("slack: %s: turn failed: %v", session, err)
 		detail := oneLine(g.o.Redact(err.Error()))

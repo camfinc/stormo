@@ -802,15 +802,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, MaxTurns: rt.cfg.ChatTurns(), Jail: rt.jail,
 		Trust: func(conv string) error {
 			// the owner (the API's key is theirs) endorses a conversation: kept with an audit record
-			if err := rt.store.Trust(conv, "owner (API)"); err != nil {
-				return err
-			}
-			if svc := rt.approvals.Load(); svc != nil {
-				svc.Audit("trusted", conv, "owner (API)")
-			} else {
-				approvals.AppendAudit(filepath.Join(rt.cfg.StateDir(), "approvals-audit.jsonl"), map[string]string{"at": time.Now().UTC().Format(time.RFC3339Nano), "event": "trusted", "conversation": conv, "by": "owner (API)"}, nil)
-			}
-			return nil
+			return rt.trustConversation(conv, "owner (API)")
 		},
 		Platforms: func() map[string]wire.Platform {
 			if gw == nil {
@@ -845,8 +837,28 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
 	defer func() { stopTicks(); <-maintenanceDone }()
 	// approvals (docs/needletail.md §7): the cards go through the gateway, which takes their buttons
-	if svc := startApprovals(ticks, rt, srv, gw); svc != nil && gw != nil {
+	svc := startApprovals(ticks, rt, srv, gw)
+	if svc != nil && gw != nil {
 		gw.SetDecider(svc)
+	}
+	// the chat commands (§4.9): /new, /status, /memory, /jobs, /stop, /trust, /help
+	backend := rt.commandBackend(srv, func() map[string]string {
+		out := map[string]string{}
+		if gw != nil {
+			out["Slack"] = gw.Platform().State
+		}
+		return out
+	})
+	approverIDs := func() []string {
+		if svc == nil {
+			return nil
+		}
+		return svc.Approvers()
+	}
+	if gw != nil {
+		if names, err := rt.cfg.SlackCommandNames(); err == nil {
+			gw.SetCommands(slack.Commands{Names: names, Backend: backend, Approvers: approverIDs})
+		}
 	}
 	rt.sched.Start(ticks)
 	rt.followUps.Start(fu) // what fell due while the agent was down fires now, marked late

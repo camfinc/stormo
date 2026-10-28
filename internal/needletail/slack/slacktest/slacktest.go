@@ -89,6 +89,19 @@ type Server struct {
 	// token; downloads counts them.
 	Files     map[string]FileBody
 	downloads []string
+	// ackAt is when each envelope was acked; responses the answers posted to response_urls
+	ackAt     map[string]time.Time
+	responses []Response
+	// respondFail makes every response_url answer this HTTP status (0: 200; SetRespondFail).
+	respondFail int
+}
+
+// Response is one answer a command's response_url received, and when.
+type Response struct {
+	ID, ResponseType, Text string
+	ReplaceOriginal        bool
+	Auth                   string
+	At                     time.Time
 }
 
 // FileBody is a file the fake serves: its bytes and the Content-Type it answers with (Redirect,
@@ -139,11 +152,12 @@ func (s *Server) file(w http.ResponseWriter, r *http.Request) {
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
 		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, Slow: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1,
-		Files: map[string]FileBody{}}
+		Files: map[string]FileBody{}, ackAt: map[string]time.Time{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
 	mux.HandleFunc("/files/", s.file)
+	mux.HandleFunc("/respond/", s.respond)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return s
@@ -285,6 +299,7 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(body, &ack) == nil && ack.EnvelopeID != "" {
 			s.mu.Lock()
 			s.acks = append(s.acks, ack.EnvelopeID)
+			s.ackAt[ack.EnvelopeID] = time.Now()
 			s.mu.Unlock()
 		}
 	}
@@ -468,4 +483,83 @@ func (s *Server) Opens() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.opens
+}
+
+// ResponseURL is a command's response_url on the fake (answers to it are kept as Responses).
+func (s *Server) ResponseURL(id string) string { return s.URL + "/respond/" + id }
+
+func (s *Server) respond(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ResponseType    string `json:"response_type"`
+		Text            string `json:"text"`
+		ReplaceOriginal bool   `json:"replace_original"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	s.mu.Lock()
+	fail := s.respondFail
+	s.responses = append(s.responses, Response{ID: strings.TrimPrefix(r.URL.Path, "/respond/"), ResponseType: body.ResponseType, Text: body.Text,
+		ReplaceOriginal: body.ReplaceOriginal, Auth: r.Header.Get("Authorization"), At: time.Now()})
+	s.mu.Unlock()
+	if fail != 0 {
+		w.WriteHeader(fail)
+		return
+	}
+	_, _ = w.Write([]byte("ok"))
+}
+
+// SetRespondFail makes every response_url answer status (0: 200 again).
+func (s *Server) SetRespondFail(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.respondFail = status
+}
+
+// Responses are the answers posted to response_urls so far.
+func (s *Server) Responses() []Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Response{}, s.responses...)
+}
+
+// WaitResponses waits until n answers reached response_urls, and returns them.
+func (s *Server) WaitResponses(n int, timeout time.Duration) []Response {
+	s.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if r := s.Responses(); len(r) >= n {
+			return r
+		}
+		if time.Now().After(deadline) {
+			s.t.Fatalf("slacktest: %d command answers after %s, want %d", len(s.Responses()), timeout, n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// AckTime is when the envelope id was acked (zero: not acked).
+func (s *Server) AckTime(id string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ackAt[id]
+}
+
+// Slash sends a slash_commands envelope as Slack does when user runs command (with text) in
+// channel; its response_url is the fake's (ResponseURL(id)). Extra fields (thread_ts) go into
+// the payload as given.
+func (s *Server) Slash(id, command, text, user, channel string, extra map[string]string) {
+	s.t.Helper()
+	payload := map[string]any{"token": "deprecated", "team_id": Team, "team_domain": "acme-test", "channel_id": channel, "channel_name": "directmessage",
+		"user_id": user, "user_name": "someone", "command": command, "text": text, "api_app_id": "A0APP00001", "is_enterprise_install": "false",
+		"response_url": s.ResponseURL(id), "trigger_id": "1.2.3"}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	env := map[string]any{"envelope_id": id, "type": "slash_commands", "accepts_response_payload": true, "payload": payload}
+	s.mu.Lock()
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		s.t.Fatal("slacktest: no connection")
+	}
+	s.write(conn, env)
 }

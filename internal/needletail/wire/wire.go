@@ -465,6 +465,17 @@ type SlackConfig struct {
 	// messages still mark the conversation: they relay others' words (a form, an email bridge), so
 	// passing allowed_users says who posted, not who wrote.
 	RelayBots []string `json:"relay_bots,omitempty" yaml:"relay_bots,omitempty"`
+	// Commands name the agent's slash commands (docs/needletail.md §4.9): a prefix every name
+	// gets, and names that rename some (command key → name). Absent: the bare names (status as
+	// agent-status, Slack's own /status being reserved). An image older than it refuses a
+	// needletail.yaml that has it.
+	Commands *SlackCommands `json:"commands,omitempty" yaml:"commands,omitempty"`
+}
+
+// SlackCommands are the slash commands' names on Slack.
+type SlackCommands struct {
+	Prefix string            `json:"prefix,omitempty" yaml:"prefix,omitempty"`
+	Names  map[string]string `json:"names,omitempty" yaml:"names,omitempty"`
 }
 
 // SchedulesConfig is what the runtime is told about the agent's scheduled jobs.

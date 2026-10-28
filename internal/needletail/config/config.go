@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/commands"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -135,6 +136,9 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("%s: web.search.max_results %d must be 1 to %d", File, w.Search.MaxResults, wire.MaxSearchResults)
 		}
 	}
+	if _, err := c.SlackCommandNames(); err != nil {
+		return nil, fmt.Errorf("%s: slack.commands: %w", File, err)
+	}
 	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > MaxChatTurns {
 		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d", File, c.Limits.ChatTurns, MaxChatTurns)
 	}
@@ -211,6 +215,16 @@ func (c *Config) VisionMode() string {
 
 // STTEnabled is whether voice notes are transcribed (stt.enabled; the key must be there too).
 func (c *Config) STTEnabled() bool { return c.STT != nil && c.STT.Enabled }
+
+// SlackCommandNames are the slash commands' Slack names (key → name without the slash):
+// slack.commands, else the bare names (commands.SlackNames).
+func (c *Config) SlackCommandNames() (map[string]string, error) {
+	prefix, names := "", map[string]string(nil)
+	if c.Slack != nil && c.Slack.Commands != nil {
+		prefix, names = c.Slack.Commands.Prefix, c.Slack.Commands.Names
+	}
+	return commands.SlackNames(prefix, names)
+}
 
 // Endpoints are the model endpoints in the order they are tried: primary, then fallbacks.
 func (c *Config) Endpoints() []wire.Endpoint {
