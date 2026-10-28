@@ -51,6 +51,9 @@ const (
 	StatusFailed   = "failed"   // approved, but running it failed
 	StatusDenied   = "denied"
 	StatusExpired  = "expired" // no decision in time: denied
+	// StatusInterrupted: approved, but the runtime stopped before it finished running it (found
+	// at boot); never run again.
+	StatusInterrupted = "interrupted"
 )
 
 // Action is what a person approves: the structured action the runtime runs, never text the model

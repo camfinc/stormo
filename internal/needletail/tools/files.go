@@ -79,7 +79,17 @@ func writable(ctx context.Context, env *Env, p string) (string, error) {
 	}
 	if why := UntrustedWhy(ctx, env); why != "" {
 		if !home || !ownWork(env, rel) {
+			// put to a person only when it goes where the card says: no symlink in the path
+			if err := env.Sandbox.LinkFree(p); err != nil {
+				return "", fmt.Errorf("refused: %v; a write a person is asked to approve must name the real path (%s), with no symlink in it", err, env.Sandbox.Display(real))
+			}
 			return "", messaging.NeedsApproval(fmt.Sprintf("a write to %s (outside this conversation's work directory %s/, where its writes go)", env.Sandbox.Display(real), WorkRel(conversationOf(env))), why)
+		}
+	}
+	if messaging.Endorsed(ctx) != "" {
+		// the approved write: refused when its path gained a symlink since the card was shown
+		if err := env.Sandbox.LinkFree(p); err != nil {
+			return "", fmt.Errorf("refused: %v (it appeared after the approval card was shown: the write would not go where the card said)", err)
 		}
 	}
 	if home && ownWork(env, rel) {

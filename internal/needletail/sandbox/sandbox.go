@@ -57,6 +57,61 @@ func (s Sandbox) Resolve(p string) (string, error) {
 	return real, nil
 }
 
+// ErrLink is a path with a symlink in it where none may be (LinkFree).
+var ErrLink = errors.New("a symlink is in the path")
+
+// LinkFree is whether p, as written, reaches its file without a symlink: every existing
+// component below its root (the home or a shared layer, by either spelling) is checked with
+// Lstat. An approval's write must go where its card says (docs/needletail.md §7): a link in the
+// path would let the card name one place and a command retarget the write to another.
+func (s Sandbox) LinkFree(p string) error {
+	if strings.TrimSpace(p) == "" || strings.ContainsRune(p, 0) {
+		return errors.New("empty path")
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		p = filepath.Join(s.Home, strings.TrimPrefix(p, "~"))
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(s.Home, p)
+	}
+	p = filepath.Clean(p)
+	base, n := "", -1
+	for _, r := range append([]string{s.Home}, s.Shared...) {
+		if r == "" {
+			continue
+		}
+		clean := filepath.Clean(r)
+		spellings := []string{clean}
+		if rr, err := evalExisting(clean); err == nil {
+			spellings = append(spellings, rr)
+		}
+		for _, sp := range spellings {
+			if within(p, sp) && len(sp) > n {
+				base, n = sp, len(sp)
+			}
+		}
+	}
+	if n < 0 {
+		return fmt.Errorf("%s: %w", p, ErrOutside)
+	}
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel == "." {
+		return nil
+	}
+	cur, shown := base, ""
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur, shown = filepath.Join(cur, part), filepath.Join(shown, part)
+		info, err := os.Lstat(cur)
+		if err != nil {
+			return nil // the rest is made by the write, by descriptor (never through a link)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s is a symlink", ErrLink, filepath.ToSlash(shown))
+		}
+	}
+	return nil
+}
+
 // rootOf is the root (resolved) that the cleaned absolute path p is lexically inside, by the
 // root's configured spelling or its resolved one; the longest when roots nest.
 func (s Sandbox) rootOf(p string) (string, bool) {

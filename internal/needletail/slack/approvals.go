@@ -33,9 +33,8 @@ const (
 	actionApproveTrust = "needletail_approve_trust"
 )
 
-// cardChunk is the most characters of escaped payload one section block carries (Slack's limit
-// is 3000 per text object, with room for the code fence), maxCardBlocks how many a message may
-// hold (Slack's 50).
+// cardChunk is the most characters of payload one rich text block carries (Slack's limit is
+// 3000 per text object), maxCardBlocks how many a message may hold (Slack's 50).
 const (
 	cardChunk     = 2800
 	maxCardBlocks = 50
@@ -78,45 +77,71 @@ func (g *Gateway) Update(ctx context.Context, r *approvals.Request, p approvals.
 	if err != nil {
 		return err
 	}
-	return g.o.Web.UpdateBlocks(ctx, p.Channel, p.TS, outcomeLine(r, g.mention), blocks)
+	return g.o.Web.UpdateBlocks(ctx, p.Channel, p.TS, outcomeLine(r, g.mention, inlineCode), blocks)
 }
 
 // Tell posts a request's outcome in the conversation it was asked in: the runtime's notice (a
-// failed before_send handler does not keep it back), never the payload.
+// failed before_send handler does not keep it back), never the payload. The notice is Markdown
+// (say escapes it): the title goes in as code, never as formatting.
 func (g *Gateway) Tell(ctx context.Context, r *approvals.Request) error {
 	if r.Origin.Channel == "" {
 		return nil
 	}
-	_, err := g.say(ctx, messaging.KindNotice, r.Conversation, r.Origin.Channel, r.Origin.Thread, outcomeLine(r, func(id string) string { return id }))
+	_, err := g.say(ctx, messaging.KindNotice, r.Conversation, r.Origin.Channel, r.Origin.Thread, outcomeLine(r, func(id string) string { return id }, markdownCode))
 	return err
 }
 
 // mention is a user as a card shows them (<@U…>, which Slack renders as their name).
 func (g *Gateway) mention(id string) string { return "<@" + id + ">" }
 
-// outcomeLine is a request's state in one line.
-func outcomeLine(r *approvals.Request, who func(string) string) string {
+// Limits of what a card shows of the model's words (Slack's own: 3000 characters a section's
+// text, 2000 a field's, 150 a header's; the message 50 blocks).
+const (
+	titleMax  = 300
+	targetMax = 600
+	reasonMax = 1500
+	whyMax    = 1200
+)
+
+// inlineCode is model-controlled text as a card shows it in mrkdwn: one line, clipped, its
+// backticks turned into a lookalike (so it cannot close the code span) and &, < and > escaped
+// (no mention, link or broadcast), inside inline code (no formatting).
+func inlineCode(s string) string { return "`" + esc(codeText(s)) + "`" }
+
+// markdownCode is the same for Markdown the runtime posts through say (which escapes it).
+func markdownCode(s string) string { return "`" + codeText(s) + "`" }
+
+func codeText(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.ReplaceAll(clipRunes(s, titleMax), "`", "ˋ")
+}
+
+// outcomeLine is a request's state in one line; code renders the title (the model's words).
+func outcomeLine(r *approvals.Request, who, code func(string) string) string {
 	at := r.DecidedAt.UTC().Format("2006-01-02 15:04 UTC")
+	title := code(r.Card.Title)
 	switch r.Status {
 	case approvals.StatusPending:
-		return fmt.Sprintf("Approval %s is waiting for a decision: %s.", r.ID, r.Card.Title)
+		return fmt.Sprintf("Approval %s is waiting for a decision: %s.", r.ID, title)
 	case approvals.StatusApproved:
-		return fmt.Sprintf("Approval %s: approved by %s at %s; running %s.", r.ID, who(r.DecidedBy), at, r.Card.Title)
+		return fmt.Sprintf("Approval %s: approved by %s at %s; running %s.", r.ID, who(r.DecidedBy), at, title)
 	case approvals.StatusDone:
 		trust := ""
 		if r.Trusted {
 			trust = " The conversation is trusted again."
 		}
-		return fmt.Sprintf("Approval %s: approved by %s at %s; done: %s.%s", r.ID, who(r.DecidedBy), at, r.Card.Title, trust)
+		return fmt.Sprintf("Approval %s: approved by %s at %s; done: %s.%s", r.ID, who(r.DecidedBy), at, title, trust)
 	case approvals.StatusFailed:
 		if r.DecidedBy == "" {
-			return fmt.Sprintf("Approval %s: %s could not be put to an approver.", r.ID, r.Card.Title)
+			return fmt.Sprintf("Approval %s: %s could not be put to an approver.", r.ID, title)
 		}
-		return fmt.Sprintf("Approval %s: approved by %s at %s, but running it failed: %s.", r.ID, who(r.DecidedBy), at, r.Card.Title)
+		return fmt.Sprintf("Approval %s: approved by %s at %s, but running it failed: %s.", r.ID, who(r.DecidedBy), at, title)
 	case approvals.StatusDenied:
-		return fmt.Sprintf("Approval %s: denied by %s at %s; not done: %s.", r.ID, who(r.DecidedBy), at, r.Card.Title)
+		return fmt.Sprintf("Approval %s: denied by %s at %s; not done: %s.", r.ID, who(r.DecidedBy), at, title)
 	case approvals.StatusExpired:
-		return fmt.Sprintf("Approval %s: no decision by %s, so it was denied; not done: %s.", r.ID, r.Expires.UTC().Format("2006-01-02 15:04 UTC"), r.Card.Title)
+		return fmt.Sprintf("Approval %s: no decision by %s, so it was denied; not done: %s.", r.ID, r.Expires.UTC().Format("2006-01-02 15:04 UTC"), title)
+	case approvals.StatusInterrupted:
+		return fmt.Sprintf("Approval %s: approved by %s at %s, but the runtime stopped before it finished; it is not run again: %s.", r.ID, who(r.DecidedBy), at, title)
 	}
 	return fmt.Sprintf("Approval %s: %s.", r.ID, r.Status)
 }
@@ -124,34 +149,40 @@ func outcomeLine(r *approvals.Request, who func(string) string) string {
 // cardText is a card's notification and fallback text: what is asked and the default.
 func (g *Gateway) cardText(r *approvals.Request) string {
 	return fmt.Sprintf("Approval needed: %s. If no one decides by %s it is denied (the buttons need the Slack app's Interactivity turned on).",
-		r.Card.Title, r.Expires.UTC().Format("2006-01-02 15:04 UTC"))
+		inlineCode(r.Card.Title), r.Expires.UTC().Format("2006-01-02 15:04 UTC"))
 }
 
 // cardBlocks renders a request as Block Kit, from the structured action only: what, where, why,
 // who brought the untrusted input in (with a link to where), the agent's reason labelled as its
-// claim, the exact payload, and (open) the buttons, else the outcome.
+// claim, the exact payload, and (open) the buttons, else the outcome. The model's words (the
+// title's and target's parts, the reason) are shown as code or plain text, clipped, never as
+// formatting; the payload as preformatted rich text, exactly (no markup is read in it); every
+// block within Slack's limits, so no field the model sizes can keep the card from posting.
 func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, error) {
 	type text struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	md := func(s string) text { return text{Type: "mrkdwn", Text: s} }
+	md := func(s string) text { return text{Type: "mrkdwn", Text: clipRunes(s, 2900)} }
 	section := func(s string) map[string]any { return map[string]any{"type": "section", "text": md(s)} }
+	plain := func(s string) map[string]any {
+		return map[string]any{"type": "section", "text": text{Type: "plain_text", Text: clipRunes(s, 2900)}}
+	}
 	blocks := []map[string]any{
 		{"type": "header", "text": text{Type: "plain_text", Text: "Approval needed"}},
-		section(fmt.Sprintf("*%s* wants to *%s*", esc(g.agentName()), esc(r.Card.Title))),
+		section(fmt.Sprintf("*%s* wants to %s", esc(clipRunes(g.agentName(), 80)), inlineCode(r.Card.Title))),
 	}
 	fields := []text{}
 	if r.Card.Target != "" {
-		fields = append(fields, md("*Target*\n"+esc(r.Card.Target)))
+		fields = append(fields, md("*Target*\n"+"`"+esc(strings.ReplaceAll(clipRunes(strings.Join(strings.Fields(r.Card.Target), " "), targetMax), "`", "ˋ"))+"`"))
 	}
 	if r.Action.Tool != "" {
-		fields = append(fields, md("*Action*\n`"+esc(r.Action.Tool)+"`"))
+		fields = append(fields, md("*Action*\n"+inlineCode(r.Action.Tool)))
 	} else {
-		fields = append(fields, md("*Action*\n`"+esc(r.Action.Kind)+"`"))
+		fields = append(fields, md("*Action*\n"+inlineCode(r.Action.Kind)))
 	}
 	if r.Conversation != "" {
-		where := "`" + esc(r.Conversation) + "`"
+		where := inlineCode(r.Conversation)
 		if channel, thread, ok := Origin(r.Conversation); ok {
 			where = g.link(channel, thread, "the conversation")
 		}
@@ -159,7 +190,7 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 	}
 	fields = append(fields, md("*Expires*\n"+r.Expires.UTC().Format("2006-01-02 15:04 UTC")+" (denied without a decision)"))
 	blocks = append(blocks, map[string]any{"type": "section", "fields": fields})
-	blocks = append(blocks, section("*Why a person must approve*\n"+esc(clipRunes(r.Why, 1200))))
+	blocks = append(blocks, section("*Why a person must approve*\n"+esc(clipRunes(r.Why, whyMax))))
 	if len(r.Taint) > 0 {
 		lines := []string{}
 		for i, t := range r.Taint {
@@ -170,7 +201,11 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 			who := "marked data"
 			if len(t.Users) > 0 {
 				names := []string{}
-				for _, u := range t.Users {
+				for j, u := range t.Users {
+					if j == 5 {
+						names = append(names, fmt.Sprintf("%d more", len(t.Users)-5))
+						break
+					}
 					names = append(names, g.mention(u))
 				}
 				who = strings.Join(names, ", ")
@@ -182,7 +217,7 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 			}
 			line := "• " + who + ": " + esc(clipRunes(t.Why, 300))
 			if t.At != "" {
-				line += " — " + esc(t.At)
+				line += " — " + esc(clipRunes(t.At, 40))
 			}
 			if t.Channel != "" {
 				line += " — " + g.link(t.Channel, t.Thread, "origin")
@@ -195,19 +230,27 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 	if reason == "" {
 		reason = "(the agent gave none)"
 	}
-	blocks = append(blocks, section("*The agent's stated reason* (its own claim, not verified):\n>"+strings.ReplaceAll(esc(clipRunes(reason, 1500)), "\n", "\n>")))
+	blocks = append(blocks, section("*The agent's stated reason* (its own claim, not verified):"), plain(clipRunes(reason, reasonMax)))
 	if open {
 		head := fmt.Sprintf("*Exactly what runs* (%s, sha256 `%s…`):", esc(orDefault(r.Card.PayloadKind, "text")), r.Hash[:16])
 		blocks = append(blocks, section(head))
-		chunks := chunkEscaped(r.Card.Payload, cardChunk)
+		chunks := chunkRunes(r.Card.Payload, cardChunk)
 		if len(chunks) == 0 {
 			chunks = []string{"(empty)"}
 		}
-		if len(blocks)+len(chunks)+2 > maxCardBlocks {
-			return nil, fmt.Errorf("%w: %d blocks", approvals.ErrTooLarge, len(blocks)+len(chunks)+2)
-		}
-		for _, c := range chunks {
-			blocks = append(blocks, section("```"+c+"```"))
+		room := maxCardBlocks - len(blocks) - 2 // the buttons and the context
+		if len(chunks) > room {
+			// never more than a message holds: the rest is cut, said so (the sha256 covers the
+			// whole payload, and Approve runs the whole of it)
+			shown := 0
+			for _, c := range chunks[:room-1] {
+				shown += len(c)
+			}
+			chunks = chunks[:room-1]
+			blocks = append(blocks, preformatted(chunks)...)
+			blocks = append(blocks, section(fmt.Sprintf("*The payload is cut here*: %d more bytes are not shown, and Approve runs them too. Deny unless you have seen it whole.", len(r.Card.Payload)-shown)))
+		} else {
+			blocks = append(blocks, preformatted(chunks)...)
 		}
 		value := r.ID + "|" + r.Hash
 		buttons := []map[string]any{
@@ -221,7 +264,7 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 		blocks = append(blocks, map[string]any{"type": "context", "elements": []text{md(fmt.Sprintf("Approval %s. Only this exact payload runs, once. If the buttons do nothing, the Slack app's Interactivity is off: the request is denied at %s.",
 			r.ID, r.Expires.UTC().Format("15:04 UTC")))}})
 	} else {
-		blocks = append(blocks, section(outcomeLine(r, g.mention)))
+		blocks = append(blocks, section(outcomeLine(r, g.mention, inlineCode)))
 		blocks = append(blocks, map[string]any{"type": "context", "elements": []text{md(fmt.Sprintf("Approval %s · sha256 `%s…`", r.ID, r.Hash[:16]))}})
 	}
 	var b strings.Builder
@@ -231,6 +274,17 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 		return nil, err
 	}
 	return json.RawMessage(strings.TrimSpace(b.String())), nil
+}
+
+// preformatted are payload chunks as rich text blocks: preformatted text, shown as it is (no
+// mrkdwn is read in it, so no run of backticks can close it).
+func preformatted(chunks []string) []map[string]any {
+	out := make([]map[string]any, 0, len(chunks))
+	for _, c := range chunks {
+		out = append(out, map[string]any{"type": "rich_text", "elements": []map[string]any{{"type": "rich_text_preformatted",
+			"elements": []map[string]any{{"type": "text", "text": c}}}}})
+	}
+	return out
 }
 
 func (g *Gateway) agentName() string {
@@ -281,22 +335,18 @@ func esc(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
-// chunkEscaped splits s into pieces whose escaped form is at most n characters, never inside an
-// escape; a run of three backticks is broken with a zero-width space so it cannot end the fence.
-func chunkEscaped(s string, n int) []string {
-	s = strings.ReplaceAll(s, "```", "`​``")
+// chunkRunes splits s into pieces of at most n characters (never inside a character).
+func chunkRunes(s string, n int) []string {
 	var out []string
-	var b strings.Builder
-	for _, r := range s {
-		e := esc(string(r))
-		if b.Len()+len(e) > n {
-			out = append(out, b.String())
-			b.Reset()
+	for s != "" {
+		cut, count := 0, 0
+		for cut < len(s) && count < n {
+			_, size := utf8.DecodeRuneInString(s[cut:])
+			cut += size
+			count++
 		}
-		b.WriteString(e)
-	}
-	if b.Len() > 0 {
-		out = append(out, b.String())
+		out = append(out, s[:cut])
+		s = s[cut:]
 	}
 	return out
 }

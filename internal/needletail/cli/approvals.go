@@ -181,6 +181,16 @@ func (rt *runtime) approve(ctx context.Context, env *tools.Env, tool string, arg
 			origin.Thread = in.Thread // a DM thread: told where it was asked
 		}
 	}
+	// one unambiguous object: rendered, hashed and run as it is (a key twice, or keys equal
+	// ignoring case, would show one value and run another)
+	var props []string
+	if t, ok := rt.agent.Tools.Get(tool); ok {
+		props = approvals.SchemaProperties(t.Schema)
+	}
+	args, err := approvals.Canonical(args, props)
+	if err != nil {
+		return nil, fmt.Errorf("%v; its arguments were not put to a person: %v", need, err)
+	}
 	card, err := rt.describe(env, tool, args)
 	if err != nil {
 		return nil, fmt.Errorf("%v; the request could not be shown to a person (%v), so it is refused", need, err)
@@ -272,12 +282,12 @@ func (rt *runtime) describe(env *tools.Env, tool string, raw json.RawMessage) (a
 			card.Title += " (with a broadcast)"
 		}
 	case tool == "write_file":
-		card = approvals.Card{Title: "write the file " + str("path"), Target: str("path"), Payload: str("content"), PayloadKind: "text"}
+		card = approvals.Card{Title: "write the file " + rt.shownPath(env, str("path")), Target: rt.shownPath(env, str("path")), Payload: str("content"), PayloadKind: "text"}
 		if old, ok := rt.currentFile(env, str("path")); ok {
 			card.Payload, card.PayloadKind = sched.UnifiedDiff(old, str("content")), "diff"
 		}
 	case tool == "patch":
-		card = approvals.Card{Title: "patch the file " + str("path"), Target: str("path"), PayloadKind: "diff",
+		card = approvals.Card{Title: "patch the file " + rt.shownPath(env, str("path")), Target: rt.shownPath(env, str("path")), PayloadKind: "diff",
 			Payload: sched.UnifiedDiff(str("old_string"), str("new_string"))}
 		if old, ok := rt.currentFile(env, str("path")); ok && strings.Contains(old, str("old_string")) && str("old_string") != "" {
 			all, _ := a["replace_all"].(bool)
@@ -359,6 +369,20 @@ func (rt *runtime) describe(env *tools.Env, tool string, raw json.RawMessage) (a
 		return card, approvals.ErrTooLarge
 	}
 	return card, nil
+}
+
+// shownPath is a file tool's path as the card names it: where it resolves (relative to the home
+// when inside it). The gate refused a path with a symlink in it, so it is the path as written,
+// and the write refuses to run if it resolves elsewhere by then.
+func (rt *runtime) shownPath(env *tools.Env, p string) string {
+	if env == nil {
+		return p
+	}
+	real, err := env.Sandbox.Resolve(p)
+	if err != nil {
+		return p
+	}
+	return env.Sandbox.Display(real)
 }
 
 // currentFile is a file's content as the file tools would read it now (bounded), for a diff.
