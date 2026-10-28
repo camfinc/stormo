@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -113,6 +114,11 @@ func TestPrivateAndGroup(t *testing.T) {
 	fake.WaitSent(3, 5*time.Second)
 	if fake.Confirmed() < 1005 {
 		t.Errorf("offset %d: taken updates not confirmed", fake.Confirmed())
+	}
+	// the command menu: the commands but /trust (approvers are Slack's)
+	menu := fake.Calls("setMyCommands")
+	if len(menu) != 1 || strings.Contains(fmt.Sprint(menu[0].Params), "trust") || !strings.Contains(fmt.Sprint(menu[0].Params), "new") {
+		t.Errorf("menu %+v", menu)
 	}
 }
 

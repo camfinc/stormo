@@ -264,6 +264,9 @@ func (g *Gateway) Start() {
 		g.logf("telegram: connected as @%s (%d)", g.me.Username, g.me.ID)
 		cmds := []Command{}
 		for _, d := range commands.Defs {
+			if d.Key == commands.Trust {
+				continue // approvers are Slack's: /trust is not served on Telegram (§4.14)
+			}
 			cmds = append(cmds, Command{Command: d.Key, Description: clipRunes(d.Description, 256)})
 		}
 		if err := g.o.Bot.SetCommands(g.polling, cmds); err != nil {
