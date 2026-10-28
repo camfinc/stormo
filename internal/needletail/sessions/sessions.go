@@ -716,6 +716,49 @@ func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Mess
 	return child.ID, s.writeIndex()
 }
 
+// Restart is a person's /new (docs/needletail.md §4.9): the conversation id belongs to goes on in
+// a fresh child session of its live one, whose context holds none of the earlier rows (a turn reads
+// its tip's rows only): one system row says so (note), and its header is clean, neither marked nor
+// tainted (what made the conversation untrusted is no longer in its context; the earlier sessions
+// keep their marks, which session_search and the transcript still read). The earlier session ends
+// with end_reason "new" (wire.EndNew); the conversation is not gone (no OnGone: its follow-ups and
+// processes are the caller's to decide). It returns the new session.
+func (s *Store) Restart(id, note string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return "", ErrNotFound
+	}
+	tip := line[len(line)-1]
+	m := s.metas[tip]
+	if m.child != "" || m.EndReason != "" {
+		return "", ErrEnded
+	}
+	child, err := s.create(wire.Session{Parent: tip, Source: m.Source, Title: m.Title})
+	if err != nil {
+		return "", err
+	}
+	c := s.metas[child.ID]
+	if note != "" {
+		_, err = s.append(c, []wire.Message{{Role: "system", Content: note, At: Stamp(s.now())}}, true)
+	}
+	if err == nil {
+		// durable before the old session ends, as a compaction's
+		err = s.syncFile(child.ID)
+	}
+	if err == nil {
+		err = s.end(tip, wire.EndNew)
+	}
+	if err != nil {
+		_ = os.Remove(s.path(child.ID))
+		delete(s.metas, child.ID)
+		return "", err
+	}
+	m.child = child.ID
+	return child.ID, s.writeIndex()
+}
+
 func (s *Store) syncFile(id string) error {
 	f, err := os.OpenFile(s.path(id), os.O_WRONLY, 0)
 	if err != nil {

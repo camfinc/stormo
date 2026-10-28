@@ -144,6 +144,10 @@ const MaxTaint = 8
 // EndCompression is Session.EndReason for a session a compaction continued elsewhere.
 const EndCompression = "compression"
 
+// EndNew is Session.EndReason for a session a person left with /new: the conversation goes on in
+// a fresh child session (sessions.Store.Restart) whose context holds none of its rows.
+const EndNew = "new"
+
 // SessionSummary is one conversation in GET /v1/sessions: listed as its live tip (ID), with Root
 // naming the conversation's first session when compactions moved it.
 type SessionSummary struct {
