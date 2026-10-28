@@ -506,7 +506,7 @@ func TestAPICannotClaimARuntimeConversation(t *testing.T) {
 	} else if h, _ := s.store.Get("mine-2"); h.Source != SourceAPI {
 		t.Errorf("a created session's source = %q", h.Source)
 	}
-	for _, id := range []string{"slack-D0DMCHAN01-dm", "slack-C0DEV-1700000000.1", "SLACK-D0DMCHAN01-dm", "oneshot-abc"} {
+	for _, id := range []string{"slack-D0DMCHAN01-dm", "slack-C0DEV-1700000000.1", "SLACK-D0DMCHAN01-dm", "oneshot-abc", "telegram-1001", "telegram--1009999-7"} {
 		if code, raw, _ := do(ctx, http.MethodPost, "/v1/sessions", map[string]string{"id": id}); code != http.StatusForbidden {
 			t.Errorf("create %s = %d %s", id, code, raw)
 		}
@@ -521,7 +521,7 @@ func TestAPICannotClaimARuntimeConversation(t *testing.T) {
 		}
 	}
 	// the gateway's conversations, a oneshot's, and one a legacy file says is Slack's
-	for _, h := range []wire.Session{{ID: "slack-D0DMCHAN01-dm", Source: "slack"}, {ID: "oneshot-1", Source: "cli"}, {ID: "legacy-1", Source: "slack"}, {ID: "legacy-2", Source: "cli"}} {
+	for _, h := range []wire.Session{{ID: "slack-D0DMCHAN01-dm", Source: "slack"}, {ID: "oneshot-1", Source: "cli"}, {ID: "legacy-1", Source: "slack"}, {ID: "legacy-2", Source: "cli"}, {ID: "legacy-3", Source: "telegram"}} {
 		if _, err := s.store.Create(h); err != nil {
 			t.Fatal(err)
 		}
@@ -530,7 +530,7 @@ func TestAPICannotClaimARuntimeConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"slack-D0DMCHAN01-dm", child, "oneshot-1", "legacy-1", "legacy-2"} {
+	for _, id := range []string{"slack-D0DMCHAN01-dm", child, "oneshot-1", "legacy-1", "legacy-2", "legacy-3"} {
 		if code, raw, _ := do(ctx, http.MethodPost, "/v1/sessions/"+id+"/chat", wire.ChatRequest{Message: "what does Ana remember?"}); code != http.StatusForbidden {
 			t.Errorf("chat in %s = %d %s", id, code, raw)
 		}

@@ -137,3 +137,15 @@ func TestSearchKeyOwned(t *testing.T) {
 		t.Errorf("tavily: env %v", on.Clean(environ))
 	}
 }
+
+// The Telegram bot's token is the runtime's: read, redacted, and out of the terminal's env.
+func TestTelegramTokenOwned(t *testing.T) {
+	environ := []string{"TELEGRAM_BOT_TOKEN=123456:telegram-token-0123456789", "PATH=/bin"}
+	s := Load(&wire.Config{Channels: []string{"telegram"}}, environ)
+	if s.Get(TelegramBot) != "123456:telegram-token-0123456789" || len(s.Clean(environ)) != 1 {
+		t.Errorf("owned %q, env %v", s.Get(TelegramBot), s.Clean(environ))
+	}
+	if r := NewRedactor(s, environ); strings.Contains(r.Redact("token 123456:telegram-token-0123456789"), "telegram-token") {
+		t.Error("not redacted")
+	}
+}

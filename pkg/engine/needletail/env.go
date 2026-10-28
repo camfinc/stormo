@@ -26,6 +26,35 @@ func (n *Needletail) Env(a *manifest.Agent, target manifest.Target) *env.Env {
 		e.Set(s.Env, home+"/"+n.layout.StateRoot+"/"+s.Name)
 	}
 	e.Merge(slackEnv(a, target))
+	e.Merge(telegramEnv(a, target))
+	return e
+}
+
+// telegramEnv is the Telegram channel's settings (the token comes from secrets), as Hermes names
+// them.
+func telegramEnv(a *manifest.Agent, target manifest.Target) *env.Env {
+	e := env.New()
+	for _, c := range a.Channels {
+		if c.Kind != "telegram" {
+			continue
+		}
+		s := c.SlackSettings
+		if target == manifest.Local && c.Local != nil {
+			s = overlay(s, *c.Local)
+		}
+		if s.AllowAllUsers != nil && *s.AllowAllUsers {
+			e.Set("TELEGRAM_ALLOW_ALL_USERS", "true")
+		}
+		if len(s.AllowedUsers) > 0 {
+			e.Set("TELEGRAM_ALLOWED_USERS", strings.Join(s.AllowedUsers, ","))
+		}
+		if s.HomeChannel != "" {
+			e.Set("TELEGRAM_HOME_CHANNEL", s.HomeChannel)
+		}
+		if s.HomeChannelName != "" {
+			e.Set("TELEGRAM_HOME_CHANNEL_NAME", s.HomeChannelName)
+		}
+	}
 	return e
 }
 

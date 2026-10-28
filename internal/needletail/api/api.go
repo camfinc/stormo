@@ -38,17 +38,18 @@ type Turns interface {
 const SourceAPI = "api_server"
 
 // The conversations the runtime makes itself, which the API neither creates nor continues
-// (Reserved): a Slack conversation is the gateway's (slack-<channel>-…, source slack) and a
+// (Reserved): a Slack conversation is the gateway's (slack-<channel>-…, source slack), a Telegram
+// chat's too (telegram-<chat>…, source telegram), and a
 // oneshot the owner's at the command line (oneshot-…, source cli). The memory reads a turn's
 // audience from them (docs/needletail.md §4.6), so a caller that could make or resume one would
 // claim its channel's records, or every scope.
 var (
-	reservedPrefixes = []string{"slack-", "oneshot-"}
-	reservedSources  = []string{"slack", "cli"}
+	reservedPrefixes = []string{"slack-", "telegram-", "oneshot-"}
+	reservedSources  = []string{"slack", "telegram", "cli"}
 )
 
 // ErrReserved refuses an API request for a conversation the runtime makes itself.
-var ErrReserved = errors.New("that conversation is the runtime's own (a Slack conversation, a oneshot): the API does not create or continue it")
+var ErrReserved = errors.New("that conversation is the runtime's own (a Slack or Telegram conversation, a oneshot): the API does not create or continue it")
 
 // Reserved: id, or the conversation the store has it in, is one the API may not create or
 // continue: its id or its root's has a reserved prefix (case-folded: a case-insensitive disk

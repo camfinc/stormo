@@ -36,7 +36,7 @@ func Tool(ix *Index, audience func(session string) Visible, persist ...func(sess
 "sort":{"type":"string","enum":["newest","oldest"],"description":"Omit for relevance; newest for where something was left, oldest for how it started."},
 "after":{"type":"string","description":"Sessions started at or after: an ISO date or time, or a duration back (7d, 24h, 2w)."},
 "before":{"type":"string","description":"Sessions started before: an ISO date or time, or a duration back (7d = older than a week)."},
-"source":{"type":"string","enum":["slack","api_server","cron","cli"],"description":"Only conversations of this source."},
+"source":{"type":"string","enum":["slack","telegram","api_server","cron","cli"],"description":"Only conversations of this source."},
 "role_filter":{"type":"string","description":"user, assistant or user,assistant (default)."},
 "exclude_session_ids":{"type":"array","items":{"type":"string"},"maxItems":20,"description":"Sessions already looked at (their conversations are left out)."},
 "session_id":{"type":"string","description":"A session to read (alone) or scroll (with around_message_id)."},
@@ -141,7 +141,7 @@ func hookArgs(args string) string {
 		return "{}"
 	}
 	out := map[string]any{}
-	for k, allowed := range map[string][]string{"sort": {"newest", "oldest"}, "source": {"slack", "api_server", "cron", "cli"}} {
+	for k, allowed := range map[string][]string{"sort": {"newest", "oldest"}, "source": {"slack", "telegram", "api_server", "cron", "cli"}} {
 		if v, ok := m[k].(string); ok {
 			if slices.Contains(allowed, v) {
 				out[k] = v

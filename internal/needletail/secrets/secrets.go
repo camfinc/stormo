@@ -27,6 +27,8 @@ const (
 	CoreKey     = "SWARM_CORE_KEY"
 	SlackBot    = "SLACK_BOT_TOKEN"
 	SlackApp    = "SLACK_APP_TOKEN"
+	// TelegramBot is the Telegram bot's token (the gateway's; it travels only to api.telegram.org).
+	TelegramBot = "TELEGRAM_BOT_TOKEN"
 	// STTKey is the speech-to-text provider's key (ElevenLabs'), the runtime's when stt is on.
 	STTKey      = "ELEVENLABS_API_KEY"
 	minRedacted = 8 // shorter values are too likely to be ordinary words
@@ -44,10 +46,11 @@ type Secrets struct {
 }
 
 // Owned are the env names the runtime reads for cfg: its API key, the core key, the Slack tokens,
+// the Telegram bot token,
 // each model endpoint's key, each http_secrets env (Luau never sees those) and, when voice notes
 // are transcribed, the speech-to-text key (then out of the terminal's env).
 func Owned(cfg *wire.Config) []string {
-	names := []string{APIKey, CoreKey, SlackBot, SlackApp, LearningKey}
+	names := []string{APIKey, CoreKey, SlackBot, SlackApp, TelegramBot, LearningKey}
 	add := func(n string) {
 		if n != "" && !slices.Contains(names, n) {
 			names = append(names, n)

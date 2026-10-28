@@ -340,7 +340,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 		c.Schedules.Repo = append(c.Schedules.Repo, s.ID)
 	}
 	for _, ch := range a.Channels {
-		if ch.Kind == "slack" { // the only gateway in the MVP
+		if ch.Kind == "slack" || ch.Kind == "telegram" { // the gateways the runtime has
 			c.Channels = append(c.Channels, ch.Kind)
 		}
 	}

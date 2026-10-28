@@ -179,6 +179,18 @@ type Gateway struct {
 	// are being answered
 	commands *Commands
 	slashes  int
+	// elsewhere sends to another platform's targets through send_message (SetElsewhere), and
+	// elsewhereTargets lists them
+	elsewhere        messaging.Messenger
+	elsewhereTargets func() []map[string]string
+}
+
+// SetElsewhere lets send_message reach another platform's targets (telegram:…) through m, which
+// applies its own policy, and lists them with targets.
+func (g *Gateway) SetElsewhere(m messaging.Messenger, targets func() []map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.elsewhere, g.elsewhereTargets = m, targets
 }
 
 // job is one message for a conversation's worker, routed but not yet prepared: the worker reads

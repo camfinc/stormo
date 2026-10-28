@@ -44,6 +44,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/slack"
 	"github.com/camfinc/stormo/internal/needletail/stt"
+	"github.com/camfinc/stormo/internal/needletail/telegram"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/web"
 	"github.com/camfinc/stormo/internal/needletail/wire"
@@ -346,17 +347,43 @@ func audiences(store *sessions.Store, dmUser func(channel string) string, ops *o
 		if r, ok := store.Root(session); ok {
 			h, _ := store.Get(r)
 			root, source = r, h.Source
-		} else if strings.HasPrefix(session, "slack-") {
-			source = slack.Source
+		} else {
+			source = sourceFromID(session)
 		}
 		return audienceOf(root, source, dmUser, ops)
 	}
 }
 
+// sourceFromID is the source of a chat conversation the store does not know yet (a message's
+// handlers run before its turn creates it), read from its id: slack-…, telegram-…; "" for others.
+func sourceFromID(session string) string {
+	switch {
+	case strings.HasPrefix(session, "slack-"):
+		return slack.Source
+	case strings.HasPrefix(session, "telegram-"):
+		return telegram.Source
+	}
+	return ""
+}
+
+// chatSource: a source whose conversations are a chat gateway's (Slack, Telegram).
+func chatSource(source string) bool { return source == slack.Source || source == telegram.Source }
+
 // audienceOf is the audience of the conversation whose root and source these are (audiences).
 func audienceOf(root, source string, dmUser func(channel string) string, ops *operators) memory.Audience {
 	if ops.has(root) {
 		return memory.Audience{Operator: true}
+	}
+	if source == telegram.Source {
+		// a private chat is its person's (its id is theirs), a group (or a topic of it) the chat's
+		chat, topic, ok := telegram.Origin(root)
+		switch {
+		case !ok:
+			return memory.Audience{}
+		case chat > 0 && topic == 0:
+			return memory.Audience{Scope: memory.DMScope(telegram.UserID(chat)), Conv: root}
+		}
+		return memory.Audience{Scope: memory.ChannelScope("telegram:" + strconv.FormatInt(chat, 10)), Conv: root}
 	}
 	if source != slack.Source {
 		return memory.Audience{}
@@ -409,6 +436,9 @@ func searchable(who func(session string) memory.Audience, sourceOf func(session 
 			}
 			if _, _, ok := slack.Origin(root); source == slack.Source && !ok {
 				return false // a Slack conversation whose channel cannot be told: no one's but the owner's
+			}
+			if _, _, ok := telegram.Origin(root); source == telegram.Source && !ok {
+				return false
 			}
 			a := audienceOf(root, source, dmUser, ops)
 			switch {
@@ -559,6 +589,14 @@ func origin(store *sessions.Store) func(session string) json.RawMessage {
 			return nil
 		}
 		h, _ := store.Get(root)
+		if chat, topic, ok := telegram.Origin(root); ok && h.Source == telegram.Source {
+			o := map[string]any{"platform": telegram.Source, "chat_id": strconv.FormatInt(chat, 10), "thread_id": nil}
+			if topic != 0 {
+				o["thread_id"] = strconv.Itoa(topic)
+			}
+			b, _ := json.Marshal(o)
+			return b
+		}
 		channel, thread, ok := slack.Origin(root)
 		if h.Source != slack.Source || !ok {
 			return nil
@@ -599,7 +637,7 @@ const SlackAPIEnv = "NEEDLETAIL_SLACK_API_URL"
 
 // startSlack is the Slack gateway (§4.9), when needletail.yaml names the channel and both tokens
 // are there; nil otherwise. Its settings are the channel's, in Hermes' SLACK_* env.
-func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
+func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 	if !slices.Contains(rt.cfg.Channels, "slack") {
 		return nil
 	}
@@ -669,13 +707,8 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 	rt.agent.Sections = append(rt.agent.Sections, gw.Guidance)
 	rt.guide.Slack, rt.guide.Broadcast = true, rt.cfg.Slack != nil && rt.cfg.Slack.Broadcast
 	rt.setGuide()
-	rt.sched.SetDeliverer(gw)
-	rt.sched.SetTargetCheck(gw.CheckTarget)
-	fu.setSlack(gw) // the follow-ups' Slack posts, under the same policy
-	rt.followUps.SetTargetCheck(followUpCheck(gw))
-	if rt.luau != nil {
-		rt.luau.Messenger = gw // Luau's send_message, under the same policy
-	}
+	// the scheduler's deliveries, the follow-ups and Luau's send_message go through the gateways
+	// (wirePlatforms), each under its platform's messaging policy
 	known := gw.KnownDMUser
 	rt.dmUsers.Store(&known) // the memory's DM audiences
 	gw.Start()
@@ -797,7 +830,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
-	var gw *slack.Gateway
+	plat := &platforms{}
 	srv, err := api.New(api.Options{Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, MaxTurns: rt.cfg.ChatTurns(), Jail: rt.jail,
 		Trust: func(conv string) error {
@@ -805,10 +838,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 			return rt.trustConversation(conv, "owner (API)")
 		},
 		Platforms: func() map[string]wire.Platform {
-			if gw == nil {
-				return nil
+			if states := plat.states(); len(states) > 0 {
+				return states
 			}
-			return map[string]wire.Platform{"slack": gw.Platform()}
+			return nil
 		}})
 	if err != nil {
 		fmt.Fprintf(stderr, "needletail serve: %v\n", err)
@@ -821,7 +854,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	rt.sched.SetTurns(reservations{srv})
 	fu := newFollowUps(rt, srv)
-	gw = startSlack(rt, srv, fu)
+	gw := startSlack(rt, srv)
+	tg := startTelegram(rt, srv)
+	plat.slack, plat.telegram = gw, tg
+	wirePlatforms(rt, plat, fu)
 	ticks, stopTicks := context.WithCancel(context.Background())
 	defer stopTicks()
 	learningDone := make(chan struct{})
@@ -837,18 +873,21 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
 	defer func() { stopTicks(); <-maintenanceDone }()
 	// approvals (docs/needletail.md §7): the cards go through the gateway, which takes their buttons
-	svc := startApprovals(ticks, rt, srv, gw)
+	svc := startApprovals(ticks, rt, srv, plat)
 	if svc != nil && gw != nil {
 		gw.SetDecider(svc)
 	}
-	// the chat commands (§4.9): /new, /status, /memory, /jobs, /stop, /trust, /help
+	// the chat commands (§4.9, §4.14): /new, /status, /memory, /jobs, /stop, /trust, /help
 	backend := rt.commandBackend(srv, func() map[string]string {
 		out := map[string]string{}
-		if gw != nil {
-			out["Slack"] = gw.Platform().State
+		for name, p := range plat.states() {
+			out[name] = p.State
 		}
 		return out
 	})
+	if tg != nil {
+		tg.SetCommands(telegram.Commands{Backend: backend})
+	}
 	approverIDs := func() []string {
 		if svc == nil {
 			return nil
@@ -878,6 +917,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	if gw != nil {
 		gw.BeginShutdown() // no Slack message starts a turn; new events are left for Slack to resend
 	}
+	if tg != nil {
+		tg.BeginShutdown() // no Telegram update is taken; those not confirmed go to the next runtime
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = hs.Shutdown(sctx)
 	cancel()
@@ -893,6 +935,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	if gw != nil {
 		gctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		gw.Shutdown(gctx) // the drained turns' replies are posted, then the socket closes
+		cancel()
+	}
+	if tg != nil {
+		tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		tg.Shutdown(tctx) // the drained turns' replies are posted, the taken updates confirmed
 		cancel()
 	}
 	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -935,7 +982,7 @@ func oneshot(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return oneshotResult(stdout, stderr, *format, nil, err)
 	}
 	rt.operators.mark(h.ID) // the owner's own turn: every scope (§4.6)
-	if slices.Contains(rt.cfg.Channels, "slack") {
+	if slices.Contains(rt.cfg.Channels, "slack") || slices.Contains(rt.cfg.Channels, telegram.Source) {
 		// no gateway runs here: a follow-up's target meets the policy as far as it is known
 		// without one, and serve checks it again when it fires
 		rt.followUps.SetTargetCheck(oneshotFollowUpCheck(rt.store))

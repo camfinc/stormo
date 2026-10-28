@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/slack"
+	"github.com/camfinc/stormo/internal/needletail/telegram"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
@@ -40,8 +42,8 @@ func followUpOrigin(store *sessions.Store, where func(session string) memory.Aud
 		if r, ok := store.Root(session); ok {
 			h, _ := store.Get(r)
 			root, source = r, h.Source
-		} else if strings.HasPrefix(session, "slack-") {
-			source = slack.Source
+		} else {
+			source = sourceFromID(session)
 		}
 		c := followup.Conversation{Session: root, Source: source, Untrusted: store.Untrusted(session)}
 		if where != nil {
@@ -139,9 +141,9 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 		}
 		return p.FollowUp(ctx, slack.FollowUpPost{Target: it.Target, Origin: it.Origin.Session, Users: it.Origin.Users, Kind: slack.FollowUpMessage, Text: it.Text, Untrusted: untrustedText(it) || f.store.Untrusted(it.Origin.Session)})
 	}
-	if it.Origin.Source == slack.Source {
+	if chatSource(it.Origin.Source) {
 		if _, ok := f.store.Root(it.Origin.Session); !ok {
-			if _, err := f.store.Create(wire.Session{ID: it.Origin.Session, Source: slack.Source, Title: "Slack conversation", Untrusted: untrustedText(it)}); err != nil {
+			if _, err := f.store.Create(wire.Session{ID: it.Origin.Session, Source: it.Origin.Source, Title: "Chat conversation", Untrusted: untrustedText(it)}); err != nil {
 				if _, exists := f.store.Root(it.Origin.Session); !exists {
 					return err
 				}
@@ -154,7 +156,7 @@ func (f *followUps) message(ctx context.Context, it followup.Item) error {
 	}
 	defer release()
 	tip, ok := f.store.Tip(it.Origin.Session)
-	if it.Origin.Source == slack.Source {
+	if chatSource(it.Origin.Source) {
 		p := f.poster()
 		if p == nil {
 			return errNoSlack
@@ -215,7 +217,7 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 	if it.Phase == followup.PhaseRan {
 		return f.deliver(ctx, it, it.Reply) // its turn ran: post the reply it kept, never the turn again
 	}
-	if _, ok := f.store.Root(root); !ok && it.Origin.Source != slack.Source {
+	if _, ok := f.store.Root(root); !ok && !chatSource(it.Origin.Source) {
 		return followup.ErrGone // a deleted API conversation is not made again
 	}
 	if tip, ok := f.store.Tip(root); ok {
@@ -253,7 +255,7 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 // toSlack: the follow-up's reply or text is posted in Slack (another target, or its own Slack
 // conversation), not only kept in an API conversation's transcript.
 func (f *followUps) toSlack(it followup.Item) bool {
-	return it.Target != followup.TargetOrigin || it.Origin.Source == slack.Source
+	return it.Target != followup.TargetOrigin || chatSource(it.Origin.Source)
 }
 
 // mayPost is whether a reply bound for Slack may still go: who asked still admitted and the
@@ -349,10 +351,32 @@ func oneshotFollowUpCheck(store *sessions.Store) func(target string, origin foll
 		}
 		return slices.Contains(slackChannels(store), channel)
 	}}
+	tgUsers := envList("TELEGRAM_ALLOWED_USERS")
+	tgHome := strings.TrimSpace(os.Getenv("TELEGRAM_HOME_CHANNEL"))
 	return func(target string, _ followup.Conversation) error {
 		t, err := messaging.Parse(target)
 		if err != nil {
 			return err
+		}
+		if t.Platform == telegram.Source {
+			// as the Telegram gateway's policy: the home chat, an allowed person's private chat, a
+			// chat the agent has a conversation in
+			switch {
+			case t.Channel == "" && tgHome != "", t.Channel != "" && t.Channel == tgHome:
+				return nil
+			case t.Channel != "" && !strings.HasPrefix(t.Channel, "-") && slices.Contains(tgUsers, t.Channel):
+				return nil
+			}
+			for _, s := range store.List(1000) {
+				id := s.ID
+				if s.Root != "" {
+					id = s.Root
+				}
+				if chat, _, ok := telegram.Origin(id); ok && strconv.FormatInt(chat, 10) == t.Channel {
+					return nil
+				}
+			}
+			return fmt.Errorf("%w: %s is not a chat you have a conversation in, the home chat or an allowed person's private chat", messaging.ErrRefused, target)
 		}
 		_, err = policy.Check(t, false)
 		return err

@@ -219,6 +219,15 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
+	if t.Platform != "slack" {
+		g.mu.Lock()
+		other := g.elsewhere
+		g.mu.Unlock()
+		if other == nil {
+			return messaging.Sent{}, fmt.Errorf("%w: %s (no %s gateway runs here)", messaging.ErrRefused, r.Target, t.Platform)
+		}
+		return other.Send(ctx, r)
+	}
 	gate := g.quarantineSend(ctx, t, r.Broadcast)
 	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
 		return messaging.Sent{}, gate
@@ -327,7 +336,7 @@ Targets: 'slack' (the home channel), 'slack:<channel id>' for a channel you have
 
 const sendSchema = `{"type":"object","properties":{
 "action":{"type":"string","enum":["send","list","channels","channel_info"],"description":"send (default), list known targets, channels to discover channels, or channel_info to check an exact channel ID."},
-"target":{"type":"string","description":"'slack' (home channel), 'slack:<channel>', 'slack:<channel>:<thread_ts>' or 'slack:<user id>'."},
+"target":{"type":"string","description":"'slack' (home channel), 'slack:<channel>', 'slack:<channel>:<thread_ts>' or 'slack:<user id>'; on Telegram too, 'telegram' (its home chat) or 'telegram:<chat id>' (list shows them)."},
 "query":{"type":"string","description":"channels: case-insensitive channel-name substring, optionally starting with #; filters this page only."},
 "cursor":{"type":"string","description":"channels: next_cursor from the preceding page; continue even if there were no matches."},
 "channel_type":{"type":"string","enum":["public_channel","private_channel"],"description":"channels: public_channel by default; private_channel only lists channels visible to the bot."},
@@ -354,6 +363,12 @@ func (g *Gateway) targets() []map[string]string {
 	}
 	for _, u := range g.Policy().AllowedUsers {
 		out = append(out, map[string]string{"target": "slack:" + u, "description": "a DM with an allowed user"})
+	}
+	g.mu.Lock()
+	more := g.elsewhereTargets
+	g.mu.Unlock()
+	if more != nil {
+		out = append(out, more()...)
 	}
 	return out
 }

@@ -45,7 +45,9 @@ type guide struct {
 	LuauTimeout   int
 	ScriptTimeout int
 	// Slack: the gateway runs (send_message, no_reply); Broadcast the agent's grant.
-	Slack     bool
+	Slack bool
+	// Telegram: the Telegram gateway runs (send_message to telegram:<chat id>).
+	Telegram  bool
 	Broadcast bool
 	// Recall: related archive records are put in front of a user's message (memory.recall).
 	Recall bool
@@ -127,14 +129,26 @@ func (g guide) render() string {
 		ref.WriteString("\n")
 	}
 	var post strings.Builder
-	if g.Slack {
+	if g.Slack || g.Telegram {
 		b := &post
-		b.WriteString("## Messages\n" +
-			"Your reply is posted in its conversation; send_message posts elsewhere: `slack` (the home channel), a channel or " +
-			"thread you are in, or the DM of a person allowed to talk to you (action list shows them); nothing else. ")
-		if g.Broadcast {
+		b.WriteString("## Messages\n")
+		switch {
+		case g.Slack && g.Telegram:
+			b.WriteString("Your reply is posted in its conversation; send_message posts elsewhere: `slack` (the home channel), a channel or " +
+				"thread you are in, the DM of a person allowed to talk to you, `telegram` (its home chat) or `telegram:<chat id>` of a chat " +
+				"you are in or an allowed person's (action list shows them); nothing else. ")
+		case g.Slack:
+			b.WriteString("Your reply is posted in its conversation; send_message posts elsewhere: `slack` (the home channel), a channel or " +
+				"thread you are in, or the DM of a person allowed to talk to you (action list shows them); nothing else. ")
+		default:
+			b.WriteString("Your reply is posted in its chat; send_message posts elsewhere: `telegram` (the home chat) or `telegram:<chat id>` " +
+				"of a chat you are in or an allowed person's (action list shows them); nothing else. ")
+		}
+		switch {
+		case !g.Slack: // Telegram has no broadcast
+		case g.Broadcast:
 			b.WriteString("@channel, @here, @everyone and user groups ping only with broadcast: true. ")
-		} else {
+		default:
 			b.WriteString("You are not granted broadcasts: @channel, @here, @everyone and user groups never ping. ")
 		}
 		b.WriteString("Files sent to you: images are shown, voice notes transcribed, text included; view_file looks again " +

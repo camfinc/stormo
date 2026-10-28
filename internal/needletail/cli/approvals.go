@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/slack"
+	"github.com/camfinc/stormo/internal/needletail/telegram"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -86,7 +88,7 @@ func riskyCommands(c *wire.ApprovalsConfig, logf func(string)) *approvals.Comman
 // was down denied), approved actions run by the runtime, outcomes noted in their conversations,
 // timeouts checked every approvalTick until ctx ends. The Slack gateway shows the cards (wired
 // once it runs).
-func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack.Gateway) *approvals.Service {
+func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, plat *platforms) *approvals.Service {
 	c := rt.cfg.Approvals
 	o := approvals.Options{StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(), Approvers: approvers(c, slackAllowedUsers(), rt.logf), Log: rt.logf,
 		Execute: map[string]approvals.Executor{approvals.KindTool: rt.runApproved, approvals.KindDelivery: rt.sched.DeliverApproved},
@@ -140,8 +142,8 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 		o.PerConversation, o.PerDay = c.PerConversation, c.PerDay
 	}
 	svc := approvals.New(o)
-	if gw != nil {
-		svc.SetNotifier(gw)
+	if plat != nil && (plat.slack != nil || plat.telegram != nil) {
+		svc.SetNotifier(plat) // cards in the approvers' Slack DMs; outcomes in the conversation's chat
 	}
 	if err := svc.Boot(ctx); err != nil {
 		rt.logf(fmt.Sprintf("approvals: %v: approvals are off (nothing is approved; what needs approval is refused)", err))
@@ -209,7 +211,12 @@ func (rt *runtime) approve(ctx context.Context, env *tools.Env, tool string, arg
 		root = r
 	}
 	origin := approvals.Origin{}
-	if channel, thread, ok := slack.Origin(root); ok {
+	if chat, topic, ok := telegram.Origin(root); ok {
+		origin = approvals.Origin{Channel: strconv.FormatInt(chat, 10)}
+		if topic != 0 {
+			origin.Thread = strconv.Itoa(topic)
+		}
+	} else if channel, thread, ok := slack.Origin(root); ok {
 		origin = approvals.Origin{Channel: channel, Thread: thread}
 		if in, ok := messaging.InputOf(ctx); ok && thread == "" {
 			origin.Thread = in.Thread // a DM thread: told where it was asked

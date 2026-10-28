@@ -51,6 +51,14 @@ func TestGuideGolden(t *testing.T) {
 			t.Errorf("the guide lacks %s", e)
 		}
 	}
+	// with Telegram beside Slack (or alone) the messaging rules name its targets and still fit
+	full.Telegram = true
+	if both := full.render(); len(both) > MaxGuide || !strings.Contains(both, "`telegram:<chat id>`") || !strings.HasSuffix(both, got[strings.Index(got, "Files sent to you"):]) {
+		t.Errorf("with Telegram: %d bytes:\n%s", len(both), both)
+	}
+	if only := (guide{Home: "/opt/data", Telegram: true}).render(); !strings.Contains(only, "`telegram` (the home chat)") || strings.Contains(only, "broadcast") {
+		t.Errorf("Telegram only:\n%s", only)
+	}
 	// what this runtime does not run is not described
 	min := guide{Home: "/opt/data"}.render()
 	for _, absent := range []string{"Luau", "send_message", "own user", "confined", "TMPDIR"} {

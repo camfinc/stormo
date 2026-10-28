@@ -110,18 +110,18 @@ func Targets(lane string, origin json.RawMessage) ([]Target, error) {
 	return out, nil
 }
 
-// Pending is the deliverer until the Slack gateway (M5) takes its place: a Slack target is
-// refused until the gateway is available (the outbox retains the report), and any
-// other platform is refused (needletail serves Slack only).
+// Pending is the deliverer until a chat gateway takes its place: a Slack or Telegram target is
+// refused until the gateway is available (the outbox retains the report), and any other
+// platform is refused (needletail serves Slack and Telegram only).
 type Pending struct{ Log func(string) }
 
 // Deliver implements Deliverer.
 func (p Pending) Deliver(_ context.Context, d Delivery) error {
-	if d.Target.Platform != "slack" {
+	if d.Target.Platform != "slack" && d.Target.Platform != "telegram" {
 		return fmt.Errorf("%w: needletail does not deliver to %s", ErrUnsupportedPlatform, d.Target.Platform)
 	}
 	if p.Log != nil {
-		p.Log(fmt.Sprintf("cron: job %s: delivery to %s waits for the Slack gateway; the output is kept in state/needletail/jobs/", d.JobID, d.Target))
+		p.Log(fmt.Sprintf("cron: job %s: delivery to %s waits for its gateway; the output is kept in state/needletail/jobs/", d.JobID, d.Target))
 	}
-	return fmt.Errorf("Slack gateway is not ready; delivery remains pending")
+	return fmt.Errorf("the %s gateway is not ready; delivery remains pending", d.Target.Platform)
 }
