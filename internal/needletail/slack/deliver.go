@@ -245,6 +245,14 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 		// an approved send from before the handlers bound it: posted as approved or not at all
 		return messaging.Sent{}, fmt.Errorf("%w: the agent's before_send handlers would change the message the owner approved; it is not sent altered", messaging.ErrBlocked)
 	}
+	if gate == nil {
+		// a handler that read marked data marked the run: the send is decided again on what
+		// they left, so their rewrite goes elsewhere only as a person approves it
+		gate = g.quarantineSend(ctx, t, r.Broadcast)
+	}
+	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
+		return messaging.Sent{}, gate
+	}
 	if need, ok := messaging.AsApproval(gate); ok {
 		// what a person approves is the message as the handlers left it: bound, and posted so
 		bound := map[string]any{"target": r.Target, "message": text}
@@ -254,9 +262,6 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 		need.Payload, _ = json.Marshal(bound)
 		need.Filtered = true
 		return messaging.Sent{}, need
-	}
-	if err := g.quarantineSend(ctx, t, r.Broadcast); err != nil {
-		return messaging.Sent{}, err
 	}
 	broadcast, err := g.Policy().Check(t, r.Broadcast)
 	if err != nil {

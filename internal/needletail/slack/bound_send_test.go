@@ -56,3 +56,63 @@ func TestApprovedSendIsBoundAfterBeforeSend(t *testing.T) {
 		}
 	}
 }
+
+// Codex finding (step 5): a send from a clean run whose before_send handler reads marked data and
+// rewrites it is decided again on what the handlers left: the approval binds the final rewritten
+// text (Filtered), so the card shows what would be posted and approving it posts exactly that,
+// once, without running the handlers again. A clean rewrite is posted as before.
+func TestSendMarkedByBeforeSendBindsFinalText(t *testing.T) {
+	const session = "slack-" + dev + "-1700000000.000100"
+	for _, viaCtx := range []bool{false, true} {
+		var calls atomic.Int32
+		h := &fakeHandlers{outCtx: func(ctx context.Context, o messaging.Outgoing) messaging.Verdict {
+			if calls.Add(1) > 1 {
+				return messaging.Verdict{Action: "rewrite", Text: "EVIL rewrite under the endorsement"}
+			}
+			if viaCtx {
+				if err := messaging.MarkUntrusted(ctx, "marked KV read"); err != nil {
+					return messaging.Verdict{Action: "block", Failed: true}
+				}
+				return messaging.Verdict{Action: "rewrite", Text: "rewritten from marked data"}
+			}
+			return messaging.Verdict{Action: "rewrite", Text: "rewritten from marked data", Untrusted: "marked KV read"}
+		}}
+		marked := map[string]bool{}
+		r := newRig(t, func(o *Options) {
+			o.Handlers = h
+			o.Quarantine = func(id string) error { marked[id] = true; return nil }
+			o.Untrusted = func(id string) bool { return marked[id] }
+		})
+		_, err := r.g.Send(messaging.WithSession(context.Background(), session), messaging.Request{Target: "slack", Text: "clean text"})
+		need, ok := messaging.AsApproval(err)
+		if !ok {
+			t.Fatalf("viaCtx %v: not an approval: %v", viaCtx, err)
+		}
+		var bound map[string]any
+		if err := json.Unmarshal(need.Payload, &bound); err != nil || bound["message"] != "rewritten from marked data" || bound["target"] != "slack" || !need.Filtered {
+			t.Fatalf("viaCtx %v: the approval does not bind the final text: %s (%v) filtered %v", viaCtx, need.Payload, err, need.Filtered)
+		}
+		if n := len(r.fake.Posts()); n != 0 {
+			t.Fatalf("viaCtx %v: posted before approval: %+v", viaCtx, r.fake.Posts())
+		}
+		ectx := messaging.WithFiltered(messaging.WithEndorsed(messaging.WithSession(context.Background(), session), "ap_1"))
+		if _, err := r.g.Send(ectx, messaging.Request{Target: bound["target"].(string), Text: bound["message"].(string)}); err != nil {
+			t.Fatalf("viaCtx %v: the approved send: %v", viaCtx, err)
+		}
+		posts := r.fake.WaitPosts(1, 5_000_000_000)
+		if len(posts) != 1 || posts[0].Text != "rewritten from marked data" || calls.Load() != 1 {
+			t.Fatalf("viaCtx %v: posted %+v after %d handler runs", viaCtx, posts, calls.Load())
+		}
+	}
+	// clean: a rewrite that reads nothing marked is posted at once
+	h := &fakeHandlers{out: func(o messaging.Outgoing) messaging.Verdict {
+		return messaging.Verdict{Action: "rewrite", Text: "clean rewrite"}
+	}}
+	r := newRig(t, func(o *Options) { o.Handlers = h })
+	if _, err := r.g.Send(messaging.WithSession(context.Background(), session), messaging.Request{Target: "slack", Text: "clean text"}); err != nil {
+		t.Fatal(err)
+	}
+	if posts := r.fake.WaitPosts(1, 5_000_000_000); len(posts) != 1 || posts[0].Text != "clean rewrite" {
+		t.Fatalf("clean %+v", posts)
+	}
+}
