@@ -300,3 +300,31 @@ func TestSynthesizedCallIDsAreUnique(t *testing.T) {
 		}
 	}
 }
+
+// Serves: the endpoint's GET /models lists the model (the core's gateway lists the plan's).
+func TestServes(t *testing.T) {
+	var asked int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer core-key" {
+			http.Error(w, "no", 401)
+			return
+		}
+		asked++
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-6","context_length":400000},{"id":"gpt-6-mini"}]}`)
+	}))
+	defer srv.Close()
+	c := &Client{Endpoints: []Endpoint{{BaseURL: srv.URL, Key: "core-key", Model: "gpt-6"}}}
+	if !c.Serves(context.Background(), 0, "gpt-6-mini") || c.Serves(context.Background(), 0, "claude-x") {
+		t.Error("serves")
+	}
+	if asked != 1 {
+		t.Errorf("the list was asked %d times (cached)", asked)
+	}
+	if c.Serves(context.Background(), 5, "gpt-6") {
+		t.Error("an endpoint that is not there serves")
+	}
+	down := &Client{Endpoints: []Endpoint{{BaseURL: "http://127.0.0.1:1", Model: "m"}}}
+	if down.Serves(context.Background(), 0, "m") {
+		t.Error("an unreachable endpoint serves")
+	}
+}

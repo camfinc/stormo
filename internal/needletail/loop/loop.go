@@ -135,6 +135,9 @@ type Options struct {
 	// a relay bot, where): kept in the conversation's header, so no author of it may approve
 	// what the conversation asks for.
 	Taint *wire.Taint
+	// LLM, when set, is the client the turn runs on instead of the agent's (a scheduled job's
+	// own model and provider, docs/schedules.md).
+	LLM *llm.Client
 }
 
 // Result is a finished turn.
@@ -270,7 +273,11 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 	}()
 
-	turn := a.LLM.NewTurn()
+	client := a.LLM
+	if opts.LLM != nil {
+		client = opts.LLM
+	}
+	turn := client.NewTurn()
 	system := a.SystemPrompt()
 	recalled := ""
 	if a.Recall != nil {
@@ -294,7 +301,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		inputImages = inputImages[:MaxTurnImages]
 	}
 	var shown []shownImage
-	env.Sees = func() bool { return a.LLM.Sees(turn.Endpoint()) }
+	env.Sees = func() bool { return client.Sees(turn.Endpoint()) }
 	lastTotal, sinceTotal := 0, 0
 	shrunk := false // a context-length refusal was answered with a compaction
 
@@ -476,7 +483,7 @@ func (a *Agent) window(ctx context.Context, turn *llm.Turn) int {
 	if a.ContextLength > 0 {
 		return a.ContextLength
 	}
-	return a.LLM.ContextLength(ctx, turn.Endpoint())
+	return turn.Client().ContextLength(ctx, turn.Endpoint())
 }
 
 // untrustedSaid frames an assistant row stored marked untrusted (a follow-up text made from input

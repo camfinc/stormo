@@ -96,6 +96,14 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("owner learning key is reserved")
 		}
 	}
+	for _, p := range c.Model.Providers {
+		if p.KeyEnv == "NEEDLETAIL_LEARNING_KEY" {
+			return nil, fmt.Errorf("owner learning key is reserved")
+		}
+		if p.Name == "" || p.BaseURL == "" {
+			return nil, fmt.Errorf("%s: model.providers entries need a name and a base_url", File)
+		}
+	}
 	if c.Core != nil && c.Core.KeyEnv == "NEEDLETAIL_LEARNING_KEY" {
 		return nil, fmt.Errorf("owner learning key is reserved")
 	}

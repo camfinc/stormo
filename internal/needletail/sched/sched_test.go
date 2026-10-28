@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/tools"
@@ -108,6 +109,7 @@ type fakeTurns struct {
 type turnCall struct {
 	job, session, input string
 	tools               []string
+	llm                 *llm.Client
 }
 
 func jobOf(session string) string {
@@ -167,7 +169,7 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	job := jobOf(s.session)
-	f.calls = append(f.calls, turnCall{job: job, session: s.session, input: input, tools: opts.Tools})
+	f.calls = append(f.calls, turnCall{job: job, session: s.session, input: input, tools: opts.Tools, llm: opts.LLM})
 	reply := "(no reply scripted)"
 	if q := f.replies[job]; len(q) > 0 {
 		reply, f.replies[job] = q[0], q[1:]

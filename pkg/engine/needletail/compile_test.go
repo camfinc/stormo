@@ -550,3 +550,23 @@ func TestWebSearchRender(t *testing.T) {
 		}
 	}
 }
+
+// The providers the agent's schedules name are rendered (with the agent's own) as
+// needletail.yaml model.providers, so a job's provider resolves at run time; none named, none
+// rendered; one that is not an API connection is refused.
+func TestScheduleProvidersRender(t *testing.T) {
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	if p, err := scheduleProviders(a, inst); err != nil || len(p) != 0 {
+		t.Errorf("no schedule names a provider: %+v %v", p, err)
+	}
+	a.Schedules = append(a.Schedules, manifest.Schedule{ID: "pinned", Provider: a.Engine.Provider})
+	p, err := scheduleProviders(a, inst)
+	if err != nil || len(p) != 1 || p[0].Name != a.Engine.Provider || p[0].BaseURL != conn.BaseURL || p[0].KeyEnv != conn.Key {
+		t.Errorf("providers = %+v %v", p, err)
+	}
+	a.Schedules = append(a.Schedules, manifest.Schedule{ID: "bad", Provider: "nowhere"})
+	if _, err := scheduleProviders(a, inst); err == nil {
+		t.Error("an unknown provider rendered")
+	}
+}

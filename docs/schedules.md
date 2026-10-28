@@ -303,8 +303,17 @@ does. (Started without the split, or on Hermes, the terminal can still edit `cro
   missed while the agent was down fires at the next boot) and are never offered to a scheduled run,
   which has no conversation to come back to. The refusal points the agent at `follow_up`, and so
   does the 5-minute floor (§7). A prompt follow-up's turn takes the scheduled runs' lane (§2).
-- `model` and `provider` are recorded but not applied: every job runs on the agent's model (logged
-  once per job).
+- `model` and `provider` are applied to the job's run, resolved as the agent's own model is: on the
+  core, the core's gateway first when it serves the model (its `GET /v1/models`, the plan's catalog,
+  cached 10 minutes), the job's `provider` (else the agent's own connection) with that model as the
+  fallback; off the core (AWS), that connection alone. `provider` is an instance API connection by
+  name: the agent's own or one agent.yaml's schedules name (Compile checks those, as for Hermes, and
+  renders them as `needletail.yaml` `model.providers`, whose keys the runtime then owns: redacted, out
+  of the terminal's env). A `provider` alone runs the agent's own model name on it. A provider the
+  runtime does not have (a job the agent made naming another) or whose key is unset fails the run
+  with a clear `last_error` ("the job's model: provider "x" is not configured …"), no turn taken,
+  counted in the failure streak (the job is not paused). A model the endpoint does not know fails as
+  the endpoint answers. An image older than `model.providers` refuses a `needletail.yaml` that has it.
 - Not implemented: `monitor_url`, `context_from` and `continuity`, `workdir`, the per-job notepad,
   `attach_to_session`, the prompt-injection scan of the assembled prompt, the automatic re-run of a
   run that never reached the model, quota holds, Hermes' other platforms.

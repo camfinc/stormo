@@ -114,6 +114,8 @@ type Client struct {
 
 	mu      sync.Mutex
 	context map[string]contextEntry
+	// models are the endpoints' model lists (Serves), by base URL and key
+	models map[string]modelsEntry
 	// blind are the endpoints that refused images (VisionAuto), by index
 	blind map[int]bool
 }
@@ -194,6 +196,9 @@ type Turn struct {
 
 // NewTurn starts a turn on the primary endpoint.
 func (c *Client) NewTurn() *Turn { return &Turn{c: c} }
+
+// Client is the client the turn runs on.
+func (t *Turn) Client() *Client { return t.c }
 
 // Endpoint is the index of the endpoint the turn is on.
 func (t *Turn) Endpoint() int { return t.start }
@@ -728,6 +733,78 @@ func (c *Client) ContextLength(ctx context.Context, idx int) int {
 	c.context[key] = e
 	c.mu.Unlock()
 	return e.n
+}
+
+// Serves is whether endpoint idx lists model among its GET {base}/models (the core's gateway lists
+// the plan's catalog); the list is cached per endpoint for modelsTTL, a failed lookup is no.
+func (c *Client) Serves(ctx context.Context, idx int, model string) bool {
+	if idx < 0 || idx >= len(c.Endpoints) || model == "" {
+		return false
+	}
+	ep := c.Endpoints[idx]
+	key := ep.BaseURL + "\x00" + ep.Key
+	c.mu.Lock()
+	e, ok := c.models[key]
+	c.mu.Unlock()
+	if !ok || time.Since(e.at) > modelsTTL {
+		ids, err := c.listModels(ctx, ep)
+		e = modelsEntry{ids: map[string]bool{}, at: time.Now()}
+		for _, id := range ids {
+			e.ids[id] = true
+		}
+		if err != nil {
+			e.at = time.Now().Add(-modelsTTL + contextRetry/5) // ask again a minute later
+		}
+		c.mu.Lock()
+		if c.models == nil {
+			c.models = map[string]modelsEntry{}
+		}
+		c.models[key] = e
+		c.mu.Unlock()
+	}
+	return e.ids[model]
+}
+
+// modelsEntry is an endpoint's cached model list.
+type modelsEntry struct {
+	ids map[string]bool
+	at  time.Time
+}
+
+const modelsTTL = 10 * time.Minute
+
+// listModels is the ids GET {base}/models lists.
+func (c *Client) listModels(parent context.Context, ep Endpoint) ([]string, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(ep.BaseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if ep.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+ep.Key)
+	}
+	res, err := c.http().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("models: HTTP %d", res.StatusCode)
+	}
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&list); err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, m := range list.Data {
+		out = append(out, m.ID)
+	}
+	return out, nil
 }
 
 func (c *Client) fetchContext(parent context.Context, ep Endpoint) int {

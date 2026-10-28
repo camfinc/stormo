@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/skills"
@@ -98,6 +99,11 @@ type Options struct {
 	// job (id, name or "*"). A reply is the run's output with no turn, silent a silent run, a
 	// pass's notes go into the prompt. nil: none.
 	OnSchedule func(ctx context.Context, id, name string, ev map[string]any) messaging.Verdict
+	// Model resolves a job's model and provider (both may be empty, not both) into the client its
+	// run's turn uses, as the agent's own model resolves (the core's gateway first when it serves
+	// the model, else the provider); an error (an unknown or unkeyed provider) is the run's error.
+	// nil: jobs run on the agent's model (logged).
+	Model func(ctx context.Context, model, provider string) (*llm.Client, error)
 	// Owners are the user ids whose DMs a kept report may be repaired to (retry_delivery: the
 	// approvers); nil: none.
 	Owners func() []string
@@ -989,11 +995,20 @@ func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, promp
 		gate.commit()
 	}
 	runContext, scriptBlock := gate.runContext, gate.scriptBlock
-	if j.Str("model") != "" || j.Str("provider") != "" {
-		s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, j.Str("model"), j.Str("provider")))
+	opts := loop.Options{Tools: s.toolsFor(j), Job: true}
+	if model, provider := j.Str("model"), j.Str("provider"); model != "" || provider != "" {
+		if s.o.Model == nil {
+			s.warnOnce("model:"+id, fmt.Sprintf("job %s pins model %q (provider %q): not applied, it runs on the agent's model", id, model, provider))
+		} else {
+			client, err := s.o.Model(ctx, model, provider)
+			if err != nil {
+				return outcome{status: wire.StatusError, err: s.o.Env.Redact("the job's model: " + err.Error()), session: session}
+			}
+			opts.LLM = client
+		}
 	}
 	input := s.buildPrompt(j, session, prompt, scriptBlock, runContext)
-	res, err := (*slot).Turn(ctx, input, loop.Options{Tools: s.toolsFor(j), Job: true})
+	res, err := (*slot).Turn(ctx, input, opts)
 	if res != nil {
 		session = res.Session
 		if s.o.End != nil {

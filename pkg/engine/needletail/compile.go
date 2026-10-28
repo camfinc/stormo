@@ -338,6 +338,33 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	return c
 }
 
+// scheduleProviders are the API connections a job may name (needletail.yaml model.providers): the
+// agent's own and each one agent.yaml's schedules name, by their instance names; none when no
+// schedule names a provider (the file stays as an older image reads it).
+func scheduleProviders(a *manifest.Agent, inst *instance.Instance) ([]wire.Provider, error) {
+	named := []string{}
+	for _, s := range a.Schedules {
+		if s.Provider != "" && !slices.Contains(named, s.Provider) {
+			named = append(named, s.Provider)
+		}
+	}
+	if len(named) == 0 {
+		return nil, nil
+	}
+	if !slices.Contains(named, a.Engine.Provider) {
+		named = append([]string{a.Engine.Provider}, named...)
+	}
+	out := []wire.Provider{}
+	for _, n := range named {
+		c, ok := inst.Connection(n)
+		if !ok || !c.API() {
+			return nil, fmt.Errorf("a schedule's provider %q is not an API connection of this instance (stormo.yaml connections:)", n)
+		}
+		out = append(out, wire.Provider{Name: n, BaseURL: c.BaseURL, KeyEnv: c.Key})
+	}
+	return out, nil
+}
+
 // readTree adds every file under dir as <prefix>/<rel>, skipping caches, node_modules and the
 // skipped skill dirs (the same walk as Hermes').
 func readTree(dir, prefix string, out map[string][]byte, skip []string) error {
@@ -433,6 +460,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
+	if rendered.Model.Providers, err = scheduleProviders(a, ctx.Instance); err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
 	rendered.Skills.Generated = generatedSkills(ctx.Knowledge)
 	rendered.StateRoot = n.layout.StateRoot
 	rendered.Scrub = scrubConfig(ctx.Instance)

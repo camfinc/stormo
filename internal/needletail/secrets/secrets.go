@@ -57,6 +57,9 @@ func Owned(cfg *wire.Config) []string {
 	for _, f := range cfg.Model.Fallbacks {
 		add(f.KeyEnv)
 	}
+	for _, p := range cfg.Model.Providers {
+		add(p.KeyEnv)
+	}
 	if cfg.Core != nil {
 		add(cfg.Core.KeyEnv)
 	}
