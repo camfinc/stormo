@@ -13,7 +13,8 @@ committed until the owner says so); update it when the state changes.
 | Uncommitted | Nothing besides the untracked plan docs. Codex committed its in-progress work as `13ff060` ("reviewed background skill improvement and maintenance controls", 48 files, +3580; touches engine-neutral `pkg/loop/rehydrate.go`, new `pkg/learning/skill_review.go`). **`13ff060` is not yet validated**; it changed none of the files with §4 findings, so they all remain open. |
 | Design | `docs/needletail.md` (the contract; §8 persisted formats, §9 milestones, §11 risks and open questions) |
 | Other specs | `docs/needletail-quarantine.md` (quarantine, implemented by Codex in `9daad6d`), `docs/needletail-memory.md` (memory design, untracked), Codex's `needletail-autonomous-learning.md`, `-delivery-recovery.md`, `-learning-improvements.md`, `-recall-evaluation.md`, `docs/schedules.md` |
-| Instance | `/Users/samt2497/camf/camf-swarm` (CAMF). `agents/mateo-nt/` is **uncommitted** (needletail copy of Mateo) |
+| Merged | PR #2 merged into `main` as `af02486` (2026-10-28); work continues on `main` (the branch and worktree rows above are history) |
+| Instance | `/Users/samt2497/camf/camf-swarm` (CAMF): every agent but Iris on needletail since 2026-10-28 (its docs/deployment.md, Engines) |
 
 Two parties have committed on this branch: Claude Code sessions (M0–M6b, follow_up, kv, listen,
 session_search, background processes, trust mark, examples switch, app changes) and Codex (as
@@ -51,22 +52,18 @@ regression tests. Codex's own commits were validated on 2026-10-27 (§4).
 
 ## 3. Live state on the owner's Mac
 
-- **CAMF Hermes agents** (clara, iris, leo, rigoberto, sofia): running on `nousresearch/hermes-agent:v2026.9.24`, healthy.
-- **Mateo (Hermes)**: **stopped** (owner's go). Final nap kept in `agents/mateo/data/store`.
-- **mateo-nt**: running `needletail:dev-18a8c56` (steps 1–5 live; files with vision and Spanish voice notes on; Luau ports of Mateo's scripts incl. the news radar active; approvals go to Simon), connected to Slack as Mateo's
-  bot (it uses Mateo's Slack app; only one of them may run). Secrets in
-  `agents/mateo-nt/data/secrets.yaml` (own API and core keys, Mateo's Slack tokens). Skills
-  rewritten for needletail; `addressability` ported as a Luau handler.
-- **Core**: still runs on **stormo main's** binary, which doesn't know needletail, so the core can't
-  see mateo-nt's hooks/activity. Fix: restart the core on the needletail binary (owner action; the
-  permission classifier blocked Claude from doing it): Core view › Restart in the app, or
-  `stormo core down && <worktree>/bin/stormo core up`.
-- **App**: Debug build from the worktree in the Claude job tmp folder (gone when the job is
-  deleted); rebuild with `STORMO_BINARY=<clean build> xcodebuild -project apps/macos/Stormo.xcodeproj -scheme Stormo build`.
-- **camf-swarm repo**: 6 unpushed commits on main (not from the needletail work); uncommitted
-  edits to `agents/mateo/agent.yaml`, `agents/mateo/engine/hermes/config.yaml`, clara/leo/sofia
-  skills (not from Claude's needletail sessions); `go test ./tests/` fails only on
-  `unknown engine "needletail"` because of the uncommitted `agents/mateo-nt`.
+- **2026-10-28 (stormo `81bbd41`)**: mateo, clara, leo, sofia and rigoberto run `needletail:dev-81bbd41`
+  (built locally); **iris** stays on Hermes (`nousresearch/hermes-agent:v2026.9.24`: her Remotion and
+  HyperFrames lanes need bun, headless Chrome and ffmpeg, which the needletail image lacks).
+- **Mateo**: Hermes Mateo is retired; `agents/mateo` is the former `mateo-nt` (Mateo's secrets file,
+  so his Slack app and Telegram bot; mateo-nt's nap store). Both old trees and stores are backed up in
+  camf-swarm `.swarm/backup/2026-10-28-mateo-to-needletail/`.
+- **The switch** per agent: `engine.kind: needletail` + `engine/needletail/config.yaml` (timezone) +
+  `stormo restart`; the final Hermes nap rehydrates onto the needletail home (the state dir carries
+  over byte for byte; Hermes' `state.db` conversations do not). Engine fixes it needed: tzdata in the
+  image (`7455279`), the scripts' SQLite databases snapshotted with VACUUM INTO (`81bbd41`).
+- **Core and app**: the core and the app's bundled CLI run `81bbd41` (the app from the Claude job's
+  tmp DerivedData).
 
 ## 4. Validation of Codex's commits (2026-10-27, at `7836a3d`)
 
@@ -377,16 +374,16 @@ and a Telegram channel (design: docs/needletail.md §4.9 "Slash commands", §4.1
 ## 6. How to build and roll out (dev)
 
 ```sh
-WT=/Users/samt2497/camf/camf-swarm/stormo/.claude/worktrees/needletail
+WT=/Users/samt2497/camf/camf-swarm/stormo   # main since the merge
 cd $WT && SHA=$(git rev-parse --short=7 HEAD)
 gofmt -l . ; go vet ./... && go test ./... && go test -race ./internal/needletail/... && GOOS=linux go vet ./internal/needletail/...
 go build -o bin/stormo ./cmd/stormo
 docker buildx build -f deploy/needletail/Dockerfile --build-arg VERSION=0.1.0-dev.$SHA --load -t needletail:dev-$SHA -t needletail:dev .
-# camf-swarm: set agents/mateo-nt/agent.yaml engine.version 0.1.0-dev.$SHA and image_tag dev-$SHA, then
-cd /Users/samt2497/camf/camf-swarm && $WT/bin/stormo check mateo-nt && $WT/bin/stormo restart mateo-nt
+# camf-swarm: set each needletail agent's engine.version 0.1.0-dev.$SHA and image_tag dev-$SHA, then
+cd /Users/samt2497/camf/camf-swarm && stormo check && stormo restart mateo clara leo sofia rigoberto
 ```
-Rollback to Hermes Mateo: `stormo stop mateo-nt` then `stormo start mateo` (never both: they share
-the Slack app).
+Rollback of an agent to Hermes: restore its `engine/hermes/config.yaml` and `engine:` block from git
+and `stormo restart <agent>` (its needletail nap rehydrates onto Hermes as the Hermes one did here).
 
 ## 7. Rules that bit us
 
