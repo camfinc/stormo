@@ -80,6 +80,11 @@ func TestGuideGolden(t *testing.T) {
 			t.Errorf("the guide does not say what a tainted conversation may do:\n%s", g)
 		}
 	}
+	// reusable tools and job scripts belong in skills as Luau (tested with luau_test); the terminal
+	// is for one-off inspection
+	if !strings.Contains(got, "Write reusable tools and job scripts as Luau tools in skills") || !strings.Contains(got, "terminal for one-off inspection") {
+		t.Error("the guide does not steer reusable work to Luau tools")
+	}
 	// the two bounds are told apart: a tool's and a message handler's, an on_schedule handler's
 	if !strings.Contains(got, "30 s (tools, handlers; luau_timeout)") || !strings.Contains(got, "900 s (on_schedule, .luau job scripts; script_timeout)") {
 		t.Error("the guide does not tell luau_timeout from script_timeout")
