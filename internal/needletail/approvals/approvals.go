@@ -472,23 +472,20 @@ func (s *Service) Request(ctx context.Context, a Ask) (*Request, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	pending, today := 0, 0
+	pending := 0
 	key := capKey(r)
 	for _, x := range s.file.Requests {
 		if x.Pending() && capKey(x) == key {
 			pending++
 		}
-		if now.Sub(x.Created) < 24*time.Hour {
-			today++
-		}
 	}
-	switch {
-	case pending >= s.o.PerConversation:
+	if pending >= s.o.PerConversation {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%w: %d are already waiting in this conversation (at most %d): wait for the owner to decide them", ErrCap, pending, s.o.PerConversation)
-	case today >= s.o.PerDay:
+	}
+	if why := s.overBudget(r, now); why != "" {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("%w: %d in the last 24 hours (at most %d)", ErrCap, today, s.o.PerDay)
+		return nil, fmt.Errorf("%w: %s", ErrCap, why)
 	}
 	s.prune(now)
 	s.file.Requests[r.ID] = r
@@ -540,6 +537,82 @@ func (s *Service) Request(ctx context.Context, a Ask) (*Request, error) {
 	}
 	s.logf("%s: %s waits for a decision until %s (%s)", snap.ID, snap.Card.Title, snap.Expires.UTC().Format(time.RFC3339), snap.Hash[:12])
 	return snap, nil
+}
+
+// Budget classes: a request's daily budget (Options.PerDay each).
+const (
+	budgetTrusted  = "trusted"  // a risky command in a trusted conversation: the owner's own work
+	budgetDelivery = "delivery" // a tainted scheduled run's held report
+	budgetTainted  = "tainted"  // what untrusted input caused: per taint author (else conversation)
+)
+
+// budget is a request's class and, for a tainted one, the keys it counts against: each taint
+// author, or its conversation when the taint names none.
+func budget(r *Request) (string, []string) {
+	switch {
+	case r.Action.Kind == KindDelivery:
+		return budgetDelivery, nil
+	case len(r.Taint) == 0 && !r.Trust:
+		return budgetTrusted, nil
+	}
+	var keys []string
+	for _, t := range r.Taint {
+		for _, u := range t.Users {
+			if !slices.Contains(keys, "user:"+u) {
+				keys = append(keys, "user:"+u)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		keys = []string{"conversation:" + capKey(r)}
+	}
+	return budgetTainted, keys
+}
+
+// overBudget is why r is over its daily budget ("" when it is not; s.mu held). Separate budgets
+// keep untrusted input from spending the owner's (docs/needletail.md §7): each taint author's
+// (or tainted conversation's) requests, with a ceiling of three budgets for all tainted ones;
+// trusted risky commands, where a request denied, expired or failed gives its slot back; held
+// reports.
+func (s *Service) overBudget(r *Request, now time.Time) string {
+	class, keys := budget(r)
+	count, all := map[string]int{}, 0
+	for _, x := range s.file.Requests {
+		if now.Sub(x.Created) >= 24*time.Hour {
+			continue
+		}
+		xc, xkeys := budget(x)
+		if xc != class {
+			continue
+		}
+		if class == budgetTrusted && (x.Status == StatusDenied || x.Status == StatusExpired || x.Status == StatusFailed) {
+			continue
+		}
+		all++
+		for _, k := range xkeys {
+			count[k]++
+		}
+	}
+	switch class {
+	case budgetTainted:
+		for _, k := range keys {
+			if count[k] >= s.o.PerDay {
+				return fmt.Sprintf("%d requests in the last 24 hours caused by the same untrusted input (%s; at most %d)", count[k], strings.SplitN(k, ":", 2)[0], s.o.PerDay)
+			}
+		}
+		if all >= 3*s.o.PerDay {
+			return fmt.Sprintf("%d requests in the last 24 hours caused by untrusted input (at most %d)", all, 3*s.o.PerDay)
+		}
+	case budgetTrusted:
+		if all >= s.o.PerDay {
+			return fmt.Sprintf("%d risky commands waiting or approved in the last 24 hours (at most %d)", all, s.o.PerDay)
+		}
+	case budgetDelivery:
+		if all >= s.o.PerDay {
+			return fmt.Sprintf("%d held reports in the last 24 hours (at most %d)", all, s.o.PerDay)
+		}
+	}
+	return ""
 }
 
 // capKey is what the per-conversation cap counts by: the conversation, or a held report's job.

@@ -80,6 +80,10 @@ type alertState struct {
 	Ref      AlertRef `json:"ref"`
 	Jobs     []string `json:"jobs"`
 	Attempts int      `json:"attempts,omitempty"`
+	// Tried is the set of jobs the last attempts were for (additive): Attempts counts tries of
+	// this set, reset only when the set waiting changes from it (Jobs is what the notice shows,
+	// which a failed update leaves as it was).
+	Tried []string `json:"tried,omitempty"`
 }
 
 type deliveryTarget struct {
@@ -336,8 +340,8 @@ func (s *Scheduler) syncAlert(ctx context.Context, f *deliveryFile) {
 	if slices.Equal(cur.Jobs, jobs) && cur.Ref.TS != "" {
 		return // the notice says this already
 	}
-	if !slices.Equal(cur.Jobs, jobs) && cur.Ref.TS != "" {
-		cur.Attempts = 0
+	if !slices.Equal(cur.Tried, jobs) {
+		cur.Attempts, cur.Tried = 0, slices.Clone(jobs) // a new set: tried afresh, at most 3 times
 	}
 	if cur.Attempts >= 3 {
 		return
@@ -368,7 +372,7 @@ func (s *Scheduler) syncAlert(ctx context.Context, f *deliveryFile) {
 	if len(jobs) == 0 {
 		f.Alert = nil // recovered: the next report waiting gets a new notice
 	} else {
-		cur.Ref, cur.Jobs, cur.Attempts = ref, jobs, 0
+		cur.Ref, cur.Jobs, cur.Attempts, cur.Tried = ref, jobs, 0, nil
 	}
 	if e := s.writeDeliveries(f); e != nil {
 		s.logf("could not persist delivery notice status")

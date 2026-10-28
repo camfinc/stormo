@@ -383,3 +383,34 @@ func TestOutboxRetargetLimited(t *testing.T) {
 		}
 	}
 }
+
+// Item 17 (Codex 8): a posted notice whose update keeps failing is tried at most 3 times per set of
+// jobs: the set it tried counts the tries, not the set it last showed (which a failure keeps).
+func TestOutboxFailedNoticeUpdatesAreBounded(t *testing.T) {
+	d := &outboxDeliverer{fail: map[string]error{"bad": outboxPermanent{}}}
+	s, a, now := outboxFixture(t, d)
+	s.enqueueDelivery(context.Background(), a, outcome{text: "one"}, []Target{{Platform: "slack", Channel: "bad"}})
+	if len(d.notices) != 1 {
+		t.Fatalf("no first notice: %+v", d.notices)
+	}
+	d.alertErr = errors.New("home unavailable")
+	b := NewJob()
+	b.Set("id", "second")
+	s.enqueueDelivery(context.Background(), b, outcome{text: "two"}, []Target{{Platform: "slack", Channel: "bad"}})
+	before := d.alerts
+	for range 10 {
+		*now = now.Add(2 * time.Hour)
+		s.recoverDeliveries()
+	}
+	if tries := d.alerts - before; tries > 3 {
+		t.Fatalf("the failed update was tried %d times since the set changed (at most 3)", tries+1)
+	}
+	// a further change of the set is tried again
+	c := NewJob()
+	c.Set("id", "third")
+	d.alertErr = nil
+	s.enqueueDelivery(context.Background(), c, outcome{text: "three"}, []Target{{Platform: "slack", Channel: "bad"}})
+	if last := d.notices[len(d.notices)-1]; len(last.JobIDs) != 3 {
+		t.Fatalf("a new set was not tried: %+v", last)
+	}
+}
