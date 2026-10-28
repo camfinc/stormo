@@ -184,8 +184,11 @@ instance: inside a sidecar it is the agent's engine home.
     (a later commit's build, tagged `dev-<sha>`, with the agents' tags moved to it, works the same).
   - **Hermes** (`engine.kind: hermes`): the image `nousresearch/hermes-agent`, pinned by
     `image_tag` (for example `version: 0.21.5`, `image_tag: v2026.9.24`); its settings are
-    `engine/hermes/config.yaml`. Choose it for what needletail does not run yet: Telegram, pairing,
-    Slack slash commands, approvals for dangerous commands, voice, plugins. To move an agent, change its
+    `engine/hermes/config.yaml`. Choose it for what needletail does not run yet: pairing, spoken (voice)
+    replies, Hermes' other chat commands (`/model`, `/btw`, …), streaming replies, plugins. (Needletail
+    runs Telegram, Slack slash commands — `/new`, `/agent-status`, `/memory`, `/jobs`, `/stop`, `/trust`,
+    `/help`, named by `engine/needletail/config.yaml`'s `slack.commands` — approvals and voice-note
+    transcription; docs/needletail.md §4.9, §4.14.) To move an agent, change its
     `engine:` block and move what it keeps under `engine/<kind>/` (needletail's `timezone:` is
     Hermes' `timezone:`); its skills, SOUL, schedules and Slack channel stay as they are.
 

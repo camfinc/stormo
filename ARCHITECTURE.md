@@ -250,9 +250,10 @@ neither the ECS task nor a laptop needs a public URL or ALB rule.
   `SLACK_HOME_CHANNEL`, `SLACK_ALLOW_BOTS`.
 - Tokens are secrets: `SLACK_BOT_TOKEN` (`xoxb-`) and `SLACK_APP_TOKEN` (`xapp-`, scope
   `connections:write`). The manifest refuses a Slack channel unless both are declared.
-- `stormo slack manifest <agent> [--dev]` runs the pinned image's own generator
-  (`hermes slack manifest --agent-view`), so scopes, events and slash commands always match the
-  deployed Hermes version, and prints the setup steps.
+- `stormo slack manifest <agent> [--dev]` uses the engine's own generator, so scopes, events and
+  slash commands always match the deployed engine: rendered in process by an engine that can
+  (`SlackManifest`: needletail, its commands named by the agent's engine config), else the pinned
+  image's (`SlackManifestArgv`: `hermes slack manifest --agent-view`); it prints the setup steps.
 - One app serves both places: tokens under `agents.<id>`, and the agent is handed off between
   local and ECS (`stormo handoff`), never run in both. Socket Mode spreads events across every
   connection on an app token, so two live copies would split the traffic; `stormo start` refuses
