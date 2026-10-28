@@ -88,6 +88,7 @@ core:
   # storage: s3://acme-shared/workdir   # mirror the shared space to S3 too (pulled at start, pushed every 5 min); default: workdir/ alone (a disk or an EFS mount)
   loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host)
   web_ui: false                   # serve the office and review pages in a browser (default false: the macOS app is the face)
+  llm_concurrency: 3              # model calls the core's gateway runs at once for the whole fleet, per ChatGPT connection (1 to 64; default 3); the env SWARM_CORE_LLM_CONCURRENCY overrides it. Engine-neutral: every agent on the gateway shares it (a needletail agent's own chat lanes are limits.chat_turns)
   learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`
     at: "03:00"                   # daily start, 24-hour time; each agent is napped, then dreamed
     timezone: Europe/Lisbon       # for `at` (default: the host's)

@@ -205,7 +205,7 @@ one process holds and refreshes them: core.
   action when the limit is hit. The web UI carries the same notice, indicator and link.
 - Never logged: tokens, prompt or completion bodies. Logged: agent, model, status, duration, tokens.
 - Fleet limits: one plan (and its weekly per-app cap, set by the owner in ChatGPT) is shared by every
-  agent: concurrency cap `SWARM_CORE_LLM_CONCURRENCY` (default 3) and per-agent usage counters.
+  agent: concurrency cap stormo.yaml `core.llm_concurrency` (default 3; the env `SWARM_CORE_LLM_CONCURRENCY` overrides it) and per-agent usage counters.
 - Scope: **local only.** A paid or remotely hosted app needs OpenAI's interest form; agents on AWS
   keep their own API keys and never call this. Agents keep OpenRouter as `fallback_providers[0]`.
 

@@ -320,9 +320,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	monitor := NewMonitor(db, keys, Scrubber(learning.NewScrubber(inst)))
 	if g.Concurrency == 0 {
-		if n, err := strconv.Atoi(os.Getenv("SWARM_CORE_LLM_CONCURRENCY")); err == nil && n > 0 {
-			g.Concurrency = n
-		}
+		g.Concurrency = llmConcurrency(inst, os.Getenv)
 	}
 	def := llm.NewGateway(g)
 	names, gws := []string{instance.DefaultChatGPT}, []*llm.Gateway{def}
@@ -894,4 +892,14 @@ func publicListener(inst *instance.Instance, port int) (net.Listener, error) {
 		return nil, fmt.Errorf("core.listen %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// llmConcurrency is how many model calls the gateway runs at once: SWARM_CORE_LLM_CONCURRENCY (an
+// operator's override) first, then stormo.yaml's core.llm_concurrency; 0 leaves the gateway's
+// default (3).
+func llmConcurrency(inst *instance.Instance, getenv func(string) string) int {
+	if n, err := strconv.Atoi(getenv("SWARM_CORE_LLM_CONCURRENCY")); err == nil && n > 0 {
+		return n
+	}
+	return inst.CoreLLMConcurrency
 }

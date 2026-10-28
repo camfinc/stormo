@@ -135,3 +135,20 @@ func TestIndependentConfirmationSetting(t *testing.T) {
 		t.Fatal("legacy sightings reinterpreted as confirmations")
 	}
 }
+
+// core.llm_concurrency is how many model calls the core's gateway runs at once for the whole
+// fleet (0: unset, the gateway's 3), 1 to 64.
+func TestCoreLLMConcurrency(t *testing.T) {
+	tmp := t.TempDir()
+	if i, err := Load(mk(t, filepath.Join(tmp, "unset"), "slug: acme\n")); err != nil || i.CoreLLMConcurrency != 0 {
+		t.Fatalf("unset: %v %v", i, err)
+	}
+	if i, err := Load(mk(t, filepath.Join(tmp, "set"), "slug: acme\ncore:\n  llm_concurrency: 6\n")); err != nil || i.CoreLLMConcurrency != 6 {
+		t.Errorf("set: %v %v", i, err)
+	}
+	for n, bad := range []string{"0", "-1", "65"} {
+		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", n)), "slug: acme\ncore:\n  llm_concurrency: "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.llm_concurrency") {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}

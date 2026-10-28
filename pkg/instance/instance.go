@@ -169,6 +169,9 @@ type Instance struct {
 	// Where the core keeps the shared space besides its workdir/ (core.storage): "" for the
 	// directory alone (a local disk, or an EFS mount), or s3://bucket/prefix mirrored to S3.
 	CoreStorage string `json:"coreStorage,omitempty"`
+	// How many model calls the core's gateway runs at once, per ChatGPT connection, for the whole
+	// fleet (core.llm_concurrency, 1 to 64); 0: unset (SWARM_CORE_LLM_CONCURRENCY, else 3).
+	CoreLLMConcurrency int `json:"coreLLMConcurrency,omitempty"`
 	// Heavy or shared calls the core brokers for agents (stormo.yaml capabilities:).
 	Capabilities []Capability `json:"capabilities"`
 	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
@@ -225,7 +228,10 @@ type rawFile struct {
 		URL           string            `yaml:"url"`
 		URLs          map[string]string `yaml:"urls"`
 		Storage       string            `yaml:"storage"`
-		Learning      struct {
+		// LLMConcurrency is how many model calls the core's gateway runs at once (each
+		// ChatGPT connection's own, across the fleet); 0: the gateway's 3.
+		LLMConcurrency *int `yaml:"llm_concurrency"`
+		Learning       struct {
 			At                         string   `yaml:"at"`
 			Timezone                   string   `yaml:"timezone"`
 			StaggerMinutes             *int     `yaml:"stagger_minutes"`
@@ -336,6 +342,13 @@ func Load(root string) (*Instance, error) {
 	if raw.Core.Port != 0 && (raw.Core.Port < 1024 || raw.Core.Port > 65535) {
 		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
 	}
+	llmConcurrency := 0
+	if n := raw.Core.LLMConcurrency; n != nil {
+		if *n < 1 || *n > 64 {
+			return nil, &Error{fmt.Sprintf("%s: core.llm_concurrency must be 1 to 64 model calls at once (leave it out for 3)", path)}
+		}
+		llmConcurrency = *n
+	}
 	cl := raw.Core.Learning
 	review := cl.Review
 	switch {
@@ -438,6 +451,7 @@ func Load(root string) (*Instance, error) {
 		Placements:         placements,
 		Capabilities:       capabilities,
 		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
+		CoreLLMConcurrency: llmConcurrency,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),
