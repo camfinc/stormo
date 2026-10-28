@@ -357,6 +357,15 @@ func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, e
 		if err != nil {
 			return nil, err
 		}
+		// a similar record saved from untrusted input marks its reader before its text is shown
+		for _, sim := range res.Similar {
+			if sim.Untrusted {
+				if err := messaging.MarkUntrusted(ctx, "read a memory record saved from untrusted input"); err != nil {
+					return nil, fmt.Errorf("a marked record cannot be shown: %w", err)
+				}
+				break
+			}
+		}
 		out := map[string]any{"status": res.Status}
 		if o.Untrusted && res.Status == memory.StatusCreated {
 			out["untrusted"] = true
@@ -392,6 +401,12 @@ func runMemoryManage(ctx context.Context, env *Env, raw json.RawMessage) (any, e
 		v, err := mem.Update(aud, id, memory.Change{Text: a.Text, Kind: a.Kind, Tags: a.Tags, Importance: a.Importance, Expires: a.Expires}, false)
 		if err != nil {
 			return nil, err
+		}
+		if v.Untrusted {
+			// its echo shows a marked record's text: the reader is marked first
+			if err := messaging.MarkUntrusted(ctx, "read a memory record saved from untrusted input"); err != nil {
+				return nil, fmt.Errorf("the record changed, but its marked text cannot be shown: %w", err)
+			}
 		}
 		return map[string]any{"success": true, "record": v}, nil
 	case "delete":

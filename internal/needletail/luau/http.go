@@ -73,6 +73,12 @@ func httpRequest(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 	default:
 		return nil, errf("bad_args", "http.request: method %q", a.Method)
 	}
+	// a tainted run (docs/needletail.md §7) reads the web, never writes to it, and never as the
+	// agent: GET and HEAD only, and none of the http_secrets
+	tainted := c.quarantined(ctx) != ""
+	if tainted && a.Method != "GET" && a.Method != "HEAD" {
+		return nil, errf("refused", "http.request: %s from a run that has taken in words you may not obey: only GET and HEAD (reading) are allowed here", a.Method)
+	}
 	if a.Body != nil && len(*a.Body) > maxReqBody {
 		return nil, errf("too_large", "http.request: the body is over %d bytes", maxReqBody)
 	}
@@ -109,7 +115,9 @@ func httpRequest(ctx context.Context, c *Call, in json.RawMessage) (any, error) 
 			}
 			req.Header.Set(k, v)
 		}
-		c.rt.inject(req)
+		if !tainted {
+			c.rt.inject(req)
+		}
 		res, err := client.Do(req)
 		if err != nil {
 			var he *hostError

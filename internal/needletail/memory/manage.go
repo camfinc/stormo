@@ -46,6 +46,8 @@ type Similar struct {
 	ID    string  `json:"id"`
 	Text  string  `json:"text,omitempty"`
 	Score float64 `json:"score"`
+	// Untrusted: saved from words the agent may not obey: whoever is shown it is marked.
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // SaveResult is a save's answer: created (ID the new record), exists (ID the record with the same
@@ -256,7 +258,7 @@ func (st *state) similar(text string, n int, ok func(*Record) bool) []Similar {
 		if len(out) == n {
 			break
 		}
-		out = append(out, Similar{ID: c.d.rec.ID, Text: cut(c.d.rec.Text, searchCut), Score: round(c.c)})
+		out = append(out, Similar{ID: c.d.rec.ID, Text: cut(c.d.rec.Text, searchCut), Score: round(c.c), Untrusted: c.d.rec.Untrusted})
 	}
 	return out
 }

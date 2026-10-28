@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
+
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 
 	"github.com/camfinc/stormo/internal/needletail/memory"
 )
@@ -75,7 +78,19 @@ func (c *Call) noSecret(binding string, texts ...string) error {
 	return nil
 }
 
-func memorySearch(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+// markRead marks the run before a marked record's text reaches the script (persisted first: no
+// mark, no data; the run's mark then reaches whatever uses the script's answer).
+func markRead(ctx context.Context, binding string, marked bool) error {
+	if !marked {
+		return nil
+	}
+	if err := messaging.MarkUntrusted(ctx, "read a memory record saved from untrusted input"); err != nil {
+		return errf("refused", "%s: a record saved from untrusted input cannot be shown: %v", binding, err)
+	}
+	return nil
+}
+
+func memorySearch(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	mem, err := c.memory("memory.search", "read")
 	if err != nil {
 		return nil, err
@@ -127,6 +142,9 @@ func memorySearch(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, memoryErr("search_memory", err)
 	}
+	if err := markRead(ctx, "search_memory", slices.ContainsFunc(res.Results, func(v memory.View) bool { return v.Untrusted })); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 
@@ -171,6 +189,9 @@ func memorySave(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, memoryErr("save_memory", err)
 	}
+	if err := markRead(ctx, "save_memory", c.Caps.Memory("read") && slices.ContainsFunc(res.Similar, func(s memory.Similar) bool { return s.Untrusted })); err != nil {
+		return nil, err
+	}
 	if !c.Caps.Memory("read") && len(res.Similar) > 0 {
 		// the archive is memory:read's: a writer learns how many similar records there are, not
 		// which (an id fetches its text where memory:read is granted, and names a record to
@@ -180,7 +201,7 @@ func memorySave(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	return res, nil
 }
 
-func memoryUpdate(_ context.Context, c *Call, in json.RawMessage) (any, error) {
+func memoryUpdate(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 	mem, err := c.memory("memory.update", "write")
 	if err != nil {
 		return nil, err
@@ -250,6 +271,9 @@ func memoryUpdate(_ context.Context, c *Call, in json.RawMessage) (any, error) {
 	v, err := mem.Update(c.audience(mem), id, ch, true)
 	if err != nil {
 		return nil, memoryErr("update_memory", err)
+	}
+	if err := markRead(ctx, "update_memory", c.Caps.Memory("read") && v.Untrusted); err != nil {
+		return nil, err
 	}
 	if !c.Caps.Memory("read") {
 		// the record's text and tags are memory:read's: a writer gets what it changed confirmed
