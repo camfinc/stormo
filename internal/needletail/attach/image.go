@@ -2,6 +2,7 @@ package attach
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -10,7 +11,55 @@ import (
 	"image/jpeg"
 	"image/png"
 	"net/http"
+	"sync"
+	"sync/atomic"
 )
+
+// MaxDecodes is how many images the runtime decodes at once, whatever conversation asks: a decode
+// of a 50-megapixel image holds hundreds of MB, so they wait for each other (Codex finding 1).
+const MaxDecodes = 1
+
+var (
+	decodeSlots = make(chan struct{}, MaxDecodes)
+	decodes     atomic.Int64 // decodes done (or begun)
+	decodeMu    sync.Mutex
+	inflight    int
+	peak        int
+)
+
+// Decodes is how many images the runtime has decoded since it started (a counter for tests and
+// logs); PeakDecodes the most that ran at once.
+func Decodes() int64 { return decodes.Load() }
+
+// PeakDecodes is the most decodes that ran at once.
+func PeakDecodes() int {
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
+	return peak
+}
+
+// decodeSlot waits for a decode slot (or ctx); release gives it back.
+func decodeSlot(ctx context.Context) (release func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case decodeSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	decodes.Add(1)
+	decodeMu.Lock()
+	inflight++
+	peak = max(peak, inflight)
+	decodeMu.Unlock()
+	return func() {
+		decodeMu.Lock()
+		inflight--
+		decodeMu.Unlock()
+		<-decodeSlots
+	}, nil
+}
 
 // Bounds of an image shown to the model.
 const (
@@ -27,6 +76,16 @@ type Image struct {
 	MIME          string
 	Data          []byte
 	Width, Height int
+}
+
+// ImageSize is an image's width and height from its header alone (no decode); 0, 0 when they
+// cannot be read (a WebP, a damaged file).
+func ImageSize(data []byte) (int, int) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }
 
 // Sniff is a file's media type from its first bytes (net/http's sniffer): what the bytes are,
@@ -53,7 +112,11 @@ func ShowableImage(mime string) bool {
 // (refused past maxPixels, before decoding) and downscaled to MaxSide on its longest side,
 // re-encoded as JPEG (PNG when it has transparency; a GIF's first frame). A WebP cannot be
 // decoded here (no module for it): it is shown as it is when within MaxImageBytes, else refused.
-func PrepareImage(data []byte) (Image, error) {
+func PrepareImage(data []byte) (Image, error) { return PrepareImageCtx(context.Background(), data) }
+
+// PrepareImageCtx is PrepareImage, waiting for one of the runtime's MaxDecodes decode slots (or
+// ctx) before it decodes: a check of the bytes and a small image's header need none.
+func PrepareImageCtx(ctx context.Context, data []byte) (Image, error) {
 	mime := Sniff(data)
 	if !ShowableImage(mime) {
 		return Image{}, fmt.Errorf("not an image the model can be shown (%s)", mime)
@@ -74,6 +137,11 @@ func PrepareImage(data []byte) (Image, error) {
 	if max(cfg.Width, cfg.Height) <= MaxSide && len(data) <= MaxImageBytes && mime != "image/gif" {
 		return Image{MIME: mime, Data: data, Width: cfg.Width, Height: cfg.Height}, nil
 	}
+	release, err := decodeSlot(ctx)
+	if err != nil {
+		return Image{}, fmt.Errorf("the image was not prepared: %v", err)
+	}
+	defer release()
 	var src image.Image
 	switch mime {
 	case "image/png":

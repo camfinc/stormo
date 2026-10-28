@@ -41,6 +41,13 @@ const DefaultRetention = 14 * 24 * time.Hour
 // DefaultMaxBytes bounds the whole store (every conversation's uploads): past it the oldest go.
 const DefaultMaxBytes = 2 << 30
 
+// MaxIndexBytes is the most a conversation's index may hold: every write keeps it within (the
+// oldest transcripts, then the oldest uploads, go first), and an index past it is rebuilt.
+const MaxIndexBytes = 8 << 20
+
+// indexSlack is what a new entry is taken to add to its index, reserved against MaxBytes.
+const indexSlack = 1 << 10
+
 // MaxFileBytes is the most one stored upload may hold.
 const MaxFileBytes = 20 << 20
 
@@ -91,9 +98,11 @@ type Store struct {
 	// (0: DefaultMaxBytes).
 	Retention time.Duration
 	MaxBytes  int64
-	Now       func() time.Time
-	Log       func(string)
-	mu        sync.Mutex
+	// MaxIndex bounds a conversation's index (0: MaxIndexBytes).
+	MaxIndex int
+	Now      func() time.Time
+	Log      func(string)
+	mu       sync.Mutex
 }
 
 func (s *Store) now() time.Time {
@@ -121,6 +130,13 @@ func (s *Store) maxBytes() int64 {
 		return s.MaxBytes
 	}
 	return DefaultMaxBytes
+}
+
+func (s *Store) maxIndex() int {
+	if s.MaxIndex > 0 {
+		return s.MaxIndex
+	}
+	return MaxIndexBytes
 }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.Home, fsx.TmpDir) }
@@ -202,18 +218,25 @@ func (s *Store) ensureDir(conv string) error {
 	return nil
 }
 
+// errUnreadable is an index the store cannot read (damaged, or past its bound): it is rebuilt
+// from the files on disk. An index of another version is left as it is (a newer runtime's).
+var errUnreadable = errors.New("unreadable index")
+
 // read is a conversation's index (none: empty).
 func (s *Store) read(conv string) (index, error) {
 	idx := index{Version: IndexVersion}
-	b, err := fsx.ReadFileBelow(s.Home, Dir(conv)+"/"+IndexFile, 8<<20)
+	b, err := fsx.ReadFileBelow(s.Home, Dir(conv)+"/"+IndexFile, int64(s.maxIndex()))
 	if errors.Is(err, fs.ErrNotExist) {
 		return idx, nil
+	}
+	if errors.Is(err, fsx.ErrTooBig) {
+		return idx, fmt.Errorf("%s: over %d bytes: %w", Dir(conv)+"/"+IndexFile, s.maxIndex(), errUnreadable)
 	}
 	if err != nil {
 		return idx, err
 	}
 	if err := json.Unmarshal(b, &idx); err != nil {
-		return index{Version: IndexVersion}, fmt.Errorf("%s: %w", Dir(conv)+"/"+IndexFile, err)
+		return index{Version: IndexVersion}, fmt.Errorf("%s: %v: %w", Dir(conv)+"/"+IndexFile, err, errUnreadable)
 	}
 	if idx.Version != IndexVersion {
 		return index{Version: IndexVersion}, fmt.Errorf("%s: version %d (this runtime reads %d)", Dir(conv)+"/"+IndexFile, idx.Version, IndexVersion)
@@ -221,13 +244,164 @@ func (s *Store) read(conv string) (index, error) {
 	return idx, nil
 }
 
-func (s *Store) write(conv string, idx index) error {
-	idx.Version = IndexVersion
-	b, err := json.MarshalIndent(idx, "", " ")
-	if err != nil {
-		return err
+// load is a conversation's index, rebuilt from the files on disk when it cannot be read (damaged,
+// or past MaxIndex): access and retention never stop at a bad index. The caller holds s.mu.
+func (s *Store) load(conv string) (index, error) {
+	idx, err := s.read(conv)
+	if !errors.Is(err, errUnreadable) {
+		return idx, err
 	}
-	return fsx.WriteAtomicBelow(s.Home, Dir(conv)+"/"+IndexFile, s.tmpDir(), b, 0o600)
+	s.logf("files: %v: rebuilt from the files on disk (they read as marked: who sent them is no longer known)", err)
+	idx = s.rebuild(conv)
+	if err := s.write(conv, &idx); err != nil {
+		return idx, err
+	}
+	return idx, nil
+}
+
+// rebuild is an index of the uploads in a conversation's directory, from the files themselves:
+// each <id>-<name>, its kind sniffed, its time the file's, marked (its sender is not known).
+func (s *Store) rebuild(conv string) index {
+	idx := index{Version: IndexVersion}
+	ents, _ := fsx.ReadDirBelow(s.Home, Dir(conv))
+	for _, f := range ents {
+		name := f.Name()
+		id, rest, ok := strings.Cut(name, "-")
+		if !ok || name == IndexFile || strings.HasPrefix(name, ".") || !idRe.MatchString(id) || !f.Type().IsRegular() {
+			continue
+		}
+		info, err := f.Info()
+		if err != nil {
+			continue
+		}
+		e := Entry{ID: id, Name: rest, Path: Dir(conv) + "/" + name, Size: info.Size(), At: info.ModTime().UTC().Format(time.RFC3339),
+			Marked: true, Why: "its index was rebuilt: who sent it is no longer known"}
+		if body, err := fsx.ReadFileBelow(s.Home, e.Path, MaxFileBytes); err == nil {
+			e.MIME = Sniff(body)
+			switch {
+			case strings.HasPrefix(e.MIME, "image/"):
+				e.Kind = KindImage
+			case e.MIME == "application/pdf":
+				e.Kind = KindPDF
+			case strings.HasPrefix(e.MIME, "audio/"), strings.HasPrefix(e.MIME, "video/"):
+				e.Kind = KindAudio
+			case strings.HasPrefix(e.MIME, "text/"):
+				e.Kind = KindText
+			}
+		}
+		idx.Files = append(idx.Files, e)
+	}
+	slices.SortStableFunc(idx.Files, func(a, b Entry) int { return strings.Compare(a.At, b.At) })
+	return idx
+}
+
+// write keeps a conversation's index within MaxIndex: while it would be larger, the oldest
+// transcript goes, then the oldest upload (and its file); the newest entry is kept. The caller
+// holds s.mu.
+func (s *Store) write(conv string, idx *index) error {
+	idx.Version = IndexVersion
+	for {
+		b, err := json.MarshalIndent(idx, "", " ")
+		if err != nil {
+			return err
+		}
+		if len(b) <= s.maxIndex() {
+			return fsx.WriteAtomicBelow(s.Home, Dir(conv)+"/"+IndexFile, s.tmpDir(), b, 0o600)
+		}
+		dropped := false
+		for i := 0; i < len(idx.Files)-1; i++ {
+			if idx.Files[i].Transcript != "" {
+				idx.Files[i].Transcript = ""
+				dropped = true
+				break
+			}
+		}
+		if dropped {
+			continue
+		}
+		if len(idx.Files) <= 1 {
+			return fmt.Errorf("%s: one entry is over the index's %d bytes", Dir(conv)+"/"+IndexFile, s.maxIndex())
+		}
+		_ = fsx.RemoveBelow(s.Home, idx.Files[0].Path, false)
+		s.logf("files: %s: the index's bound reached: the oldest upload %s removed", Dir(conv), idx.Files[0].ID)
+		idx.Files = idx.Files[1:]
+	}
+}
+
+// usage is the store's size: every kept upload and every index, by conversation's index (read
+// or rebuilt). The caller holds s.mu.
+func (s *Store) usage() (int64, map[string]index) {
+	indexes := map[string]index{}
+	var total int64
+	convs, _ := fsx.ReadDirBelow(s.Home, Root)
+	for _, d := range convs {
+		conv := d.Name()
+		if !d.IsDir() || validConv(conv) != nil {
+			continue
+		}
+		idx, err := s.load(conv)
+		if err != nil {
+			continue
+		}
+		indexes[conv] = idx
+		for _, e := range idx.Files {
+			total += e.Size
+		}
+		if raw, err := fsx.ReadFileBelow(s.Home, Dir(conv)+"/"+IndexFile, int64(s.maxIndex())); err == nil {
+			total += int64(len(raw))
+		}
+	}
+	return total, indexes
+}
+
+// reserve makes room for n more bytes in the store before a write: the oldest uploads (any
+// conversation's) go while the store would pass MaxBytes; an upload larger than the store is
+// refused. The caller holds s.mu.
+func (s *Store) reserve(n int64) error {
+	limit := s.maxBytes()
+	if n > limit {
+		return fmt.Errorf("over the file store's %d bytes", limit)
+	}
+	total, indexes := s.usage()
+	if total+n <= limit {
+		return nil
+	}
+	type kept struct {
+		conv string
+		e    Entry
+	}
+	var all []kept
+	for conv, idx := range indexes {
+		for _, e := range idx.Files {
+			all = append(all, kept{conv, e})
+		}
+	}
+	slices.SortStableFunc(all, func(a, b kept) int { return strings.Compare(a.e.At, b.e.At) })
+	changed := map[string]bool{}
+	for _, k := range all {
+		if total+n <= limit {
+			break
+		}
+		if err := fsx.RemoveBelow(s.Home, k.e.Path, false); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		total -= k.e.Size
+		idx := indexes[k.conv]
+		idx.Files = slices.DeleteFunc(idx.Files, func(e Entry) bool { return e.ID == k.e.ID })
+		indexes[k.conv] = idx
+		changed[k.conv] = true
+		s.logf("files: the store's bound reached: the oldest upload %s (%s) removed", k.e.ID, Dir(k.conv))
+	}
+	for conv := range changed {
+		idx := indexes[conv]
+		if err := s.write(conv, &idx); err != nil {
+			s.logf("files: %s: index not updated: %v", Dir(conv), err)
+		}
+	}
+	if total+n > limit {
+		return fmt.Errorf("the file store is full (%d bytes)", limit)
+	}
+	return nil
 }
 
 // Save stores body as an upload of conversation conv and records it (e.ID, e.Name, e.MIME,
@@ -248,7 +422,7 @@ func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
 	if err := s.ensureDir(conv); err != nil {
 		return Entry{}, err
 	}
-	idx, err := s.read(conv)
+	idx, err := s.load(conv)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -256,6 +430,14 @@ func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
 		if x.ID == e.ID {
 			return x, nil
 		}
+	}
+	// the store's bound holds at every write (finding 4): room is made first, the index's growth
+	// counted
+	if err := s.reserve(int64(len(body)) + indexSlack); err != nil {
+		return Entry{}, err
+	}
+	if idx, err = s.load(conv); err != nil {
+		return Entry{}, err
 	}
 	e.Name = OneLine(e.Name, 200)
 	e.Path = Dir(conv) + "/" + e.ID + "-" + SafeName(e.Name)
@@ -265,7 +447,7 @@ func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
 		return Entry{}, err
 	}
 	idx.Files = append(idx.Files, e)
-	if err := s.write(conv, idx); err != nil {
+	if err := s.write(conv, &idx); err != nil {
 		_ = fsx.RemoveBelow(s.Home, e.Path, false)
 		return Entry{}, err
 	}
@@ -279,14 +461,14 @@ func (s *Store) SetTranscript(conv, id, text string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	idx, err := s.read(conv)
+	idx, err := s.load(conv)
 	if err != nil {
 		return err
 	}
 	for i := range idx.Files {
 		if idx.Files[i].ID == id {
 			idx.Files[i].Transcript = text
-			return s.write(conv, idx)
+			return s.write(conv, &idx)
 		}
 	}
 	return fmt.Errorf("no file %s in this conversation", id)
@@ -299,7 +481,7 @@ func (s *Store) List(conv string) ([]Entry, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	idx, err := s.read(conv)
+	idx, err := s.load(conv)
 	return idx.Files, err
 }
 
@@ -373,7 +555,7 @@ func (s *Store) Sweep() (int, error) {
 		if !d.IsDir() || validConv(conv) != nil {
 			continue
 		}
-		idx, err := s.read(conv)
+		idx, err := s.load(conv) // an unreadable index is rebuilt; another version's is left
 		if err != nil {
 			s.logf("files: %s: %v (left as it is)", Dir(conv), err)
 			continue
@@ -436,7 +618,7 @@ func (s *Store) Sweep() (int, error) {
 			continue
 		}
 		if changed[conv] {
-			if err := s.write(conv, idx); err != nil {
+			if err := s.write(conv, &idx); err != nil {
 				s.logf("files: %s: index not updated: %v", Dir(conv), err)
 			}
 		}

@@ -241,9 +241,15 @@ func (g *Gateway) fetchFiles(session string, jobs []job) incoming {
 			var img attach.Image
 			var imgErr error
 			if kind == attach.KindImage {
-				img, imgErr = attach.PrepareImage(body)
-				if imgErr == nil {
-					e.Width, e.Height = img.Width, img.Height
+				// decoded only when it will be shown (the model sees images and the turn has room):
+				// a decode holds up to hundreds of MB, and they wait for each other runtime-wide
+				if sees && len(in.images) < loop.MaxTurnImages {
+					img, imgErr = attach.PrepareImageCtx(g.base, body)
+					if imgErr == nil {
+						e.Width, e.Height = img.Width, img.Height
+					}
+				} else {
+					e.Width, e.Height = attach.ImageSize(body)
 				}
 			}
 			e, err = g.o.Files.Save(conv, e, body)

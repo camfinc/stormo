@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -89,9 +90,16 @@ func (s *Store) Tool(neutralise Neutralise) tools.Tool {
 				if err != nil {
 					return nil, err
 				}
+				// a marked upload's name is its sender's words: the reader is marked before any of
+				// the list reaches the model (no mark, no list)
+				if slices.ContainsFunc(files, func(e Entry) bool { return e.Marked }) {
+					if err := messaging.MarkUntrusted(ctx, whyMarked); err != nil {
+						return nil, fmt.Errorf("the files cannot be listed: %w", err)
+					}
+				}
 				out := []map[string]any{}
 				for _, e := range files {
-					item := map[string]any{"id": e.ID, "name": e.Name, "kind": e.Kind, "mime": e.MIME, "size": e.Size, "at": e.At, "path": e.Path}
+					item := map[string]any{"id": e.ID, "name": neutralise(e.Name), "kind": e.Kind, "mime": e.MIME, "size": e.Size, "at": e.At, "path": e.Path}
 					if e.Marked {
 						item["marked"] = true
 					}
@@ -103,7 +111,7 @@ func (s *Store) Tool(neutralise Neutralise) tools.Tool {
 			if err != nil {
 				return nil, err
 			}
-			out := map[string]any{"id": e.ID, "name": e.Name, "kind": e.Kind, "mime": e.MIME, "size": e.Size, "path": e.Path}
+			out := map[string]any{"id": e.ID, "name": neutralise(e.Name), "kind": e.Kind, "mime": e.MIME, "size": e.Size, "path": e.Path}
 			if e.Marked {
 				// the reader is marked before the content reaches the model (persisted first)
 				if err := messaging.MarkUntrusted(ctx, whyMarked); err != nil {
@@ -123,7 +131,7 @@ func (s *Store) Tool(neutralise Neutralise) tools.Tool {
 				if err != nil {
 					return nil, err
 				}
-				img, err := PrepareImage(body)
+				img, err := PrepareImageCtx(ctx, body)
 				if err != nil {
 					return nil, err
 				}
