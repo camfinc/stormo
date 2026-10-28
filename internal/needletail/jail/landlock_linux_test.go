@@ -168,11 +168,11 @@ func TestJailRefusesBadArgs(t *testing.T) {
 }
 
 // This exercises the actual kernel restriction without containers or production
-// resources. It runs on any Linux test host with Landlock ABI >=3.
+// resources. It runs on any Linux test host with Landlock ABI >= TaintedABI.
 func TestQuarantineReadOnlyJail(t *testing.T) {
 	abi, err := ABI()
-	if err != nil || abi < 3 {
-		t.Skip("requires Landlock ABI 3 or newer")
+	if err != nil || abi < TaintedABI {
+		t.Skipf("requires Landlock ABI %d or newer (a tainted command's jail)", TaintedABI)
 	}
 	// the home's .tmp (as before) and a conversation's work directory (a tainted run's grant)
 	for _, writable := range []string{TmpDir, WorkDir + "/slack-C0DEV-1.2"} {
