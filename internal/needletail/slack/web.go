@@ -271,6 +271,8 @@ type Message struct {
 	UserTeam string `json:"user_team"`
 	// Blocks are the message's blocks (rich text names a mention as a user element).
 	Blocks json.RawMessage `json:"blocks"`
+	// Files are the files it carries (a file_share).
+	Files []File `json:"files"`
 }
 
 // Replies is a thread's messages, oldest first, at most limit (the root included).

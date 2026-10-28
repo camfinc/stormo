@@ -85,15 +85,65 @@ type Server struct {
 	// Profiles are users.info fields laid over a user's answer (team_id, is_restricted,
 	// is_ultra_restricted, is_stranger, is_bot, …). A user not listed is a full member of Team.
 	Profiles map[string]map[string]any
+	// Files are the files the fake serves at /files/<id> (FileURL), to a request with the bot
+	// token; downloads counts them.
+	Files     map[string]FileBody
+	downloads []string
+}
+
+// FileBody is a file the fake serves: its bytes and the Content-Type it answers with (Redirect,
+// when set, answers with a redirect there instead).
+type FileBody struct {
+	Body        []byte
+	ContentType string
+	Redirect    string
+}
+
+// FileURL is where the fake serves a file (url_private_download).
+func (s *Server) FileURL(id string) string { return s.URL + "/files/" + id }
+
+// Downloads are the files fetched so far (ids), with the bot token.
+func (s *Server) Downloads() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string{}, s.downloads...)
+}
+
+func (s *Server) file(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/files/")
+	if r.Header.Get("Authorization") != "Bearer "+BotToken {
+		// as Slack does without the token: its sign-in page
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>sign in</html>"))
+		return
+	}
+	s.mu.Lock()
+	f, ok := s.Files[id]
+	if ok {
+		s.downloads = append(s.downloads, id)
+	}
+	s.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if f.Redirect != "" {
+		http.Redirect(w, r, f.Redirect, http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", f.ContentType)
+	_, _ = w.Write(f.Body)
 }
 
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
-		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, Slow: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1}
+		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, Slow: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1,
+		Files: map[string]FileBody{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
+	mux.HandleFunc("/files/", s.file)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return s
@@ -264,6 +314,10 @@ type Event struct {
 	UserTeam string
 	// Blocks, when set, is the event's blocks (rich text).
 	Blocks any
+	// Files, when set, are the files the message carries (Slack's file objects: id, name,
+	// mimetype, filetype, size, mode, subtype, url_private_download, …); its subtype is then
+	// file_share unless set.
+	Files []map[string]any
 }
 
 // Send sends an events_api envelope with the event, as envelope id.
@@ -280,6 +334,12 @@ func (s *Server) Send(id string, e Event) {
 	}
 	if e.Blocks != nil {
 		ev["blocks"] = e.Blocks
+	}
+	if len(e.Files) > 0 {
+		ev["files"] = e.Files
+		if e.Subtype == "" {
+			ev["subtype"] = "file_share"
+		}
 	}
 	env := map[string]any{"envelope_id": id, "type": "events_api", "accepts_response_payload": false,
 		"payload": map[string]any{"team_id": Team, "event_id": "Ev" + id, "type": "event_callback", "event": ev}}

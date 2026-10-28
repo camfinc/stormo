@@ -23,6 +23,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/api"
 	"github.com/camfinc/stormo/internal/needletail/approvals"
+	"github.com/camfinc/stormo/internal/needletail/attach"
 	"github.com/camfinc/stormo/internal/needletail/config"
 	"github.com/camfinc/stormo/internal/needletail/followup"
 	"github.com/camfinc/stormo/internal/needletail/fsx"
@@ -41,6 +42,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/skills"
 	"github.com/camfinc/stormo/internal/needletail/slack"
+	"github.com/camfinc/stormo/internal/needletail/stt"
 	"github.com/camfinc/stormo/internal/needletail/tools"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -126,6 +128,8 @@ type runtime struct {
 	approvals atomic.Pointer[approvals.Service]
 	// risky are the risky-command rules (approvals.commands over the defaults)
 	risky *approvals.Commands
+	// files are people's uploads (files/<conversation>/; view_file, the Slack gateway's)
+	files *attach.Store
 }
 
 // operators are the conversations (their roots) this process started for the owner: a oneshot's.
@@ -179,7 +183,7 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	for _, e := range cfg.Endpoints() {
 		eps = append(eps, llm.Endpoint{BaseURL: e.BaseURL, Key: sec.Get(e.KeyEnv), Model: e.Model})
 	}
-	client := &llm.Client{Endpoints: eps, Reasoning: cfg.Reasoning, Log: logf}
+	client := &llm.Client{Endpoints: eps, Reasoning: cfg.Reasoning, Log: logf, Vision: cfg.VisionMode()}
 	store, err := sessions.Open(cfg.SessionsDir(), red.Redact)
 	if err != nil {
 		return nil, err
@@ -278,8 +282,11 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 		return policy, nil
 	}
 	agent.Tools.Add(s.Tool(origin(store)))
+	// people's uploads (§4.9, §6): the gateway keeps them, view_file looks at a conversation's own
+	files := &attach.Store{Home: cfg.Home, Retention: cfg.FileRetention(), Log: logf}
+	agent.Tools.Add(files.Tool(slack.Neutralise))
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
-		jail: js.state,
+		jail: js.state, files: files,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
 			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
 	rt.setGuide()
@@ -596,6 +603,9 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 		Handlers:     handlers,
 		Listen:       slackListen(rt.cfg.Slack),
 		RelayBots:    slackRelayBots(rt.cfg.Slack),
+		Files:        rt.files,
+		STT:          startSTT(rt),
+		Sees:         func() bool { return rt.agent.LLM.Sees(0) },
 		Taint: func(session string, t wire.Taint) error {
 			if _, ok := store.Root(session); !ok {
 				if _, err := store.Create(wire.Session{ID: session, Source: slack.Source, Title: "Slack conversation", Untrusted: true}); err != nil {
@@ -626,6 +636,48 @@ func startSlack(rt *runtime, srv *api.Server, fu *followUps) *slack.Gateway {
 	rt.dmUsers.Store(&known) // the memory's DM audiences
 	gw.Start()
 	return gw
+}
+
+// startSTT is the speech-to-text of voice notes (needletail.yaml stt, §4.9): nil when it is off,
+// its key is missing, or the test override (stt.URLEnv) is not a loopback address.
+func startSTT(rt *runtime) slack.Transcriber {
+	if !rt.cfg.STTEnabled() {
+		return nil
+	}
+	key := rt.sec.Get(secrets.STTKey)
+	if key == "" {
+		rt.logger.Printf("stt: voice notes are not transcribed: %s is missing", secrets.STTKey)
+		return nil
+	}
+	base := os.Getenv(stt.URLEnv)
+	if err := stt.CheckURL(base); err != nil {
+		rt.logger.Printf("stt: voice notes are not transcribed: %v", err)
+		return nil
+	}
+	return &stt.Client{BaseURL: base, Key: key, Model: rt.cfg.STT.Model, Language: rt.cfg.STT.Language}
+}
+
+// sweepFiles removes the uploads past their retention (files.retention_days), now and every hour
+// until ctx ends.
+func sweepFiles(ctx context.Context, rt *runtime) {
+	sweep := func() {
+		if n, err := rt.files.Sweep(); err != nil {
+			rt.logger.Printf("files: sweep: %v", err)
+		} else if n > 0 {
+			rt.logger.Printf("files: %d upload(s) past their retention removed", n)
+		}
+	}
+	sweep()
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
+		}
+	}
 }
 
 // slackAllowedUsers is SLACK_ALLOWED_USERS, as a list.
@@ -742,6 +794,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		rt.agent.RunBackgroundLearning(ticks)
 	}()
 	defer func() { stopTicks(); <-learningDone }()
+	filesDone := make(chan struct{})
+	go func() { defer close(filesDone); sweepFiles(ticks, rt) }()
+	defer func() { stopTicks(); <-filesDone }()
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
 	defer func() { stopTicks(); <-maintenanceDone }()
