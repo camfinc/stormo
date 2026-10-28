@@ -755,7 +755,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	defer link.close(3 * time.Second)
 	var gw *slack.Gateway
 	srv, err := api.New(api.Options{Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
-		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, Jail: rt.jail,
+		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, MaxTurns: rt.cfg.ChatTurns(), Jail: rt.jail,
 		Trust: func(conv string) error {
 			// the owner (the API's key is theirs) endorses a conversation: kept with an audit record
 			if err := rt.store.Trust(conv, "owner (API)"); err != nil {

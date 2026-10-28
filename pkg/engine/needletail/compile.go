@@ -70,6 +70,9 @@ type agentConfig struct {
 		// BackgroundLifetime is how long a background process (terminal background: true) may
 		// run, in seconds (needletail.yaml limits.background_lifetime; the runtime's 2 h when 0).
 		BackgroundLifetime int `yaml:"background_lifetime"`
+		// ChatTurns is how many chat turns may run at once (needletail.yaml limits.chat_turns;
+		// the runtime's 2 when 0).
+		ChatTurns int `yaml:"chat_turns"`
 	} `yaml:"limits"`
 	// Files are what the runtime does with the files people send (needletail.yaml files):
 	// retention_days (1 to 365; 14 when unset) and vision (auto, on/true, off/false).
@@ -127,6 +130,9 @@ const maxScheduleTurns = 4
 
 // maxLuauTimeout is the longest luau.timeout (a tool header's own longest, luau.MaxTimeout).
 const maxLuauTimeout = 600
+
+// maxChatTurns is the most chat turns limits.chat_turns may allow at once.
+const maxChatTurns = 16
 
 // maxBackgroundLifetime is the longest limits.background_lifetime (the runtime's
 // tools.MaxLifetime), in seconds.
@@ -225,6 +231,9 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 	if l := c.Limits.BackgroundLifetime; l < 0 || l > maxBackgroundLifetime {
 		return nil, fmt.Errorf("%s: limits.background_lifetime %d must be seconds, 1 to %d (0 or unset: the runtime's 7200, 2 h)", ConfigFile, l, maxBackgroundLifetime)
 	}
+	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > maxChatTurns {
+		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d (0 or unset: the runtime's 2)", ConfigFile, c.Limits.ChatTurns, maxChatTurns)
+	}
 	if c.Luau.Timeout < 0 || c.Luau.Timeout > maxLuauTimeout {
 		return nil, fmt.Errorf("%s: luau.timeout %d must be seconds, 1 to %d (0 or unset: the runtime's 30)", ConfigFile, c.Luau.Timeout, maxLuauTimeout)
 	}
@@ -262,7 +271,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	cloud := wire.Endpoint{BaseURL: conn.BaseURL, KeyEnv: conn.Key, Model: a.Engine.Model}
 	c := wire.Config{Version: wire.ConfigVersion, Agent: a.ID, Reasoning: a.Limits.Reasoning,
 		Limits: wire.Limits{Turns: a.Limits.Turns, CommandTimeout: a.Limits.CommandTimeout, ScriptTimeout: a.Limits.ScriptTimeout, LuauTimeout: ac.Luau.Timeout,
-			BackgroundLifetime: ac.Limits.BackgroundLifetime},
+			BackgroundLifetime: ac.Limits.BackgroundLifetime, ChatTurns: ac.Limits.ChatTurns},
 		Memory: wire.MemoryConfig{MemoryCharLimit: a.Learning.MemoryCharLimit, UserCharLimit: a.Learning.UserCharLimit, Recall: ac.Memory.Recall}}
 	c.Reflection = ac.Reflection
 	c.BackgroundLearning = ac.BackgroundLearning

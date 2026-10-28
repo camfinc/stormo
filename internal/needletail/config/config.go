@@ -30,8 +30,12 @@ const (
 	DefaultScriptTimeout  = 30  // seconds
 	DefaultLuauTimeout    = 30  // seconds: a Luau tool the model calls
 	DefaultPort           = 8642
-	DefaultHome           = "/opt/data"
-	DefaultSharedDir      = "/shared"
+	// DefaultChatTurns is how many chat turns may run at once when limits.chat_turns is unset;
+	// MaxChatTurns the most it may say.
+	DefaultChatTurns = 2
+	MaxChatTurns     = 16
+	DefaultHome      = "/opt/data"
+	DefaultSharedDir = "/shared"
 	// Hot-memory budgets when the config has none (UTF-16 units).
 	DefaultMemoryLimit = 2200
 	DefaultUserLimit   = 1375
@@ -115,6 +119,9 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	if s := c.STT; s != nil && s.Provider != "" && s.Provider != "elevenlabs" {
 		return nil, fmt.Errorf("%s: stt.provider %q is not one this runtime has (elevenlabs)", File, s.Provider)
 	}
+	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > MaxChatTurns {
+		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d", File, c.Limits.ChatTurns, MaxChatTurns)
+	}
 	if c.Model.Primary.BaseURL == "" || c.Model.Primary.Model == "" {
 		return nil, fmt.Errorf("%s: model.primary needs base_url and model", File)
 	}
@@ -192,6 +199,14 @@ func (c *Config) STTEnabled() bool { return c.STT != nil && c.STT.Enabled }
 // Endpoints are the model endpoints in the order they are tried: primary, then fallbacks.
 func (c *Config) Endpoints() []wire.Endpoint {
 	return append([]wire.Endpoint{c.Model.Primary}, c.Model.Fallbacks...)
+}
+
+// ChatTurns is how many chat turns may run at once (limits.chat_turns, else DefaultChatTurns).
+func (c *Config) ChatTurns() int {
+	if c.Limits.ChatTurns > 0 {
+		return c.Limits.ChatTurns
+	}
+	return DefaultChatTurns
 }
 
 // BackgroundLifetime is how long a background process may run (0: the runtime's default).

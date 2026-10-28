@@ -166,3 +166,24 @@ func TestLoadFilesAndSTT(t *testing.T) {
 		}
 	}
 }
+
+// limits.chat_turns: how many chat turns may run at once (ChatTurns: the runtime's 2 when unset,
+// 1 to 16).
+func TestLoadChatTurns(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || c.ChatTurns() != DefaultChatTurns || DefaultChatTurns != 2 {
+		t.Fatalf("default: %v %v", err, c)
+	}
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base+"limits: {chat_turns: 5}\n"), 0o644)
+	if c, err := Load(dir, env(nil)); err != nil || c.ChatTurns() != 5 {
+		t.Errorf("set: %v %+v", err, c)
+	}
+	for _, bad := range []string{"limits: {chat_turns: 17}\n", "limits: {chat_turns: -2}\n"} {
+		_ = os.WriteFile(filepath.Join(dir, File), []byte(base+bad), 0o644)
+		if _, err := Load(dir, env(nil)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

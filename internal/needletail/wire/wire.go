@@ -469,6 +469,11 @@ type Limits struct {
 	// this long after it started (0: the runtime's 2 h). An image older than the key refuses a
 	// needletail.yaml that has it.
 	BackgroundLifetime int `json:"background_lifetime,omitempty" yaml:"background_lifetime,omitempty"`
+	// ChatTurns is how many chat turns (the API's and the Slack gateway's) may run at once
+	// (0: the runtime's 2; 1 to 16). The core's gateway bounds model calls across the fleet
+	// besides (stormo.yaml core.llm_concurrency). An image older than the key refuses a
+	// needletail.yaml that has it.
+	ChatTurns int `json:"chat_turns,omitempty" yaml:"chat_turns,omitempty"`
 }
 
 // CoreConfig is the swarm core, set only when the agent runs on it.

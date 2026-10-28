@@ -160,7 +160,7 @@ The runtime is the process `needletail serve`, started as root by the image and 
 `$AGENT_HOME/needletail.yaml` is rendered by Compile and read once at boot. It holds:
 - `model`: `primary {base_url, key_env, model}` and `fallbacks[]`
 - `reasoning`
-- `limits {turns, command_timeout, script_timeout, luau_timeout, background_lifetime}`: `script_timeout` (default 30 s) bounds a schedule's `.luau` script, `luau_timeout` (default 30 s) a Luau tool the model calls or `luau_test` runs, so an agent whose schedules need many minutes does not give every interactive tool call as long; `background_lifetime` (seconds, 1 to 86 400; unset: 7200, 2 h), from `engine/needletail/config.yaml`'s `limits.background_lifetime`, is how long a background process may run (§4.5). An image older than `background_lifetime` refuses a `needletail.yaml` that has it
+- `limits {turns, command_timeout, script_timeout, luau_timeout, background_lifetime, chat_turns}`: `chat_turns` (1 to 16; unset: 2) is how many chat turns run at once (§4.4); `script_timeout` (default 30 s) bounds a schedule's `.luau` script, `luau_timeout` (default 30 s) a Luau tool the model calls or `luau_test` runs, so an agent whose schedules need many minutes does not give every interactive tool call as long; `background_lifetime` (seconds, 1 to 86 400; unset: 7200, 2 h), from `engine/needletail/config.yaml`'s `limits.background_lifetime`, is how long a background process may run (§4.5). An image older than `background_lifetime` refuses a `needletail.yaml` that has it
 - `core {mcp_url, ingest_url, key_env: SWARM_CORE_KEY}`, only when on core
 - `channels`
 - `memory {memory_char_limit, user_char_limit, recall}`: the hot files' budgets (UTF-16 units), and `recall {auto, jobs, max, budget}`, config.yaml's `memory.recall` (§4.6: on for user turns, off for scheduled runs, 5 records, 1,200 units when unset; `max` 1 to 10, `budget` 200 to 4000), omitted when unset
@@ -224,8 +224,9 @@ A turn is `Run(ctx, session, input, opts{tools filter, model override})`.
 - This matches today's lineage, `Tip` and `Compacted` semantics.
 
 **Concurrency**
-- One running turn per conversation, in two lanes: two chat turns (the API's and Slack's, `api.Server.Reserve`) and the scheduled runs' own (`ReserveJob`, `schedules.turns`, one by default), so a burst of jobs never starves chat nor chat the jobs.
+- One running turn per conversation, in two lanes: the chat turns (the API's and Slack's, `api.Server.Reserve`; `limits.chat_turns` at once, 1 to 16, two by default: engine/needletail/config.yaml's `limits.chat_turns`, an image older than the key refusing a `needletail.yaml` that has it) and the scheduled runs' own (`ReserveJob`, `schedules.turns`, one by default), so a burst of jobs never starves chat nor chat the jobs.
 - Over a lane's cap the API returns 429 (`ErrBusy`). A run on a busy session returns 409.
+- **Model calls are bounded by the core too.** On the core's gateway every agent's calls share its concurrency (3 at once per ChatGPT connection, for the whole fleet: stormo.yaml `core.llm_concurrency`, 1 to 64, which `SWARM_CORE_LLM_CONCURRENCY` overrides; docs/instances.md); a call over it waits in the core's queue (503 `core_busy` past it, retried, §4.3). More chat turns than that only queue at the core; the cloud fallback has no such bound.
 
 ### 4.5 Built-in tools
 
@@ -755,6 +756,7 @@ Each is frozen at the first nap of a needletail agent and covered by golden test
 - the handler header (`events`, `jobs`), each event's fields and actions, and the handler layout `skills/<skill>/handlers/<name>.luau` (v1, §5.5, M6b; `on_message`'s `ambient` added with `slack.listen`, and its `verified` is false for an unverified ambient message; an ambient message's pass must be explicit, `nil` being none)
 - `needletail.yaml` `slack.listen` (a list of channel ids, or `["*"]`): an image older than it refuses a `needletail.yaml` that has it
 - `needletail.yaml` `limits.background_lifetime` (seconds): an image older than it refuses a `needletail.yaml` that has it
+- `needletail.yaml` `limits.chat_turns` (1 to 16): an image older than it refuses a `needletail.yaml` that has it
 - `files/<conversation>/.files-v1.json` v1 (Raw, 0600; §4.9, §6): `{"version":1,"files":[{"id","name","path","mime","kind" (image|text|pdf|audio),"size"[,"width","height"][,"author"][,"source"][,"marked","why"],"at" (RFC 3339, UTC: the retention counts from it)[,"transcript"]}]}`; the file itself at `path`, `files/<conversation>/<id>-<safe name>` (letters, digits, `.`, `_`, `-`, at most 80 bytes). A runtime that cannot read an index leaves that conversation's files as they are (logged)
 - `needletail.yaml` `files` and `stt` (§4.1): an image older than them refuses a `needletail.yaml` that has them
 - the `view_file` tool's name and arguments (`{id?}`)

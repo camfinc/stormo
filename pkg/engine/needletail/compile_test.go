@@ -487,3 +487,30 @@ func TestFilesAndSTTRender(t *testing.T) {
 		}
 	}
 }
+
+// limits.chat_turns is how many chat turns (the API's and Slack's) may run at once:
+// needletail.yaml's limits.chat_turns, left out when unset (the runtime's 2), 1 to 16.
+func TestChatTurnsRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("limits:\n  chat_turns: 4\n"), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	if c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac); c.Limits.ChatTurns != 4 {
+		t.Errorf("limits = %+v", c.Limits)
+	}
+	c := renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), &agentConfig{})
+	if body, _ := yaml.Marshal(c); c.Limits.ChatTurns != 0 || strings.Contains(string(body), "chat_turns") {
+		t.Errorf("unset: %+v", c.Limits)
+	}
+	for _, bad := range []string{"-1", "17", "two"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte("limits:\n  chat_turns: "+bad+"\n"), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("limits.chat_turns %s accepted", bad)
+		}
+	}
+}
