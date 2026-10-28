@@ -154,8 +154,9 @@ func startApprovals(ctx context.Context, rt *runtime, srv *api.Server, gw *slack
 	rt.agent.Notes = svc.Notes
 	rt.sched.SetApprovals(rt.askDelivery)
 	rt.sched.SetOwners(svc.Approvers)
+	tick := approvalTick // read here, not in the goroutine: tests change it between serves
 	go func() {
-		t := time.NewTicker(approvalTick)
+		t := time.NewTicker(tick)
 		defer t.Stop()
 		for {
 			select {
