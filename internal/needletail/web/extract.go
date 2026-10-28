@@ -70,7 +70,7 @@ func Extract(body []byte, contentType string, base *url.URL) Page {
 }
 
 func looksHTML(s string) bool {
-	head := strings.ToLower(s[:min(len(s), 512)])
+	head := asciiLower(s[:min(len(s), 512)])
 	return strings.Contains(head, "<html") || strings.Contains(head, "<!doctype html")
 }
 
@@ -103,9 +103,22 @@ func bound(s string, n int) (string, bool) {
 	return s[:n], true
 }
 
+// asciiLower is s with ASCII letters only in lower case: byte for byte s's length, so an offset
+// found in it is one in s (strings.ToLower is not: the Kelvin sign shrinks, a dotted capital I
+// grows). Tag names are ASCII, so it is also how they compare.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 // title is the page's <title>, unescaped, on one line.
 func title(s string) string {
-	lower := strings.ToLower(s)
+	lower := asciiLower(s)
 	i := strings.Index(lower, "<title")
 	if i < 0 {
 		return ""
@@ -126,7 +139,7 @@ func title(s string) string {
 // region is the part of the page its main text is in: <main>…</main>, else the first <article> to
 // the last </article>, else the <body>, else the whole.
 func region(s string) string {
-	lower := strings.ToLower(s)
+	lower := asciiLower(s)
 	for _, tag := range []string{"main", "article", "body"} {
 		i := indexTag(lower, tag)
 		if i < 0 {
@@ -197,7 +210,7 @@ func (w *walker) text(raw string) {
 }
 
 func (w *walker) walk(s string) {
-	lower := strings.ToLower(s)
+	lower := asciiLower(s)
 	i := 0
 	for i < len(s) {
 		lt := strings.IndexByte(s[i:], '<')

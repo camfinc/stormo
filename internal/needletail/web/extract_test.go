@@ -73,3 +73,32 @@ func TestExtractTolerant(t *testing.T) {
 		_ = Extract([]byte(s), "text/html", base)
 	}
 }
+
+// Codex finding (step 4): Unicode whose lower case has another byte length (the Kelvin sign, a
+// dotted capital I) never shifts the tag scan off the page's bytes: no panic, the text kept.
+func TestExtractUnicodeCase(t *testing.T) {
+	base, _ := url.Parse("https://example.test/")
+	p := Extract([]byte("\u212A<HTML><TITLE>\u0130stanbul \u212Aelvin</TITLE><MAIN><SCRIPT>hidden</SCRIPT><P>\u212A \u0130 x</P></MAIN></HTML>"), "text/html", base)
+	if p.Title != "\u0130stanbul \u212Aelvin" || !strings.Contains(p.Text, "\u212A \u0130 x") || strings.Contains(p.Text, "hidden") {
+		t.Errorf("page %+v", p)
+	}
+}
+
+// FuzzExtract: no page panics the extractor (its seeds run with go test).
+func FuzzExtract(f *testing.F) {
+	for _, s := range []string{
+		"\u212A\u212A<p>",
+		"\u212A<main><p>x</p></main>",
+		"<TITLE>\u0130\u0130\u0130</TITLE><BODY>\u212A\u212A<A HREF='/x'>\u0130</A></BODY>",
+		"\u0130<ARTICLE>\u212A<SCRIPT>\u0130</SCRIPT>stra\u00DFe</ARTICLE>",
+		"<html>\u212A\u212A\u212A<title>t</title><nav>\u0130</nav><main>m</main>",
+		"\u023A\u2C65<STYLE>x</STYLE>\u1E9E<p>\u03A3</p>",
+	} {
+		f.Add(s)
+	}
+	base, _ := url.Parse("https://example.test/")
+	f.Fuzz(func(t *testing.T, s string) {
+		_ = Extract([]byte(s), "text/html", base)
+		_ = Extract([]byte(s), "", base)
+	})
+}
