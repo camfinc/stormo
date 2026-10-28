@@ -559,7 +559,7 @@ return function(args) ... end
 
 **Effective caps = declared ∩ granted.**
 - Grants live only in `engine/needletail/config.yaml` (rendered into `needletail.yaml`). Both files sit outside `skills/` and are not writable by the agent, so a tool, or a dream-proposed tool, cannot grant itself anything.
-- Default grants: `fs.read:home`, `fs.write:home` (excluding protected paths) and `core:msg_*` when on core.
+- Default grants: `fs.read:home`, `fs.write:home/work/**` and `core:msg_*` when on core. The write grant reaches only the run's own conversation's work directory (`work/<conversation>/`: another conversation's is refused, §5.3), so a schedule's `.luau` script, which has no conversation, writes nothing in the home by default. **Migration (2026-10-28):** the default was `fs.write:home` (the whole home but the protected paths); a tool, handler or job script that writes elsewhere needs that directory granted in `engine/needletail/config.yaml` (`luau.grants: [fs.write:home/reports/**]`), or `fs.write:home` to keep the old reach. Explicit grants are unchanged; `skill_view` shows a tool's effective caps, and a write outside them fails `denied` (audited).
 - `http`, `fs.*:shared`, `message`, `memory`, `kv` and `followup` are off unless granted.
 - A call outside the effective caps fails with code `denied` and is audited.
 

@@ -19,7 +19,7 @@ skills:
 luau:
     grants:
         - fs.read:home
-        - fs.write:home
+        - fs.write:home/work/**
         - http:crm.example.com
         - fs.read:shared
     http_secrets:

@@ -243,6 +243,12 @@ func scrubConfig(inst *instance.Instance) *wire.ScrubConfig {
 	return c
 }
 
+// DefaultWriteGrant is the home write every agent's Luau is granted: its own conversation's work
+// directory only (work/<conversation>/: the runtime refuses another conversation's). Before
+// 2026-10-28 it was the whole home (fs.write:home); an agent whose tools or .luau job scripts write
+// elsewhere grants that directory in engine/needletail/config.yaml (fs.write:home/<dir>/**).
+const DefaultWriteGrant = "fs.write:home/work/**"
+
 // onCore: a local run routed through the swarm core (engine.local), as for Hermes.
 func onCore(a *manifest.Agent, target manifest.Target) bool {
 	return target == manifest.Local && a.Engine.Local != nil
@@ -262,7 +268,7 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 	c.BackgroundLearning = ac.BackgroundLearning
 	c.SkillMaintenance = ac.SkillMaintenance
 	c.Model.Primary = cloud
-	grants := []string{"fs.read:home", "fs.write:home"}
+	grants := []string{"fs.read:home", DefaultWriteGrant}
 	if onCore(a, target) && !core.NoGateway {
 		c.Model.Primary = wire.Endpoint{BaseURL: core.BaseURL, KeyEnv: core.KeyEnv, Model: a.Engine.Local.Model}
 		c.Model.Fallbacks = []wire.Endpoint{cloud}

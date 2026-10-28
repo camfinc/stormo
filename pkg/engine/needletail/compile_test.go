@@ -131,7 +131,7 @@ func TestGrantsRender(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(c.Luau.Grants, ",") != "fs.read:home,fs.write:home,core:msg_*,http:api.example.com,fs.read:shared" {
+	if strings.Join(c.Luau.Grants, ",") != "fs.read:home,fs.write:home/work/**,core:msg_*,http:api.example.com,fs.read:shared" {
 		t.Errorf("grants = %v", c.Luau.Grants)
 	}
 	if len(c.Luau.HTTPSecrets) != 1 || c.Luau.HTTPSecrets[0].Env != "CRM_API_TOKEN" {

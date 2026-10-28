@@ -29,7 +29,7 @@ func TestLoadGoldenHome(t *testing.T) {
 	}
 	// The example's engine/needletail/config.yaml: its grants after the two the adapter always
 	// gives, the CRM token as a header, its wall clock.
-	if len(c.Endpoints()) != 1 || strings.Join(c.Luau.Grants, ",") != "fs.read:home,fs.write:home,http:crm.example.com,fs.read:shared" ||
+	if len(c.Endpoints()) != 1 || strings.Join(c.Luau.Grants, ",") != "fs.read:home,fs.write:home/work/**,http:crm.example.com,fs.read:shared" ||
 		len(c.Luau.HTTPSecrets) != 1 || c.Luau.HTTPSecrets[0].Env != "CRM_API_TOKEN" || c.Timezone != "America/New_York" {
 		t.Errorf("endpoints %v grants %v http_secrets %+v timezone %q", c.Endpoints(), c.Luau.Grants, c.Luau.HTTPSecrets, c.Timezone)
 	}

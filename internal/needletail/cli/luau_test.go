@@ -31,6 +31,25 @@ return function(args)
 end
 `
 
+// grantReports adds the write grant the fare tool needs to the rendered needletail.yaml: the
+// default write grant is the conversation's work/ only (fs.write:home/work/**), so a tool that
+// writes reports/ is granted that directory, as an agent's engine/needletail/config.yaml would.
+func grantReports(t *testing.T, home string) {
+	t.Helper()
+	p := filepath.Join(home, "needletail.yaml")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const def = "        - fs.write:home/work/**\n"
+	if !strings.Contains(string(raw), def) {
+		t.Fatalf("needletail.yaml has no default write grant:\n%s", raw)
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(string(raw), def, def+"        - fs.write:home/reports/**\n", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // M6's done-when (docs/needletail.md §9): an agent writes a Luau tool through skill_manage, calls
 // it the next turn, and the dream proposes it. The real build, rehydrate, oneshot turns (driven
 // by a scripted model), nap and dream, as TestNapRehydrateDream; then a second boot from the nap
@@ -39,6 +58,7 @@ func TestLuauToolLifecycle(t *testing.T) {
 	w := newLearningWorld(t)
 	home := filepath.Join(w.tmp, "home1")
 	w.rehydrate(home)
+	grantReports(t, home)
 	if err := os.MkdirAll(filepath.Join(home, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +166,7 @@ func TestLuauToolLifecycle(t *testing.T) {
 	// A second boot from the nap has the tool again.
 	home2 := filepath.Join(w.tmp, "home2")
 	w.rehydrate(home2)
+	grantReports(t, home2)
 	if err := os.MkdirAll(filepath.Join(home2, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}

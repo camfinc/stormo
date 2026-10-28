@@ -2,7 +2,8 @@
 timezone: America/New_York      # the agent's wall clock: its schedules' cron and the time it is told
 
 luau:
-  # What Atlas's Luau tools may use besides its home (and the core's msg_* tools on the core).
+  # What Atlas's Luau tools may use besides reading its home and writing its conversation's work/ (and the
+  # core's msg_* tools on the core); fs.write:home/<dir>/** for a tool that writes elsewhere in the home.
   # The CRM token never reaches a script: the runtime adds it as a header to requests to that host.
   grants: [http:crm.example.com, fs.read:shared]
   http_secrets:
