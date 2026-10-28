@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -78,9 +79,12 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
 
   build and ship:
   check [agent...]                       validate manifests, compile, check action isolation
-  config show <file>                     print agents/<id>/agent.yaml or agents/<id>/SOUL.md
+  config show <file>                     print agents/<id>/{agent.yaml,SOUL.md} or units/<u>/{unit.yaml,knowledge/<name>.md}
   config write <file> --if-hash h        replace it with stdin if unchanged since show and valid
-  config apply <file> --if-hash h        change agent.yaml by a JSON merge patch on stdin, comments kept
+  config apply <file> --if-hash h        change agent.yaml or unit.yaml by a JSON merge patch on stdin, comments kept
+  config create <file>                   a new units/<u>/unit.yaml (a new unit) or knowledge file, from stdin
+  config delete <file> --if-hash h       remove a unit's knowledge file
+  config units                           the units: members, knowledge files
   look show <agent>                     the agent's look: office character, desk, portrait description
   look set <agent> [--if-hash h]         replace it with the JSON look on stdin (creates personas/<agent>)
   connections [list|kinds]               ways to reach models (stormo.yaml connections:) and who uses them
@@ -872,7 +876,16 @@ func check(inst *instance.Instance, ids []string) ([]checked, error) {
 
 // configCmd shows and replaces configuration files for editors (pkg/config, docs/api.md).
 func configCmd(inst *instance.Instance, sub string, rest []string) error {
-	file, err := need(strings.Join(rest, " "), "file (agents/<id>/agent.yaml or agents/<id>/SOUL.md)")
+	if sub == "units" {
+		units := config.Units(inst)
+		result(units, func(w io.Writer) {
+			for _, u := range units {
+				fmt.Fprintf(w, "%-12s %-24s %d agents, %d knowledge files\n", u.ID, u.Name, len(u.Agents), len(u.Knowledge))
+			}
+		})
+		return nil
+	}
+	file, err := need(strings.Join(rest, " "), "file (agents/<id>/agent.yaml, agents/<id>/SOUL.md, units/<u>/unit.yaml or units/<u>/knowledge/<name>.md)")
 	if err != nil {
 		return err
 	}
@@ -880,12 +893,24 @@ func configCmd(inst *instance.Instance, sub string, rest []string) error {
 	switch sub {
 	case "show":
 		f, err = config.Show(inst, file)
-	case "write", "apply":
+	case "write", "apply", "create":
 		var body []byte
-		if body, err = io.ReadAll(os.Stdin); err == nil && sub == "write" {
+		if body, err = io.ReadAll(os.Stdin); err != nil {
+			break
+		}
+		switch sub {
+		case "write":
 			f, err = config.Write(inst, file, body, *fIfHash)
-		} else if err == nil {
+		case "apply":
 			f, err = config.Apply(inst, file, body, *fIfHash)
+		default:
+			f, err = config.Create(inst, file, body)
+		}
+	case "delete":
+		if err = config.Delete(inst, file, *fIfHash); err == nil {
+			p := path.Clean(filepath.ToSlash(file))
+			result(map[string]string{"path": p}, func(w io.Writer) { fmt.Fprintf(w, "removed %s\n", p) })
+			return nil
 		}
 	default:
 		return errUsage

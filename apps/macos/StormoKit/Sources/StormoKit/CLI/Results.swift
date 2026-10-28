@@ -101,14 +101,46 @@ public struct CheckedAgent: Codable, Sendable, Equatable {
 /// `config show` / `config write`: an editable file and the hash of what was read or written.
 public struct ConfigFile: Codable, Sendable, Equatable {
     public var path: String
-    /// agent (agent.yaml) | soul (SOUL.md)
+    /// agent (agent.yaml) | soul (SOUL.md) | unit (unit.yaml) | knowledge (a unit's knowledge/*.md)
     public var kind: String
+    /// The agent the file belongs to; empty for a unit's files.
     public var agent: String
+    /// The unit the file belongs to (unit and knowledge; absent from an older stormo).
+    public var unit: String?
     public var hash: String
     public var text: String
-    /// agent.yaml: the manifest as JSON (nil when it does not parse) and the form's choices.
+    /// agent.yaml and unit.yaml: the document as JSON (nil when it does not parse); agent.yaml also
+    /// the form's choices.
     public var doc: JSONValue?
     public var options: AgentOptions?
+}
+
+/// `config units`: one unit, with the agents its knowledge reaches and its knowledge files.
+public struct UnitInfo: Codable, Sendable, Equatable, Identifiable, Hashable {
+    public struct Knowledge: Codable, Sendable, Equatable, Identifiable, Hashable {
+        public var path: String
+        public var name: String
+        public var size: Int
+        /// False for README.md: it is for people and never reaches an agent.
+        public var compiled: Bool
+        public var id: String { path }
+    }
+    public var id: String
+    public var name: String
+    public var description: String
+    /// Its unit.yaml, relative to the instance.
+    public var path: String
+    /// Why its unit.yaml does not load (fix it as text).
+    public var problem: String?
+    /// The agents its knowledge reaches: its members, every agent for group.
+    public var agents: [String]
+    public var knowledge: [Knowledge]
+
+    public init(id: String, name: String, description: String = "", path: String? = nil, problem: String? = nil,
+                agents: [String] = [], knowledge: [Knowledge] = []) {
+        self.id = id; self.name = name; self.description = description; self.path = path ?? "units/\(id)/unit.yaml"
+        self.problem = problem; self.agents = agents; self.knowledge = knowledge
+    }
 }
 
 /// What an agent form may offer, from the instance and the engine (`config show`).

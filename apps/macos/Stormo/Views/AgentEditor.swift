@@ -54,7 +54,7 @@ struct AgentEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             if let problem = editor.problem {
-                ProblemBanner(problem: problem, stale: editor.isStale, oldBinary: editor.file == nil) {
+                ConfigProblemBanner(problem: problem, stale: editor.isStale, oldBinary: editor.file == nil) {
                     Task { await reload() }
                 }
             } else if page == .yaml && definition.isFormDirty {
@@ -987,7 +987,7 @@ private struct MultiPicker: View {
     }
 }
 
-private struct ProblemBanner: View {
+struct ConfigProblemBanner: View {
     let problem: ConfigEditor.Problem
     let stale: Bool
     let oldBinary: Bool
@@ -1013,7 +1013,7 @@ private struct ProblemBanner: View {
     }
 }
 
-private struct NoticeBanner: View {
+struct NoticeBanner: View {
     let text: String
 
     var body: some View {
@@ -1026,7 +1026,7 @@ private struct NoticeBanner: View {
     }
 }
 
-private struct TextPane: View {
+struct TextPane: View {
     @Bindable var editor: ConfigEditor
     let wraps: Bool
     let editable: Bool

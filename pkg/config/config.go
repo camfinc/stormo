@@ -4,9 +4,12 @@
 // that file, so a broken or stale edit never replaces what is on disk.
 //
 // Supported so far: agents/<id>/agent.yaml (validated like `stormo check` validates the manifest
-// and its bridge actions; deploy: is read-only, it names cloud resources) and agents/<id>/SOUL.md.
-// An agent.yaml can also be changed field by field (Apply, a JSON merge patch); Show then carries
-// the parsed document and the choices a form offers (Options).
+// and its bridge actions; deploy: is read-only, it names cloud resources), agents/<id>/SOUL.md,
+// units/<u>/unit.yaml (its id is the folder's) and units/<u>/knowledge/<name>.md (the unit's
+// human-authored knowledge; README.md is for people and never compiled). An agent.yaml or a
+// unit.yaml can also be changed field by field (Apply, a JSON merge patch); Show then carries the
+// parsed document, and for an agent.yaml the choices a form offers (Options). Create adds a unit
+// or a knowledge file, Delete removes a knowledge file, Units lists the units.
 package config
 
 import (
@@ -18,6 +21,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -31,18 +35,20 @@ import (
 
 // File is one configuration file as an editor sees it.
 type File struct {
-	Path  string `json:"path"`  // relative to the instance, with forward slashes
-	Kind  string `json:"kind"`  // "agent" (agent.yaml) or "soul" (SOUL.md)
-	Agent string `json:"agent"` // the agent the file belongs to
-	Hash  string `json:"hash"`  // sha256 of the bytes, hex: pass it back to Write
+	Path  string `json:"path"`           // relative to the instance, with forward slashes
+	Kind  string `json:"kind"`           // "agent" (agent.yaml), "soul" (SOUL.md), "unit" (unit.yaml) or "knowledge"
+	Agent string `json:"agent"`          // the agent the file belongs to; empty for a unit's files
+	Unit  string `json:"unit,omitempty"` // the unit the file belongs to (unit and knowledge)
+	Hash  string `json:"hash"`           // sha256 of the bytes, hex: pass it back to Write
 	Text  string `json:"text"`
-	// agent.yaml only: the document as JSON (null when it does not parse) and the form's choices.
+	// agent.yaml and unit.yaml: the document as JSON (absent when it does not parse); agent.yaml
+	// also the form's choices.
 	Doc     any      `json:"doc,omitempty"`
 	Options *Options `json:"options,omitempty"`
 }
 
 // Error is a refusal with a stable code for --json (docs/api.md): unsupported, conflict, invalid,
-// readonly.
+// readonly, exists.
 type Error struct {
 	Code string
 	Msg  string
@@ -61,21 +67,44 @@ func Hash(b []byte) string {
 }
 
 type target struct {
-	rel, kind, agent string
+	rel, kind, agent, unit string
 }
 
+// knowledgeName is a knowledge file's name: it becomes a heading in the unit's compiled knowledge.
+var knowledgeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.md$`)
+
+const supported = "agents/<id>/agent.yaml, agents/<id>/SOUL.md, units/<unit>/unit.yaml or units/<unit>/knowledge/<name>.md"
+
 func resolve(inst *instance.Instance, rel string) (target, error) {
+	t, ok := parse(rel)
+	switch {
+	case !ok:
+	case t.agent != "" && slices.Contains(manifest.AgentIDs(inst.Root), t.agent):
+		return t, nil
+	case t.unit != "" && slices.Contains(manifest.UnitIDs(inst.Root), t.unit):
+		return t, nil
+	}
+	return target{}, refuse("unsupported", "%s: not a configuration file stormo edits (%s)", rel, supported)
+}
+
+// parse names the file rel would be, without looking at the instance.
+func parse(rel string) (target, bool) {
 	clean := path.Clean(filepath.ToSlash(rel))
 	parts := strings.Split(clean, "/")
-	if !filepath.IsAbs(rel) && len(parts) == 3 && parts[0] == "agents" && slices.Contains(manifest.AgentIDs(inst.Root), parts[1]) {
-		switch parts[2] {
-		case "agent.yaml":
-			return target{clean, "agent", parts[1]}, nil
-		case "SOUL.md":
-			return target{clean, "soul", parts[1]}, nil
-		}
+	if filepath.IsAbs(rel) || len(parts) < 3 {
+		return target{}, false
 	}
-	return target{}, refuse("unsupported", "%s: not a configuration file stormo edits (agents/<id>/agent.yaml or agents/<id>/SOUL.md)", rel)
+	switch {
+	case len(parts) == 3 && parts[0] == "agents" && parts[2] == "agent.yaml":
+		return target{rel: clean, kind: "agent", agent: parts[1]}, true
+	case len(parts) == 3 && parts[0] == "agents" && parts[2] == "SOUL.md":
+		return target{rel: clean, kind: "soul", agent: parts[1]}, true
+	case len(parts) == 3 && parts[0] == "units" && parts[2] == "unit.yaml":
+		return target{rel: clean, kind: "unit", unit: parts[1]}, true
+	case len(parts) == 4 && parts[0] == "units" && parts[2] == "knowledge" && knowledgeName.MatchString(parts[3]):
+		return target{rel: clean, kind: "knowledge", unit: parts[1]}, true
+	}
+	return target{}, false
 }
 
 func (t target) abs(inst *instance.Instance) string {
@@ -96,12 +125,14 @@ func Show(inst *instance.Instance, rel string) (*File, error) {
 }
 
 func file(inst *instance.Instance, t target, b []byte) *File {
-	f := &File{Path: t.rel, Kind: t.kind, Agent: t.agent, Hash: Hash(b), Text: string(b)}
-	if t.kind == "agent" {
+	f := &File{Path: t.rel, Kind: t.kind, Agent: t.agent, Unit: t.unit, Hash: Hash(b), Text: string(b)}
+	if t.kind == "agent" || t.kind == "unit" {
 		var doc map[string]any
 		if yaml.Unmarshal(b, &doc) == nil {
 			f.Doc = doc
 		}
+	}
+	if t.kind == "agent" {
 		f.Options = options(inst, t.agent)
 	}
 	return f
@@ -136,7 +167,7 @@ func Write(inst *instance.Instance, rel string, body []byte, ifHash string) (*Fi
 	return file(inst, t, body), nil
 }
 
-// Apply changes an agent.yaml by a JSON merge patch (RFC 7386): the file's node tree is edited, so
+// Apply changes an agent.yaml or a unit.yaml by a JSON merge patch (RFC 7386): the file's node tree is edited, so
 // comments, key order, blank lines and comment alignment stay where nothing changed. The result is
 // validated and written as Write does.
 func Apply(inst *instance.Instance, rel string, patch []byte, ifHash string) (*File, error) {
@@ -144,14 +175,18 @@ func Apply(inst *instance.Instance, rel string, patch []byte, ifHash string) (*F
 	if err != nil {
 		return nil, err
 	}
-	if t.kind != "agent" {
-		return nil, refuse("unsupported", "%s: only agent.yaml takes a patch; write the whole file", t.rel)
+	if t.kind != "agent" && t.kind != "unit" {
+		return nil, refuse("unsupported", "%s: only agent.yaml and unit.yaml take a patch; write the whole file", t.rel)
 	}
 	var p yaml.Node
 	if err := yaml.Unmarshal(patch, &p); err != nil || len(p.Content) != 1 || p.Content[0].Kind != yaml.MappingNode {
 		return nil, refuse("usage", "%s: the patch must be a JSON object", t.rel)
 	}
-	for _, key := range []string{"id", "deploy", "format"} {
+	readonly := []string{"id", "deploy", "format"}
+	if t.kind == "unit" {
+		readonly = []string{"id"}
+	}
+	for _, key := range readonly {
 		if keyIndex(p.Content[0], key) >= 0 {
 			return nil, refuse("readonly", "%s: %s: is not edited here", t.rel, key)
 		}
@@ -183,6 +218,17 @@ func validate(inst *instance.Instance, t target, old, body []byte) error {
 	case "soul":
 		if len(bytes.TrimSpace(body)) == 0 {
 			return refuse("invalid", "%s: the agent's behaviour cannot be empty", t.rel)
+		}
+	case "unit":
+		var u manifest.Unit
+		if err := yaml.Unmarshal(body, &u); err != nil {
+			return refuse("invalid", "%s: %v", t.rel, err)
+		}
+		if u.ID != t.unit {
+			return refuse("invalid", `%s: id must be "%s", the folder's name (a unit is not renamed here)`, t.rel, t.unit)
+		}
+		if strings.TrimSpace(u.Name) == "" {
+			return refuse("invalid", "%s: the unit needs a name", t.rel)
 		}
 	case "agent":
 		a, err := manifest.Parse(inst.Root, t.agent, inst.Names.Secret, body)

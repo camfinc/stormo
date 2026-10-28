@@ -2,13 +2,14 @@ import StormoKit
 import SwiftUI
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case office, agents, files, review, chat, providers, capabilities, core
+    case office, agents, units, files, review, chat, providers, capabilities, core
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .office: "Office"
         case .agents: "Agents"
+        case .units: "Units"
         case .files: "Files"
         case .review: "Review"
         case .chat: "Chat"
@@ -22,6 +23,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .office: "building.2"
         case .agents: "person.3"
+        case .units: "rectangle.3.group"
         case .files: "folder"
         case .review: "checklist"
         case .chat: "bubble.left.and.text.bubble.right"
@@ -55,6 +57,7 @@ struct MainView: View {
                     switch section ?? .agents {
                     case .office: OfficeView()
                     case .agents: AgentsView()
+                    case .units: UnitsView()
                     case .files: FilesView()
                     case .review: ReviewSectionView()
                     case .chat: ChatView()

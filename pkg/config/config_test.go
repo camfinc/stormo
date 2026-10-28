@@ -119,10 +119,12 @@ func TestSoul(t *testing.T) {
 	}
 }
 
-func TestOnlyAgentFiles(t *testing.T) {
+func TestOnlyConfigFiles(t *testing.T) {
 	inst := acme(t)
 	for _, rel := range []string{"stormo.yaml", "agents/atlas/../../stormo.yaml", "agents/ghost/agent.yaml",
-		"agents/atlas/hermes/config.base.yaml", "/etc/passwd", "../agents/atlas/agent.yaml"} {
+		"agents/atlas/hermes/config.base.yaml", "/etc/passwd", "../agents/atlas/agent.yaml",
+		"units/ghost/unit.yaml", "units/sales/knowledge/notes.txt", "units/sales/knowledge/.hidden.md",
+		"units/sales/knowledge/sub/a.md", "units/sales/README.md", "units/sales/knowledge/../../../stormo.yaml"} {
 		if _, err := Show(inst, rel); code(err) != "unsupported" {
 			t.Errorf("%s: %v", rel, err)
 		}

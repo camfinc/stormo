@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// One configuration file open in an editor (docs/api.md, `config`): loaded with `config show`,
-/// saved whole with `config write --if-hash`, or, for an agent.yaml edited as a form, as a merge
+/// saved whole with `config write --if-hash`, or, for an agent.yaml or unit.yaml edited as a form, as a merge
 /// patch with `config apply --if-hash`; the engine validates every save and refuses one made over a
 /// version that changed on disk since.
 @MainActor @Observable
@@ -16,7 +16,7 @@ public final class ConfigEditor {
     public let path: String
     /// The text being edited.
     public var text = ""
-    /// The document being edited as a form (agent.yaml), nil when the file does not parse.
+    /// The document being edited as a form (agent.yaml, unit.yaml), nil when the file does not parse.
     public var doc: JSONValue?
     /// The version on disk the edits are based on.
     public private(set) var file: ConfigFile?
@@ -72,6 +72,22 @@ public final class ConfigEditor {
             file = saved
             text = saved.text
             doc = saved.doc
+            problem = nil
+            return true
+        } catch {
+            problem = Self.problem(error)
+            return false
+        }
+    }
+
+    /// Removes the file (a unit's knowledge file; `config delete`), only if it is still the version
+    /// loaded; true when it is gone.
+    public func delete(with cli: StormoCLI) async -> Bool {
+        guard let base = file, !busy else { return false }
+        busy = true
+        defer { busy = false }
+        do {
+            try await cli.perform(["config", "delete", path, "--if-hash", base.hash])
             problem = nil
             return true
         } catch {

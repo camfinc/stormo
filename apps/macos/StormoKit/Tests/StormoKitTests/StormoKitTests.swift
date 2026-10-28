@@ -552,6 +552,58 @@ final class Steps: @unchecked Sendable {
     }
 }
 
+/// The Units section's files through this checkout's bin/stormo: a unit's form, a new unit, its
+/// knowledge created, edited and removed.
+@Suite struct UnitEditing {
+    @Test func names() {
+        #expect(UnitCatalog.unitID(from: "Customer Care") == "customer-care")
+        #expect(UnitCatalog.knowledgeName(from: "Pricing Rules.md") == "pricing-rules.md")
+        #expect(UnitCatalog.knowledgeName(from: "  ") == "")
+        #expect(UnitCatalog.unitYAML(id: "care", name: "Care: \"VIP\"", description: "") == "id: care\nname: \"Care: \\\"VIP\\\"\"\ndescription: \"\"\n")
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    @MainActor func unitsAndKnowledge() async throws {
+        let s = try Scratch()
+        let instance = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: instance)
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: instance)
+
+        let catalog = UnitCatalog()
+        await catalog.load(with: cli)
+        #expect(catalog.units.map(\.id) == ["group", "sales", "support"] && catalog.problem == nil)
+        #expect(catalog.unit("sales")?.agents == ["atlas", "scout"] && catalog.unit("sales")?.knowledge.first?.compiled == false)
+
+        // The form saves a unit.yaml as a patch; its id is the folder's and stays.
+        let editor = ConfigEditor(path: "units/sales/unit.yaml")
+        await editor.load(with: cli)
+        #expect(editor.file?.kind == "unit" && editor.file?.unit == "sales" && editor.doc?[["name"]] == .string("Acme Sales"))
+        editor.doc?.set(["description"], .string("Deals and quotes."))
+        #expect(await editor.save(with: cli))
+        #expect(try String(contentsOf: instance.appending(path: "units/sales/unit.yaml"), encoding: .utf8).contains("description: Deals and quotes."))
+        editor.doc?.set(["id"], .string("deals"))
+        #expect(!(await editor.save(with: cli)) && editor.problem?.code == "readonly")
+        editor.revert()
+
+        // A new unit, then a knowledge file in it.
+        let made = try #require(await catalog.createUnit(id: "billing", name: "Acme Billing", description: "Invoices: \"net 30\".", with: cli))
+        #expect(made.name == "Acme Billing" && made.description == "Invoices: \"net 30\"." && made.agents.isEmpty)
+        #expect(await catalog.createUnit(id: "billing", name: "Again", description: "", with: cli) == nil && catalog.problem?.code == "exists")
+        let path = try #require(await catalog.createKnowledge(unit: "billing", name: "terms.md", with: cli))
+        #expect(catalog.unit("billing")?.knowledge.map(\.name) == ["terms.md"])
+
+        let doc = ConfigEditor(path: path)
+        await doc.load(with: cli)
+        #expect(doc.file?.kind == "knowledge" && doc.text == "# Terms\n\n")
+        doc.text += "Invoices are due in 30 days.\n"
+        #expect(await doc.save(with: cli))
+        #expect(await doc.delete(with: cli))
+        await catalog.load(with: cli)
+        #expect(catalog.unit("billing")?.knowledge.isEmpty == true)
+    }
+}
+
 /// Export and import through this checkout's bin/stormo, as the app's sheets run them.
 @Suite struct Transfer {
     @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))

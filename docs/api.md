@@ -158,7 +158,7 @@ into an `error` event.
 | `core learning` | as `/api/learning` |
 | `core review [--no-open]` | `url`; emits `auth_url` with the page address, owner token in the fragment (keep it private) |
 | `check [agent…]` | one row per agent that passed: `agent`, `unit`, `engine`, `files`, `skills`, `format` (its agent.yaml format) and `legacy` (format-0 keys it still uses) (each also a `step`). The build goes to `.swarm/check/<id>`; a failing agent ends the command with an `error` |
-| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul`), `agent`, `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` also `doc` (the file as JSON; absent when it does not parse) and `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values), `scripts` (the agent's scripts/), `reasoning` (the levels its engine accepts), `connections` [{`name`, `kind`, `label`, `api`, `key`}] |
+| `config show <file>` | `path` (instance-relative), `kind` (`agent` \| `soul` \| `unit` \| `knowledge`), `agent` (empty for a unit's files), `unit` (`unit` and `knowledge` only), `hash` (sha256 of the bytes, hex), `text`; for an `agent.yaml` or a `unit.yaml` also `doc` (the file as JSON; absent when it does not parse); for an `agent.yaml` also `options`, the choices a form offers: `units` [{`id`, `name`, `description`}], `actions` [{`name`, `unit`, `description`, `mutates`}] (an agent may use its unit's and `group`'s), `skills` (the agent's, for optional secrets), `personas` (`personas/<slug>`), `engines`, `channels` [{`kind`, `secrets`}], `allowBots`, `secrets` (every name declared in the instance; never values), `scripts` (the agent's scripts/), `reasoning` (the levels its engine accepts), `connections` [{`name`, `kind`, `label`, `api`, `key`}] |
 | `look show <agent>` | `agent`, `path` (its persona folder, empty when it has none), `hash` (of persona.md, for `look set`), `look` {`description` (the `## Avatar lock` text), `sprite` {`skin`,`hair`,`hair_style`,`shirt`,`pants`,`accessory`}, `desk` {`apps` (one per monitor), `screens`, `props` (≤ 6), `side`}}, `editable` (false for a persona in a sibling repo, with `reason`), `shared` (other agents with the same persona) |
 | `look set <agent> [--if-hash h]` (look JSON on stdin) | as `look show`, after the write. Only the sprite, desk and Avatar lock change; other frontmatter, comments and text stay. An agent with no persona gets `personas/<agent>/persona.md` and its agent.yaml points there (no hash needed). Codes: `invalid`, `conflict` (stale hash, or `personas/<agent>` exists), `readonly` (sibling repo) |
 | `connections [list]` | one row per connection: `name`, `kind`, `label`, `api`, `baseUrl`, `key` (the secret's NAME), `implicit`, `keySet` (a shared value exists), `agentKeys` (agents with their own value), `usedBy` |
@@ -172,21 +172,27 @@ into an `error` event.
 | `export <agent> [--data] [-o file]` | `path`, `agent`, `mode` (`config` \| `data`), `files`, `naps`, `containsSecrets`. A data export carries every secret value the agent resolves in plain text: the zip is written 0600, holds `DATA-EXPORT-CONTAINS-SECRETS.txt`, and a `step` warns. Codes: `legacy` (format 0: migrate first), `tracked` (its data folder is in git) |
 | `delete agent <agent> [--with-persona] --yes` | `agent`, `removed` (what went), `notes` (what stays: a persona another agent uses, a stopped ECS service, an emptied unit). A `step` per item. Stops a local container first; refused (`refused`) while the agent runs on ECS. Without `--yes` it asks on a terminal |
 | `import <file.zip> [--as id] [--unit u] [--replace] [--with-actions]` | `agent`, `from` (the source instance's slug), `mode`, `changes`. Every member is checked against the zip's manifest; the result must pass `check`, else nothing is kept. Codes: `invalid`, `exists` (pass `--replace` or `--as`), `unknown_unit`, `missing_actions` (pass `--with-actions`), `tracked` |
-| `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` only |
+| `config apply <file> --if-hash <h>` | as `show`, for what was written. A JSON merge patch (RFC 7386) on stdin, `agent.yaml` and `unit.yaml` only |
+| `config create <file>` | as `show`, for what was written: a new `units/<unit>/unit.yaml` (a new unit; `<unit>` a slug) or `units/<unit>/knowledge/<name>.md` of an existing unit, from stdin. Code `exists` when the file is there |
+| `config delete <file> --if-hash <h>` | `path`. Removes a unit's knowledge file; nothing else is deleted here |
+| `config units` | one row per unit, `group` first: `id`, `name`, `description`, `path` (its unit.yaml), optional `problem` (why it does not load), `agents` (those its knowledge reaches: its members, every agent for `group`), `knowledge` [{`path`, `name`, `size`, `compiled` (false for `README.md`, which is for people)}] |
 
-`config` edits `agents/<id>/agent.yaml` and `agents/<id>/SOUL.md` (`pkg/config`); any other path
-is refused with `unsupported`. `write` replaces the file atomically, and only when it still hashes
+`config` edits `agents/<id>/agent.yaml`, `agents/<id>/SOUL.md`, `units/<unit>/unit.yaml` and
+`units/<unit>/knowledge/<name>.md` (`<name>` letters, digits, `.`, `_`, `-`; `pkg/config`); any
+other path is refused with `unsupported`. `write` replaces the file atomically, and only when it still hashes
 to `--if-hash` (else `conflict`: reload and edit again) and the new content validates: an
 `agent.yaml` must load as the manifest and its bridge actions do in `check` (else `invalid`, with
 the reason) and keep `deploy:` as it was (else `readonly`: it names cloud resources); a `SOUL.md`
-must not be empty. Building the agent is not part of the write: run `check <agent>` after it.
+must not be empty; a `unit.yaml` must keep `id` as its folder's name and have a `name` (else
+`invalid`). Building the agent is not part of the write: run `check <agent>` after it (for a unit's
+files, on the agents `config units` lists for it: its knowledge is compiled into them).
 
 `apply` is how a form saves: it edits the file's YAML node tree, so a key the patch does not name
 keeps its comments and place, and the file is re-encoded with its original blank lines and comment
 alignment wherever nothing changed (an empty patch changes no byte). Merge patch semantics: `null`
 deletes a key, an object merges into an object, anything else (an array too) replaces the value;
 inside a replaced array, unchanged strings keep their comments and objects are matched by position.
-A patch that names `id`, `deploy` or `format` is refused with `readonly` (`stormo migrate agent` changes the format); then the result is validated and
+A patch that names `id`, `deploy` or `format` (a `unit.yaml`: `id`) is refused with `readonly` (`stormo migrate agent` changes the format); then the result is validated and
 written as `write` does.
 
 ### Background learning review metadata
