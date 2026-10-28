@@ -44,6 +44,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/slack"
 	"github.com/camfinc/stormo/internal/needletail/stt"
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/web"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
@@ -285,6 +286,8 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	// people's uploads (§4.9, §6): the gateway keeps them, view_file looks at a conversation's own
 	files := &attach.Store{Home: cfg.Home, Retention: cfg.FileRetention(), Log: logf}
 	agent.Tools.Add(files.Tool(slack.Neutralise))
+	// the public web (§4.5): a page's readable text; what it says marks the run (§7)
+	agent.Tools.Add(web.ExtractTool(&web.Fetcher{CoreURLs: coreURLs(cfg)}, slack.Neutralise))
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
 		jail: js.state, files: files,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
@@ -412,6 +415,19 @@ func searchable(who func(session string) memory.Audience, sourceOf func(session 
 	}
 }
 
+// coreURLs are the core's and its relay's addresses (SWARM_CORE_URL, the MCP and ingest URLs):
+// the agent's outbound HTTP (Luau's, web_extract's) never reaches them.
+func coreURLs(cfg *config.Config) []string {
+	var out []string
+	if u := os.Getenv("SWARM_CORE_URL"); u != "" {
+		out = append(out, u)
+	}
+	if cfg.Core != nil {
+		out = append(out, cfg.Core.MCPURL, cfg.Core.IngestURL)
+	}
+	return out
+}
+
 // luauGroup is the registry group of the Luau tools (found again every turn).
 const luauGroup = "luau"
 
@@ -433,12 +449,7 @@ func startLuau(cfg *config.Config, sec *secrets.Secrets, red *secrets.Redactor, 
 		HTTPSecrets: cfg.Luau.HTTPSecrets, Secret: sec.Get, Memory: mem, Redact: red.Redact, Log: logf,
 		Untrusted: agent.Env.Untrusted, Conversation: agent.Env.Conversation,
 		LuauTimeout: time.Duration(cfg.Limits.LuauTimeout) * time.Second, ScriptTimeout: time.Duration(cfg.Limits.ScriptTimeout) * time.Second}
-	if u := os.Getenv("SWARM_CORE_URL"); u != "" {
-		lr.CoreURLs = append(lr.CoreURLs, u)
-	}
-	if cfg.Core != nil {
-		lr.CoreURLs = append(lr.CoreURLs, cfg.Core.MCPURL, cfg.Core.IngestURL)
-	}
+	lr.CoreURLs = coreURLs(cfg)
 	// handler runs are hooked like tool calls, to whatever observes the turns (the core's hooks
 	// connect after boot)
 	lr.Observer = func() luau.HookObserver { return agent.Observer }

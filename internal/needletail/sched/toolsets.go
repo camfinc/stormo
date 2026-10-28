@@ -15,7 +15,7 @@ const CronJobTool = "cronjob_manage"
 const FollowUpTool = "follow_up"
 
 // toolsets are Hermes' toolset names a job's enabled_toolsets (agent.yaml's schedules.tools)
-// uses, with the tools each stands for here. A toolset with no tool here (web, browser,
+// uses, with the tools each stands for here. A toolset with no tool here (browser,
 // code_execution, vision, …) offers nothing; a tool's own name stands for itself.
 var toolsets = map[string][]string{
 	"terminal": {"terminal", "process_manage"},
@@ -27,6 +27,9 @@ var toolsets = map[string][]string{
 	"cronjob":        {CronJobTool},
 	"messaging":      {messaging.SendTool},
 	"debugging":      {"terminal", "process_manage", "read_file", "write_file", "patch", "search_files"},
+	// the public web: a search (when the agent has a provider) and a page's text; both mark the
+	// run, so a scheduled run that reads the web has its report held for the owner (§4.7)
+	"web": {"web_search", "web_extract"},
 }
 
 // neverInCron are tools a scheduled run is never offered, as in Hermes: scheduling (a job that

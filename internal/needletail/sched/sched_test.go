@@ -791,3 +791,15 @@ func TestNoFollowUpsInScheduledRuns(t *testing.T) {
 		t.Errorf("the one-time refusal does not point at follow_up: %v", ErrOneShot)
 	}
 }
+
+// Hermes' web toolset is web_search and web_extract here (web_search only when the agent has a
+// search provider, so only web_extract when it has none).
+func TestWebToolset(t *testing.T) {
+	all := []string{"terminal", "web_extract", "web_search"}
+	if got := ExpandToolsets([]string{"web", "no_mcp"}, all); !slices.Equal(got, []string{"web_extract", "web_search"}) {
+		t.Errorf("web: %v", got)
+	}
+	if got := ExpandToolsets([]string{"web"}, []string{"terminal", "web_extract"}); !slices.Equal(got, []string{"web_extract"}) {
+		t.Errorf("web without a provider: %v", got)
+	}
+}

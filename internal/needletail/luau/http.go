@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/netguard"
 )
 
 // nt.http bounds.
@@ -23,30 +25,8 @@ const (
 	maxReqBody   = 4 << 20
 )
 
-// metadata addresses are never dialled, whatever is granted.
-var metadata = []netip.Addr{netip.MustParseAddr("169.254.169.254"), netip.MustParseAddr("fd00:ec2::254")}
-
-var internalNets = func() []netip.Prefix {
-	out := []netip.Prefix{}
-	for _, s := range []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
-		"192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
-		"::/128", "::1/128", "64:ff9b::/96", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8"} {
-		out = append(out, netip.MustParsePrefix(s))
-	}
-	return out
-}()
-
-// internal: an address no tool reaches unless it is granted by its exact IP (loopback, RFC 1918,
-// CGNAT, link-local, ULA, multicast, reserved and documentation ranges).
-func internal(a netip.Addr) bool {
-	a = a.Unmap()
-	for _, p := range internalNets {
-		if p.Contains(a) {
-			return true
-		}
-	}
-	return false
-}
+// internal and the other address checks are netguard's (shared with web_extract).
+func internal(a netip.Addr) bool { return netguard.Internal(a) }
 
 type httpArgs struct {
 	Method    string            `json:"method"`
@@ -183,43 +163,9 @@ func unwrapURL(err error) error {
 	return err
 }
 
-// normHost is a host as every check compares it: lower case, no trailing dot, an IP literal in its
-// canonical form.
-func normHost(h string) string {
-	h = strings.ToLower(strings.TrimSuffix(h, "."))
-	if ip, err := netip.ParseAddr(h); err == nil {
-		return ip.String()
-	}
-	return h
-}
-
-// parsePort is a port as a number: decimal digits only, 1 to 65535 (0443 is 443).
-func parsePort(s string) (int, bool) {
-	if s == "" || len(s) > 8 || strings.Trim(s, "0123456789") != "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s)
-	return n, err == nil && n >= 1 && n <= 65535
-}
-
-// hostPort is u's normalized host and its port as a number (the scheme's default when it has none).
-func hostPort(u *url.URL) (string, int, bool) {
-	host := normHost(u.Hostname())
-	if host == "" {
-		return "", 0, false
-	}
-	if p := u.Port(); p != "" {
-		n, ok := parsePort(p)
-		return host, n, ok
-	}
-	switch u.Scheme {
-	case "https", "wss":
-		return host, 443, true
-	case "http", "ws":
-		return host, 80, true
-	}
-	return "", 0, false
-}
+func normHost(h string) string                { return netguard.NormHost(h) }
+func parsePort(s string) (int, bool)          { return netguard.ParsePort(s) }
+func hostPort(u *url.URL) (string, int, bool) { return netguard.HostPort(u) }
 
 // checkURL refuses anything but HTTPS to a host the tool may reach. The URL it returns has its
 // host and port in the form every later check compares (the dialer sees the port as a number).
@@ -351,7 +297,7 @@ func (rt *Runtime) httpClient() *http.Client {
 			}
 			ip := addrs[0]
 			for _, a := range addrs {
-				if contains2(metadata, a.Unmap()) {
+				if netguard.Metadata(a) {
 					return nil, errf("denied", "http.request: %s resolves to a metadata address", host)
 				}
 				if internal(a) && (c == nil || !isIPHost(host) || !c.Caps.HTTPExact(host)) {
@@ -371,12 +317,3 @@ func (rt *Runtime) httpClient() *http.Client {
 }
 
 func isIPHost(h string) bool { _, err := netip.ParseAddr(h); return err == nil }
-
-func contains2(list []netip.Addr, a netip.Addr) bool {
-	for _, x := range list {
-		if x == a {
-			return true
-		}
-	}
-	return false
-}
