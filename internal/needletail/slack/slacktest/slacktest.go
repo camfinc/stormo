@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,14 @@ type Server struct {
 	Names   map[string]string
 	Replies map[string][]map[string]any
 	Fail    map[string]string
+	// Channels are the workspace's conversations (conversations.list, filtered by its types,
+	// exclude_archived and cursor; conversations.info answers a listed one as it is); History a
+	// channel's messages, newest first (conversations.history, honouring oldest and limit);
+	// Members a channel's member ids (conversations.members; a channel not listed is
+	// channel_not_found).
+	Channels []map[string]any
+	History  map[string][]map[string]any
+	Members  map[string][]string
 	// RateLimit makes the next call of a method answer 429 with Retry-After 1.
 	RateLimit map[string]bool
 	// SlowUsers makes users.info for a user answer after a delay (set before the calls).
@@ -150,7 +159,7 @@ func (s *Server) file(w http.ResponseWriter, r *http.Request) {
 
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
-	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
+	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{}, History: map[string][]map[string]any{}, Members: map[string][]string{},
 		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, Slow: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1,
 		Files: map[string]FileBody{}, ackAt: map[string]time.Time{}}
 	mux := http.NewServeMux()
@@ -245,11 +254,29 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		msgs := s.Replies[params["channel"]+":"+params["ts"]]
 		s.mu.Unlock()
 		reply(map[string]any{"ok": true, "messages": msgs})
+	case "conversations.list":
+		reply(s.list(params))
+	case "conversations.history":
+		reply(s.history(params))
+	case "conversations.members":
+		s.mu.Lock()
+		members, ok := s.Members[params["channel"]]
+		s.mu.Unlock()
+		if !ok {
+			reply(map[string]any{"ok": false, "error": "channel_not_found"})
+			return
+		}
+		reply(map[string]any{"ok": true, "members": members, "response_metadata": map[string]any{"next_cursor": ""}})
 	case "conversations.info":
 		ch := params["channel"]
 		s.mu.Lock()
 		user := s.DMUsers[ch]
+		listed := s.channel(ch)
 		s.mu.Unlock()
+		if listed != nil {
+			reply(map[string]any{"ok": true, "channel": listed})
+			return
+		}
 		if !strings.HasPrefix(ch, "D") {
 			reply(map[string]any{"ok": true, "channel": map[string]any{"id": ch, "is_channel": true}})
 			return
@@ -275,6 +302,81 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	default:
 		reply(map[string]any{"ok": false, "error": "unknown_method"})
 	}
+}
+
+// channel is the Channels entry with id (nil: none); the caller holds s.mu.
+func (s *Server) channel(id string) map[string]any {
+	for _, c := range s.Channels {
+		if c["id"] == id {
+			return c
+		}
+	}
+	return nil
+}
+
+// kind is a Channels entry's conversations.list type.
+func kind(c map[string]any) string {
+	switch {
+	case c["is_im"] == true:
+		return "im"
+	case c["is_mpim"] == true:
+		return "mpim"
+	case c["is_private"] == true:
+		return "private_channel"
+	}
+	return "public_channel"
+}
+
+// list is conversations.list over Channels: the types asked for (public_channel by default),
+// archived ones left out when exclude_archived, a page of limit from cursor (an index).
+func (s *Server) list(params map[string]string) map[string]any {
+	types := strings.Split(params["types"], ",")
+	if params["types"] == "" {
+		types = []string{"public_channel"}
+	}
+	limit, start := 100, 0
+	fmt.Sscan(params["limit"], &limit)
+	fmt.Sscan(params["cursor"], &start)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	match := []map[string]any{}
+	for _, c := range s.Channels {
+		if !slices.Contains(types, kind(c)) || params["exclude_archived"] == "true" && c["is_archived"] == true {
+			continue
+		}
+		match = append(match, c)
+	}
+	start = min(start, len(match))
+	end := min(start+limit, len(match))
+	next := ""
+	if end < len(match) {
+		next = fmt.Sprint(end)
+	}
+	return map[string]any{"ok": true, "channels": match[start:end], "response_metadata": map[string]any{"next_cursor": next}}
+}
+
+// history is conversations.history over History: newest first, those after oldest, at most
+// limit, has_more when more were left out.
+func (s *Server) history(params map[string]string) map[string]any {
+	limit := 100
+	fmt.Sscan(params["limit"], &limit)
+	oldest := params["oldest"]
+	s.mu.Lock()
+	msgs := s.History[params["channel"]]
+	s.mu.Unlock()
+	out := []map[string]any{}
+	more := false
+	for _, m := range msgs {
+		if ts, _ := m["ts"].(string); oldest != "" && ts <= oldest {
+			continue
+		}
+		if len(out) == limit {
+			more = true
+			break
+		}
+		out = append(out, m)
+	}
+	return map[string]any{"ok": true, "messages": out, "has_more": more}
 }
 
 func (s *Server) link(w http.ResponseWriter, r *http.Request) {

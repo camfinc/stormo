@@ -273,6 +273,8 @@ type Message struct {
 	Blocks json.RawMessage `json:"blocks"`
 	// Files are the files it carries (a file_share).
 	Files []File `json:"files"`
+	// ReplyCount is how many replies a thread's parent has (conversations.history).
+	ReplyCount int `json:"reply_count"`
 }
 
 // Replies is a thread's messages, oldest first, at most limit (the root included).
@@ -282,6 +284,38 @@ func (w *Web) Replies(ctx context.Context, channel, thread string, limit int) ([
 	}
 	err := w.call(ctx, "conversations.replies", w.BotToken, url.Values{"channel": {channel}, "ts": {thread}, "limit": {strconv.Itoa(limit)}, "inclusive": {"true"}}, &out)
 	return out.Messages, err
+}
+
+// History is a channel's messages after oldest (a ts; "" for no bound), newest first, at most
+// limit, and whether Slack has more (conversations.history).
+func (w *Web) History(ctx context.Context, channel, oldest string, limit int) ([]Message, bool, error) {
+	var out struct {
+		Messages []Message `json:"messages"`
+		HasMore  bool      `json:"has_more"`
+	}
+	p := url.Values{"channel": {channel}, "limit": {strconv.Itoa(limit)}, "include_all_metadata": {"false"}}
+	if oldest != "" {
+		p.Set("oldest", oldest)
+	}
+	err := w.call(ctx, "conversations.history", w.BotToken, p, &out)
+	return out.Messages, out.HasMore, err
+}
+
+// Members is a page of a channel's member ids, and the cursor of the next ("" at the end)
+// (conversations.members).
+func (w *Web) Members(ctx context.Context, channel, cursor string) ([]string, string, error) {
+	var out struct {
+		Members  []string `json:"members"`
+		Metadata struct {
+			Next string `json:"next_cursor"`
+		} `json:"response_metadata"`
+	}
+	p := url.Values{"channel": {channel}, "limit": {"1000"}}
+	if cursor != "" {
+		p.Set("cursor", cursor)
+	}
+	err := w.call(ctx, "conversations.members", w.BotToken, p, &out)
+	return out.Members, out.Metadata.Next, err
 }
 
 // User is users.info's answer (the fields used here).

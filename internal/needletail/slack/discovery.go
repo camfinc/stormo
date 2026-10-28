@@ -60,6 +60,10 @@ func (g *Gateway) discovered(c ChannelMetadata) discoveredChannel {
 	return discoveredChannel{ChannelMetadata: c, Target: "slack:" + c.ID, PolicyAllowed: g.CheckTarget(sched.Target{Platform: "slack", Channel: c.ID}) == nil}
 }
 
+// defaultChannelTypes is what discovery lists when no channel_type is given: public channels, and
+// the private channels the bot is a member of.
+const defaultChannelTypes = "public_channel,private_channel"
+
 const discoveryNote = "Visibility and membership do not guarantee posting permission. Discovery does not authorize sending or join channels; only a successful send receipt confirms delivery."
 
 func discoveryError(err error) error {
@@ -79,10 +83,11 @@ func discoveryError(err error) error {
 // A search filters that page only; even an empty match page may have more results.
 func (g *Gateway) discover(ctx context.Context, query, cursor, kind string) (any, error) {
 	if kind == "" {
-		kind = "public_channel"
-	}
-	if kind != "public_channel" && kind != "private_channel" {
-		return nil, errors.New("channel_type must be public_channel or private_channel")
+		// the public channels and the private ones the bot is in (owner decision, 2026-10-28):
+		// a private channel it is not a member of is left out below
+		kind = defaultChannelTypes
+	} else if kind != "public_channel" && kind != "private_channel" {
+		return nil, errors.New("channel_type must be public_channel or private_channel (leave it out for both)")
 	}
 	if len(query) > 100 || len(cursor) > 2048 {
 		return nil, errors.New("query or cursor is too long")
@@ -104,6 +109,9 @@ func (g *Gateway) discover(ctx context.Context, query, cursor, kind string) (any
 		}
 		if c.IM || c.MPIM || strings.HasPrefix(c.Name, "mpdm-") || c.Archived || !strings.Contains(strings.ToLower(c.Name), q) {
 			continue
+		}
+		if kind == defaultChannelTypes && c.Private && (c.Member == nil || !*c.Member) {
+			continue // a private channel is listed by default only where the bot is a member (unsaid: not)
 		}
 		found = append(found, g.discovered(c))
 	}

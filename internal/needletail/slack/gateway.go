@@ -175,6 +175,8 @@ type Gateway struct {
 	statusOn  atomic.Bool
 	// decider takes the approval cards' buttons (SetDecider); nil: approvals off
 	decider Decider
+	// memberLists are channels' members as slack_read last checked them (read.go)
+	memberLists map[string]memberList
 	// commands are the chat commands (SetCommands; nil until serve sets them), slashes how many
 	// are being answered
 	commands *Commands
@@ -843,27 +845,37 @@ func (g *Gateway) threadLines(ctx context.Context, channel, thread string, skip 
 		if skip[m.TS] || strings.TrimSpace(m.Text) == "" {
 			continue
 		}
-		text := oneLine(mentionRe.ReplaceAllStringFunc(m.Text, func(s string) string {
-			id := mentionRe.FindStringSubmatch(s)[1]
-			if id == g.id.UserID {
-				return "@you"
-			}
-			return "@" + g.name(id, &budget)
-		}))
-		if m.User == g.id.UserID || m.BotID != "" && m.BotID == g.id.BotID {
-			marked := g.o.Untrusted != nil && (g.o.Untrusted(SessionID(channel, thread)) || strings.HasPrefix(channel, "D") && g.o.Untrusted(DMSessionID(channel)))
-			lines = append(lines, messaging.ContextLine{User: m.User, Name: "assistant", Text: text, Assistant: true, Unverified: marked})
-			continue
-		}
-		bot := m.BotID != "" || m.Subtype == "bot_message"
-		l := messaging.ContextLine{User: orDefault(m.User, m.BotID), Name: "a bot", Text: text, Parent: m.TS == thread,
-			Unverified: !g.admitted(m.User, m.BotID) || !g.verified(m.User, m.BotID, m.UserTeam, bot, &budget) || g.relay(m.User, m.BotID)}
-		if m.User != "" {
-			l.Name = g.name(m.User, &budget)
-		}
+		l := g.contextLine(channel, thread, m, &budget)
+		l.Parent = !l.Assistant && m.TS == thread
 		lines = append(lines, l)
 	}
 	return lines
+}
+
+// contextLine is a message of channel, in thread (the thread it is in, or its own ts at the top
+// level), as a line of context: its text on one line with the agent's mention as @you and others
+// as @Name; the agent's own (Assistant, unverified when that thread's or the DM's conversation is
+// marked), or an author's, unverified when allowed_users does not admit them, they are not
+// verified, or they are a relay bot. Its names are looked up within budget.
+func (g *Gateway) contextLine(channel, thread string, m Message, budget *int) messaging.ContextLine {
+	text := oneLine(mentionRe.ReplaceAllStringFunc(m.Text, func(s string) string {
+		id := mentionRe.FindStringSubmatch(s)[1]
+		if id == g.id.UserID {
+			return "@you"
+		}
+		return "@" + g.name(id, budget)
+	}))
+	if m.User == g.id.UserID || m.BotID != "" && m.BotID == g.id.BotID {
+		marked := g.o.Untrusted != nil && (g.o.Untrusted(SessionID(channel, thread)) || strings.HasPrefix(channel, "D") && g.o.Untrusted(DMSessionID(channel)))
+		return messaging.ContextLine{User: m.User, Name: "assistant", Text: text, Assistant: true, Unverified: marked}
+	}
+	bot := m.BotID != "" || m.Subtype == "bot_message"
+	l := messaging.ContextLine{User: orDefault(m.User, m.BotID), Name: "a bot", Text: text,
+		Unverified: !g.admitted(m.User, m.BotID) || !g.verified(m.User, m.BotID, m.UserTeam, bot, budget) || g.relay(m.User, m.BotID)}
+	if m.User != "" {
+		l.Name = g.name(m.User, budget)
+	}
+	return l
 }
 
 // threadContext is lines as the turn's input carries them, in Hermes' format: [assistant],
@@ -1650,9 +1662,9 @@ func (g *Gateway) NoReplyTool() tools.Tool {
 		}}
 }
 
-// Tools are the gateway's tools: send_message and no_reply.
+// Tools are the gateway's tools: send_message, no_reply, thread_context and slack_read.
 func (g *Gateway) Tools() []tools.Tool {
-	return []tools.Tool{g.SendTool(), g.NoReplyTool(), g.ThreadContextTool()}
+	return []tools.Tool{g.SendTool(), g.NoReplyTool(), g.ThreadContextTool(), g.ReadTool()}
 }
 
 // reserve waits for a turn slot: the thread's conversation busy elsewhere (an API turn) or the

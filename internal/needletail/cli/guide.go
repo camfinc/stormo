@@ -61,7 +61,7 @@ func (g guide) render() string {
 	b.WriteString("## Your home\n")
 	fmt.Fprintf(&b, "Your home is %s: the terminal's working directory and $HOME.\n", clipPath(g.Home))
 	b.WriteString("- `SOUL.md`: who you are. Read-only (it changes through review).\n" +
-		"- `skills/<category>/<name>/`: your skills (SKILL.md, scripts, `tools/*.luau`, `handlers/*.luau`). Change them with skill_manage (it checks them); the terminal may too.\n" +
+		"- `skills/<category>/<name>/`: your skills (SKILL.md, scripts, `tools/*.luau`, `handlers/*.luau`). Change them with skill_manage; the terminal may too.\n" +
 		"- `scripts/`: your jobs' scripts (write one, then name it in cronjob_manage).\n" +
 		"- `memories/`: your memory (`MEMORY.md`, `USER.md`, the archive `RECORDS.md`): memory tools only.\n" +
 		"- `cron/jobs.json`: your jobs (cronjob_manage only).\n" +
@@ -76,8 +76,8 @@ func (g guide) render() string {
 	}
 	if g.Split {
 		b.WriteString("Your terminal commands and job scripts run as their own user: memories/, cron/ and the runtime's own above are out of their " +
-			"reach (memories/ read-only, RECORDS.md not readable). Run a script with its " +
-			"interpreter (`bash x.sh`, `python3 x.py`): your commands cannot chmod a file the runtime wrote.\n")
+			"reach (memories/ read-only, RECORDS.md unreadable). Run a script with its " +
+			"interpreter (`bash x.sh`): you cannot chmod a file the runtime wrote.\n")
 	}
 	if g.Jailed {
 		b.WriteString("They are confined to your home and the shared directories above (and system programs): nothing else, " +
@@ -89,7 +89,7 @@ func (g guide) render() string {
 	b.WriteString("A server or long job: terminal background: true, then process_manage.\n")
 	b.WriteString("\n")
 	b.WriteString("## Memory\n" +
-		"MEMORY and USER PROFILE (above) are in every prompt, within their budgets: keep what you always need there (memory tool). " +
+		"MEMORY and USER PROFILE (above) are in every prompt: keep what you always need there (memory tool). " +
 		"Everything else goes to your archive, by id: memory_manage save (kind, tags, importance, expires for time-bound facts), " +
 		"update, delete, pin (always shown), unpin. A save answers " +
 		"exists or similar: update that, or save with force. memory_search: try synonyms, in Spanish and English. Never save secrets.")
@@ -136,23 +136,27 @@ func (g guide) render() string {
 		case g.Slack && g.Telegram:
 			b.WriteString("Your reply is posted in its conversation; send_message posts elsewhere: `slack` (the home channel), a channel or " +
 				"thread you are in, the DM of a person allowed to talk to you, `telegram` (its home chat) or `telegram:<chat id>` of a chat " +
-				"you are in or an allowed person's (action list shows them); nothing else. ")
+				"you are in or an allowed person's (action list); nothing else. ")
 		case g.Slack:
 			b.WriteString("Your reply is posted in its conversation; send_message posts elsewhere: `slack` (the home channel), a channel or " +
-				"thread you are in, or the DM of a person allowed to talk to you (action list shows them); nothing else. ")
+				"thread you are in, or the DM of a person allowed to talk to you (action list); nothing else. ")
 		default:
 			b.WriteString("Your reply is posted in its chat; send_message posts elsewhere: `telegram` (the home chat) or `telegram:<chat id>` " +
-				"of a chat you are in or an allowed person's (action list shows them); nothing else. ")
+				"of a chat you are in or an allowed person's (action list); nothing else. ")
+		}
+		if g.Slack {
+			b.WriteString("Action channels lists public and your private channels; slack_read reads one you are in (a private " +
+				"one only for its members). ")
 		}
 		switch {
 		case !g.Slack: // Telegram has no broadcast
 		case g.Broadcast:
 			b.WriteString("@channel, @here, @everyone and user groups ping only with broadcast: true. ")
 		default:
-			b.WriteString("You are not granted broadcasts: @channel, @here, @everyone and user groups never ping. ")
+			b.WriteString("No broadcasts: @channel, @here, @everyone and user groups never ping. ")
 		}
 		b.WriteString("Files sent to you: images are shown, voice notes transcribed, text included; view_file looks again " +
-			"(kept a while in `files/`). A scheduled run's final reply is its delivery: do not send it yourself.\n\n")
+			"(kept in `files/`). A scheduled run's final reply is its delivery: do not send it yourself.\n\n")
 	}
 	head := fitText(b.String(), MaxGuide-post.Len(), guideCut)
 	return head + fitReference(ref.String(), MaxGuide-len(head)-post.Len()) + post.String()
