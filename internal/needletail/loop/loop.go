@@ -127,6 +127,10 @@ type Options struct {
 	// Untrusted marks the turn's input row (wire.Message.Untrusted): it carries content the
 	// agent must not obey, which marks its conversation until the owner endorses it.
 	Untrusted bool
+	// Images are shown to the model with the turn's input, in every request of this turn only:
+	// never stored in the session file (the input names them; view_file shows one again later).
+	// At most MaxTurnImages, with those a tool shows during the turn.
+	Images []llm.Image
 	// Taint, with Untrusted, is who and what brought it in (the gateway's: the unverified authors,
 	// a relay bot, where): kept in the conversation's header, so no author of it may approve
 	// what the conversation asks for.
@@ -151,6 +155,18 @@ const (
 	summaryIn   = 0.50 // most of the window the summary call may use
 	charsPerTok = 4
 )
+
+// MaxTurnImages is the most images one turn shows the model: its input's and those tools show.
+const MaxTurnImages = 4
+
+// imageTokens is what an image is counted as in the context estimate.
+const imageTokens = 1600
+
+// shownImage is an image a tool showed during a turn: sent right after its call's result.
+type shownImage struct {
+	after string // the tool call id
+	img   llm.Image
+}
 
 // ErrNoSession is a turn on a session that does not exist.
 var ErrNoSession = errors.New("session not found")
@@ -273,6 +289,12 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		allowed[t.Name] = true
 	}
 	env := a.Env
+	inputImages := opts.Images
+	if len(inputImages) > MaxTurnImages {
+		inputImages = inputImages[:MaxTurnImages]
+	}
+	var shown []shownImage
+	env.Sees = func() bool { return a.LLM.Sees(turn.Endpoint()) }
 	lastTotal, sinceTotal := 0, 0
 	shrunk := false // a context-length refusal was answered with a compaction
 
@@ -282,7 +304,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 		final := step >= a.Cfg.Limits.Turns
 		window := a.window(ctx, turn)
-		estimate := max(estimateTokens(system, history, specs)+len(recalled)/charsPerTok, lastTotal+sinceTotal/charsPerTok)
+		estimate := max(estimateTokens(system, history, specs)+len(recalled)/charsPerTok+(len(inputImages)+len(shown))*imageTokens, lastTotal+sinceTotal/charsPerTok)
 		if float64(estimate) > compactAt*float64(window) {
 			newTip, newHistory, err := a.compact(ctx, turn, res.Session, history, window, int(keepRecent*float64(window)))
 			if err != nil {
@@ -292,7 +314,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 				lastTotal, sinceTotal = 0, 0
 			}
 		}
-		req := llm.Request{Messages: withRecall(toLLM(system, history), recalled)}
+		req := llm.Request{Messages: withImages(withRecall(toLLM(system, history), recalled), inputImages, shown)}
 		if final {
 			req.Messages = append(req.Messages, llm.Message{Role: "system", Content: "You have reached this turn's tool-call limit. Answer now with what you have; do not call tools."})
 		} else {
@@ -352,13 +374,21 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			var failed bool
 			var touched []string
 			env.Touched = func(p string) { touched = append(touched, p) }
+			callID := c.ID
+			env.Show = func(name, mime string, data []byte) error {
+				if len(inputImages)+len(shown) >= MaxTurnImages {
+					return fmt.Errorf("this turn already shows %d images, the most one turn may: answer with what you have, or look again in a later turn", MaxTurnImages)
+				}
+				shown = append(shown, shownImage{after: callID, img: llm.Image{Name: name, MIME: mime, Data: data}})
+				return nil
+			}
 			if allowed[c.Name] {
 				// the step's own text is the agent's reason, should a gate put the call to a person
 				out, failed = a.Tools.Call(messaging.WithReason(ctx, resp.Content), &env, c.Name, c.Arguments)
 			} else {
 				out, failed = fmt.Sprintf(`{"error":"tool %q is not available in this turn"}`, c.Name), true
 			}
-			env.Touched = nil
+			env.Touched, env.Show = nil, nil
 			subjects := a.memoryOutcomeSubjects(c, out, failed)
 			if subject != nil {
 				subjects = append(subjects, subject)
@@ -530,6 +560,50 @@ func withRecall(msgs []llm.Message, recalled string) []llm.Message {
 		}
 	}
 	return msgs
+}
+
+// withImages shows the turn's images: the input's with the request's last user message (the
+// turn's input), and each one a tool showed in a user message of its own right after that call's
+// result (a tool result is text only). A copy: the session keeps only the text.
+func withImages(msgs []llm.Message, input []llm.Image, shown []shownImage) []llm.Message {
+	if len(input) > 0 {
+		for i := len(msgs) - 1; i > 0; i-- {
+			if msgs[i].Role == "user" {
+				msgs[i].Images = append(append([]llm.Image{}, msgs[i].Images...), input...)
+				break
+			}
+		}
+	}
+	for _, s := range shown {
+		for i := range msgs {
+			if msgs[i].Role == "tool" && msgs[i].ToolCallID == s.after {
+				// after the step's last tool result: every call's result follows its call first
+				j := i + 1
+				for j < len(msgs) && msgs[j].Role == "tool" {
+					j++
+				}
+				for j < len(msgs) && msgs[j].Role == "user" && strings.HasPrefix(msgs[j].Content, shownPrefix) && len(msgs[j].Images) > 0 {
+					j++
+				}
+				row := llm.Message{Role: "user", Content: fmt.Sprintf("%s %s (view_file), shown by the runtime:]", shownPrefix, oneLineName(s.img.Name)), Images: []llm.Image{s.img}}
+				msgs = append(msgs[:j], append([]llm.Message{row}, msgs[j:]...)...)
+				break
+			}
+		}
+	}
+	return msgs
+}
+
+// shownPrefix introduces an image a tool showed (view_file).
+const shownPrefix = "[The image you asked to see:"
+
+// oneLineName is a file name on one line, bounded.
+func oneLineName(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:120]) + "…"
+	}
+	return s
 }
 
 // estimateTokens is a character count over four: rough, and only used against a threshold.

@@ -66,6 +66,13 @@ type Env struct {
 	// run acts on words the agent may not obey, or its conversation has taken some in
 	// (docs/needletail.md §7). nil: only the run's own context decides (messaging.UntrustedWhy).
 	Untrusted func(ctx context.Context, session string) string
+	// Show, set per call by the loop, shows the model an image (already bounded and downscaled)
+	// right after this call's result, in this turn's requests only (never stored in the session):
+	// view_file looks at an upload again. It fails past the turn's image limit. nil: outside a
+	// turn.
+	Show func(name, mime string, data []byte) error
+	// Sees, set by the loop, is whether the turn's model is given images (nil: unknown, no).
+	Sees func() bool
 	// Touched, set per call by the loop, is told the /shared paths a tool wrote another way than
 	// the file tools (a Luau tool through the core), so its tool_done hook names them.
 	Touched func(path string)

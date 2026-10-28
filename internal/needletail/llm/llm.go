@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,7 +36,27 @@ type Message struct {
 	Content    string
 	ToolCalls  []wire.ToolCall
 	ToolCallID string
+	// Images are shown with a user message (image content parts after its text), when the
+	// endpoint is given images (Client.Sees); otherwise a line names each one as not shown.
+	Images []Image
 }
+
+// Image is a picture shown to the model: its bytes (already bounded and downscaled by the
+// caller), their media type and a name the text can refer to.
+type Image struct {
+	Name string
+	MIME string
+	Data []byte
+}
+
+// Vision settings (Client.Vision): whether user messages' images reach the model.
+const (
+	// VisionAuto (also ""): images are sent; an endpoint that refuses them (a 4xx naming
+	// images) gets the request again without them and is not given images again in this process.
+	VisionAuto = "auto"
+	VisionOn   = "on"
+	VisionOff  = "off"
+)
 
 // Tool is a function the model may call; Parameters is its JSON schema.
 type Tool struct {
@@ -88,9 +109,56 @@ type Client struct {
 	AttemptTimeout time.Duration
 	// DefaultContext is the context length when an endpoint does not say.
 	DefaultContext int
+	// Vision is whether images reach the model: VisionAuto ("" too), VisionOn or VisionOff.
+	Vision string
 
 	mu      sync.Mutex
 	context map[string]contextEntry
+	// blind are the endpoints that refused images (VisionAuto), by index
+	blind map[int]bool
+}
+
+// Sees is whether the endpoint idx is given images: never with VisionOff, and not after it
+// refused them under VisionAuto.
+func (c *Client) Sees(idx int) bool {
+	switch c.Vision {
+	case VisionOff:
+		return false
+	case VisionOn:
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.blind[idx]
+}
+
+// imageRefusal is whether f is an endpoint refusing a request's images (a 4xx whose code or
+// message names images, vision or modalities): under VisionAuto the endpoint is then marked
+// blind and the request sent again without them.
+func (c *Client) imageRefusal(idx int, req Request, f *Failure) bool {
+	if c.Vision == VisionOn || c.Vision == VisionOff || f.Status < 400 || f.Status > 499 || f.Status == 429 || !hasImages(req) || !c.Sees(idx) {
+		return false
+	}
+	m := strings.ToLower(f.Code + " " + f.Message)
+	if !strings.Contains(m, "image") && !strings.Contains(m, "vision") && !strings.Contains(m, "modalit") && !strings.Contains(m, "multimodal") {
+		return false
+	}
+	c.mu.Lock()
+	if c.blind == nil {
+		c.blind = map[int]bool{}
+	}
+	c.blind[idx] = true
+	c.mu.Unlock()
+	return true
+}
+
+func hasImages(req Request) bool {
+	for _, m := range req.Messages {
+		if len(m.Images) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // contextEntry is a cached context length; a failed lookup (a core not signed in yet) is retried
@@ -247,6 +315,10 @@ func (t *Turn) Complete(ctx context.Context, req Request) (*Response, error) {
 				}
 			}
 			if act == fatal {
+				if c.imageRefusal(i, req, f) {
+					c.logf("llm endpoint=%d refused images: sending without them from now on", i)
+					continue
+				}
 				return nil, f
 			}
 			break // fallback
@@ -302,8 +374,9 @@ type chatToolCall struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    *string        `json:"content"`
+	Role string `json:"role"`
+	// Content is a string, null, or (a user message with images) an array of content parts
+	Content    any            `json:"content"`
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
@@ -327,13 +400,40 @@ type chatRequest struct {
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
 }
 
-func (c *Client) body(ep Endpoint, req Request) ([]byte, error) {
+type textPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type imagePart struct {
+	Type     string `json:"type"`
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
+}
+
+func (c *Client) body(idx int, ep Endpoint, req Request) ([]byte, error) {
 	out := chatRequest{Model: ep.Model, Stream: true, StreamOptions: map[string]bool{"include_usage": true}, ReasoningEffort: c.Reasoning, MaxTokens: req.MaxTokens}
+	sees := c.Sees(idx)
 	for _, m := range req.Messages {
 		cm := chatMessage{Role: m.Role, ToolCallID: m.ToolCallID}
 		content := m.Content
-		if content != "" || len(m.ToolCalls) == 0 {
-			cm.Content = &content
+		switch {
+		case len(m.Images) > 0 && sees:
+			parts := []any{textPart{Type: "text", Text: content}}
+			for _, im := range m.Images {
+				p := imagePart{Type: "image_url"}
+				p.ImageURL.URL = "data:" + im.MIME + ";base64," + base64.StdEncoding.EncodeToString(im.Data)
+				parts = append(parts, p)
+			}
+			cm.Content = parts
+		case len(m.Images) > 0:
+			for _, im := range m.Images {
+				content += fmt.Sprintf("\n[image %s not shown: this model is not given images]", im.Name)
+			}
+			cm.Content = content
+		case content != "" || len(m.ToolCalls) == 0:
+			cm.Content = content
 		}
 		for _, tc := range m.ToolCalls {
 			ct := chatToolCall{ID: tc.ID, Type: "function"}
@@ -358,7 +458,7 @@ func (c *Client) body(ep Endpoint, req Request) ([]byte, error) {
 
 // attempt is one streamed call to one endpoint.
 func (c *Client) attempt(parent context.Context, idx int, ep Endpoint, req Request) (*Response, *Failure) {
-	body, err := c.body(ep, req)
+	body, err := c.body(idx, ep, req)
 	if err != nil {
 		return nil, &Failure{Endpoint: idx, Status: 400, Code: "encode", Message: err.Error()}
 	}
