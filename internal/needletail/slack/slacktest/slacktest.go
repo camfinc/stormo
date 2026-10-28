@@ -80,12 +80,15 @@ type Server struct {
 	// DMUsers are the people of DM channels (conversations.info); a channel not listed is the DM
 	// conversations.open gives the user (D0<id> for U<id>).
 	DMUsers map[string]string
+	// Profiles are users.info fields laid over a user's answer (team_id, is_restricted,
+	// is_ultra_restricted, is_stranger, is_bot, …). A user not listed is a full member of Team.
+	Profiles map[string]map[string]any
 }
 
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
-		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, connCh: make(chan struct{}, 16), nextTS: 1}
+		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, connCh: make(chan struct{}, 16), nextTS: 1}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
@@ -151,6 +154,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "users.info":
 		s.mu.Lock()
 		name, slow := s.Names[params["user"]], s.SlowUsers[params["user"]]
+		user := map[string]any{"id": params["user"], "team_id": Team, "name": strings.ToLower(name), "profile": map[string]any{"display_name": name}}
+		for k, v := range s.Profiles[params["user"]] {
+			user[k] = v
+		}
 		s.mu.Unlock()
 		if slow > 0 {
 			select {
@@ -158,7 +165,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 			}
 		}
-		reply(map[string]any{"ok": true, "user": map[string]any{"id": params["user"], "name": strings.ToLower(name), "profile": map[string]any{"display_name": name}}})
+		reply(map[string]any{"ok": true, "user": user})
 	case "conversations.replies":
 		s.mu.Lock()
 		msgs := s.Replies[params["channel"]+":"+params["ts"]]
@@ -243,6 +250,8 @@ func (s *Server) WaitConnected(timeout time.Duration) {
 // Event is a message event as Slack sends it.
 type Event struct {
 	Type, Subtype, Channel, ChannelType, User, BotID, Text, TS, ThreadTS string
+	// UserTeam, when set, is the author's own team (a Slack Connect user's differs from Team).
+	UserTeam string
 	// Blocks, when set, is the event's blocks (rich text).
 	Blocks any
 }
@@ -254,7 +263,7 @@ func (s *Server) Send(id string, e Event) {
 		e.Type = "message"
 	}
 	ev := map[string]any{"type": e.Type, "channel": e.Channel, "user": e.User, "text": e.Text, "ts": e.TS, "team": Team}
-	for k, v := range map[string]string{"subtype": e.Subtype, "channel_type": e.ChannelType, "bot_id": e.BotID, "thread_ts": e.ThreadTS} {
+	for k, v := range map[string]string{"subtype": e.Subtype, "channel_type": e.ChannelType, "bot_id": e.BotID, "thread_ts": e.ThreadTS, "user_team": e.UserTeam} {
 		if v != "" {
 			ev[k] = v
 		}

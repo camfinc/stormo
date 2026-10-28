@@ -177,7 +177,7 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 				if t.Verified {
 					who += " (in allowed_users, relaying others' words)"
 				} else {
-					who += " (not verified: not in allowed_users)"
+					who += " (not verified: not listed in allowed_users, nor a full member of this workspace)"
 				}
 			}
 			line := "• " + who + ": " + esc(clipRunes(t.Why, 300))

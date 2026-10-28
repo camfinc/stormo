@@ -267,6 +267,8 @@ type Message struct {
 	TS          string          `json:"ts"`
 	ThreadTS    string          `json:"thread_ts"`
 	Team        string          `json:"team"`
+	// UserTeam is the author's own team (Slack Connect: another workspace's), when Slack says.
+	UserTeam string `json:"user_team"`
 	// Blocks are the message's blocks (rich text names a mention as a user element).
 	Blocks json.RawMessage `json:"blocks"`
 }
@@ -282,10 +284,18 @@ func (w *Web) Replies(ctx context.Context, channel, thread string, limit int) ([
 
 // User is users.info's answer (the fields used here).
 type User struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	IsBot   bool   `json:"is_bot"`
-	Profile struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	IsBot bool   `json:"is_bot"`
+	// TeamID is the user's own workspace; IsRestricted (a multi-channel guest),
+	// IsUltraRestricted (a single-channel guest) and IsStranger (an external user Slack Connect
+	// shows) say they are not a full member of it.
+	TeamID            string `json:"team_id"`
+	IsRestricted      bool   `json:"is_restricted"`
+	IsUltraRestricted bool   `json:"is_ultra_restricted"`
+	IsStranger        bool   `json:"is_stranger"`
+	Deleted           bool   `json:"deleted"`
+	Profile           struct {
 		DisplayName string `json:"display_name"`
 		RealName    string `json:"real_name"`
 	} `json:"profile"`
