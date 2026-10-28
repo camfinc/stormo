@@ -51,6 +51,7 @@ func TestPrepare(t *testing.T) {
 	put(t, filepath.Join(home, "work", "notes.txt"), "x", 0o640)
 	put(t, filepath.Join(home, "cron", "jobs.json"), "{}", 0o644)
 	put(t, filepath.Join(home, "sessions", "a.jsonl"), "x", 0o644)
+	put(t, filepath.Join(home, "files", "c", "F1-a.png"), "x", 0o644) // as rehydrate restores it
 	put(t, filepath.Join(home, "memories", "MEMORY.md"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "USER.md"), "x", 0o644)
 	put(t, filepath.Join(home, "memories", "RECORDS.md"), "x", 0o644) // as rehydrate restores it
@@ -84,6 +85,8 @@ func TestPrepare(t *testing.T) {
 		"logs/audit":                fs.ModeDir | 0o700,
 		".swarm":                    fs.ModeDir | 0o700,
 		".needletail-tmp":           fs.ModeDir | 0o700,
+		"files":                     fs.ModeDir | 0o700,
+		"files/c/F1-a.png":          0o600,
 		"memories":                  fs.ModeDir | 0o750,
 		"memories/MEMORY.md":        0o640,
 		"memories/RECORDS.md":       0o600, // the archive: the runtime's alone

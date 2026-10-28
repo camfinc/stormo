@@ -274,7 +274,7 @@ func TestFSListBounded(t *testing.T) {
 func TestProtectedPaths(t *testing.T) {
 	rt, _ := newRuntime(t)
 	for _, p := range []string{"needletail.yaml", "SOUL.md", "memories/MEMORY.md", "skills/crm/tools/x.luau", "skills/.usage.json",
-		"cron/jobs.json", "sessions/a.jsonl", "logs/audit/s1.jsonl", "state/needletail/idem.json", ".needletail-tmp/x", ".swarm/booted.json", "~"} {
+		"cron/jobs.json", "sessions/a.jsonl", "logs/audit/s1.jsonl", "state/needletail/idem.json", ".needletail-tmp/x", ".swarm/booted.json", "files/c/F1-x", "~"} {
 		fails(t, rt, homeRW, fmt.Sprintf(`write_file(%q, "x")`, p), "protected")
 	}
 	fails(t, rt, homeRW, `remove_file("SOUL.md")`, "protected")

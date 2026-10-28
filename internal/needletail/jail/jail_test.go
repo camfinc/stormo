@@ -237,3 +237,21 @@ func TestTaintedRulesEnumerateTheHome(t *testing.T) {
 		t.Errorf("trusted home %+v", r)
 	}
 }
+
+// A tainted command's read rules leave out the file store (people's uploads, every
+// conversation's) as they leave out work/: the store is the runtime's, reached through view_file.
+func TestHomeEntriesSkipFileStore(t *testing.T) {
+	home := t.TempDir()
+	for _, d := range []string{"skills", FileStore, WorkDir, ".ssh"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := []string{}
+	for _, r := range homeEntries(home) {
+		got = append(got, filepath.Base(r.Path))
+	}
+	if strings.Join(got, ",") != "skills" {
+		t.Errorf("tainted read rules: %v", got)
+	}
+}

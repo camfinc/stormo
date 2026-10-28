@@ -61,7 +61,7 @@ func Bindings() []Binding {
 				"The memory archive (memories/RECORDS.md) and its counters need memory:read besides.",
 			Grant: "fs.read:home | fs.read:shared", Example: `local text = read_file("notes/today.md")`, run: fsRead},
 		{Name: "fs.write", Global: "write_file", Params: []Param{path, content}, Returns: "nil",
-			Doc: "Writes (replaces) a file. Home: protected paths (needletail.yaml, SOUL.md, memories/, sessions/, logs/, state/, skills/, cron/, scripts/, the home's hidden entries, .git/) are refused, missing directories are made. " +
+			Doc: "Writes (replaces) a file. Home: protected paths (needletail.yaml, SOUL.md, memories/, sessions/, logs/, state/, files/, skills/, cron/, scripts/, the home's hidden entries, .git/) are refused, missing directories are made. " +
 				"Shared: written through the core (fs_write), recorded as yours. At most 4 MiB per run.",
 			Grant: "fs.write:home[/glob] | fs.write:shared", Example: `write_file("reports/fares.md", text)`, Write: true, run: fsWrite},
 		{Name: "fs.append", Global: "append_file", Params: []Param{path, content}, Returns: "nil",

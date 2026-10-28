@@ -38,7 +38,11 @@ const (
 // bounds and scrub; SOUL.md only through review; .needletail-tmp/ is the runtime's temp dir). The
 // file tools run in the runtime, which owns all of them, so this list is what keeps them out;
 // with the uid split the agent's commands cannot write them either (docs/needletail.md §7).
-var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs", ".swarm", "SOUL.md", "memories", fsx.TmpDir}
+var protected = []string{"sessions", "state", "needletail.yaml", "cron", "logs", ".swarm", "SOUL.md", "memories", fsx.TmpDir, FileStore}
+
+// FileStore is the home's store of people's uploads (attach.Root): client data, per conversation,
+// the runtime's own. The file tools never reach it; view_file shows a conversation its own.
+const FileStore = "files"
 
 // skipDirs are never searched: the runtime's files, VCS and dependency trees.
 var skipDirs = map[string]bool{".git": true, "node_modules": true, "__pycache__": true, ".venv": true}
@@ -119,6 +123,9 @@ func runLater(rel string) bool {
 func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
 	if rel, home := env.Sandbox.HomeRel(real); home && strings.EqualFold(rel, "memories/RECORDS.md") {
 		return nil, nil, fmt.Errorf("%s is the private memory archive; use memory_search to read records within this conversation's audience", display)
+	}
+	if rel, home := env.Sandbox.HomeRel(real); home && under(rel, []string{FileStore}) {
+		return nil, nil, fmt.Errorf("%s is in the store of files people sent (the runtime's own): use view_file to look at this conversation's", display)
 	}
 	if runtimeDir(env, real) {
 		return nil, nil, fmt.Errorf("%s is private runtime data; use session_search for conversation history or cronjob_manage list for job status", display)
@@ -591,7 +598,7 @@ func runSearch(ctx context.Context, env *Env, raw json.RawMessage) (any, error) 
 
 // runtimeDirs are the runtime's own directories in the home, never searched (sessions hold whole
 // conversations).
-var runtimeDirs = []string{"sessions", "state", "logs"}
+var runtimeDirs = []string{"sessions", "state", "logs", FileStore}
 
 // runtimeDir: p is one of runtimeDirs or inside one.
 func runtimeDir(env *Env, p string) bool {

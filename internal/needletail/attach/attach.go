@@ -1,0 +1,445 @@
+// Package attach is the runtime's store of the files people send the agent (docs/needletail.md
+// §4.9, §6): each conversation's uploads in files/<conversation>/, with an index
+// (files/<conversation>/.files-v1.json) of what each one is, who sent it and whether it is marked
+// (an author who may not instruct the agent sent it: reading it marks the reader, §7). The store
+// is the runtime's own (files/ is private: the agent's commands never reach it, the file tools
+// refuse it); the model sees an upload through the turn that brought it and view_file. Old
+// uploads go after the retention (Sweep).
+package attach
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/camfinc/stormo/internal/needletail/fsx"
+	"golang.org/x/sys/unix"
+)
+
+// Root is the store's directory in the home.
+const Root = "files"
+
+// IndexFile is a conversation's index, in its directory (a persisted format, version 1).
+const IndexFile = ".files-v1.json"
+
+// IndexVersion is the index's version.
+const IndexVersion = 1
+
+// DefaultRetention is how long an upload is kept when the config says nothing (14 days).
+const DefaultRetention = 14 * 24 * time.Hour
+
+// DefaultMaxBytes bounds the whole store (every conversation's uploads): past it the oldest go.
+const DefaultMaxBytes = 2 << 30
+
+// MaxFileBytes is the most one stored upload may hold.
+const MaxFileBytes = 20 << 20
+
+// Kinds of upload.
+const (
+	KindImage = "image"
+	KindText  = "text"
+	KindPDF   = "pdf"
+	KindAudio = "audio"
+)
+
+// Entry is one stored upload.
+type Entry struct {
+	// ID is the platform's id of the file (Slack's F…), unique in the conversation.
+	ID string `json:"id"`
+	// Name is the file's name as sent (one line).
+	Name string `json:"name"`
+	// Path is where it is, relative to the home: files/<conversation>/<id>-<safe name>.
+	Path string `json:"path"`
+	MIME string `json:"mime"`
+	Kind string `json:"kind"`
+	Size int64  `json:"size"`
+	// Width and Height are an image's, when it could be decoded.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	// Author is who sent it (a Slack user or bot id); Source the platform ("slack").
+	Author string `json:"author,omitempty"`
+	Source string `json:"source,omitempty"`
+	// Marked: its author may not instruct the agent (unverified, a guest, an external user, an
+	// unlisted or relay bot); Why says so. Reading it marks the reader's conversation.
+	Marked bool   `json:"marked,omitempty"`
+	Why    string `json:"why,omitempty"`
+	// At is when it was stored (RFC 3339, UTC).
+	At string `json:"at"`
+	// Transcript is a voice note's transcript, once made.
+	Transcript string `json:"transcript,omitempty"`
+}
+
+type index struct {
+	Version int     `json:"version"`
+	Files   []Entry `json:"files"`
+}
+
+// Store is the agent's uploads.
+type Store struct {
+	Home string
+	// Retention is how long an upload is kept (0: DefaultRetention); MaxBytes bounds the store
+	// (0: DefaultMaxBytes).
+	Retention time.Duration
+	MaxBytes  int64
+	Now       func() time.Time
+	Log       func(string)
+	mu        sync.Mutex
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+func (s *Store) logf(format string, args ...any) {
+	if s.Log != nil {
+		s.Log(fmt.Sprintf(format, args...))
+	}
+}
+
+func (s *Store) retention() time.Duration {
+	if s.Retention > 0 {
+		return s.Retention
+	}
+	return DefaultRetention
+}
+
+func (s *Store) maxBytes() int64 {
+	if s.MaxBytes > 0 {
+		return s.MaxBytes
+	}
+	return DefaultMaxBytes
+}
+
+func (s *Store) tmpDir() string { return filepath.Join(s.Home, fsx.TmpDir) }
+
+// Dir is a conversation's directory, relative to the home.
+func Dir(conv string) string { return Root + "/" + conv }
+
+// validConv is a conversation id that names one directory.
+func validConv(conv string) error {
+	if conv == "" || len(conv) > 200 || strings.ContainsAny(conv, "/\\\x00") || conv == "." || conv == ".." || strings.HasPrefix(conv, ".") {
+		return fmt.Errorf("no conversation to keep files for")
+	}
+	return nil
+}
+
+var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// SafeName is a file name as stored: letters, digits, dot, dash and underscore, at most 80 bytes,
+// never hidden.
+func SafeName(name string) string {
+	n := strings.Trim(unsafeName.ReplaceAllString(name, "_"), "._")
+	if len(n) > 80 {
+		ext := path.Ext(n)
+		if len(ext) > 10 {
+			ext = ""
+		}
+		n = n[:80-len(ext)] + ext
+	}
+	if n == "" {
+		n = "file"
+	}
+	return n
+}
+
+var idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// OneLine is text on one line without control or format characters, at most n runes.
+func OneLine(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n]) + "…"
+	}
+	return s
+}
+
+// ensureDir makes files/ and files/<conv>/ (the runtime's own, 0700) and never goes through a
+// symlink.
+func (s *Store) ensureDir(conv string) error {
+	root, err := unix.Open(s.Home, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return &os.PathError{Op: "open", Path: s.Home, Err: err}
+	}
+	defer unix.Close(root)
+	fd := root
+	for _, name := range []string{Root, conv} {
+		if err := unix.Mkdirat(fd, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return &os.PathError{Op: "mkdir", Path: name, Err: err}
+		}
+		next, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return fmt.Errorf("%s is not a directory the runtime can use: %w", name, err)
+		}
+		var st unix.Stat_t
+		if unix.Fstat(next, &st) == nil && int(st.Uid) == os.Geteuid() && st.Mode&0o077 != 0 {
+			_ = unix.Fchmod(next, 0o700)
+		}
+		if fd != root {
+			unix.Close(fd)
+		}
+		fd = next
+	}
+	unix.Close(fd)
+	return nil
+}
+
+// read is a conversation's index (none: empty).
+func (s *Store) read(conv string) (index, error) {
+	idx := index{Version: IndexVersion}
+	b, err := fsx.ReadFileBelow(s.Home, Dir(conv)+"/"+IndexFile, 8<<20)
+	if errors.Is(err, fs.ErrNotExist) {
+		return idx, nil
+	}
+	if err != nil {
+		return idx, err
+	}
+	if err := json.Unmarshal(b, &idx); err != nil {
+		return index{Version: IndexVersion}, fmt.Errorf("%s: %w", Dir(conv)+"/"+IndexFile, err)
+	}
+	if idx.Version != IndexVersion {
+		return index{Version: IndexVersion}, fmt.Errorf("%s: version %d (this runtime reads %d)", Dir(conv)+"/"+IndexFile, idx.Version, IndexVersion)
+	}
+	return idx, nil
+}
+
+func (s *Store) write(conv string, idx index) error {
+	idx.Version = IndexVersion
+	b, err := json.MarshalIndent(idx, "", " ")
+	if err != nil {
+		return err
+	}
+	return fsx.WriteAtomicBelow(s.Home, Dir(conv)+"/"+IndexFile, s.tmpDir(), b, 0o600)
+}
+
+// Save stores body as an upload of conversation conv and records it (e.ID, e.Name, e.MIME,
+// e.Kind, the author and the mark as given; Path, Size and At are set). A file already stored
+// under its id in the conversation is not stored again: its entry is returned.
+func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
+	if err := validConv(conv); err != nil {
+		return Entry{}, err
+	}
+	if !idRe.MatchString(e.ID) {
+		return Entry{}, fmt.Errorf("file id %q is not one the store keeps", e.ID)
+	}
+	if int64(len(body)) > MaxFileBytes {
+		return Entry{}, fmt.Errorf("over %d bytes", MaxFileBytes)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureDir(conv); err != nil {
+		return Entry{}, err
+	}
+	idx, err := s.read(conv)
+	if err != nil {
+		return Entry{}, err
+	}
+	for _, x := range idx.Files {
+		if x.ID == e.ID {
+			return x, nil
+		}
+	}
+	e.Name = OneLine(e.Name, 200)
+	e.Path = Dir(conv) + "/" + e.ID + "-" + SafeName(e.Name)
+	e.Size = int64(len(body))
+	e.At = s.now().UTC().Format(time.RFC3339)
+	if err := fsx.WriteAtomicBelow(s.Home, e.Path, s.tmpDir(), body, 0o600); err != nil {
+		return Entry{}, err
+	}
+	idx.Files = append(idx.Files, e)
+	if err := s.write(conv, idx); err != nil {
+		_ = fsx.RemoveBelow(s.Home, e.Path, false)
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// SetTranscript keeps a voice note's transcript in its entry.
+func (s *Store) SetTranscript(conv, id, text string) error {
+	if err := validConv(conv); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, err := s.read(conv)
+	if err != nil {
+		return err
+	}
+	for i := range idx.Files {
+		if idx.Files[i].ID == id {
+			idx.Files[i].Transcript = text
+			return s.write(conv, idx)
+		}
+	}
+	return fmt.Errorf("no file %s in this conversation", id)
+}
+
+// List is a conversation's uploads, oldest first.
+func (s *Store) List(conv string) ([]Entry, error) {
+	if err := validConv(conv); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, err := s.read(conv)
+	return idx.Files, err
+}
+
+// Find is a conversation's upload by id, by name (case-insensitive) or by its path.
+func (s *Store) Find(conv, ref string) (Entry, error) {
+	files, err := s.List(conv)
+	if err != nil {
+		return Entry{}, err
+	}
+	ref = strings.TrimSpace(ref)
+	var found []Entry
+	for _, e := range files {
+		switch {
+		case e.ID == ref || e.Path == ref || strings.TrimPrefix(ref, "./") == e.Path:
+			return e, nil
+		case strings.EqualFold(e.Name, ref) || strings.EqualFold(path.Base(e.Path), ref):
+			found = append(found, e)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return Entry{}, fmt.Errorf("no file %q in this conversation (list them with view_file and no id)", ref)
+	case 1:
+		return found[0], nil
+	}
+	ids := []string{}
+	for _, e := range found {
+		ids = append(ids, e.ID)
+	}
+	return Entry{}, fmt.Errorf("%d files are named %q: name one by id (%s)", len(found), ref, strings.Join(ids, ", "))
+}
+
+// Read is an upload's bytes.
+func (s *Store) Read(e Entry) ([]byte, error) {
+	if !strings.HasPrefix(e.Path, Root+"/") {
+		return nil, fmt.Errorf("%s is not in the file store", e.Path)
+	}
+	return fsx.ReadFileBelow(s.Home, e.Path, MaxFileBytes)
+}
+
+// orphanAge is how old a file the index does not name must be before Sweep removes it (a write
+// whose index update a crash cut off; a younger one may be a Save still running).
+const orphanAge = time.Hour
+
+// Sweep removes the uploads older than the retention (and files the indexes do not name), then
+// the oldest ones while the store is over MaxBytes, and conversations' directories left empty.
+// It returns how many files it removed.
+func (s *Store) Sweep() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	convs, err := fsx.ReadDirBelow(s.Home, Root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	cutoff := now.Add(-s.retention())
+	removed := 0
+	type kept struct {
+		conv string
+		e    Entry
+		at   time.Time
+	}
+	var all []kept
+	indexes := map[string]index{}
+	changed := map[string]bool{}
+	for _, d := range convs {
+		conv := d.Name()
+		if !d.IsDir() || validConv(conv) != nil {
+			continue
+		}
+		idx, err := s.read(conv)
+		if err != nil {
+			s.logf("files: %s: %v (left as it is)", Dir(conv), err)
+			continue
+		}
+		named := map[string]bool{IndexFile: true}
+		keep := idx.Files[:0:0]
+		for _, e := range idx.Files {
+			at, err := time.Parse(time.RFC3339, e.At)
+			if err != nil || at.Before(cutoff) {
+				if rmErr := fsx.RemoveBelow(s.Home, e.Path, false); rmErr == nil || errors.Is(rmErr, fs.ErrNotExist) {
+					removed++
+					changed[conv] = true
+					continue
+				}
+			}
+			named[path.Base(e.Path)] = true
+			keep = append(keep, e)
+			all = append(all, kept{conv, e, at})
+		}
+		ents, _ := fsx.ReadDirBelow(s.Home, Dir(conv))
+		for _, f := range ents {
+			if named[f.Name()] {
+				continue
+			}
+			if info, err := f.Info(); err == nil && !f.IsDir() && now.Sub(info.ModTime()) > orphanAge {
+				if fsx.RemoveBelow(s.Home, Dir(conv)+"/"+f.Name(), false) == nil {
+					removed++
+				}
+			}
+		}
+		idx.Files = keep
+		indexes[conv] = idx
+	}
+	// over the store's bound: the oldest go first
+	var total int64
+	for _, k := range all {
+		total += k.e.Size
+	}
+	slices.SortStableFunc(all, func(a, b kept) int { return a.at.Compare(b.at) })
+	for _, k := range all {
+		if total <= s.maxBytes() {
+			break
+		}
+		if err := fsx.RemoveBelow(s.Home, k.e.Path, false); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		removed++
+		total -= k.e.Size
+		idx := indexes[k.conv]
+		idx.Files = slices.DeleteFunc(idx.Files, func(e Entry) bool { return e.ID == k.e.ID })
+		indexes[k.conv] = idx
+		changed[k.conv] = true
+	}
+	for conv, idx := range indexes {
+		if len(idx.Files) == 0 {
+			_ = fsx.RemoveBelow(s.Home, Dir(conv)+"/"+IndexFile, false)
+			if err := fsx.RemoveBelow(s.Home, Dir(conv), true); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				s.logf("files: %s left: %v", Dir(conv), err)
+			}
+			continue
+		}
+		if changed[conv] {
+			if err := s.write(conv, idx); err != nil {
+				s.logf("files: %s: index not updated: %v", Dir(conv), err)
+			}
+		}
+	}
+	return removed, nil
+}

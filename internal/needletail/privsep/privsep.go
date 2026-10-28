@@ -34,8 +34,9 @@ var Default = Users{RuntimeUID: wire.RuntimeUID, RuntimeGID: wire.RuntimeGID, Ex
 // so the runtime (same group) writes there too.
 var (
 	// Private are the runtime's own directories: its user's, 0700 (files 0600), made when
-	// missing so a command cannot take the name first. Parents come before children.
-	Private = []string{"cron", "state", "state/needletail", "sessions", "logs", "logs/audit", ".swarm", fsx.TmpDir}
+	// missing so a command cannot take the name first. Parents come before children. files/ is
+	// the store of people's uploads (client data, every conversation's): no command reads it.
+	Private = []string{"cron", "state", "state/needletail", "sessions", "logs", "logs/audit", ".swarm", fsx.TmpDir, jail.FileStore}
 	// ReadOnly are the runtime's directories the agent's commands may read (group r-x): the
 	// memory, which is in the system prompt anyway and changes only through the memory tool.
 	ReadOnly = []string{"memories"}

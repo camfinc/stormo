@@ -339,7 +339,7 @@ type place struct {
 // agent's memory (the memory tool), its skills (skill_manage checks every change), its schedules
 // (cronjob_manage) and the job scripts they run (scripts/: the baseline's, and the ones the agent
 // writes with its own file tools or terminal), and the temp dir.
-var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "state", "memories", "skills", "cron", "scripts", ".needletail-tmp", ".swarm"}
+var protected = []string{"needletail.yaml", "SOUL.md", "sessions", "logs", "state", "memories", "skills", "cron", "scripts", ".needletail-tmp", ".swarm", "files"}
 
 // isProtected: rel (slash-separated, relative to the home) is a protected entry or below one, a
 // hidden entry of the home's root or below one (shell startup files, .config, .local's Python
@@ -483,7 +483,7 @@ func (c *Call) readPlace(name string, in json.RawMessage) (place, error) {
 	}
 	if !p.shared {
 		first, _, _ := strings.Cut(p.rel, "/")
-		for _, private := range []string{"sessions", "state", "logs"} {
+		for _, private := range []string{"sessions", "state", "logs", "files"} {
 			if strings.EqualFold(first, private) {
 				return place{}, errf("refused", "%s is private runtime data: use the model's session_search for history, search_memory for memory, or kv_get for KV so provenance is preserved", display(p))
 			}

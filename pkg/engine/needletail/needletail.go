@@ -66,6 +66,9 @@ func New(inst *instance.Instance) *Needletail {
 			// never read by the dream, which learns from the hot files alone
 			{Class: engine.Raw, Glob: "memories/RECORDS.md"},
 			{Class: engine.Raw, Glob: "logs/audit/**"},
+			// people's uploads (images, documents, voice notes) and each conversation's index of
+			// them (.files-v1.json): client data, restored at boot until their retention ends
+			{Class: engine.Raw, Glob: "files/**"},
 			// a monitor's last output and each run's record hold what jobs fetched and replied:
 			// client data, before the state rule that would claim them
 			{Class: engine.Raw, Glob: "state/needletail/jobs/**"},

@@ -210,7 +210,7 @@ func TestQuarantinePrivateRuntimeReadsRequireTypedTools(t *testing.T) {
 	declared := []string{"fs.read:home"}
 	caps, _ := NewCaps(declared, rt.Grants)
 	call := rt.NewCall("reader", "clean", caps, false)
-	for _, path := range []string{"sessions/marked.jsonl", "state/needletail/jobs/output.md", "logs/marked.log"} {
+	for _, path := range []string{"sessions/marked.jsonl", "state/needletail/jobs/output.md", "logs/marked.log", "files/conv/F1-upload.txt"} {
 		full := filepath.Join(rt.Home, path)
 		_ = os.MkdirAll(filepath.Dir(full), 0700)
 		_ = os.WriteFile(full, []byte("marked runtime content"), 0600)

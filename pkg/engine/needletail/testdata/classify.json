@@ -285,6 +285,21 @@
    "path": "state/needletail/skill-archives-v1/opaque/scripts/check.sh",
    "class": "raw",
    "glob": "state/needletail/skill-archives-v1/**"
+  },
+  {
+   "path": "files/slack-C0DEVCHAN1-1700000100.000100/F0AB12CD34-photo.png",
+   "class": "raw",
+   "glob": "files/**"
+  },
+  {
+   "path": "files/slack-D0DMCHAN01-dm/.files-v1.json",
+   "class": "raw",
+   "glob": "files/**"
+  },
+  {
+   "path": "files/slack-D0DMCHAN01-dm/F0VOICE001-audio_message.m4a",
+   "class": "raw",
+   "glob": "files/**"
   }
  ]
 }

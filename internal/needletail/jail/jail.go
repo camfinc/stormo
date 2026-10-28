@@ -199,7 +199,8 @@ func (s Spec) Rules() []Rule {
 }
 
 // homeEntries are a tainted command's read rules in the home: each top-level entry, read-only
-// (and executable: a skill's script), but work/ (other conversations' work directories), any
+// (and executable: a skill's script), but work/ (other conversations' work directories), files/
+// (every conversation's uploads), any
 // hidden entry (.ssh, .gnupg, .config, .netrc, .git-credentials, .aws, .swarm, …: credentials
 // and the runtime's own) and any symlink (a rule follows nothing: NoFollow, and a link is
 // skipped). An entry made after the launcher read the home is not granted (fail closed).
@@ -211,7 +212,7 @@ func homeEntries(home string) []Rule {
 	var out []Rule
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, ".") || name == WorkDir || e.Type()&os.ModeSymlink != 0 {
+		if strings.HasPrefix(name, ".") || name == WorkDir || name == FileStore || e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		access := RX
@@ -241,6 +242,10 @@ func (s Spec) Args() []string {
 // WorkDir is the home's work area: a tainted run's commands may write only in its own
 // work/<conversation> directory (docs/needletail.md §7).
 const WorkDir = "work"
+
+// FileStore is the home's store of people's uploads (every conversation's): the runtime's own, so
+// no tainted command is given it (the uid split keeps every command out of it, 0700).
+const FileStore = "files"
 
 // writableBelow is whether dir may be a read-only home's one writable directory: the home's .tmp,
 // or a directory right below its work/ (a conversation's), given clean and absolute.
