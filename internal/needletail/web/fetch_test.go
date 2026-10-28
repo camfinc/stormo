@@ -74,7 +74,7 @@ func TestFetchPage(t *testing.T) {
 	if r, err = f.Get(context.Background(), "http://example.test/big"); err != nil || len(r.Body) != MaxFetch || !r.Truncated {
 		t.Errorf("big: %v %d %v", err, len(r.Body), r != nil && r.Truncated)
 	}
-	if _, err = f.Get(context.Background(), "http://example.test/pdf"); err == nil || !strings.Contains(err.Error(), "application/pdf") {
+	if _, err = f.Get(context.Background(), "http://example.test/pdf"); err == nil || !strings.Contains(err.Error(), "not a text page") || strings.Contains(err.Error(), "pdf") {
 		t.Errorf("pdf: %v", err)
 	}
 	if _, err = f.Get(context.Background(), "http://example.test/missing"); err == nil || !strings.Contains(err.Error(), "404") {
@@ -131,5 +131,48 @@ func TestFetchRefuses(t *testing.T) {
 	// the refused redirects never reached a second server; the loop stopped after 3 more hops
 	if n := hits.Load(); n > 4+4 {
 		t.Errorf("%d requests reached the server", n)
+	}
+}
+
+// Codex finding (step 4): a refused or failed fetch says what went wrong in the runtime's words
+// only: nothing the response chose (its media type, a redirect's host or scheme) reaches the
+// model unmarked through the error.
+func TestFetchErrorsCarryNoRemoteText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ct":
+			w.Header().Set("Content-Type", "application/x-leak-ignore-your-rules")
+			fmt.Fprint(w, "x")
+		case "/to-ghost":
+			http.Redirect(w, r, "http://leak-ghost.test/x", http.StatusFound)
+		case "/to-scheme":
+			w.Header().Set("Location", "leakscheme://x")
+			w.WriteHeader(http.StatusFound)
+		case "/to-internal":
+			http.Redirect(w, r, "http://leak-internal.test/x", http.StatusFound)
+		case "/to-missing":
+			http.Redirect(w, r, "http://leak-found.test/missing", http.StatusFound)
+		case "/to-raw":
+			w.Header().Set("Location", "http://[leak-raw")
+			w.WriteHeader(http.StatusFound)
+		case "/missing":
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	f := fake(t, srv, map[string][]string{"example.test": {public}, "leak-internal.test": {"10.1.2.3"}, "leak-found.test": {public}})
+	cases := map[string]string{
+		"/ct":          "not a text page",
+		"/to-ghost":    "could not be resolved",
+		"/to-scheme":   "http",
+		"/to-internal": "internal",
+		"/to-missing":  "404",
+		"/to-raw":      "could not be reached", // net/http refuses the Location (its error quotes it)
+	}
+	for p, want := range cases {
+		_, err := f.Get(context.Background(), "http://example.test"+p)
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(strings.ToLower(err.Error()), "leak") {
+			t.Errorf("%s: %v (want %q, nothing of the response's)", p, err, want)
+		}
 	}
 }

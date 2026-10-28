@@ -59,7 +59,10 @@ type Response struct {
 	Truncated bool
 }
 
-// Error is a refused or failed fetch; its message never carries a body.
+// Error is a refused or failed fetch. Its message is the runtime's words only: never a body, nor
+// anything else the response chose (its media type, a redirect's URL, host or scheme), since an
+// error reaches the model before any mark (web_extract marks the run only for content). It names
+// at most the host the agent asked for, and says when a redirect was followed.
 type Error struct{ msg string }
 
 func (e *Error) Error() string { return e.msg }
@@ -85,10 +88,10 @@ func textual(ct string) bool {
 func (f *Fetcher) checkURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
-		return nil, errorf("%q is not an absolute http(s) URL", clip(raw, 200))
+		return nil, errorf("the URL is not an absolute http(s) URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, errorf("only http and https pages are fetched (%s)", u.Scheme)
+		return nil, errorf("only http and https pages are fetched")
 	}
 	if u.User != nil {
 		return nil, errorf("credentials in the URL are not allowed")
@@ -172,25 +175,26 @@ func (f *Fetcher) client() *http.Client {
 			if err != nil {
 				return nil, err
 			}
+			// the host may be a redirect's: these errors never name it (Get says whose it is)
 			port, ok := netguard.ParsePort(portText)
 			if !ok {
-				return nil, errorf("%q is not a port", portText)
+				return nil, errorf("the port is not valid")
 			}
 			addrs, err := f.lookup(ctx, host)
 			if err != nil {
-				return nil, errorf("%s could not be resolved", host)
+				return nil, errorf("the host could not be resolved")
 			}
 			if len(addrs) == 0 {
-				return nil, errorf("%s has no address", host)
+				return nil, errorf("the host has no address")
 			}
 			for _, a := range addrs {
 				switch {
 				case netguard.Metadata(a):
-					return nil, errorf("%s resolves to a metadata address: refused", host)
+					return nil, errorf("the host resolves to a metadata address: refused")
 				case netguard.Internal(a):
-					return nil, errorf("%s resolves to an internal address: refused (only public pages are fetched)", host)
+					return nil, errorf("the host resolves to an internal address: refused (only public pages are fetched)")
 				case f.coreAddr(ctx, a, port):
-					return nil, errorf("%s is the swarm core: refused", host)
+					return nil, errorf("the host is the swarm core: refused")
 				}
 			}
 			target := net.JoinHostPort(addrs[0].Unmap().String(), strconv.Itoa(port))
@@ -204,6 +208,8 @@ func (f *Fetcher) client() *http.Client {
 }
 
 // Get fetches a public page: at most MaxFetch bytes of its body, a textual content type only.
+// Its errors name the host asked for (the agent's), "after a redirect" once one was followed,
+// never what a response said (Error).
 func (f *Fetcher) Get(ctx context.Context, raw string) (*Response, error) {
 	u, err := f.checkURL(raw)
 	if err != nil {
@@ -212,7 +218,12 @@ func (f *Fetcher) Get(ctx context.Context, raw string) (*Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 	client := f.client()
+	asked := u.Host
 	for hop := 0; ; hop++ {
+		where := asked
+		if hop > 0 {
+			where += " (after a redirect)"
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return nil, errorf("the request could not be made")
@@ -224,11 +235,11 @@ func (f *Fetcher) Get(ctx context.Context, raw string) (*Response, error) {
 			var fe *Error
 			switch {
 			case errors.As(err, &fe):
-				return nil, fe
+				return nil, errorf("%s: %s", where, fe.msg)
 			case ctx.Err() != nil:
-				return nil, errorf("%s timed out", u.Host)
+				return nil, errorf("%s timed out", where)
 			}
-			return nil, errorf("%s could not be reached", u.Host)
+			return nil, errorf("%s could not be reached", where)
 		}
 		if loc := res.Header.Get("Location"); isRedirect(res.StatusCode) && loc != "" {
 			res.Body.Close()
@@ -237,25 +248,24 @@ func (f *Fetcher) Get(ctx context.Context, raw string) (*Response, error) {
 			}
 			next, err := u.Parse(loc)
 			if err != nil {
-				return nil, errorf("a bad redirect")
+				return nil, errorf("%s: a bad redirect", where)
 			}
 			if u, err = f.checkURL(next.String()); err != nil {
-				return nil, err
+				return nil, errorf("%s: a redirect refused: %v", where, err)
 			}
 			continue
 		}
 		defer res.Body.Close()
 		ct := res.Header.Get("Content-Type")
 		if res.StatusCode < 200 || res.StatusCode > 299 {
-			return nil, errorf("%s answered HTTP %d", u.Host, res.StatusCode)
+			return nil, errorf("%s answered HTTP %d", where, res.StatusCode)
 		}
 		if !textual(ct) {
-			mt, _, _ := mime.ParseMediaType(ct)
-			return nil, errorf("not a text page (%s): only HTML and text are read", clip(mt, 80))
+			return nil, errorf("%s: not a text page: only HTML and text are read", where)
 		}
 		body, err := io.ReadAll(io.LimitReader(res.Body, MaxFetch+1))
 		if err != nil && len(body) == 0 {
-			return nil, errorf("%s: the page could not be read", u.Host)
+			return nil, errorf("%s: the page could not be read", where)
 		}
 		out := &Response{URL: u.String(), Status: res.StatusCode, ContentType: ct, Body: body}
 		if len(body) > MaxFetch {
@@ -267,11 +277,4 @@ func (f *Fetcher) Get(ctx context.Context, raw string) (*Response, error) {
 
 func isRedirect(code int) bool {
 	return code == 301 || code == 302 || code == 303 || code == 307 || code == 308
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return strings.ToValidUTF8(s[:n], "") + "…"
 }
