@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/approvals"
 	"github.com/camfinc/stormo/internal/needletail/commands"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
@@ -266,5 +267,35 @@ func TestFormat(t *testing.T) {
 		if units(p) > 1000 || !strings.HasPrefix(p, "```") || !strings.HasSuffix(p, "```") {
 			t.Fatalf("part %d: %d units, fences %q…%q", i, units(p), p[:4], p[len(p)-4:])
 		}
+	}
+}
+
+// Follow-ups: back to their own Telegram conversation, or to a target the policy allows; refused
+// once who asked may no longer talk to the agent; a marked one marks its destination first. An
+// approval's outcome is told in the chat it was asked in.
+func TestFollowUpAndTell(t *testing.T) {
+	fake, _, g := rig(t, nil)
+	ctx := context.Background()
+	if err := g.FollowUp(ctx, slack.FollowUpPost{Origin: "telegram-1001", Kind: slack.FollowUpMessage, Text: "reminder: the quote", Users: []string{"telegram:1001"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.FollowUp(ctx, slack.FollowUpPost{Target: "telegram:-100777", Origin: "telegram-1001", Kind: slack.FollowUpMessage, Text: "x"}); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("outside the policy: %v", err)
+	}
+	if err := g.FollowUp(ctx, slack.FollowUpPost{Origin: "telegram-1001", Kind: slack.FollowUpMessage, Text: "x", Users: []string{"telegram:6666"}}); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("asked by someone no longer admitted: %v", err)
+	}
+	if err := g.FollowUp(ctx, slack.FollowUpPost{Origin: "telegram-1001", Kind: slack.FollowUpMessage, Text: "marked words", Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !g.o.Untrusted("telegram-1001") {
+		t.Error("a marked follow-up did not mark its destination")
+	}
+	if err := g.Tell(ctx, &approvals.Request{Conversation: "telegram-1001", Status: approvals.StatusDenied, Card: approvals.Card{Title: "send a message"}}); err != nil {
+		t.Fatal(err)
+	}
+	sent := fake.Sent()
+	if len(sent) != 3 || sent[0].Text != "reminder: the quote" || sent[1].Text != "marked words" || !strings.Contains(sent[2].Text, "send a message") {
+		t.Fatalf("sent %+v", sent)
 	}
 }

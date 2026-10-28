@@ -123,6 +123,8 @@ func newQueue(t *testing.T, opts ...func(*Options)) (*Queue, string) {
 		switch {
 		case strings.HasPrefix(s, "slack-"):
 			c.Source = "slack"
+		case strings.HasPrefix(s, "telegram-"):
+			c.Source, c.Audience = "telegram", "dm:telegram:1001"
 		case strings.HasPrefix(s, "op-"):
 			c.Source, c.Operator, c.Audience = "cli", true, "operator"
 		case strings.HasPrefix(s, "cron-"):
@@ -856,5 +858,34 @@ func TestParseAtDSTEverywhere(t *testing.T) {
 		if err != nil || got.Format(time.RFC3339) != c.want {
 			t.Errorf("%s, %q at %s: %s %v, want %s", c.loc, c.at, c.now.In(c.loc).Format(time.RFC3339), got.Format(time.RFC3339), err, c.want)
 		}
+	}
+}
+
+// A Telegram conversation's follow-up comes back to it, checked by the gateway (as a Slack one's);
+// without the gateway it is refused; its handlers' follow-ups count toward the chat's audience.
+func TestCreateTelegram(t *testing.T) {
+	q, _ := newQueue(t)
+	ctx := context.Background()
+	if _, err := q.Create(ctx, "telegram-1001", Spec{In: "10s", Text: "x"}); err == nil || !strings.Contains(err.Error(), "Telegram is not connected") {
+		t.Errorf("a Telegram conversation without the gateway: %v", err)
+	}
+	var seen []string
+	q.SetTargetCheck(func(target string, from Conversation) error {
+		seen = append(seen, target+" from "+from.Session)
+		return nil
+	})
+	it, err := q.Create(ctx, "telegram-1001", Spec{In: "10s", Text: "x"})
+	if err != nil || it.Target != TargetOrigin || it.Origin.Source != "telegram" || it.Origin.Audience != "dm:telegram:1001" {
+		t.Errorf("origin: %+v %v", it, err)
+	}
+	it, err = q.Create(ctx, "telegram-1001", Spec{In: "10s", Text: "x", Target: "telegram:-1005555"})
+	if err != nil || it.Target != "telegram:-1005555" {
+		t.Errorf("a chat: %+v %v", it, err)
+	}
+	if strings.Join(seen, "|") != TargetOrigin+" from telegram-1001|telegram:-1005555 from telegram-1001" {
+		t.Errorf("checks %v", seen)
+	}
+	if got := audienceKey(Conversation{Session: "telegram--1009999-7"}); got != "channel:telegram:-1009999" {
+		t.Errorf("a topic's audience key %q", got)
 	}
 }
