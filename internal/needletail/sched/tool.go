@@ -195,6 +195,10 @@ func (s *Scheduler) manage(a cronArgs, origin json.RawMessage, untrusted string)
 	// job (its prompt, script, skills, targets, schedule), and repairing or dropping a held report,
 	// need a person's approval; list, run, pause and resume do not.
 	if untrusted != "" {
+		if action == "pause" && a.JobID != "" && !s.markedJob(a.JobID) {
+			// pausing a trusted job silences the owner's work: a disruption a person approves
+			return nil, messaging.NeedsApproval("a pause of the scheduled job "+a.JobID+" (cronjob_manage pause)", untrusted)
+		}
 		switch action {
 		case "create", "update", "remove", "retry_delivery", "discard_delivery":
 			what := "a scheduled job (cronjob_manage " + action + ")"
@@ -645,4 +649,16 @@ func orDefault(s, d string) string {
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// markedJob is whether job id is one made from untrusted input (its file marks it untrusted).
+func (s *Scheduler) markedJob(id string) bool {
+	marked := false
+	_ = s.mutate(func(f *File) (bool, error) {
+		if j := f.Find(id); j != nil {
+			marked = !s.trusted(j) && j.Bool("untrusted")
+		}
+		return false, nil
+	})
+	return marked
 }

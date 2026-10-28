@@ -77,6 +77,8 @@ type Server struct {
 	RateLimit map[string]bool
 	// SlowUsers makes users.info for a user answer after a delay (set before the calls).
 	SlowUsers map[string]time.Duration
+	// Slow makes a method answer after a delay (or when the caller gives up).
+	Slow map[string]time.Duration
 	// DMUsers are the people of DM channels (conversations.info); a channel not listed is the DM
 	// conversations.open gives the user (D0<id> for U<id>).
 	DMUsers map[string]string
@@ -88,7 +90,7 @@ type Server struct {
 // New starts a fake Slack; Close stops it (registered with t.Cleanup).
 func New(t *testing.T) *Server {
 	s := &Server{t: t, Names: map[string]string{}, Replies: map[string][]map[string]any{}, Fail: map[string]string{},
-		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, connCh: make(chan struct{}, 16), nextTS: 1}
+		RateLimit: map[string]bool{}, SlowUsers: map[string]time.Duration{}, DMUsers: map[string]string{}, Profiles: map[string]map[string]any{}, Slow: map[string]time.Duration{}, connCh: make(chan struct{}, 16), nextTS: 1}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
@@ -113,7 +115,15 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	limited := s.RateLimit[method]
 	delete(s.RateLimit, method)
 	fail := s.Fail[method]
+	slow := s.Slow[method]
 	s.mu.Unlock()
+	if slow > 0 {
+		select {
+		case <-time.After(slow):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	reply := func(v map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(v)

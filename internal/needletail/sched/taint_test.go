@@ -48,13 +48,13 @@ func TestUntrustedConversationMakesNoJob(t *testing.T) {
 				t.Errorf("update %v: %v %s", change, failed, out)
 			}
 		}
-		for _, args := range []map[string]any{{"action": "remove", "job_id": "mine"}, {"action": "discard_delivery", "job_id": "mine"}} {
+		// item 21 (Claude L4): pausing a trusted job is a disruption a tainted run asks a person for
+		for _, args := range []map[string]any{{"action": "remove", "job_id": "mine"}, {"action": "discard_delivery", "job_id": "mine"}, {"action": "pause", "job_id": "mine"}} {
 			if out, failed := call(run.ctx, run.env, args); !failed || !strings.Contains(out, "approval") {
 				t.Errorf("%v: %v %s", args, failed, out)
 			}
 		}
 		for _, args := range []map[string]any{
-			{"action": "pause", "job_id": "mine"},
 			{"action": "resume", "job_id": "mine"}, {"action": "run", "job_id": "mine"}, {"action": "list"},
 		} {
 			if out, failed := call(run.ctx, run.env, args); failed {

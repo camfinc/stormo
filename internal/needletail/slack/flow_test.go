@@ -113,3 +113,20 @@ func TestDiscoveryRefusedInTaintedRunsAndNoGroupDMNames(t *testing.T) {
 		t.Errorf("a channel's name dropped: %+v", d)
 	}
 }
+
+// Item 20 (Claude L6): thread_context gives up when its call does (the turn's deadline or its
+// own), not after the gateway's fetch timeout.
+func TestThreadContextToolHonoursItsContext(t *testing.T) {
+	r := newRig(t, nil)
+	const thread = "1700003300.000100"
+	r.fake.Replies[dev+":"+thread] = []map[string]any{{"user": mallet, "text": "late", "ts": thread}}
+	r.fake.Slow["conversations.replies"] = 5 * time.Second
+	<-r.g.ready
+	ctx, cancel := context.WithTimeout(messaging.WithQuarantine(context.Background(), nil), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	out, err := r.g.ThreadContextTool().Run(ctx, &tools.Env{Session: SessionID(dev, thread)}, nil)
+	if took := time.Since(start); took > 2*time.Second || err == nil {
+		t.Fatalf("thread_context took %s past its deadline: %v %v", took, out, err)
+	}
+}

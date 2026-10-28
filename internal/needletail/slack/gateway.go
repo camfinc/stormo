@@ -784,8 +784,8 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 // in yet (Hermes' cold-start thread context): at most 30, leaving out the messages of skip (the
 // ones the turn carries), each flagged when it is the agent's own, the thread's parent, or from an
 // author allowed_users does not list (unverified). nil when there are none or Slack did not say.
-func (g *Gateway) threadLines(channel, thread string, skip map[string]bool) []messaging.ContextLine {
-	ctx, cancel := context.WithTimeout(g.base, 15*time.Second)
+func (g *Gateway) threadLines(ctx context.Context, channel, thread string, skip map[string]bool) []messaging.ContextLine {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	budget := maxLookups
 	msgs, err := g.o.Web.Replies(ctx, channel, thread, 31)
@@ -795,6 +795,9 @@ func (g *Gateway) threadLines(channel, thread string, skip map[string]bool) []me
 	}
 	var lines []messaging.ContextLine
 	for _, m := range msgs {
+		if ctx.Err() != nil {
+			break // the caller gave up (its lookups would only wait longer)
+		}
 		if skip[m.TS] || strings.TrimSpace(m.Text) == "" {
 			continue
 		}
@@ -968,7 +971,7 @@ func (g *Gateway) batch(session string, jobs []job) {
 		for _, j := range jobs {
 			skip[j.ts] = true
 		}
-		lines, fetched = g.threadLines(first.channel, first.threadTS, skip), true
+		lines, fetched = g.threadLines(g.base, first.channel, first.threadTS, skip), true
 	}
 	// the first message addressed to the agent (an ambient one before it does not count: its
 	// handlers do not get the thread, a Slack call for every message heard)

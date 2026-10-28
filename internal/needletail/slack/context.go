@@ -39,7 +39,7 @@ func (g *Gateway) ThreadContextTool() tools.Tool {
 			}
 			fctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
-			lines := g.threadLines(channel, thread, nil)
+			lines := g.threadLines(fctx, channel, thread, nil)
 			if fctx.Err() != nil {
 				return nil, fctx.Err()
 			}

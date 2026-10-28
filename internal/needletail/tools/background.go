@@ -488,6 +488,11 @@ func runProcess(ctx context.Context, env *Env, raw json.RawMessage) (any, error)
 	if why != "" && !pr.quarantined && (a.Action == "write" || a.Action == "submit" || a.Action == "close") {
 		return nil, messaging.Deferred("input to a process started before quarantine", why)
 	}
+	if why != "" && !pr.quarantined && a.Action == "kill" && !pr.exited() {
+		// a process started before the conversation was marked is trusted work: killing it is a
+		// disruption a person approves
+		return nil, messaging.NeedsApproval("a kill of the process "+pr.id+" (started before this conversation took in untrusted input)", why)
+	}
 	switch a.Action {
 	case "poll":
 		return pr.poll(), nil

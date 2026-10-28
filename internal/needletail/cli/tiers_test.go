@@ -30,7 +30,7 @@ var tierSteps = []tierStep{
 	{"read", "read_file", fixed(map[string]any{"path": "SOUL.md"}), "allow", ""},
 	{"followtext", "follow_up", fixed(map[string]any{"action": "create", "in": "2h", "text": "Reminder: the quote."}), "allow", ""},
 	{"jobrun", sched.CronJobTool, fixed(map[string]any{"action": "run", "job_id": "tablejob001"}), "allow", ""},
-	{"jobpause", sched.CronJobTool, fixed(map[string]any{"action": "pause", "job_id": "tablejob001"}), "allow", ""},
+	{"jobpause", sched.CronJobTool, fixed(map[string]any{"action": "pause", "job_id": "tablejob001"}), "approval", ""}, // a trusted job (item 21)
 	{"proclist", "process_manage", fixed(map[string]any{"action": "list"}), "allow", ""},
 	{"workfile", "write_file", func(conv string) map[string]any {
 		return map[string]any{"path": "work/" + conv + "/draft.md", "content": "a draft"}

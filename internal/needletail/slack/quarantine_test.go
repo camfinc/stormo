@@ -71,7 +71,7 @@ func TestOwnBotThreadContextReadsPersistentMark(t *testing.T) {
 		o.Untrusted = func(session string) bool { return session == SessionID(dev, "1700000100.000100") }
 	})
 	r.fake.Replies[dev+":1700000100.000100"] = []map[string]any{{"user": r.g.id.UserID, "text": "previous marked reply", "ts": "1700000100.000200"}}
-	lines := r.g.threadLines(dev, "1700000100.000100", nil)
+	lines := r.g.threadLines(context.Background(), dev, "1700000100.000100", nil)
 	if len(lines) != 1 || !lines[0].Assistant || !lines[0].Unverified {
 		t.Fatalf("context=%+v", lines)
 	}

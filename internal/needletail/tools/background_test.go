@@ -278,3 +278,20 @@ func TestBackgroundStdinDeadline(t *testing.T) {
 		t.Errorf("after the refused write: %v", m)
 	}
 }
+
+// Item 21 (Claude L4): a tainted run may not kill a process its conversation started before it
+// was marked (a trusted one): that disruption is put to a person; its own processes it may.
+func TestTaintedKillOfATrustedProcessNeedsApproval(t *testing.T) {
+	r, env, _ := bgSetup(t)
+	id, pid := started(t, r, env, `sleep 300`)
+	marked := *env
+	marked.Untrusted = func(context.Context, string) string { return "this conversation has taken in words you may not obey" }
+	m, failed := call(t, r, &marked, "process_manage", map[string]any{"action": "kill", "session_id": id})
+	if !failed || !strings.Contains(fmt.Sprint(m["error"]), "approval") {
+		t.Fatalf("a tainted run killed a trusted process: %v", m)
+	}
+	if m, failed := call(t, r, env, "process_manage", map[string]any{"action": "kill", "session_id": id}); failed || m["status"] != "killed" {
+		t.Fatalf("kill = %v", m)
+	}
+	waitGone(t, pid)
+}
