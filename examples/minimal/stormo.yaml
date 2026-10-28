@@ -1,5 +1,6 @@
-# Example Stormo instance: a made-up organisation (Acme) with two units and three agents. It is the
-# engine's test fixture and the template for a new instance (docs/instances.md). No real ids.
+# Example Stormo instance: a made-up organisation (Acme) with two units and three agents, all on
+# needletail (its image is a local build: docs/instances.md, "Engines"). It is the engine's test
+# fixture and the template for a new instance (docs/instances.md). No real ids.
 name: Acme Swarm
 org: Acme
 slug: acme
@@ -41,3 +42,4 @@ deploy:
 
 core:
   web_ui: false                   # the office and review pages in a browser; the macOS app needs none of it
+  llm_concurrency: 3              # model calls the core's gateway runs at once for the whole fleet (1 to 64)

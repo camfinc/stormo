@@ -104,7 +104,7 @@ func TestCoreLearning(t *testing.T) {
 	if p, err := Load(dir); err != nil || p.CoreLearning.ReviewPrompt != "review/rules.md" || p.CoreLearning.ReviewModel != "gpt-test" {
 		t.Errorf("review prompt: %+v %v", p.CoreLearning, err)
 	}
-	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_accept_min_seen: 0",
+	for i, bad := range []string{"at: \"3:00\"", "at: \"24:00\"", "timezone: Mars/Olympus", "stagger_minutes: -1", "auto_accept_min_seen: 0", "auto_accept_min_confirmations: 0", "auto_accept_min_confirmations: 1001",
 		"review: sometimes", "review: auto\n    auto_accept: true", "review: manual\n    auto_restart: true", "review_connection: nope",
 		"review_prompt: ../outside.md", "review_prompt: /etc/rules.md"} {
 		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", i)), "slug: acme\ncore:\n  learning:\n    "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.learning") {
@@ -115,5 +115,40 @@ func TestCoreLearning(t *testing.T) {
 	ex, err := Load("../../examples/minimal")
 	if err != nil || ex.CoreLearning.At != "" {
 		t.Errorf("the example must not schedule the cycle: %+v %v", ex.CoreLearning, err)
+	}
+}
+
+func TestIndependentConfirmationSetting(t *testing.T) {
+	tmp := t.TempDir()
+	inst, err := Load(mk(t, tmp, "slug: acme\ncore:\n  learning:\n    auto_accept_min_seen: 7\n    auto_accept_min_confirmations: 2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.CoreLearning.AutoAcceptMinSeen != 7 || inst.CoreLearning.AutoAcceptMinConfirmations != 2 {
+		t.Fatalf("settings conflated %+v", inst.CoreLearning)
+	}
+	legacy, err := Load(mk(t, filepath.Join(tmp, "legacy"), "slug: acme\ncore:\n  learning:\n    auto_accept_min_seen: 7\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.CoreLearning.AutoAcceptMinConfirmations != 1 {
+		t.Fatal("legacy sightings reinterpreted as confirmations")
+	}
+}
+
+// core.llm_concurrency is how many model calls the core's gateway runs at once for the whole
+// fleet (0: unset, the gateway's 3), 1 to 64.
+func TestCoreLLMConcurrency(t *testing.T) {
+	tmp := t.TempDir()
+	if i, err := Load(mk(t, filepath.Join(tmp, "unset"), "slug: acme\n")); err != nil || i.CoreLLMConcurrency != 0 {
+		t.Fatalf("unset: %v %v", i, err)
+	}
+	if i, err := Load(mk(t, filepath.Join(tmp, "set"), "slug: acme\ncore:\n  llm_concurrency: 6\n")); err != nil || i.CoreLLMConcurrency != 6 {
+		t.Errorf("set: %v %v", i, err)
+	}
+	for n, bad := range []string{"0", "-1", "65"} {
+		if _, err := Load(mk(t, filepath.Join(tmp, fmt.Sprint("bad", n)), "slug: acme\ncore:\n  llm_concurrency: "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "core.llm_concurrency") {
+			t.Errorf("%s: %v", bad, err)
+		}
 	}
 }

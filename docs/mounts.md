@@ -31,7 +31,20 @@ snapshot rules) and gets the same three.
 - **Containers.** Every container of an agent (local) runs with `no-new-privileges` and without
   `NET_RAW`, `MKNOD`, `SYS_CHROOT`, `SETFCAP`, `AUDIT_WRITE` and `NET_BIND_SERVICE`. The user is
   left to the image, because engine images may boot as root and drop to their runtime user
-  (Hermes: s6, then `hermes`).
+  (Hermes: s6, then `hermes`; needletail lays the home out, runs as the runtime uid and starts
+  what the agent executes as a second uid in the runtime's group, docs/needletail.md §7). A
+  shared layer is reached by that second uid too: through an EFS access point every operation
+  is the access point's POSIX user (`shared.PosixUID`) whoever makes it, and a local layer must
+  be group-writable for the shared uid's group (2775, as the access points create them).
+- **Only the mounts, inside the container too.** The mounts decide what an agent's container can
+  reach; an engine may also confine what the agent executes to them. Needletail does (its jail,
+  docs/needletail.md §7): with Landlock in the kernel, its terminal, scripts and monitors read and
+  write only the home and the two shared layers, read and run the system's programs, read the few
+  `/etc` files tools need and `/proc`, and nothing else (no `/tmp`, no other file of the image,
+  no layer of another unit even if one were mounted); their `TMPDIR` is in the home. Without
+  Landlock (a kernel before 5.13, such as Fargate's today) it says so in its log and its activity
+  (`jail`) and runs unjailed. An engine whose `Layout.ReadOnlyRoot` is set (needletail) also runs
+  on a read-only root filesystem, so only its mounts are writable.
 
 ## Next steps (not built)
 

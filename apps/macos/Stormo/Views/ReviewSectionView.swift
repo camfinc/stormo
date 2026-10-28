@@ -8,21 +8,26 @@ import SwiftUI
 struct ReviewSectionView: View {
     @Environment(AppModel.self) private var model
     @State private var showAll = false
+    @State private var learningMode = false
 
     private var review: ReviewStore { model.review }
+    private var coreReady: Bool { model.core.state.isRunning || model.isLearningPreview }
 
     var body: some View {
         Group {
-            if !model.core.state.isRunning {
+            if !coreReady {
                 ContentUnavailableView("Core stopped", systemImage: "server.rack", description: Text("Start the core to review what the agents learned."))
             } else if let view = review.view {
-                let agents = view.agents.filter { showAll || $0.pending > 0 || $0.unapplied }
+                let agents = view.agents.filter { learningMode || showAll || $0.pending > 0 || $0.unapplied || !($0.notices ?? []).isEmpty }
                 if agents.isEmpty {
                     ContentUnavailableView("Nothing to review", systemImage: "checkmark.circle", description: Text("Proposals appear here after an agent's dream."))
                 } else {
                     Form {
                         Section { ReviewModeNote(view: view) }
-                        ForEach(agents) { AgentReview(agent: $0, showAccepted: showAll) }
+                        ForEach(agents) { agent in
+                            if learningMode { AgentLearningReview(agent: agent) }
+                            else { AgentReview(agent: agent, showAccepted: showAll) }
+                        }
                     }
                     .formStyle(.grouped)
                 }
@@ -40,22 +45,29 @@ struct ReviewSectionView: View {
         }
         .toolbar {
             ToolbarItem {
+                Picker("Review content", selection: $learningMode) {
+                    Text("Proposals").tag(false)
+                    Text("Task outcomes").tag(true)
+                }.pickerStyle(.segmented).frame(width: 240)
+            }
+            ToolbarItem {
                 Toggle("Show All Agents", systemImage: "line.3.horizontal.decrease.circle", isOn: $showAll)
                     .help("Also show agents with nothing pending, and their accepted lessons")
             }
             ToolbarItem {
                 Button("Reload", systemImage: "arrow.clockwise") { Task { await review.load() } }
-                    .disabled(review.loading || !model.core.state.isRunning)
+                    .disabled(review.loading || !coreReady)
             }
         }
-        .task(id: ReloadKey(running: model.core.state.isRunning, root: model.instances.active?.url, pending: model.fleet.summary.toReview)) {
-            if model.core.state.isRunning { await review.load() }
+        .task(id: ReloadKey(running: coreReady, root: model.instances.active?.url, context: review.contextID, pending: model.fleet.summary.toReview)) {
+            if coreReady { await review.load() }
         }
     }
 
     private struct ReloadKey: Equatable {
         let running: Bool
         let root: URL?
+        let context: UUID
         let pending: Int
     }
 }
@@ -70,6 +82,11 @@ private struct AgentReview: View {
     var body: some View {
         Section {
             if agent.unapplied { restartRow }
+            ForEach(agent.notices ?? [], id: \.self) { notice in
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(agent.proposedLessons) { LessonRow(agent: agent.id, lesson: $0) }
             ForEach(agent.skills) { SkillRow(agent: agent.id, skill: $0) }
             if let schedules = agent.schedules { SchedulesRow(agent: agent.id, schedules: schedules) }
@@ -144,6 +161,7 @@ private struct LessonRow: View {
                 }
             }
             .controlSize(.small)
+            LearningEvidenceNote(evidence: lesson.evidence)
             if lesson.status == "proposed" { ReviewNote(ai: lesson.ai, held: lesson.held) }
         }
         .padding(.vertical, 2)
@@ -180,6 +198,7 @@ private struct SkillRow: View {
                     .disabled(!skill.pii.isEmpty || stale || busy)
             }
             .controlSize(.small)
+            LearningEvidenceNote(evidence: skill.evidence)
             ReviewNote(ai: skill.ai, held: skill.held)
             if stale {
                 Label("The agent changed a version of this skill from before the repo's latest edit\(skill.base.map { " (it booted from \($0))" } ?? ""). Red lines below include the repo's newer edits, not only the agent's. Accepting would undo them, so merge what you want by hand, then reject this.", systemImage: "exclamationmark.triangle.fill")
@@ -249,7 +268,7 @@ private struct ReviewModeNote: View {
     }
 
     private var details: String {
-        var parts = ["Rules in code always keep client data, people's profiles, scripts and permission changes for you"]
+        var parts = ["Rules in code always keep client data, people's profiles, scripts and permission changes for you", "the model also reads any outcome evidence the agent's engine recorded"]
         if let c = view.reviewConnection { parts.append("model: \(view.reviewModel ?? "the first \(c) lists")") }
         if let p = view.reviewPrompt { parts.append("your rules: \(p)") }
         if view.autoRestart { parts.append("idle agents restart to apply") }

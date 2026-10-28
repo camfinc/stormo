@@ -21,6 +21,8 @@ if (location.hash) history.replaceState(null, "", location.pathname);
 
 let view = null;
 let busy = false;
+const learningViews = new Map();
+const feedbackOrigins = new Map();
 
 function toast(text, bad = false) {
   const m = $("#msg");
@@ -51,20 +53,21 @@ const ago = (iso) => {
 
 // The review's word on a proposal: why the rules held it for you, or what its model said.
 function reviewTags(x) {
-  if (x.held) return `<span class="tag warn" title="the rules in code hold this for a person">held: ${esc(x.held)}</span>`;
-  if (x.ai && !x.ai.approve) return `<span class="tag warn" title="${esc(x.ai.model)}">review passed it to you: ${esc(x.ai.reason)}</span>`;
+  if (x.held) return `<span class="rv-tag warn" title="the rules in code hold this for a person">held: ${esc(x.held)}</span>`;
+  if (x.ai && !x.ai.approve) return `<span class="rv-tag warn" title="${esc(x.ai.model)}">review passed it to you: ${esc(x.ai.reason)}</span>`;
   return "";
 }
 
 function lessonHTML(a, l) {
   const tags = [
-    `<span class="tag">${esc(l.kind === "user" ? "about a person" : "lesson")}</span>`,
-    `<span class="tag">${esc(l.scope)}</span>`,
-    `<span class="tag">seen ${l.seenCount}×</span>`,
-    `<span class="tag">last ${esc(ago(l.lastSeen))}</span>`,
-    ...l.pii.map((p) => `<span class="tag warn">redacted ${esc(p)}</span>`),
+    `<span class="rv-tag">${esc(l.kind === "user" ? "about a person" : "lesson")}</span>`,
+    `<span class="rv-tag">${esc(l.scope)}</span>`,
+    `<span class="rv-tag">seen ${l.seenCount}×</span>`,
+    `<span class="rv-tag">last ${esc(ago(l.lastSeen))}</span>`,
+    outcomeEvidence(l.evidence),
+    ...l.pii.map((p) => `<span class="rv-tag warn">redacted ${esc(p)}</span>`),
     l.status === "accepted"
-      ? `<span class="tag ok"${l.note ? ` title="${esc(l.note)}"` : ""}>accepted${l.note?.startsWith("approved by") ? " by the review" : l.note?.includes("automatically") ? " automatically" : ""}</span>`
+      ? `<span class="rv-tag ok"${l.note ? ` title="${esc(l.note)}"` : ""}>accepted${l.note?.startsWith("approved by") ? " by the review" : l.note?.includes("automatically") ? " automatically" : ""}</span>`
       : "",
     l.status === "proposed" ? reviewTags(l) : "",
   ].join("");
@@ -77,7 +80,7 @@ function lessonHTML(a, l) {
         ? `${l.scope === "agent" ? `<button class="btn" data-a="${esc(a.id)}" data-l="${esc(l.id)}" data-d="promote" data-s="unit">Share with unit</button>` : ""}
            ${l.scope !== "group" ? `<button class="btn" data-a="${esc(a.id)}" data-l="${esc(l.id)}" data-d="promote" data-s="group">Share with all</button>` : ""}`
         : "";
-  return `<div class="item"><div class="text">${esc(l.text)}</div><div class="acts">${acts}</div><div class="tags">${tags}</div></div>`;
+  return `<div class="item"><div class="text">${esc(l.text)}</div><div class="acts">${acts}</div><div class="rv-tags">${tags}</div></div>`;
 }
 
 function skillHTML(a, s) {
@@ -94,7 +97,7 @@ function skillHTML(a, s) {
       <button class="btn yes" data-a="${esc(a.id)}" data-k="${esc(s.skill)}" data-d="accept">Accept</button>
       <button class="btn no" data-a="${esc(a.id)}" data-k="${esc(s.skill)}" data-d="reject">Reject</button>
     </div>
-    <div class="tags">${s.pii.map((p) => `<span class="tag warn">contains ${esc(p)}</span>`).join("")}<span class="tag">${s.files.length} file${s.files.length === 1 ? "" : "s"}</span>${reviewTags(s)}</div>
+    <div class="rv-tags">${s.pii.map((p) => `<span class="rv-tag warn">contains ${esc(p)}</span>`).join("")}<span class="rv-tag">${s.files.length} file${s.files.length === 1 ? "" : "s"}</span>${outcomeEvidence(s.evidence)}${reviewTags(s)}</div>
     <details class="files"><summary>Show files</summary>${files}</details>
   </div>`;
 }
@@ -113,7 +116,7 @@ function schedulesHTML(a, s) {
       <button class="btn yes" data-a="${esc(a.id)}" data-sch="1" data-d="accept">Accept</button>
       <button class="btn no" data-a="${esc(a.id)}" data-sch="1" data-d="reject">Reject</button>
     </div>
-    <div class="tags">${s.pii.map((p) => `<span class="tag warn">redacted ${esc(p)}</span>`).join("")}${reviewTags(s)}</div>
+    <div class="rv-tags">${s.pii.map((p) => `<span class="rv-tag warn">redacted ${esc(p)}</span>`).join("")}${reviewTags(s)}</div>
     <details class="files"><summary>Show jobs</summary>${jobs}</details>
   </div>`;
 }
@@ -125,7 +128,7 @@ function settingHTML(a, s) {
       <button class="btn yes" data-a="${esc(a.id)}" data-set="${esc(s.key)}" data-d="accept">Accept</button>
       <button class="btn no" data-a="${esc(a.id)}" data-set="${esc(s.key)}" data-d="reject">Reject</button>
     </div>
-    <div class="tags">${s.sensitive ? `<span class="tag warn">widens what the agent may do</span>` : ""}${s.pii.map((p) => `<span class="tag warn">redacted ${esc(p)}</span>`).join("")}${reviewTags(s)}</div>
+    <div class="rv-tags">${s.sensitive ? `<span class="rv-tag warn">widens what the agent may do</span>` : ""}${s.pii.map((p) => `<span class="rv-tag warn">redacted ${esc(p)}</span>`).join("")}${reviewTags(s)}</div>
   </div>`;
 }
 
@@ -138,7 +141,7 @@ function agentHTML(a) {
       ? `<button class="btn go" data-restart="${esc(a.id)}"${a.busy ? ' title="it is busy now; restarting interrupts its work"' : ""}>Restart to apply${a.busy ? " (busy)" : ""}</button>`
       : `<span class="note">applies when it next starts</span>`
     : "";
-  return `<section class="agent" aria-labelledby="h-${esc(a.id)}">
+  return `<section class="rv-agent" aria-labelledby="h-${esc(a.id)}">
     <header>
       <h2 id="h-${esc(a.id)}">${esc(a.name)}</h2>
       <span class="meta">${esc(a.unit)} · ${esc(a.state)}${a.busy ? " · busy" : ""}${view.review === "auto" && !a.autoReview ? " · no automatic review" : ""}</span>
@@ -146,11 +149,13 @@ function agentHTML(a) {
       <span class="pill"><b>${pending}</b> to review</span>
       ${restart}
     </header>
+    ${(a.notices ?? []).map((n) => `<p class="empty notice-warn" role="status">${esc(n)}</p>`).join("")}
     ${pending === 0 && accepted.length === 0 ? `<p class="empty">Nothing proposed yet. Proposals appear after a learning cycle (swarm core learn ${esc(a.id)}).</p>` : ""}
     ${proposed.length ? `<div class="sec"><h3>Proposed lessons</h3>${proposed.map((l) => lessonHTML(a, l)).join("")}</div>` : ""}
     ${a.skills.length ? `<div class="sec"><h3>Skill proposals</h3>${a.skills.map((s) => skillHTML(a, s)).join("")}</div>` : ""}
     ${a.schedules ? `<div class="sec"><h3>Schedules changed at runtime</h3>${schedulesHTML(a, a.schedules)}</div>` : ""}
     ${a.settings.length ? `<div class="sec"><h3>Settings changed at runtime</h3>${a.settings.map((s) => settingHTML(a, s)).join("")}</div>` : ""}
+    ${learningHTML(a)}
     ${accepted.length ? `<details class="sec"><summary><h3 style="display:inline">Accepted lessons (${accepted.length})</h3></summary>${accepted.map((l) => lessonHTML(a, l)).join("")}</details>` : ""}
   </section>`;
 }
@@ -180,6 +185,7 @@ async function load() {
   try {
     view = await api("GET", "/api/review");
     render();
+    restoreLearningPanels();
   } catch (e) {
     app.innerHTML = `<div class="gate"><h1>Review</h1><p>${esc(e.message)}</p></div>`;
   }
@@ -188,6 +194,9 @@ async function load() {
 app.addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
   if (!b || busy) return;
+  if (b.dataset.learningRefresh) return loadLearning(b.dataset.learningRefresh);
+  if (b.dataset.exportCandidate) return exportCandidate(b);
+  if (b.closest(".learning")) return;
   if (b.id === "reload") return load();
   busy = true;
   b.disabled = true;
@@ -219,4 +228,202 @@ app.addEventListener("click", async (ev) => {
 });
 
 load();
-setInterval(() => !busy && document.visibilityState === "visible" && load(), 30000);
+setInterval(() => !busy && !document.querySelector(".learning[open]") && document.visibilityState === "visible" && load(), 30000);
+
+function learningHTML(a) {
+  return `<details class="sec learning" data-learning-agent="${esc(a.id)}"><summary>Task outcomes and reflection</summary><div class="learning-body"><p class="notice">Open to review outcomes and proposed procedures for a conversation.</p></div></details>`;
+}
+
+function learningPath(id, session = "") {
+  return `/api/agents/${encodeURIComponent(id)}/learning${session ? `?session=${encodeURIComponent(session)}` : ""}`;
+}
+
+function learningPanel(id) {
+  return [...app.querySelectorAll("[data-learning-agent]")].find((p) => p.dataset.learningAgent === id);
+}
+
+// What the agent's runtime recorded about this exact version, when it recorded anything (an engine
+// that records no outcomes shows nothing). The review's model reads the same counts; they decide nothing.
+function outcomeEvidence(e) {
+  if (!e?.evidenceTypes?.length) return "";
+  const negative = (e.failures ?? 0) > 0 || (e.corrections ?? 0) > 0;
+  return `<span class="rv-tag${negative ? " warn" : ""}" title="${esc(e.evidenceTypes.join(", "))}">${esc(e.confirmations ?? 0)} verified confirmations · ${esc(e.failures ?? 0)} failures · ${esc(e.corrections ?? 0)} corrections</span>`;
+}
+
+function eventHTML(id, e, status) {
+  const canFeedback = status.feedbackAllowed === true && ["runtime", "view"].includes(e.sourceType);
+  const subject = `${e.subjectKind} ${String(e.subjectId).slice(0, 12)}`;
+  return `<div class="item"><div class="text"><b>${esc(subject)}</b> <span class="note">${esc(ago(e.at))}</span></div>
+    <div class="rv-tags"><span class="rv-tag">${esc(e.sourceType)}</span><span class="rv-tag">execution ${esc(e.executionStatus)}</span><span class="rv-tag${e.taskOutcome === "failed" || e.taskOutcome === "corrected" ? " warn" : ""}">task ${esc(e.taskOutcome)}</span><span class="rv-tag">${esc(e.audience === "agent" ? "agent-wide" : "conversation audience")}</span></div>
+    ${canFeedback ? `<details class="outcome-form"><summary>Record a checked outcome</summary><form data-feedback-agent="${esc(id)}" data-event-id="${esc(e.eventId)}">
+      <label>Task result<select name="outcome" required><option value="">Choose a result…</option><option value="succeeded">Succeeded — the task check passed</option><option value="failed">Failed — the task check failed</option><option value="corrected">Corrected — the claim or procedure changed</option></select></label>
+      <label>Checked result or correction <span class="note">Optional. Up to 1,000 characters and 2,000 UTF-8 bytes. Include only information this conversation may use.</span><textarea name="summary" maxlength="1000"></textarea></label>
+      <button class="btn" type="submit">Save outcome</button><p class="note">A successful command alone does not confirm task success. Saving feedback may create a reflection proposal when reflection is enabled.</p>
+    </form></details>` : ""}</div>`;
+}
+
+function candidateHTML(id, c, status) {
+  const exported = (status.exportedIds ?? []).includes(c.id);
+  const publicCandidate = c.audience === "agent" && ["public", "procedural"].includes(c.sensitivity);
+  const allowed = status.exportAllowed === true && publicCandidate && !exported;
+  return `<div class="item"><div class="text">${esc(c.text)}</div><div class="acts"><button class="btn" data-export-candidate="${esc(c.id)}" data-learning-id="${esc(id)}" ${allowed ? "" : "disabled"}>${exported ? "Sent for review" : "Send for review"}</button></div>
+    <div class="rv-tags"><span class="rv-tag">${esc(c.action)} proposal</span><span class="rv-tag">${esc(c.audience === "agent" ? "agent-wide" : "private audience")}</span><span class="rv-tag">review by ${esc(c.reviewDate)}</span></div>
+    <div class="outcome-form"><p class="detail-copy"><b>Applies:</b> ${esc(c.conditions)}</p>${c.exceptions ? `<p class="detail-copy"><b>Exceptions:</b> ${esc(c.exceptions)}</p>` : ""}<p class="detail-copy"><b>Supporting checks:</b> ${esc(c.checks)}</p>${c.previousMistake ? `<p class="detail-copy"><b>Correction:</b> ${esc(c.previousMistake)}</p>` : ""}<p class="note">${exported ? "Pending the learning cycle and review. This procedure is not active knowledge." : !publicCandidate ? "Private or sensitive proposals stay in this conversation and cannot be sent for shared review." : "Sending selects this procedure for the next learning cycle and review. It does not activate it or change a live skill."}</p></div></div>`;
+}
+
+function renderLearning(id) {
+  const panel = learningPanel(id), state = learningViews.get(id);
+  if (!panel || !state) return;
+  panel.open = state.open;
+  const body = panel.querySelector(".learning-body");
+  body.setAttribute("aria-busy", String(state.loading || state.mutating));
+  const envelope = state.envelope ?? {}, data = envelope.data, status = { ...(data?.status ?? {}), ...(state.loading || state.mutating ? { feedbackAllowed: false, exportAllowed: false } : {}) };
+  const sessions = envelope.sessions ?? [];
+  const options = sessions.map((s) => `<option value="${esc(s.id)}"${s.id === state.session ? " selected" : ""}>${esc(s.title || s.preview || s.id)}${s.source ? ` · ${esc(s.source)}` : ""}</option>`).join("");
+  const controls = `<div class="learning-controls"><label>Conversation<select data-learning-session="${esc(id)}" ${state.loading || state.mutating || !sessions.length ? "disabled" : ""}><option value="">Choose a conversation…</option>${options}</select></label><button class="btn" data-learning-refresh="${esc(id)}" ${state.loading || state.mutating ? "disabled" : ""}>${state.loading ? "Loading…" : "Refresh outcomes"}</button></div>`;
+  const notice = state.error ? `<p class="notice error" role="alert">${esc(state.error)} Refresh outcomes to try again.</p>` : envelope.state && envelope.state !== "ready" ? `<p class="notice" role="status">${esc(envelope.message || "Learning review is unavailable for this agent.")}</p>` : "";
+  body.innerHTML = `<p class="note">Review checked task outcomes and reflection proposals. Proposals remain pending until the learning cycle and review accept them.</p>${controls}${notice}
+    ${data ? `<div class="bar"><span class="pill">Reflection <b>${status.reflectionEnabled ? "enabled" : "disabled"}</b></span><span class="pill">Calls <b>${esc(status.callsUsed ?? 0)} / ${esc(status.callsLimit ?? 100)}</b></span><span class="pill">Events ${esc(status.eventsUsed ?? 0)} / ${esc(status.eventsLimit ?? 4096)}</span><span class="pill">Candidates ${esc(status.candidatesUsed ?? 0)} / ${esc(status.candidatesLimit ?? 100)}</span><span class="pill">Exports ${esc(status.exportsUsed ?? 0)} / ${esc(status.exportsLimit ?? 100)}</span></div>
+      ${backgroundLearningHTML(id, data.background, state.loading || state.mutating)}${skillLearningHTML(id, data.skills, state.loading || state.mutating)}${!status.reflectionEnabled ? `<p class="note">Outcome feedback is still recorded. Legacy reflection is disabled; background generation has its own setting.</p>` : ""}${status.feedbackAllowed === false ? `<p class="notice">Feedback is unavailable for this conversation. Existing outcomes and proposals remain readable.</p>` : ""}
+      <h4>Observed outcomes (${(data.events ?? []).length})</h4>${(data.events ?? []).length ? data.events.map((e) => eventHTML(id, e, status)).join("") : `<p class="notice">No attributed outcomes in this conversation yet. Views and command exits alone do not establish task success.</p>`}
+      <h4>Reflection proposals (${(data.candidates ?? []).length})</h4>${(data.candidates ?? []).length ? data.candidates.map((c) => candidateHTML(id, c, status)).join("") : `<p class="notice">No reflection proposals for this conversation. A routine turn may produce none.</p>`}` : !state.loading && !state.error && envelope.state === "ready" ? `<p class="notice">${sessions.length ? "Choose a conversation to see its outcomes and proposals." : "No conversations available for this agent yet."}</p>` : ""}`;
+}
+
+async function loadLearning(id, session) {
+  const state = learningViews.get(id) ?? { open: true, session: "", envelope: null };
+  if (state.loading || state.mutating || busy) return;
+  if (session !== undefined && session !== state.session) {
+    state.session = session;
+    if (state.envelope) state.envelope = { ...state.envelope, data: undefined };
+  }
+  state.loading = true;
+  state.error = "";
+  learningViews.set(id, state);
+  renderLearning(id);
+  try { state.envelope = await api("GET", learningPath(id, state.session)); }
+  catch (e) { state.error = e.message; }
+  finally { state.loading = false; renderLearning(id); }
+}
+
+function restoreLearningPanels() {
+  for (const [id] of learningViews) renderLearning(id);
+}
+
+app.addEventListener("toggle", (ev) => {
+  const panel = ev.target;
+  if (!panel.matches?.("[data-learning-agent]")) return;
+  const id = panel.dataset.learningAgent;
+  const state = learningViews.get(id);
+  if (state) state.open = panel.open;
+  else if (panel.open) loadLearning(id);
+}, true);
+
+app.addEventListener("change", (ev) => {
+  if (ev.target.dataset.learningSession) loadLearning(ev.target.dataset.learningSession, ev.target.value);
+});
+
+app.addEventListener("submit", async (ev) => {
+  const form = ev.target.closest("[data-feedback-agent]");
+  if (!form) return;
+  ev.preventDefault();
+  if (busy || !form.reportValidity()) return;
+  const id = form.dataset.feedbackAgent, state = learningViews.get(id);
+  if (state.loading || state.mutating) return;
+  const session = state.session;
+  const outcome = form.elements.outcome.value;
+  const key = `${id}:${state.session}:${form.dataset.eventId}:${outcome}`;
+  if (!feedbackOrigins.has(key)) feedbackOrigins.set(key, Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join(""));
+  const payload = { eventId: form.dataset.eventId, outcome, origin: feedbackOrigins.get(key), summary: form.elements.summary.value };
+  if (new TextEncoder().encode(payload.summary).length > 2000) return toast("The result summary exceeds 2,000 UTF-8 bytes. Shorten it and save again.", true);
+  if (new TextEncoder().encode(JSON.stringify(payload)).length > 4096) return toast("The result summary is too long. Shorten it and save again.", true);
+  busy = true;
+  state.mutating = true;
+  lockLearningControls(id, true);
+  const button = form.querySelector("button");
+  button.disabled = true; button.textContent = "Saving…";
+  try {
+    state.envelope = await api("POST", learningPath(id, session), payload);
+    if (state.envelope.state !== "ready") throw new Error(state.envelope.message || "Outcome could not be saved.");
+    renderLearning(id);
+    const operation = state.envelope.data?.operation;
+    toast(operation?.ok === false ? operation.message || "Feedback was saved, but reflection could not finish. Review the recorded outcome before trying again." : "Outcome saved. Any reflection proposal still needs review.", operation?.ok === false);
+  } catch (e) { toast(e.message, true); button.disabled = false; button.textContent = "Save outcome"; }
+  finally { busy = false; state.mutating = false; renderLearning(id); }
+});
+
+async function exportCandidate(button) {
+  const id = button.dataset.learningId, state = learningViews.get(id);
+  if (state.loading || state.mutating) return;
+  const session = state.session;
+  busy = true; state.mutating = true; lockLearningControls(id, true);
+  button.disabled = true; button.textContent = "Sending…";
+  try {
+    state.envelope = await api("POST", learningPath(id, session), { exportId: button.dataset.exportCandidate });
+    if (state.envelope.state !== "ready") throw new Error(state.envelope.message || "Proposal could not be sent.");
+    renderLearning(id);
+    const operation = state.envelope.data?.operation;
+    toast(operation?.ok === false ? operation.message || "Proposal could not be sent. Refresh to check its status." : "Selected for the next learning cycle and review. It is not active yet.", operation?.ok === false);
+  } catch (e) { toast(e.message, true); button.disabled = false; button.textContent = "Send for review"; }
+  finally { busy = false; state.mutating = false; renderLearning(id); }
+}
+
+// Keep the selected conversation fixed while its outcome/export mutation is in flight.
+function lockLearningControls(id, locked) {
+  const panel = learningPanel(id);
+  panel?.querySelectorAll("select, textarea, button").forEach((control) => { control.disabled = locked; });
+  panel?.querySelector(".learning-body").setAttribute("aria-busy", String(locked));
+}
+
+
+function learningAction(id, action, label, target = "", revision = "", disabled = false) {
+  return `<button class="btn" data-learning-action="${esc(action)}" data-learning-id="${esc(id)}" data-target-id="${esc(target)}" data-revision="${esc(revision)}" ${disabled ? "disabled" : ""}>${esc(label)}</button>`;
+}
+
+function backgroundLearningHTML(id, background, locked) {
+  if (!background) return "";
+  return `<h4>Background jobs · ${background.enabled ? "enabled" : "disabled"}</h4>
+    <p class="note">Home budget, rolling 24 hours: ${esc(background.callsUsed)} / ${esc(background.callsLimit)} calls · ${esc(background.tokensReserved)} / ${esc(background.tokensLimit)} reserved output tokens.</p>
+    <p class="note">Conversation jobs: ${esc(background.pending)} pending · ${esc(background.completed)} complete · ${esc(background.failed)} failed · ${esc(background.interrupted)} interrupted. Candidates are scoped to this conversation and remain proposals.</p>
+    ${(background.jobs ?? []).map((job) => `<div class="item"><div class="text"><b>${esc(job.kind)} · ${esc(job.state)}</b><p class="note">${esc(job.id)} · attempts ${esc(job.attempts)} · owner retries ${esc(job.ownerRetries)} · ${esc(job.resultCode)}</p></div><div class="acts">${["pending", "reserved"].includes(job.state) ? learningAction(id, "cancel_job", "Cancel job", job.id, "", locked) : ""}${["failed", "interrupted", "cancelled"].includes(job.state) ? learningAction(id, "retry_job", "Retry job…", job.id, "", locked) : ""}</div></div>`).join("")}
+    ${learningAction(id, "prune_jobs", "Prune terminal job details", "", "", locked)}
+    <h4>Background proposals (${(background.candidates ?? []).length})</h4>${(background.candidates ?? []).map((candidate) => `<div class="item"><div class="text">${esc(candidate.text)}<p class="note">Proposal only · ${esc(candidate.audience)} · checks: ${esc(candidate.checks)}</p><p class="note">Applies: ${esc(candidate.conditions)}${candidate.exceptions ? ` · Exceptions: ${esc(candidate.exceptions)}` : ""}</p></div></div>`).join("") || `<p class="notice">No background proposals for this conversation.</p>`}`;
+}
+
+function skillLearningHTML(id, skills, locked) {
+  if (!skills) return "";
+  return `<h4>Skill proposals and maintenance</h4><p class="note">Review the exact replacement before approval. Approval activates a local executable skill; repository promotion is separate.</p>
+    ${(skills.patches ?? []).map((patch) => `<div class="item"><div class="text"><b>${esc(patch.name)} · ${esc(patch.status)}</b><p class="note">Audience: ${esc(patch.audience)} · base: ${esc(patch.expectedRevision)} · current: ${esc(patch.currentRevision)}</p>${patch.reason ? `<p class="note">${esc(patch.reason)}</p>` : ""}${patch.checks ? `<p class="note"><b>Checks:</b> ${esc(patch.checks)}</p>` : ""}${patch.conditions ? `<p class="note"><b>Applies:</b> ${esc(patch.conditions)}</p>` : ""}${patch.evidenceRefs?.length ? `<details><summary>Evidence references</summary><pre>${esc(patch.evidenceRefs.join("\n"))}</pre></details>` : ""}</div><div class="acts">${patch.canApprove ? learningAction(id, "approve_patch", "Approve…", patch.id, patch.expectedRevision, locked) : ""}${["proposed", "pending"].includes(patch.status) ? learningAction(id, "reject_patch", "Reject", patch.id, "", locked) : ""}${patch.canRollback ? learningAction(id, "rollback_patch", "Roll back…", patch.id, patch.currentRevision, locked) : ""}</div><details class="learning-preview"><summary>Replacement preview</summary><b>Before</b><pre>${esc(patch.before)}</pre><b>After</b><pre>${esc(patch.after)}</pre></details></div>`).join("") || `<p class="notice">No skill patches to review.</p>`}
+    <p class="note">Maintenance ${skills.maintenanceEnabled ? "enabled" : "disabled"} · last scan: ${esc(skills.lastScanAt || "never")}</p>${learningAction(id, "scan_maintenance", "Scan maintenance", "", "", locked)}
+    ${(skills.maintenance ?? []).map((item) => `<div class="item"><div class="text"><b>${esc(item.name)} · ${esc(item.action)}</b><p class="note">${esc(item.reason)}</p></div><div class="acts">${item.action === "archive_review" ? learningAction(id, "archive_skill", "Archive…", item.name, item.revision, locked) : ""}</div></div>`).join("")}
+    <h4>Archived skills</h4>${(skills.archives ?? []).map((item) => `<div class="item"><div class="text">${esc(item.name)} · ${esc(item.status)}</div><div class="acts">${item.status === "archived" ? learningAction(id, "restore_skill", "Restore", item.id, "", locked) : ""}</div></div>`).join("") || `<p class="notice">No archived skills.</p>`}`;
+}
+
+app.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-learning-action]");
+  if (!button || busy) return;
+  const id = button.dataset.learningId, state = learningViews.get(id);
+  if (!state || state.loading || state.mutating) return;
+  const action = button.dataset.learningAction;
+  const confirmations = {
+    approve_patch: "Activate the previewed skill replacement? The base revision must still match.",
+    rollback_patch: "Restore the skill's previous revision? The current revision must still match.",
+    archive_skill: "Archive this skill? It will no longer be active. You can restore it from archives.",
+    retry_job: "Retry this job? This may spend another model call and reserved output tokens from the home budget."
+  };
+  if (confirmations[action] && !window.confirm(confirmations[action])) return;
+  const payload = { action };
+  if (button.dataset.targetId) payload.id = button.dataset.targetId;
+  if (button.dataset.revision) payload.expectedRevision = button.dataset.revision;
+  const session = state.session;
+  busy = true; state.mutating = true; state.error = "";
+  lockLearningControls(id, true);
+  try {
+    const result = await api("POST", learningPath(id, session), payload);
+    if (result.state !== "ready") throw new Error(result.message || "The learning action could not finish.");
+    state.envelope = result;
+    const operation = result.data?.operation;
+    if (operation?.ok === false) throw new Error(operation.message || "The action was refused. Refresh to review the current revision.");
+    toast(operation?.message || "Learning review updated.");
+  } catch (error) { state.error = error.message; toast(error.message, true); }
+  finally { busy = false; state.mutating = false; renderLearning(id); }
+});

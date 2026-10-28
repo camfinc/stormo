@@ -7,6 +7,7 @@ import Observation
 public final class ReviewStore {
     public private(set) var view: ReviewView?
     public private(set) var loading = false
+    private var loadContext: UUID?
     /// The last failure, in the core's words when it gave some.
     public var problem: String?
     /// Decisions on their way to the core, by `ReviewDecision.key`.
@@ -14,9 +15,18 @@ public final class ReviewStore {
     /// Agents restarting now.
     public private(set) var restarting: Set<String> = []
 
-    public var client: CoreClient
+    public private(set) var contextID = UUID()
+    public private(set) var learningViews: [String: LearningReviewView] = [:]
+    public private(set) var learningLoading: Set<String> = []
+    public private(set) var learningPending: Set<String> = []
+    public private(set) var learningProblems: [String: String] = [:]
+    public private(set) var learningSessions: [String: String] = [:]
+
+    public var client: CoreClient {
+        didSet { if client.base != oldValue.base || client.token != oldValue.token { clearLearning(); view = nil; problem = nil } }
+    }
     public var instanceRoot: URL? {
-        didSet { if instanceRoot != oldValue { view = nil; problem = nil } }
+        didSet { if instanceRoot != oldValue { view = nil; problem = nil; clearLearning() } }
     }
 
     public init(client: CoreClient, instanceRoot: URL?) {
@@ -35,14 +45,18 @@ public final class ReviewStore {
     }
 
     public func load() async {
-        guard let owner = token() else { return }
+        let context = contextID
+        guard let owner = token(), loadContext != context else { return }
+        loadContext = context
         loading = true
-        defer { loading = false }
+        defer { if loadContext == context { loading = false; loadContext = nil } }
         do {
-            view = try await client.review(owner: owner)
+            let result = try await client.review(owner: owner)
+            guard contextID == context else { return }
+            view = result
             problem = nil
         } catch {
-            problem = Self.describe(error)
+            if contextID == context { problem = Self.describe(error) }
         }
     }
 
@@ -72,7 +86,43 @@ public final class ReviewStore {
         await load()
     }
 
+    public func loadLearning(agent: String, session: String? = nil) async {
+        guard let owner = token(), !learningLoading.contains(agent), !learningPending.contains(agent) else { return }
+        let root = instanceRoot, base = client.base, generation = contextID
+        learningLoading.insert(agent)
+        defer { if generation == contextID { learningLoading.remove(agent) } }
+        do {
+            let result = try await client.with(timeout: 40).learning(agent: agent, session: session, owner: owner)
+            guard root == instanceRoot, base == client.base, generation == contextID else { return }
+            learningViews[agent] = result
+            learningSessions[agent] = session
+            learningProblems[agent] = nil
+        } catch { if root == instanceRoot, base == client.base, generation == contextID { learningProblems[agent] = Self.describe(error) } }
+    }
+
+    public func sendLearning(_ feedback: LearningFeedback, agent: String, session: String) async -> Bool {
+        guard let owner = token(), !learningPending.contains(agent), !learningLoading.contains(agent) else { return false }
+        let root = instanceRoot, base = client.base, generation = contextID
+        learningPending.insert(agent)
+        defer { if generation == contextID { learningPending.remove(agent) } }
+        do {
+            let result = try await client.with(timeout: 40).learning(feedback, agent: agent, session: session, owner: owner)
+            guard root == instanceRoot, base == client.base, generation == contextID else { return false }
+            learningViews[agent] = result
+            learningProblems[agent] = nil
+            return result.state == "ready" && (result.data?.operation?.ok != false || result.data?.operation?.feedbackSaved == true)
+        } catch {
+            if root == instanceRoot, base == client.base, generation == contextID { learningProblems[agent] = Self.describe(error) }
+            return false
+        }
+    }
+
+    private func clearLearning() {
+        contextID = UUID(); loading = false; loadContext = nil; learningViews = [:]; learningProblems = [:]; learningSessions = [:]; learningLoading = []; learningPending = []
+    }
+
     public func clear() {
+        clearLearning()
         view = nil
         problem = nil
     }

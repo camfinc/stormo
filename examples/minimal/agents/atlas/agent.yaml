@@ -1,4 +1,5 @@
-# Atlas: deals & operations for Acme Sales. Exercises every manifest feature the engine supports.
+# Atlas: deals & operations for Acme Sales. Exercises every manifest feature needletail supports;
+# what only needletail reads is in engine/needletail/config.yaml.
 format: 1
 id: atlas
 name: Atlas
@@ -9,9 +10,9 @@ persona:
   path: personas/atlas
 
 engine:
-  kind: hermes
-  version: 0.21.5
-  image_tag: v2026.9.24
+  kind: needletail
+  version: 0.1.0-dev.2084e89
+  image_tag: dev-2084e89     # a local build of deploy/needletail/Dockerfile (docs/instances.md)
 
 model:
   name: openai/gpt-6-luna    # the cloud model
@@ -23,12 +24,8 @@ model:
 channels:
   - kind: slack
     allow_bots: mentions
-    slash_commands: true
     allowed_users: [U0000000001]
     home_channel: C0000000001
-  # Telegram runs only when TELEGRAM_BOT_TOKEN has a value (optional_secrets below).
-  - kind: telegram
-    # allowed_users: [123456789]
 
 secrets:
   - APIFY_API_TOKEN
@@ -49,7 +46,6 @@ optional_secrets:
       - crm/hourly_deal_monitor
     actions:
       - sales.crm.deals.list
-  - name: TELEGRAM_BOT_TOKEN
 
 actions:
   - sales.crm.deals.list

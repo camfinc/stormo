@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 func TestBotNameIsASCII(t *testing.T) {
@@ -37,15 +39,9 @@ func TestSlashPolicyKeepsOrderAndStripsNonOwners(t *testing.T) {
 }
 
 func TestManifestUsesTheEngineGenerator(t *testing.T) {
-	src, err := instance.Load("../../examples/minimal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Work on a copy so dist/ never lands in the example.
-	dir := t.TempDir()
-	if err := os.CopyFS(dir, os.DirFS(src.Root)); err != nil {
-		t.Fatal(err)
-	}
+	// Hermes drafts the app manifest; atlas (on Hermes) owns the slash commands. A temporary
+	// copy, so dist/ never lands in the example.
+	dir := hermestest.Instance(t)
 	inst, err := instance.Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -79,5 +75,45 @@ func TestManifestUsesTheEngineGenerator(t *testing.T) {
 	}
 	if _, err := Manifest(inst, "scout", false, func([]string) (string, string, int) { return "", "no image", 1 }); err == nil || !strings.Contains(err.Error(), "no image") {
 		t.Fatal(err)
+	}
+}
+
+// renderer is an engine that renders its Slack app manifest in process (manifestRenderer).
+type renderer struct{ asked *[]string }
+
+func (renderer) Kind() string { return "fake" }
+func (r renderer) SlackManifest(a *manifest.Agent, name, description string) ([]byte, error) {
+	*r.asked = append(*r.asked, a.ID+"|"+name)
+	return []byte(`{"features":{"bot_user":{"display_name":"` + name + `"},"slash_commands":[{"command":"/new"}]},"oauth_config":{"scopes":{"bot":["chat:write","commands"]}}}`), nil
+}
+
+// An engine that renders its manifest in process is asked before any image runs; the slash policy
+// still applies (atlas owns the commands; scout's app ships without them or the commands scope).
+func TestManifestRenderedInProcess(t *testing.T) {
+	dir := hermestest.Instance(t)
+	inst, err := instance.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := []string{}
+	ran := false
+	run := func([]string) (string, string, int) { ran = true; return "", "", 1 }
+	for _, id := range []string{"atlas", "scout"} {
+		a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := manifestFor(inst, a, renderer{&asked}, false, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := os.ReadFile(r.Path)
+		owner := strings.Contains(string(body), "slash_commands") && strings.Contains(string(body), `"commands"`)
+		if owner != (id == "atlas") {
+			t.Fatalf("%s: commands kept %v:\n%s", id, owner, body)
+		}
+	}
+	if ran || len(asked) != 2 {
+		t.Fatalf("ran an image %v; asked %v", ran, asked)
 	}
 }

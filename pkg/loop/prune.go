@@ -57,8 +57,8 @@ func Prune(inst *instance.Instance, agent string, s Store, keep int) (*PruneRepo
 		keepSet[ids[i]] = true
 	}
 	for _, id := range ids {
-		if keepSet[id] || w.LastNap == nil || id > *w.LastNap {
-			continue // kept, or the dream has not read it
+		if mark := w.evidenceMark(); keepSet[id] || w.LastNap == nil || id > *w.LastNap || mark == nil || id > *mark {
+			continue // kept, or the dream has not read it (or not merged its evidence)
 		}
 		if err := s.Delete(NapKey(agent, id)); err != nil {
 			return rep, err

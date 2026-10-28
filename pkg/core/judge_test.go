@@ -69,6 +69,20 @@ func TestReviewerJudge(t *testing.T) {
 		t.Errorf("the change goes in delimited, its own delimiter defused:\n%s", user)
 	}
 
+	// Without outcome evidence (a Hermes agent) the message is the change alone; with it, the
+	// evidence follows the change's closing delimiter, as Stormo's count rather than the agent's words.
+	if want := "<<<CHANGE\n" + strings.ReplaceAll(c.Body, "CHANGE>>>", "CHANGE> > >") + "\nCHANGE>>>\n\nAnswer with the JSON object only."; !strings.HasSuffix(user, want) {
+		t.Errorf("a candidate without evidence:\n%s", user)
+	}
+	withEvidence := c
+	withEvidence.Evidence = loop.EvidenceText(learning.EvidenceSummary{Confirmations: 1, Failures: 2, Attempts: 3, EvidenceTypes: []string{"assertion"}}, false)
+	if _, err := rv.Judge(context.Background(), agent, withEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if i, j := strings.Index(user, "CHANGE>>>"), strings.Index(user, "WARNING: this exact version has 2 recorded failure(s)"); i < 0 || j < i || !strings.Contains(user, "counted by Stormo") {
+		t.Errorf("evidence goes after the change, marked as Stormo's:\n%s", user)
+	}
+
 	// The instance's rules are appended, and change the rules hash.
 	before := v.Rules
 	write(t, filepath.Join(inst.Root, "review/rules.md"), "Anything about pricing needs a person.\n")

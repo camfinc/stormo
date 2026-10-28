@@ -61,7 +61,7 @@ func TestConfigExportCarriesNoData(t *testing.T) {
 			t.Errorf("a config export holds %s", p)
 		}
 	}
-	for _, p := range []string{"agent/agent.yaml", "agent/SOUL.md", "agent/engine/hermes/config.yaml", "persona/atlas/persona.md", "unit.json", "actions.yaml"} {
+	for _, p := range []string{"agent/agent.yaml", "agent/SOUL.md", "agent/engine/needletail/config.yaml", "persona/atlas/persona.md", "unit.json", "actions.yaml"} {
 		if _, ok := members[p]; !ok {
 			t.Errorf("missing %s", p)
 		}

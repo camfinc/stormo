@@ -1,9 +1,9 @@
 # Stormo architecture
 
 Stormo is an agent swarm engine. It takes an **instance** (one organisation's agent definitions:
-[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes today,
-swappable), deploys it to AWS ECS, tests it on a bench, and folds what the running agents learn
-back into git through a reviewed nap/dream loop.
+[docs/instances.md](docs/instances.md)), compiles each agent for an engine (Hermes or needletail,
+chosen per agent), deploys it to AWS ECS, tests it on a bench, and folds what the running agents
+learn back into git through a reviewed nap/dream loop.
 
 Engine and instance are separate repos. The engine (this repo) holds no organisation: names,
 AWS target, scrub rules, bridge actions and branding come from the instance's `stormo.yaml`, and
@@ -74,6 +74,27 @@ baseline home from the manifest, its container image/command/env/health check, i
 nap/dream machinery, the deployer and the bench only talk to that interface. Adding an engine is a
 new module plus one registry line; agents switch by changing `engine.kind` and porting their
 engine-specific files (`hermes/` today).
+
+An engine may also implement optional learning interfaces (`pkg/engine`); engine-neutral code
+asserts them and does nothing when they are absent (Hermes implements none, so its naps, dreams,
+review and homes are as before them):
+- `OutcomeEvidence` (`OutcomePath()`): a home file, classified Learning, holding the runtime's
+  metadata-only outcome export (`learning.EvidenceStore` version 1, agent-audience events with
+  opaque ids). The dream merges it into `learnings/evidence-v1.json` (below).
+- `LearningProposals` (`LearningProposalsPath()`): a home file, classified Learning, holding the
+  reflection proposals an owner explicitly exported (version 1, at most 100 agent-wide procedures
+  of at most 2,000 characters). The dream scrubs each and upserts it into the ledger as a proposed
+  memory; private candidates never reach this file.
+- `PrivateLearningState` (`PrivateLearningPaths()`) and `PrivateLearningTrees`
+  (`PrivateLearningDirectories()`): runtime-owned private files and directory trees. Rehydrate
+  restores those files as 0600 and tree directories as 0700; their snapshot class stays Raw. Of the
+  two Learning exports above, the proposals export is restored too (0600, so a selection survives a
+  restart) and the outcome export is not (the runtime rebuilds it from its private store). Needletail
+  uses this for review receipts and reversible skill archives. Archive mode manifests belong to
+  the runtime and restore executable permissions only when the owner explicitly restores a skill.
+- `LearningRuntime` (on `engine.Runtime`: `LearningKeyName()`, `LearningPath(session)`): the
+  runtime's owner learning API, which only the core calls (`/api/agents/<id>/learning`, docs/api.md)
+  with a dedicated credential it resolves itself, distinct from the conversation key.
 
 ### Hermes specifics
 
@@ -212,8 +233,8 @@ the actions and channels, and the agent starts anyway; `secrets check` reports t
 of `secrets.local.yaml`** (what `secrets push` sends). `deploy render` lists only present optional
 secrets in the task definition, since a `valueFrom` pointing at a missing JSON key fails the task at
 start. So adding an optional secret on AWS later means `secrets push`, then rebuild and redeploy.
-The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action) and
-`TELEGRAM_BOT_TOKEN` (its Telegram channel).
+The example's Atlas: `CRM_API_TOKEN` (its CRM skills and the deals action); a Hermes agent's
+`TELEGRAM_BOT_TOKEN` gates its Telegram channel the same way.
 
 ## Channels: Slack
 
@@ -229,9 +250,10 @@ neither the ECS task nor a laptop needs a public URL or ALB rule.
   `SLACK_HOME_CHANNEL`, `SLACK_ALLOW_BOTS`.
 - Tokens are secrets: `SLACK_BOT_TOKEN` (`xoxb-`) and `SLACK_APP_TOKEN` (`xapp-`, scope
   `connections:write`). The manifest refuses a Slack channel unless both are declared.
-- `stormo slack manifest <agent> [--dev]` runs the pinned image's own generator
-  (`hermes slack manifest --agent-view`), so scopes, events and slash commands always match the
-  deployed Hermes version, and prints the setup steps.
+- `stormo slack manifest <agent> [--dev]` uses the engine's own generator, so scopes, events and
+  slash commands always match the deployed engine: rendered in process by an engine that can
+  (`SlackManifest`: needletail, its commands named by the agent's engine config), else the pinned
+  image's (`SlackManifestArgv`: `hermes slack manifest --agent-view`); it prints the setup steps.
 - One app serves both places: tokens under `agents.<id>`, and the agent is handed off between
   local and ECS (`stormo handoff`), never run in both. Socket Mode spreads events across every
   connection on an app token, so two live copies would split the traffic; `stormo start` refuses
@@ -316,6 +338,23 @@ open in WAL mode. Blobs are content-addressed, so an unchanged nap costs one man
 plus the latest nap:
 - Live memory wins over the seed, but entries a reviewer **rejected** are purged (matched by the
   ledger id of their scrubbed text). Review is enforced at runtime, not only in git.
+- What a reviewer rejected is written to `.swarm/memory-merge.json` (a contract, v2;
+  `loop.MemoryMerge`), hashes only, never the text: `{"v":2,"memory":{"purged":[{"hash":…,
+  "at":…}],"deferred":[…]},"user":{…}}`. Each hash is the SHA-256 (hex) of `learning.Normalize` of
+  the entry as the agent saved it, unscrubbed. `purged` is every entry a reviewer rejected that the
+  nap holds: the hot entries the merge purged, then the entries of the engine's own archive, if it
+  keeps one (`engine.MemoryArchive`), matched the same way (ledger id of the scrubbed text); `at`
+  is when it was rejected (the ledger's `decidedAt`, carried as `rejectedAt` in baseline.json),
+  absent when unknown. `deferred` are the ones with no room (a live entry past the budget, a seed
+  entry past `seed_fill`). It is written whole, atomically and 0600, on every boot (every
+  rejection the nap still holds, not only what that boot purged: a nap can catch a home before the
+  engine read the last report), and no engine's rules claim `.swarm/`, so it is never napped. An
+  engine with an archive deletes there every copy saved before `at` (all of them with no `at`)
+  and may delete the report once read; applying it again must change nothing. A copy saved again
+  after the rejection may stay in the archive; the merge keeps it out of the hot files on every
+  boot regardless. An engine without one (Hermes) ignores the report, as it ignores
+  `rehydrate.json` and `booted.json` beside it. v1 (`purged` a list of hashes, that boot's purges
+  only) is what an older rehydrate wrote.
 - The compiled seed fills only `seed_fill` (default 60%) of the char budget, leaving the agent
   headroom to keep learning.
 - A runtime skill patch is restored only if the repo has not changed that skill since the nap was
@@ -339,7 +378,10 @@ asked for anything else, and raw history sits under a prefix the dream role can 
 - Every memory entry from every unseen nap is scrubbed (tokens, emails, cards, phones, plus the
   instance's own `scrub.rules`) and upserted into `learnings/ledger.jsonl` by content hash. The same lesson seen by
   several instances or naps merges into one entry with `seenCount`, `instances` and `naps`
-  (provenance and corroboration).
+  (provenance and corroboration), and the union of every sighting's `pii` flags: an entry flagged
+  once stays flagged (reflection proposals that scrub to one text keep every flag too), while its
+  text is the sighting's: a reviewer's rewrite that dropped the personal data (and cleared the
+  flags) is not flagged again by later sightings of the old text, which keep its id.
 - Changed or new skills in the newest nap become scrubbed copies under
   `learnings/proposals/skills/` (a skill already decided at that content hash is not re-proposed).
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
@@ -362,6 +404,25 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   `config.yaml` blob stays in the nap store like any learning blob.
 - A proposal already decided (skills by content hash, schedules by proposal text, settings by
   value; all in `learnings/watermark.json`) is not made again.
+- With `engine.OutcomeEvidence`, each unseen nap's outcome export is merged into
+  `learnings/evidence-v1.json` (versioned, metadata only, 0600, at most 4,096 events, written under
+  a lock in `.swarm/learning-locks/`): events keyed to a subject's exact revision (a lesson's
+  kind and text, a skill's snapshot hash), deduplicated by task and source, with no source text.
+  Only task assertions and authorized feedback confirm; views, snapshots, model claims and a
+  clean exit never do. Its readers (ledger, compile, review) read an unreadable store as none and
+  warn; only the merge refuses it, so it is never overwritten. With `engine.LearningProposals`,
+  exported reflection proposals are scrubbed and upserted as proposed memories (a flagged one kept
+  flagged for a person).
+- What the dream cannot take from these exports (an unreadable export, a private or oversized
+  proposal, invalid events, an evidence store that refuses the merge) is a notice in its report and
+  `DREAM.md`, never a failure: the rest of the dream, watermark included, goes through. A refused
+  evidence merge is not lost: `watermark.json`'s `evidenceNap` (additive; absent means the same as
+  `lastNap`, `""` before every nap) stays at the last nap whose evidence merged, the next dream
+  (even with no new nap) merges the naps after it again, and Prune keeps those naps. It is bounded:
+  `evidenceRetries` and `evidenceSince` (additive) count the dreams refused in a row and since
+  when; after 20 dreams or 7 days the dream gives that evidence up with a loud notice
+  (`OUTCOME EVIDENCE DROPPED`, in `DREAM.md`) and the watermark catches up, so pruning goes on.
+  An engine without outcome evidence (Hermes) never gets there.
 - It writes the working tree only. It never commits, branches or pushes.
 
 **Review** (`stormo learn …`, the core's review page): accept, reject, edit (rewrite to drop PII),
@@ -377,12 +438,19 @@ accepted first.
 docs/core.md §6). Rules in code (`loop.ReviewCandidates`) hold for a person what must never be
 decided by a model: user-profile lessons, anything PII-flagged, skills with scripts or binaries,
 schedules that run a script, use another model or deliver to an explicit target, settings that
-widen what the agent may do, and every promotion. A model reads the rest and either approves it or
+widen what the agent may do, and every promotion. A lesson reaches the model once seen
+`auto_accept_min_seen` times. Outcome evidence is never a rule: where the engine records it, the
+model reads the summary for the change's exact version beside it (confirmations, failures and
+corrections, a warning first when any failure or correction is recorded) and judges whether the
+change is obvious. A model reads the rest and either approves it or
 passes it to a person; it never rejects (a reject purges, a wrong approve is undone with `learn
 reject`). The instance can append its own rules; agents can opt out (`learning.auto_review: false`).
 
 **Build** compiles accepted learnings into two tiers:
-- **hot**: the top-ranked own lessons (pinned, then most corroborated, then most recent) packed into
+- **hot**: the top-ranked own lessons (pinned; then those with outcome evidence supporting them and no
+  recorded failure or correction, by confirmations and when last confirmed; then most corroborated
+  across naps, then most recent, then id: without evidence, as for every Hermes lesson, the order is
+  pinned, seen count, last seen) packed into
   the seed share of `MEMORY.md` / `USER.md`;
 - **cold**: every visible accepted lesson plus `units/<unit>/knowledge/*.md` and
   `units/group/knowledge/*.md`, shipped as the generated knowledge skill (`names.knowledge_skill`; no size cap; the

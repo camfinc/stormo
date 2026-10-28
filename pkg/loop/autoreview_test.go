@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -14,7 +15,7 @@ import (
 func reviewInstance(t *testing.T) *instance.Instance {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "instance")
-	example := "../../examples/minimal"
+	example := hermestest.Instance(t)
 	for _, d := range []string{"units", "bridge", "agents/atlas"} {
 		copyDir(t, filepath.Join(example, d), filepath.Join(root, d))
 	}
@@ -80,6 +81,20 @@ func TestReviewRules(t *testing.T) {
 	for _, want := range []string{"lesson:" + clean.ID, "skill:notes/brief", "schedules:schedules", "setting:home_channel.slack"} {
 		if !got[want] {
 			t.Errorf("missing candidate %s (got %v)", want, got)
+		}
+	}
+	// A Hermes agent records no outcome evidence: what the model reads and the hash its verdict is
+	// kept under are what they were before evidence existed (cached verdicts stay valid).
+	for _, c := range cands {
+		switch c.Kind + ":" + c.Ref {
+		case "lesson:" + clean.ID:
+			if c.Hash != clean.ID || c.Body != "A lesson the agent wrote into its own memory (seen 1 times):\n\n"+clean.Text {
+				t.Errorf("Hermes lesson candidate changed: hash %q body %q", c.Hash, c.Body)
+			}
+		case "skill:notes/brief":
+			if c.Hash != "h1" || strings.Contains(c.Body, "evidence") {
+				t.Errorf("Hermes skill candidate changed: hash %q body %q", c.Hash, c.Body)
+			}
 		}
 	}
 	whyOf := map[string]string{}
@@ -154,4 +169,93 @@ func TestReviewRules(t *testing.T) {
 			t.Error("approving a decided proposal again succeeded")
 		}
 	})
+}
+
+// Outcome evidence is what the model reads beside a change, never a rule: a lesson seen enough
+// times reaches the model with or without confirmations, and one with recorded failures still
+// reaches it, marked as such. Its verdict is keyed to the evidence, so new evidence asks again.
+func TestEvidenceIsReviewInputNotGate(t *testing.T) {
+	withLearningEngine(t)
+	inst := reviewInstance(t)
+	root := inst.Root
+	ledger := []*learning.Learning{}
+	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check the task assertion before claiming success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	only := func(min int) Candidate {
+		t.Helper()
+		cands, held, err := ReviewCandidates(inst, "atlas", min)
+		if err != nil || len(cands) != 1 || len(held) != 0 {
+			t.Fatalf("candidates %v held %v: %v", cands, held, err)
+		}
+		return cands[0]
+	}
+	none := only(1)
+	if !strings.Contains(none.Evidence, "No outcome evidence") || strings.Contains(none.Body, "evidence") || none.Hash == e.ID {
+		t.Fatalf("an engine that records outcomes: evidence %q body %q hash %q", none.Evidence, none.Body, none.Hash)
+	}
+
+	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	if err := learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := only(1)
+	if confirmed.Hash == none.Hash || !strings.Contains(confirmed.Evidence, "Independent confirmations (a task check or authorized feedback found the result right): 1") || strings.Contains(confirmed.Evidence, "WARNING") {
+		t.Fatalf("confirmed: %+v", confirmed)
+	}
+
+	negative := event
+	negative.EventID, negative.TaskRoot, negative.Origin, negative.TaskOutcome = "negative", "failed-task", "failed-check", "failed"
+	if err := learning.MergeEvidence(root, "atlas", []learning.OutcomeEvent{negative, negative}); err != nil {
+		t.Fatal(err)
+	}
+	failed := only(1)
+	if failed.Hash == confirmed.Hash || !strings.HasPrefix(failed.Evidence, "WARNING: this exact version has 1 recorded failure(s) and 0 correction(s)") {
+		t.Fatalf("a recorded failure is not presented as one: %+v", failed)
+	}
+	if err := Approve(inst, "atlas", confirmed, Decider{By: "test"}); err == nil {
+		t.Fatal("a verdict given before the failure was recorded was applied")
+	}
+
+	// The seen-count rule still decides what reaches the model; confirmations do not bypass it.
+	if _, held, _ := ReviewCandidates(inst, "atlas", 2); len(held) != 1 || !strings.Contains(held[0].Why, "seen 1 of 2") {
+		t.Fatalf("held at min_seen 2: %v", held)
+	}
+
+	e.Text = "Revised procedure."
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	if revised := only(1); !strings.Contains(revised.Evidence, "No outcome evidence") {
+		t.Fatalf("revised text inherited the old version's evidence: %q", revised.Evidence)
+	}
+	if err := Approve(inst, "atlas", failed, Decider{By: "test"}); err == nil {
+		t.Fatal("a verdict on the old text was applied to the revised one")
+	}
+}
+
+// An unreadable evidence store fails nothing: the review goes on, and the model is told the
+// evidence could not be read rather than that none was recorded.
+func TestUnreadableEvidenceDoesNotStopReview(t *testing.T) {
+	withLearningEngine(t)
+	inst := reviewInstance(t)
+	root := inst.Root
+	ledger := []*learning.Learning{}
+	learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Reports are due on Mondays.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ProposalsDir(root, "atlas"), "notes/brief/SKILL.md"), "---\nname: brief\n---\nKeep briefs to five lines.\n")
+	write(t, filepath.Join(ProposalsDir(root, "atlas"), "notes/brief/.proposal.json"), `{"skill":"notes/brief","napHash":"h1","nap":"n","pii":[]}`)
+	write(t, learning.EvidencePath(root, "atlas"), "{not json")
+	cands, _, err := ReviewCandidates(inst, "atlas", 1)
+	if err != nil || len(cands) != 2 {
+		t.Fatalf("candidates %v: %v", cands, err)
+	}
+	for _, c := range cands {
+		if !strings.Contains(c.Evidence, "could not be read") || strings.Contains(c.Evidence, "No outcome evidence is recorded") {
+			t.Errorf("%s %s evidence: %q", c.Kind, c.Ref, c.Evidence)
+		}
+	}
 }

@@ -159,6 +159,8 @@ type Container struct {
 	DependsOn        []DependsOn      `json:"dependsOn,omitempty"`
 	StopTimeout      int              `json:"stopTimeout,omitempty"`
 	LogConfiguration LogConfiguration `json:"logConfiguration"`
+	// ReadonlyRootFilesystem: the engine writes only to its mounts (engine.Layout.ReadOnlyRoot).
+	ReadonlyRootFilesystem bool `json:"readonlyRootFilesystem,omitempty"`
 }
 
 type TaskDef struct {
@@ -261,6 +263,7 @@ func RenderTaskDef(a *manifest.Agent, eng engine.Engine, t Target) TaskDef {
 				HealthCheck:  &HealthCheck{Command: eng.HealthCheck(), Interval: 30, Timeout: 5, Retries: 3, StartPeriod: 120},
 				DependsOn:    []DependsOn{{"rehydrate", "SUCCESS"}, {"nap", "START"}},
 				StopTimeout:  60, LogConfiguration: logs(a, t, "agent"),
+				ReadonlyRootFilesystem: eng.Layout().ReadOnlyRoot,
 			},
 		},
 	}

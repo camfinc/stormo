@@ -111,9 +111,12 @@ type CoreLearning struct {
 	// ReviewPrompt is a file, relative to the instance, appended to the built-in review rules.
 	ReviewPrompt string `json:"reviewPrompt,omitempty"`
 	// AutoAccept is Review == "auto" (the field API readers had before Review). AutoAcceptMinSeen:
-	// a lesson is judged only once seen this many times.
-	AutoAccept        bool `json:"autoAccept"`
-	AutoAcceptMinSeen int  `json:"autoAcceptMinSeen"`
+	// a lesson is judged only once seen this many times. AutoAcceptMinConfirmations
+	// (auto_accept_min_confirmations) is deprecated and unused: still read and range-checked so an
+	// instance that set it loads, but outcome evidence is the review model's input, never a rule.
+	AutoAccept                 bool `json:"autoAccept"`
+	AutoAcceptMinSeen          int  `json:"autoAcceptMinSeen"`
+	AutoAcceptMinConfirmations int  `json:"autoAcceptMinConfirmations"`
 	// AutoRestart: restart a running, idle agent after the review approved something, so it applies.
 	AutoRestart bool `json:"autoRestart"`
 }
@@ -166,6 +169,9 @@ type Instance struct {
 	// Where the core keeps the shared space besides its workdir/ (core.storage): "" for the
 	// directory alone (a local disk, or an EFS mount), or s3://bucket/prefix mirrored to S3.
 	CoreStorage string `json:"coreStorage,omitempty"`
+	// How many model calls the core's gateway runs at once, per ChatGPT connection, for the whole
+	// fleet (core.llm_concurrency, 1 to 64); 0: unset (SWARM_CORE_LLM_CONCURRENCY, else 3).
+	CoreLLMConcurrency int `json:"coreLLMConcurrency,omitempty"`
 	// Heavy or shared calls the core brokers for agents (stormo.yaml capabilities:).
 	Capabilities []Capability `json:"capabilities"`
 	// Where agents can run (stormo.yaml placements:, plus the implicit local and remote).
@@ -222,19 +228,23 @@ type rawFile struct {
 		URL           string            `yaml:"url"`
 		URLs          map[string]string `yaml:"urls"`
 		Storage       string            `yaml:"storage"`
-		Learning      struct {
-			At                string   `yaml:"at"`
-			Timezone          string   `yaml:"timezone"`
-			StaggerMinutes    *int     `yaml:"stagger_minutes"`
-			QuietWaitMinutes  *int     `yaml:"quiet_wait_minutes"`
-			Agents            []string `yaml:"agents"`
-			Review            string   `yaml:"review"`
-			ReviewConnection  string   `yaml:"review_connection"`
-			ReviewModel       string   `yaml:"review_model"`
-			ReviewPrompt      string   `yaml:"review_prompt"`
-			AutoAccept        *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
-			AutoAcceptMinSeen *int     `yaml:"auto_accept_min_seen"`
-			AutoRestart       bool     `yaml:"auto_restart"`
+		// LLMConcurrency is how many model calls the core's gateway runs at once (each
+		// ChatGPT connection's own, across the fleet); 0: the gateway's 3.
+		LLMConcurrency *int `yaml:"llm_concurrency"`
+		Learning       struct {
+			At                         string   `yaml:"at"`
+			Timezone                   string   `yaml:"timezone"`
+			StaggerMinutes             *int     `yaml:"stagger_minutes"`
+			QuietWaitMinutes           *int     `yaml:"quiet_wait_minutes"`
+			Agents                     []string `yaml:"agents"`
+			Review                     string   `yaml:"review"`
+			ReviewConnection           string   `yaml:"review_connection"`
+			ReviewModel                string   `yaml:"review_model"`
+			ReviewPrompt               string   `yaml:"review_prompt"`
+			AutoAccept                 *bool    `yaml:"auto_accept"` // the old switch: true is review: auto
+			AutoAcceptMinSeen          *int     `yaml:"auto_accept_min_seen"`
+			AutoAcceptMinConfirmations *int     `yaml:"auto_accept_min_confirmations"`
+			AutoRestart                bool     `yaml:"auto_restart"`
 		} `yaml:"learning"`
 	} `yaml:"core"`
 	Connections  []rawConnection          `yaml:"connections"`
@@ -332,6 +342,13 @@ func Load(root string) (*Instance, error) {
 	if raw.Core.Port != 0 && (raw.Core.Port < 1024 || raw.Core.Port > 65535) {
 		return nil, &Error{fmt.Sprintf("%s: core.port must be 1024 to 65535", path)}
 	}
+	llmConcurrency := 0
+	if n := raw.Core.LLMConcurrency; n != nil {
+		if *n < 1 || *n > 64 {
+			return nil, &Error{fmt.Sprintf("%s: core.llm_concurrency must be 1 to 64 model calls at once (leave it out for 3)", path)}
+		}
+		llmConcurrency = *n
+	}
 	cl := raw.Core.Learning
 	review := cl.Review
 	switch {
@@ -346,7 +363,13 @@ func Load(root string) (*Instance, error) {
 	}
 	learning := CoreLearning{At: cl.At, Timezone: cl.Timezone, StaggerMinutes: 2, QuietWaitMinutes: 30, Agents: cl.Agents,
 		Review: review, ReviewConnection: or(cl.ReviewConnection, DefaultChatGPT), ReviewModel: cl.ReviewModel, ReviewPrompt: cl.ReviewPrompt,
-		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoRestart: cl.AutoRestart}
+		AutoAccept: review == ReviewAuto, AutoAcceptMinSeen: 1, AutoAcceptMinConfirmations: 1, AutoRestart: cl.AutoRestart}
+	if cl.AutoAcceptMinConfirmations != nil {
+		if *cl.AutoAcceptMinConfirmations < 1 || *cl.AutoAcceptMinConfirmations > 1000 {
+			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_confirmations must be 1 to 1000", path)}
+		}
+		learning.AutoAcceptMinConfirmations = *cl.AutoAcceptMinConfirmations
+	}
 	if cl.AutoAcceptMinSeen != nil {
 		if *cl.AutoAcceptMinSeen < 1 || *cl.AutoAcceptMinSeen > 1000 {
 			return nil, &Error{fmt.Sprintf("%s: core.learning.auto_accept_min_seen must be 1 to 1000", path)}
@@ -428,6 +451,7 @@ func Load(root string) (*Instance, error) {
 		Placements:         placements,
 		Capabilities:       capabilities,
 		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
+		CoreLLMConcurrency: llmConcurrency,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

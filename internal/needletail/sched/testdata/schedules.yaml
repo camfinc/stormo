@@ -1,0 +1,68 @@
+# Job definitions shaped like real agents' (anonymised into Acme's example instance): the
+# watch/report pairs, monitors with [SILENT] prompts, script-only watchdogs and collectors, a
+# job paused with a note and pinned to another model, explicit channel delivery.
+schedules:
+  - id: 1a2b3c4d5e01
+    name: Tracker watch
+    every: 120m
+    prompt: 'The tracker findings changed (the diff and current output are above). Follow the crm-api skill: group the NEW findings by owner and post one summary with the question for each owner. If findings only disappeared (resolved), reply exactly [SILENT].'
+    skills: [crm-api]
+    monitor: tracker_watch.sh
+    deliver: slack
+    on_failure: slack
+  - id: 1a2b3c4d5e02
+    name: Weekly delivery status
+    cron: 0 10 * * 1
+    prompt: 'Weekly delivery status, short: done vs planned, load per person, risks with an owner. Close with three decisions for the week.'
+    skills: [crm-api, hourly_deal_monitor]
+    deliver: slack
+    on_failure: slack
+  - id: 1a2b3c4d5e03
+    name: Check-in watchdog
+    every: 60m
+    enabled: false
+    note: paused pending review
+    prompt: 'Check the flights leaving in the next 6 hours and alert on any without check-in.'
+    skills: [crm-api]
+    model: example/fast-model
+    provider: openrouter
+    tools: [web, terminal, execute_code, messaging, skills]
+    deliver: slack
+  - id: 1a2b3c4d5e04
+    name: SLA watchdog
+    every: 2m
+    script: sla_watchdog.sh
+    agent: false
+    deliver: slack
+    on_failure: slack
+  - id: 1a2b3c4d5e05
+    name: Metrics collector
+    every: 360m
+    script: collect.py
+    agent: false
+    deliver: slack:C0000000002
+    on_failure: slack:C0000000002
+  - id: 1a2b3c4d5e06
+    name: Performance evaluation
+    every: 60m
+    prompt: 'The monitor signals changed (diff and current output above). Evaluate only new or resolved signals. If only not-collected signals changed, or nothing is new, reply exactly [SILENT].'
+    skills: [news-radar]
+    monitor: perf_monitor.sh
+    deliver: slack:C0000000002
+    on_failure: slack:C0000000002
+  - id: 1a2b3c4d5e07
+    name: Morning news radar
+    cron: 0 8 * * *
+    prompt: 'Run the news radar and write to the team what is new today; only news not reported before.'
+    script: radar_fetch.sh
+    skills: [news-radar]
+    deliver: slack
+    on_failure: slack
+  - id: 1a2b3c4d5e08
+    name: Signals to briefs
+    cron: 0 10 * * *
+    prompt: 'Read the new signals in /shared/group since your last run and write one to three briefs. If there are no useful new signals, reply exactly [SILENT].'
+    skills: [acme-shared-docs, news-radar]
+    tools: [terminal, skills]
+    deliver: slack
+    on_failure: local

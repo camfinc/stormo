@@ -1,0 +1,305 @@
+{
+ "stateDir": "acme-state",
+ "cases": [
+  {
+   "path": "memories/MEMORY.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/USER.md",
+   "class": "learning",
+   "glob": "memories/{MEMORY,USER}.md"
+  },
+  {
+   "path": "memories/RECORDS.md",
+   "class": "raw",
+   "glob": "memories/RECORDS.md"
+  },
+  {
+   "path": "memories/.RECORDS.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "memories/OTHER.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/.usage.json",
+   "class": "learning",
+   "glob": "skills/.usage.json"
+  },
+  {
+   "path": "skills/.hidden/x",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/crm/crm-api/.SKILL.md.tmp-123",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": ".needletail-tmp/.SKILL.md.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "skills/crm/crm-api/SKILL.md",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm/lookup/tools/lookup_fare.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm/lookup/handlers/on_message.luau",
+   "class": "learning",
+   "glob": "skills/[!.]*/**"
+  },
+  {
+   "path": "skills/crm",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/jobs.json",
+   "class": "learning",
+   "glob": "cron/jobs.json"
+  },
+  {
+   "path": "sessions/index.json",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "sessions/cron-a1-20261012T090000.jsonl",
+   "class": "raw",
+   "glob": "sessions/**"
+  },
+  {
+   "path": "logs/audit/slack-C1-1.jsonl",
+   "class": "raw",
+   "glob": "logs/audit/**"
+  },
+  {
+   "path": "logs/needletail.log",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "acme-state/news-radar/seen.json",
+   "class": "state",
+   "glob": "acme-state/**"
+  },
+  {
+   "path": "state/needletail/idem.json",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "state/needletail/kv.json",
+   "class": "raw",
+   "glob": "state/needletail/kv.json"
+  },
+  {
+   "path": "state/needletail/deliveries-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/deliveries-v1.json"
+  },
+  {
+   "path": "state/needletail/approvals-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/approvals-v1.json"
+  },
+  {
+   "path": "state/needletail/approvals-audit.jsonl",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "work/slack-C0DEVCHAN1-1700000100.000100/draft.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".tmp/scratch.txt",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "state/needletail/followups.json",
+   "class": "raw",
+   "glob": "state/needletail/followups.json"
+  },
+  {
+   "path": "state/needletail/followups.lock",
+   "class": "state",
+   "glob": "state/needletail/**"
+  },
+  {
+   "path": "state/needletail/monitor/a1.out",
+   "class": "raw",
+   "glob": "state/needletail/monitor/**"
+  },
+  {
+   "path": "state/needletail/jobs/a1/20261012T090000.000.md",
+   "class": "raw",
+   "glob": "state/needletail/jobs/**"
+  },
+  {
+   "path": ".needletail-tmp/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "cron/.jobs.json.tmp-123",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "needletail.yaml",
+   "class": "learning",
+   "glob": "needletail.yaml"
+  },
+  {
+   "path": "SOUL.md",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".swarm/memory-merge.json",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": ".swarm/booted.json",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/digest.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/lib/helper.py",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/accounts.json",
+   "class": "learning",
+   "glob": "scripts/**"
+  },
+  {
+   "path": "scripts/__pycache__/digest.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/__pycache__/helper.cpython-312.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/lib/helper.pyc",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.cache",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/.venv/bin/python",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "scripts/node_modules/x/index.js",
+   "class": null,
+   "glob": null
+  },
+  {
+   "path": "state/needletail/outcomes-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/outcomes-v1.json"
+  },
+  {
+   "path": "state/needletail/reflection-proposals-v1.json",
+   "class": "learning",
+   "glob": "state/needletail/reflection-proposals-v1.json"
+  },
+  {
+   "path": "state/needletail/reflections-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/reflections-v1.json"
+  },
+  {
+   "path": "state/needletail/outcomes-export-v1.json",
+   "class": "learning",
+   "glob": "state/needletail/outcomes-export-v1.json"
+  },
+  {
+   "path": "state/needletail/background-learning-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/background-learning-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-origins-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-origins-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-proposals-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-proposals-v1.json"
+  },
+  {
+   "path": "state/needletail/background-learning-v1.backup.json",
+   "class": "raw",
+   "glob": "state/needletail/background-learning-v1.backup.json"
+  },
+  {
+   "path": "state/needletail/skill-decisions-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-decisions-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-maintenance-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-maintenance-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-archives-v1.json",
+   "class": "raw",
+   "glob": "state/needletail/skill-archives-v1.json"
+  },
+  {
+   "path": "state/needletail/skill-archives-v1/opaque/scripts/check.sh",
+   "class": "raw",
+   "glob": "state/needletail/skill-archives-v1/**"
+  },
+  {
+   "path": "files/slack-C0DEVCHAN1-1700000100.000100/F0AB12CD34-photo.png",
+   "class": "raw",
+   "glob": "files/**"
+  },
+  {
+   "path": "files/slack-D0DMCHAN01-dm/.files-v1.json",
+   "class": "raw",
+   "glob": "files/**"
+  },
+  {
+   "path": "files/slack-D0DMCHAN01-dm/F0VOICE001-audio_message.m4a",
+   "class": "raw",
+   "glob": "files/**"
+  }
+ ]
+}

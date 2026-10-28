@@ -23,6 +23,7 @@ import Testing
         let body = #"""
         {"review":"auto","reviewConnection":"chatgpt","autoAccept":true,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[
          {"id":"atlas","name":"Atlas","unit":"sales","state":"running","busy":false,"unapplied":false,"autoReview":true,
+          "notices":["outcome evidence (evidence-v1.json) is unreadable, so it reads as none: bad"],
           "lessons":[{"id":"l1","kind":"memory","scope":"agent","text":"t","pii":[],"status":"proposed","seenCount":1,"firstSeen":"a","lastSeen":"b","autoAcceptable":true,
                       "ai":{"approve":false,"reason":"names a client","model":"m","at":"z"}}],
           "skills":[],
@@ -37,7 +38,8 @@ import Testing
         // A core from before the automatic review still decodes.
         let old = #"{"autoAccept":false,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[{"id":"a","name":"A","unit":"u","state":"stopped","busy":false,"unapplied":false,"lessons":[],"skills":[]}]}"#
         let o = try JSONDecoder().decode(ReviewView.self, from: Data(old.utf8))
-        #expect(o.review == nil && o.agents[0].pending == 0)
+        #expect(o.review == nil && o.agents[0].pending == 0 && o.agents[0].notices == nil)
+        #expect(a.notices?.first?.contains("evidence-v1.json") == true)
     }
 
     @Test func ownerTokenIsTrimmedAndOptional() throws {

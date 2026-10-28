@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -77,6 +78,10 @@ type Layout struct {
 	StateRoot string `json:"stateRoot"`
 	// uid/gid the engine runs as; rehydrate (root) hands the home to it so the agent can write.
 	RuntimeUID, RuntimeGID int
+	// ReadOnlyRoot runs the engine's container with a read-only root filesystem (compose
+	// read_only, ECS readonlyRootFilesystem): only its mounts (the home, the shared layers) are
+	// writable. For an engine that writes nowhere else; off by default.
+	ReadOnlyRoot bool `json:"readOnlyRoot,omitempty"`
 }
 
 // Classify returns the first rule matching path (relative to the home), or nil.
@@ -220,6 +225,47 @@ type ScheduleDropper interface {
 	DropSchedules(body []byte, ids []string) ([]byte, error)
 }
 
+// MemoryArchive is an engine that keeps its own copy of the memories beside the hot files (an
+// archive the nap carries): rehydrate reads it from the nap to name, in its memory merge report,
+// every entry a reviewer rejected that the nap holds, archived as well as hot.
+type MemoryArchive interface {
+	// ArchivedMemories are the archive's entries, read with read (a path in the home → the nap's
+	// body, nil when absent). Never an error: an archive it cannot read has none.
+	ArchivedMemories(read func(path string) []byte) []ArchivedMemory
+}
+
+// OutcomeEvidence exposes the metadata-only outcome export a dream may ingest.
+// The path must be classified Learning; raw conversations are never evidence input.
+type OutcomeEvidence interface {
+	OutcomePath() string
+}
+
+// LearningProposals exposes explicitly selected, scrubbed procedural proposals.
+// Private reflection queues remain Raw and are never read by the dream.
+type LearningProposals interface {
+	LearningProposalsPath() string
+}
+
+// PrivateLearningState identifies runtime-owned learning files whose restore must
+// remain private even before the runtime applies its permission preparation.
+type PrivateLearningState interface {
+	PrivateLearningPaths() []string
+}
+
+// PrivateLearningTrees identifies private archive data directories. Restored files
+// are data (0600), not executable skill bundles; engines restore reviewed modes
+// from their own archive manifest when an owner explicitly restores a skill.
+type PrivateLearningTrees interface {
+	PrivateLearningDirectories() []string
+}
+
+// ArchivedMemory is one archive entry: the hot file it belongs to ("memory" or "user") and its
+// text as the agent saved it.
+type ArchivedMemory struct {
+	Target string
+	Text   string
+}
+
 // Engine turns a manifest into a baseline home directory and knows its runtime layout.
 type Engine interface {
 	Kind() string
@@ -254,6 +300,31 @@ type Engine interface {
 	// BenchArgv is one bench turn executed inside the agent image; ParseBench reads its output.
 	BenchArgv(prompt string) []string
 	ParseBench(stdout string, exitCode int) BenchRun
+}
+
+// VersionValidator is an engine with its own rule for agent.yaml's engine.version and
+// engine.image_tag (each is checked when set). An engine without one accepts any non-empty
+// version, which manifest loading already requires.
+type VersionValidator interface {
+	ValidVersion(v string) error
+}
+
+// CheckVersion applies e's version rule, if it has one, to the agent's engine.version and
+// engine.image_tag.
+func CheckVersion(e Engine, a *manifest.Agent) error {
+	vv, ok := e.(VersionValidator)
+	if !ok {
+		return nil
+	}
+	if err := vv.ValidVersion(a.Engine.Version); err != nil {
+		return fmt.Errorf("agents/%s: engine.version %q: %w", a.ID, a.Engine.Version, err)
+	}
+	if a.Engine.ImageTag != "" {
+		if err := vv.ValidVersion(a.Engine.ImageTag); err != nil {
+			return fmt.Errorf("agents/%s: engine.image_tag %q: %w", a.ID, a.Engine.ImageTag, err)
+		}
+	}
+	return nil
 }
 
 // IsTempSibling reports SQLite journal files that naps never copy.

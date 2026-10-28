@@ -1,0 +1,26 @@
+# Scout: SLA watchdog for Acme Sales, Slack only.
+format: 1
+id: scout
+name: Scout
+unit: sales
+role: Nudges the team when a lead waits too long.
+engine:
+  kind: hermes
+  version: 0.21.5
+  image_tag: v2026.9.24
+model:
+  name: openai/gpt-6-luna
+  local:
+    via: core
+    name: gpt-5.6-luna
+channels:
+  - kind: slack
+    allowed_users: [U0000000002]
+secrets:
+  - API_SERVER_KEY
+optional_secrets:
+  - name: OPENROUTER_API_KEY
+  - name: SLACK_BOT_TOKEN
+  - name: SLACK_APP_TOKEN
+env:
+  BOT_MODE: dry-run

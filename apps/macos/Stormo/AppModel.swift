@@ -10,6 +10,7 @@ final class AppModel {
     /// Debug builds can keep their instance list apart from the installed app's (STORMO_DEFAULTS_SUITE).
     static var defaults: UserDefaults {
         #if DEBUG
+        if learningPreviewURL != nil { return UserDefaults(suiteName: "com.stormo.learning-preview")! }
         if let suite = ProcessInfo.processInfo.environment["STORMO_DEFAULTS_SUITE"], let d = UserDefaults(suiteName: suite) { return d }
         #endif
         return .standard
@@ -43,8 +44,20 @@ final class AppModel {
     /// The stormo inside the app.
     static let bundledBinary = Bundle.main.bundleURL.appending(path: "Contents/Helpers/stormo")
 
+    static var learningPreviewURL: URL? {
+        #if DEBUG
+        guard let value = ProcessInfo.processInfo.environment["STORMO_LEARNING_PREVIEW"],
+              let url = URL(string: value), url.scheme == "http", url.host == "127.0.0.1", url.port != nil,
+              url.user == nil, url.password == nil else { return nil }
+        return url
+        #else
+        return nil
+        #endif
+    }
+    var isLearningPreview: Bool { Self.learningPreviewURL != nil }
+
     init() {
-        let client = CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
+        let client = Self.learningPreviewURL.map { CoreClient(base: $0, token: "learning-preview-owner", timeout: 40) } ?? CoreClient(port: CoreClient.port(environment: ProcessInfo.processInfo.environment))
         core = CoreSupervisor(client: client, instanceRoot: nil)
         fleet = FleetStore(client: client)
         review = ReviewStore(client: client, instanceRoot: nil)
@@ -55,8 +68,12 @@ final class AppModel {
 
     /// Captures the environment, resolves the active instance's binary and starts polling.
     func start() async {
+        // Explicit synthetic debug fixture: never inspect/start an instance, run CLI commands,
+        // reconcile symlinks, or poll the installed app's core.
+        if isLearningPreview { await review.load(); return }
         let env = await ShellEnvironment.current()
         environment = env
+        reconcileCommandLineLink()
         await activate(instances.active)
         startPolling()
     }
@@ -108,14 +125,29 @@ final class AppModel {
         return BinaryResolver(bundled: bundled, environment: environment ?? [:])
     }
 
-    /// Probes the binaries and pins Auto's choice the first time an instance is seen.
+    /// Probes the binaries and, for an instance on Auto, pins Auto's choice (on every look, so an
+    /// app update moves it to the new bundled copy). A binary picked in Settings stays.
     func resolveBinary() async {
         let active = instances.active
         candidates = await resolver.candidates(instance: active?.folder)
-        guard let active, active.binary == nil else { return }
-        if let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) {
-            instances.pin(active.root, binary: choice.resolved.path, choice: "auto")
+        await lookAtTerminal()
+        guard let active, !active.isRemote else { return }
+        if let choice = BinaryResolver.repin(binary: active.binary, choice: active.binaryChoice, candidates: candidates, runningCoreExe: core.state.info?.exe) {
+            instances.pin(active.root, binary: choice.resolved.path, choice: BinaryResolver.autoPin)
         }
+    }
+
+    /// The active instance follows Auto (no binary picked in Settings).
+    var followsAuto: Bool {
+        guard let choice = instances.active?.binaryChoice else { return true }
+        return choice == BinaryResolver.autoPin
+    }
+
+    /// Back to Auto after a binary was picked in Settings.
+    func useAuto() {
+        guard let active = instances.active,
+              let choice = BinaryResolver.autoChoice(candidates, runningCoreExe: core.state.info?.exe) else { return }
+        instances.pin(active.root, binary: choice.resolved.path, choice: BinaryResolver.autoPin)
     }
 
     /// The pinned binary for the active instance, if it is still there and usable.
@@ -347,19 +379,76 @@ final class AppModel {
 
     // MARK: Command line tool
 
-    /// ~/.local/bin/stormo → the bundled binary, when no stormo is on PATH.
+    /// ~/.local/bin/stormo: the terminal's stormo, a link to the bundled one (CommandLineLink).
+    /// Only this name: `swarm` or anything else there is never touched.
     static let commandLineLink = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".local/bin/stormo")
 
-    var canInstallCommandLineTool: Bool {
-        !candidates.contains { $0.source == .path } && !FileManager.default.fileExists(atPath: Self.commandLineLink.path)
+    /// The link manager, when the app carries its binary.
+    var terminalLink: CommandLineLink? {
+        guard FileManager.default.isExecutableFile(atPath: Self.bundledBinary.path) else { return nil }
+        return CommandLineLink(link: Self.commandLineLink, bundled: Self.bundledBinary)
     }
 
-    func installCommandLineTool() async {
+    /// What is at ~/.local/bin/stormo.
+    private(set) var linkState: CommandLineLink.State?
+    /// Why the app could not write the link.
+    private(set) var linkProblem: String?
+    /// What `stormo` runs in a terminal (the first on the login shell's PATH), probed.
+    private(set) var terminalStormo: BinaryCandidate?
+
+    private static let noteKey = "commandLine.note"
+
+    /// Told once, after the app put stormo on the terminal; kept until dismissed.
+    var commandLineNote: String? {
+        get {
+            access(keyPath: \.commandLineNote)
+            return Self.defaults.string(forKey: Self.noteKey)
+        }
+        set {
+            withMutation(keyPath: \.commandLineNote) { Self.defaults.set(newValue, forKey: Self.noteKey) }
+        }
+    }
+
+    /// At launch: links ~/.local/bin/stormo to the bundled binary when nothing is there, and moves
+    /// a link into a Stormo app (an older copy) to this one. Anything else is left alone.
+    func reconcileCommandLineLink() {
+        guard let link = terminalLink else { return }
+        switch link.reconcile() {
+        case .created:
+            var note = "`stormo` now works in the terminal: ~/.local/bin/stormo runs the copy inside Stormo and updates with the app."
+            if let env = environment, !link.directoryIsOnPath(env) {
+                note += " ~/.local/bin is not on your shell's PATH yet: add `export PATH=\"$HOME/.local/bin:$PATH\"` to your shell profile (~/.zprofile for zsh) and open a new terminal."
+            }
+            commandLineNote = note
+            linkProblem = nil
+        case .failed(let message):
+            linkProblem = message
+        case .retargeted, .unchanged, .left, .skipped:
+            linkProblem = nil
+        }
+        linkState = link.state()
+    }
+
+    /// Refreshes the link's state and probes the terminal's stormo.
+    func lookAtTerminal() async {
+        linkState = terminalLink?.state()
+        if let env = environment, let url = ShellEnvironment.which("stormo", in: env) {
+            terminalStormo = await resolver.probe(BinaryCandidate(url: url, resolved: url.resolvingSymlinksInPath(), source: .path))
+        } else {
+            terminalStormo = nil
+        }
+    }
+
+    /// Settings' "Use Stormo's copy in the terminal", after the person confirmed: replaces whatever
+    /// ~/.local/bin/stormo is with the link.
+    func useStormoInTerminal() async {
+        guard let link = terminalLink else { return }
         do {
-            try FileManager.default.createDirectory(at: Self.commandLineLink.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.createSymbolicLink(at: Self.commandLineLink, withDestinationURL: Self.bundledBinary)
+            try link.install()
+            linkProblem = nil
         } catch {
-            failure = "Could not install the stormo command: \(error.localizedDescription)"
+            linkProblem = error.localizedDescription
+            failure = "Could not link the stormo command: \(error.localizedDescription)"
         }
         await resolveBinary()
     }

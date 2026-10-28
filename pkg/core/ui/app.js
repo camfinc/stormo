@@ -1039,6 +1039,13 @@ const EVENT = {
   on_session_end: "session closed",
   pre_approval_request: "asked for approval",
   post_approval_response: "approval answered",
+  // Stormo's own kind names, for an engine whose hooks use them.
+  tool_start: "started",
+  tool_done: "finished",
+  session_start: "session opened",
+  session_end: "session closed",
+  approval_waiting: "asked for approval",
+  approval_answered: "approval answered",
 };
 
 async function fetchTimeline(id) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -22,7 +23,7 @@ import (
 func TestRuntimeSettingsAndSchedules(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "instance")
-	example := "../../examples/minimal"
+	example := hermestest.Instance(t)
 	for _, d := range []string{"units", "bridge", "agents/atlas"} {
 		copyDir(t, filepath.Join(example, d), filepath.Join(root, d))
 	}
@@ -220,7 +221,7 @@ func TestRuntimeSettingsAndSchedules(t *testing.T) {
 func TestRuntimeScripts(t *testing.T) {
 	tmp := t.TempDir()
 	root := filepath.Join(tmp, "instance")
-	example := "../../examples/minimal"
+	example := hermestest.Instance(t)
 	for _, d := range []string{"units", "bridge", "agents/atlas"} {
 		copyDir(t, filepath.Join(example, d), filepath.Join(root, d))
 	}

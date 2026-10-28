@@ -107,8 +107,14 @@ func (rv *Reviewer) Judge(ctx context.Context, agent *manifest.Agent, c loop.Can
 		body = body[:maxReviewBody] + "\n[cut: too long to show whole]"
 	}
 	body = strings.ReplaceAll(body, "CHANGE>>>", "CHANGE> > >")
-	user := fmt.Sprintf("Agent: %s (%s), unit %s. Its role: %s\nWhat to review: %s\n\n<<<CHANGE\n%s\nCHANGE>>>\n\nAnswer with the JSON object only.",
-		agent.Name, agent.ID, agent.Unit, agent.Role, c.Title, body)
+	// Outcome evidence is Stormo's count of what the runtime recorded, not the agent's words: it
+	// goes outside the change's delimiters, and only when there is any to give (Hermes: never).
+	evidence := ""
+	if c.Evidence != "" {
+		evidence = "Outcome evidence for this exact version (counted by Stormo from what the agent's runtime recorded; counts only):\n" + c.Evidence + "\n\n"
+	}
+	user := fmt.Sprintf("Agent: %s (%s), unit %s. Its role: %s\nWhat to review: %s\n\n<<<CHANGE\n%s\nCHANGE>>>\n\n%sAnswer with the JSON object only.",
+		agent.Name, agent.ID, agent.Unit, agent.Role, c.Title, body, evidence)
 	call := rv.Complete
 	if call == nil {
 		call = rv.complete

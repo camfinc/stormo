@@ -39,6 +39,10 @@ type Info struct {
 	Skills OrderedHashes `json:"skills"`
 	// Ledger ids a reviewer rejected; rehydrate purges matching entries from live memory.
 	Rejected []string `json:"rejected"`
+	// Ledger id → when a reviewer rejected it (the entry's decidedAt; absent when it has none):
+	// rehydrate's memory merge report carries it, so a runtime with an archive deletes only the
+	// records saved before the rejection.
+	RejectedAt map[string]string `json:"rejectedAt,omitempty"`
 	// Skill dir → hash of a runtime version a reviewer rejected; rehydrate never restores it.
 	RejectedSkills OrderedHashes `json:"rejectedSkills,omitempty"`
 	// Ids of jobs the agent created at runtime that a reviewer rejected; rehydrate drops them.
@@ -211,6 +215,9 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 	if err != nil {
 		return nil, err
 	}
+	if err := engine.CheckVersion(eng, eff.Agent); err != nil {
+		return nil, err
+	}
 	if err := manifest.CheckConnections(declared, inst); err != nil {
 		return nil, err
 	}
@@ -256,11 +263,17 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 	if err != nil {
 		return nil, err
 	}
-	rejected := []string{}
+	rejected, rejectedAt := []string{}, map[string]string{}
 	for _, e := range ledger {
 		if e.Status == learning.Rejected {
 			rejected = append(rejected, e.ID)
+			if e.DecidedAt != nil && *e.DecidedAt != "" {
+				rejectedAt[e.ID] = *e.DecidedAt
+			}
 		}
+	}
+	if len(rejectedAt) == 0 {
+		rejectedAt = nil
 	}
 	rejectedSkills, rejectedJobs, rejectedScripts, err := rejectedSkillVersions(inst.Root, agentID)
 	if err != nil {
@@ -270,7 +283,7 @@ func Compile(inst *instance.Instance, agentID string, o Options) (*Result, error
 		RejectedSkills: rejectedSkills, RejectedJobs: rejectedJobs, RejectedScripts: rejectedScripts,
 		Agent: eff.Agent.ID, Unit: eff.Agent.Unit, Engine: eng.Kind(), Target: o.Target,
 		BuiltAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"), GitSha: gitSha(inst.Root),
-		Skills: skills, Rejected: rejected, Files: fileHashes,
+		Skills: skills, Rejected: rejected, RejectedAt: rejectedAt, Files: fileHashes,
 	}
 	if len(eff.SkipSkills) > 0 {
 		info.Withheld = eff.SkipSkills

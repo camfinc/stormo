@@ -205,7 +205,7 @@ one process holds and refreshes them: core.
   action when the limit is hit. The web UI carries the same notice, indicator and link.
 - Never logged: tokens, prompt or completion bodies. Logged: agent, model, status, duration, tokens.
 - Fleet limits: one plan (and its weekly per-app cap, set by the owner in ChatGPT) is shared by every
-  agent: concurrency cap `SWARM_CORE_LLM_CONCURRENCY` (default 3) and per-agent usage counters.
+  agent: concurrency cap stormo.yaml `core.llm_concurrency` (default 3; the env `SWARM_CORE_LLM_CONCURRENCY` overrides it) and per-agent usage counters.
 - Scope: **local only.** A paid or remotely hosted app needs OpenAI's interest form; agents on AWS
   keep their own API keys and never call this. Agents keep OpenRouter as `fallback_providers[0]`.
 
@@ -402,7 +402,9 @@ work alike in both places; there is no separate `/workdir` mount.
 - *Attribution*: a scan every 5 s (stat, then SHA-256 only when size or mtime moved; a touch is
   not a change) records created, modified and deleted files. The writer is, in order: `fs_write`
   (exact); a file tool's `post_tool_call` naming the path (`tool:write_file`, within 2 min of the
-  change); `fs_note`; the one agent that mounts that layer and had a `terminal`, `execute_code` or
+  change; `read_file` and `search_files` claim nothing); `fs_note`. One agent's claims for a path
+  within 2 min are one change (a tool's hook and the `fs_note` after it), so a spare never credits
+  the next writer's change to it. Else the one agent that mounts that layer and had a `terminal`, `execute_code` or
   `process` call running at the file's mtime (`terminal (inferred)`, from the activity timeline);
   else `unknown`, which a later `fs_note` claims. The first scan of an empty table only takes
   stock. Locks are released when they expire and 5 minutes after their owner stops; a change by
@@ -504,7 +506,15 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   than `auto_accept_min_seen` times, skills holding scripts or binaries (or stale, or over 48 KB),
   schedules with a script (proposed with them or named), a monitor, another model, an explicit
   delivery target or a removed repo job, and settings marked sensitive. Promotions are never proposals. The review's model reads each
-  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. It never
+  of the rest and answers one JSON verdict: `approve`, or `needs_human` with a reason. Outcome
+  evidence never decides what reaches the model; the model judges whether a change is obvious. When
+  the agent's engine records outcomes (`engine.OutcomeEvidence`) or any are held for the proposal,
+  the model also reads, after the change's delimiters and marked as Stormo's count, the evidence
+  summary for its exact version (`loop.EvidenceText`): independent confirmations, failures,
+  corrections, attempts, evidence kinds and when it was last confirmed, a `WARNING` line first when
+  any failure or correction is recorded, and that views, snapshot sightings, model claims and a
+  clean exit are not evidence. An engine that records none (Hermes) adds nothing: its proposals
+  read, and hash, as they did before evidence existed. It never
   rejects: a reject purges what the agent learned, and a wrong approval is undone with `stormo learn
   reject`. Anything but a well-formed approve is a pass to a person.
   - Rules: the built-in prompt (`pkg/core/review_prompt.md`, embedded), then the instance's own
@@ -515,7 +525,10 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
     the plan lists; required for an API connection, which is called with the instance's shared
     key).
   - Verdicts are kept in `core.db` (`review_verdicts`) by agent, proposal, content hash and rules
-    hash: an unchanged proposal is not asked about again, and a rules change asks again. At most 40
+    hash: an unchanged proposal is not asked about again, and a rules change asks again. A proposal
+    shown with evidence is hashed with its exact revision and its evidence summary's revision, so
+    new evidence (a failure, a correction, a confirmation) asks again and an approval given before
+    it is refused at apply time. At most 40
     model calls per agent per cycle; a model out of reach leaves everything for a person and says
     so in the run.
   - An approval is applied like a person's (`loop.Approve`, working tree only) and records who and
@@ -687,3 +700,11 @@ which another session owns right now:
    OpenRouter.
 6. **Retention** for activity previews (7 days) and messages (90 days after a thread's last
    message), as built; change `RetainActivity` / `RetainMessages` if the owner decides otherwise.
+
+### Learning evidence contract
+
+`agents/<id>/learnings/evidence-v1.json` is a separate versioned, metadata-only store (0600). Existing ledger lines and usage counts keep their formats. Snapshot sightings and timestamps never count as confirmation; they keep the roles they had before evidence (`auto_accept_min_seen`, and the ranking below once evidence comparisons tie). Existing accepted lessons remain accepted when evidence is absent, and legacy evidence is reported as unknown. Pins remain first in retention ranking; supported knowledge (confirmed, no failure or correction) by confirmations and validation time follows; then, as without evidence, seen count, last seen and id.
+
+Only authorized feedback or task assertions can confirm a result. Views, model claims, snapshots, and a successful process exit cannot. Events are attributed to an exact subject revision and deduplicated by task and underlying source; another snapshot cannot manufacture independent support. Review exposes bounded counts and evidence types rather than source text. Evidence is the review model's input, never a rule (§6 *Review*): `auto_accept_min_seen` still decides when a lesson reaches the model, and `auto_accept_min_confirmations` is read and range-checked for compatibility but unused.
+
+Missing stores initialize at version 1. A store that cannot be read (corrupt, oversized, invalid or an unsupported version) is never rewritten: the dream's merge refuses it (the dream reports that and goes on, see ARCHITECTURE.md), while its readers (the ledger, the compile, the review and its page) read it as no evidence, log a warning once and show it on the review page as the agent's `notices`. Replayed identical events are no-ops; conflicting event IDs and stores over 4,096 events are refused. Updates are locked and atomically replaced. No implicit eviction or conversion from historical usage occurs. Broad deployment still requires a retention/archival policy and measured quality/cost gates; deterministic regression tests do not establish live learning quality.

@@ -35,22 +35,23 @@ const (
 
 // Learning is one ledger line. Field order is the ledger's line format; keep it.
 type Learning struct {
-	ID        string         `json:"id"`
-	Kind      Kind           `json:"kind"`
-	Scope     manifest.Scope `json:"scope"`
-	Agent     string         `json:"agent"`
-	Unit      string         `json:"unit"`
-	Text      string         `json:"text"` // already scrubbed; raw text never reaches git
-	PII       []string       `json:"pii"`  // scrubber finding kinds, empty when clean
-	Status    Status         `json:"status"`
-	Pinned    *bool          `json:"pinned,omitempty"`
-	FirstSeen string         `json:"firstSeen"`
-	LastSeen  string         `json:"lastSeen"`
-	SeenCount int            `json:"seenCount"`
-	Instances []string       `json:"instances"`
-	Naps      []string       `json:"naps"` // nap keys that carried it (provenance)
-	DecidedAt *string        `json:"decidedAt,omitempty"`
-	Note      *string        `json:"note,omitempty"`
+	Evidence  EvidenceSummary `json:"-"` // derived from the separate versioned evidence store
+	ID        string          `json:"id"`
+	Kind      Kind            `json:"kind"`
+	Scope     manifest.Scope  `json:"scope"`
+	Agent     string          `json:"agent"`
+	Unit      string          `json:"unit"`
+	Text      string          `json:"text"` // already scrubbed; raw text never reaches git
+	PII       []string        `json:"pii"`  // scrubber finding kinds, empty when clean
+	Status    Status          `json:"status"`
+	Pinned    *bool           `json:"pinned,omitempty"`
+	FirstSeen string          `json:"firstSeen"`
+	LastSeen  string          `json:"lastSeen"`
+	SeenCount int             `json:"seenCount"`
+	Instances []string        `json:"instances"`
+	Naps      []string        `json:"naps"` // nap keys that carried it (provenance)
+	DecidedAt *string         `json:"decidedAt,omitempty"`
+	Note      *string         `json:"note,omitempty"`
 }
 
 func (l *Learning) IsPinned() bool { return l.Pinned != nil && *l.Pinned }
@@ -72,6 +73,7 @@ func LoadLedger(root, agent string) ([]*Learning, error) {
 	} else if err != nil {
 		return nil, err
 	}
+	evidence, _ := ReadEvidence(root, agent) // unreadable evidence reads as none (logged)
 	out := []*Learning{}
 	for _, line := range strings.Split(string(body), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -81,6 +83,7 @@ func LoadLedger(root, agent string) ([]*Learning, error) {
 		if err := json.Unmarshal([]byte(line), &l); err != nil {
 			return nil, fmt.Errorf("%s: %w", LedgerPath(root, agent), err)
 		}
+		l.Evidence = evidence.Summary("lesson", l.ID, LessonRevision(&l), "agent")
 		out = append(out, &l)
 	}
 	return out, nil
@@ -162,6 +165,14 @@ func Upsert(ledger *[]*Learning, s Sighting) (*Learning, bool) {
 		if s.At > e.LastSeen {
 			e.LastSeen = s.At
 		}
+		// A text flagged on any sighting stays flagged (promotion refuses it): the flags are a
+		// union, never the latest sighting's, while the entry's text is the sighting's
+		// (normalized). A reviewer's rewrite (Decide) changed the text and cleared its flags on
+		// purpose: a later sighting of the old text (the same id) flags what is no longer
+		// there, and is not taken.
+		if Normalize(e.Text) == Normalize(s.Text) {
+			e.PII = unionFlags(e.PII, s.PII)
+		}
 		return e, false
 	}
 	pii := s.PII
@@ -172,6 +183,18 @@ func Upsert(ledger *[]*Learning, s Sighting) (*Learning, bool) {
 		Status: Proposed, FirstSeen: s.At, LastSeen: s.At, SeenCount: 1, Instances: []string{s.Instance}, Naps: []string{s.Nap}}
 	*ledger = append(*ledger, e)
 	return e, true
+}
+
+// unionFlags is a's flags plus b's it lacks, sorted (never nil).
+func unionFlags(a, b []string) []string {
+	out := append([]string{}, a...)
+	for _, f := range b {
+		if !contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func contains(l []string, s string) bool {
@@ -207,10 +230,23 @@ func Promote(e *Learning, scope manifest.Scope) error {
 	return nil
 }
 
-// Rank orders the hot tier: pinned, then corroboration across naps, then recency.
+// Rank orders the hot tier: pinned; then lessons with outcome evidence that supports them (no
+// failure or correction), by confirmations and when last confirmed; then, as before evidence
+// existed (and for every lesson of an engine that records no outcomes), corroboration across
+// naps (seen count), recency (last seen) and id.
 func Rank(a, b *Learning) bool {
 	if a.IsPinned() != b.IsPinned() {
 		return a.IsPinned()
+	}
+	as, bs := a.Evidence.AutoEligible(1), b.Evidence.AutoEligible(1)
+	if as != bs {
+		return as
+	}
+	if as && a.Evidence.Confirmations != b.Evidence.Confirmations {
+		return a.Evidence.Confirmations > b.Evidence.Confirmations
+	}
+	if as && a.Evidence.ValidatedAt != b.Evidence.ValidatedAt {
+		return a.Evidence.ValidatedAt > b.Evidence.ValidatedAt
 	}
 	if a.SeenCount != b.SeenCount {
 		return a.SeenCount > b.SeenCount

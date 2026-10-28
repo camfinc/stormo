@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
 )
 
@@ -42,8 +43,12 @@ func TestDefaultsAndOrder(t *testing.T) {
 	}
 }
 
+// On Hermes, atlas also has a Telegram channel its token gates.
 func TestAbsentOptionalSecretsSwitchOffWhatTheyGate(t *testing.T) {
-	a := atlas(t)
+	a, err := Load(hermestest.Instance(t), "atlas", "acme/stormo")
+	if err != nil {
+		t.Fatal(err)
+	}
 	eff := ApplyOptional(a, required)
 	if len(eff.Agent.Channels) != 1 || eff.Agent.Channels[0].Kind != "slack" || len(eff.Agent.Actions) != 0 || slices.Contains(eff.Agent.Secrets, "CRM_API_TOKEN") {
 		t.Errorf("effective = %+v", eff.Agent)
@@ -76,7 +81,7 @@ func copyInstance(t *testing.T) string {
 }
 
 func TestManifestRejections(t *testing.T) {
-	root := copyInstance(t)
+	root := hermestest.Instance(t) // atlas on Hermes, with its Telegram channel
 	yamlPath := filepath.Join(root, "agents", "atlas", "agent.yaml")
 	original, _ := os.ReadFile(yamlPath)
 	for _, c := range []struct {

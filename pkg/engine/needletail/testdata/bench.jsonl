@@ -1,0 +1,7 @@
+starting needletail oneshot
+{"type":"tool_use","name":"terminal"}
+{"type":"text","text":"Checking "}
+{"type":"tool_use","name":"crm__lookup"}
+{"type":"text","text":"deals."}
+not json {
+{"type":"result","text":"Three stale deals.","exit_code":0,"tokens":{"total":1834},"error":""}

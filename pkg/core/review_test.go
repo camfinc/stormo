@@ -190,3 +190,66 @@ func TestReviewPageAndDecisions(t *testing.T) {
 		t.Errorf("home channel in agent.yaml: %+v %v", a, err)
 	}
 }
+
+// The review page shows a lesson's outcome evidence; confirmations decide nothing there
+// (core.learning.auto_accept_min_confirmations is read but unused), and a lesson with none is as
+// auto-acceptable as before evidence existed.
+func TestReviewViewShowsEvidenceWithoutGating(t *testing.T) {
+	_, inst := fixture(t)
+	ledger := []*learning.Learning{}
+	e, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Check task assertions before reporting success.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	bare, _ := learning.Upsert(&ledger, learning.Sighting{Kind: learning.KindMemory, Text: "Reports are due on Mondays.", Agent: "atlas", Unit: "sales", Nap: "n", At: "2026-10-26T10:00:00Z"})
+	if err := learning.SaveLedger(inst.Root, "atlas", ledger); err != nil {
+		t.Fatal(err)
+	}
+	event := learning.OutcomeEvent{EventID: "check", TaskRoot: "task", Origin: "check", SubjectKind: "lesson", SubjectID: e.ID, SubjectRevision: learning.LessonRevision(e), At: "2026-10-26T10:00:00Z", Audience: "agent", SourceType: "assertion", ExecutionStatus: "succeeded", TaskOutcome: "succeeded"}
+	if err := learning.MergeEvidence(inst.Root, "atlas", []learning.OutcomeEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: testDB(t), DigestDir: t.TempDir()})
+	inst.CoreLearning.AutoAcceptMinConfirmations = 5
+	view, err := learner.review(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lessons := map[string]ReviewLesson{}
+	for _, agent := range view.Agents {
+		if agent.ID == "atlas" {
+			for _, l := range agent.Lessons {
+				lessons[l.ID] = l
+			}
+		}
+	}
+	for _, id := range []string{e.ID, bare.ID} {
+		if l, ok := lessons[id]; !ok || !l.AutoAcceptable || l.Held != "" {
+			t.Errorf("lesson %s: %+v", id, l)
+		}
+	}
+	if lessons[e.ID].Evidence.Confirmations != 1 || lessons[bare.ID].Evidence.Confirmations != 0 {
+		t.Errorf("evidence not shown: %+v %+v", lessons[e.ID].Evidence, lessons[bare.ID].Evidence)
+	}
+}
+
+// An unreadable evidence store does not take the review page down: the agent's proposals are
+// listed as usual, with a notice saying why its evidence reads as none.
+func TestReviewSurvivesUnreadableEvidence(t *testing.T) {
+	_, inst := fixture(t)
+	write(t, learning.EvidencePath(inst.Root, "atlas"), "{not json")
+	learner := NewLearner(LearnerOptions{Inst: inst, DB: testDB(t), DigestDir: t.TempDir()})
+	view, err := learner.review(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range view.Agents {
+		switch a.ID {
+		case "atlas":
+			if len(a.Lessons) == 0 || len(a.Notices) != 1 || !strings.Contains(a.Notices[0], "evidence-v1.json") {
+				t.Errorf("atlas: lessons %d notices %q", len(a.Lessons), a.Notices)
+			}
+		default:
+			if len(a.Notices) != 0 {
+				t.Errorf("%s notices %q", a.ID, a.Notices)
+			}
+		}
+	}
+}
