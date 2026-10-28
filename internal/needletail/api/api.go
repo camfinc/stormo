@@ -118,11 +118,13 @@ type Server struct {
 	wg     sync.WaitGroup // running turns; Add only under mu, with closing checked
 	grace  time.Duration  // how long Shutdown waits for cancelled turns to stop
 
-	mu         sync.Mutex
-	closing    bool            // Shutdown has begun: no turn starts
-	busy       map[string]bool // conversation roots with a running turn
-	active     int             // turns held, both lanes
-	jobTurns   int             // of which scheduled runs' (their own lane)
+	mu      sync.Mutex
+	closing bool            // Shutdown has begun: no turn starts
+	busy    map[string]bool // conversation roots with a running turn
+	// stops cancel the turn running in a conversation (its root): Cancel, a person's /stop
+	stops      map[string]context.CancelFunc
+	active     int // turns held, both lanes
+	jobTurns   int // of which scheduled runs' (their own lane)
 	lastActive time.Time
 	lastSource string
 }
@@ -168,7 +170,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}, stops: map[string]context.CancelFunc{}}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -393,7 +395,44 @@ func (r *Reservation) Turn(ctx context.Context, input string, opts loop.Options)
 	defer cancel()
 	stop := context.AfterFunc(r.s.base, cancel)
 	defer stop()
+	r.s.mu.Lock()
+	r.s.stops[r.root] = cancel
+	r.s.mu.Unlock()
+	defer func() {
+		r.s.mu.Lock()
+		delete(r.s.stops, r.root)
+		r.s.mu.Unlock()
+	}()
 	return r.s.run(ctx, r.session, input, opts)
+}
+
+// Cancel stops the turn running in session's conversation (a person's /stop): its context is
+// cancelled, so the model call or the tool running ends and the turn returns its error. False
+// when no turn runs there.
+func (s *Server) Cancel(session string) bool {
+	root := session
+	if r, ok := s.store.Root(session); ok {
+		root = r
+	}
+	s.mu.Lock()
+	stop := s.stops[root]
+	s.mu.Unlock()
+	if stop == nil {
+		return false
+	}
+	stop()
+	return true
+}
+
+// Running is whether a turn (or a hold) has session's conversation now.
+func (s *Server) Running(session string) bool {
+	root := session
+	if r, ok := s.store.Root(session); ok {
+		root = r
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy[root]
 }
 
 // Release gives the slot back; calls after the first do nothing.
