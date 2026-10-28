@@ -232,7 +232,16 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if messaging.Endorsed(ctx) != "" && !messaging.Filtered(ctx) && text != g.o.Redact(r.Text) {
 		return messaging.Sent{}, fmt.Errorf("%w: the agent's before_send handlers would change the message the owner approved; it is not sent altered", messaging.ErrBlocked)
 	}
+	if gate == nil {
+		// a handler that read marked data marked the run: the send is decided again on what
+		// they left, so their rewrite reaches another chat only through a person's approval
+		gate = g.quarantineSend(ctx, t)
+	}
+	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
+		return messaging.Sent{}, gate
+	}
 	if need, ok := messaging.AsApproval(gate); ok {
+		// what a person approves is the message as the handlers left it: bound, and posted so
 		need.Payload, _ = json.Marshal(map[string]any{"target": r.Target, "message": text})
 		need.Filtered = true
 		return messaging.Sent{}, need
@@ -350,6 +359,10 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	}
 	if messaging.Endorsed(ctx) != "" && text != g.o.Redact(d.Text) {
 		return fmt.Errorf("%w: the agent's before_send handlers would change the report the owner approved; it is not delivered altered", messaging.ErrBlocked)
+	}
+	// a handler that read marked data marked the run: the report is held for approval
+	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+		return messaging.Deferred("scheduled Telegram delivery", why)
 	}
 	if !d.Trusted {
 		if err := g.Check(mt); err != nil {
