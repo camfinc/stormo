@@ -131,8 +131,15 @@ type manifestDrafter interface {
 	SlackManifestArgv(a *manifest.Agent, name, description string) []string
 }
 
-// Manifest generates the agent's Slack app manifest with the pinned engine image's own generator
-// and writes dist/<id>/slack-manifest[.dev].json.
+// manifestRenderer is an engine that renders an agent's Slack app manifest itself, in process (the
+// scopes and events its gateway needs, and its slash commands): no image is run. Asked before
+// manifestDrafter.
+type manifestRenderer interface {
+	SlackManifest(a *manifest.Agent, name, description string) ([]byte, error)
+}
+
+// Manifest generates the agent's Slack app manifest with the engine's own generator (rendered in
+// process, or the pinned engine image's) and writes dist/<id>/slack-manifest[.dev].json.
 func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result, error) {
 	a, err := manifest.Load(inst.Root, id, inst.Names.Secret)
 	if err != nil {
@@ -149,21 +156,41 @@ func Manifest(inst *instance.Instance, id string, dev bool, run Runner) (*Result
 	if err != nil {
 		return nil, err
 	}
-	drafter, ok := eng.(manifestDrafter)
-	if !ok {
-		return nil, fmt.Errorf("the %s engine cannot draft a Slack app manifest", eng.Kind())
-	}
+	return manifestFor(inst, a, eng, dev, run)
+}
+
+// manifestFor is Manifest with the agent's engine given.
+func manifestFor(inst *instance.Instance, a *manifest.Agent, eng interface{ Kind() string }, dev bool, run Runner) (*Result, error) {
+	id := a.ID
 	name := AppName(a.Name, dev)
 	// The TS engine cut the description at 139 UTF-16 units; roles are plain text, so runes match.
-	argv := drafter.SlackManifestArgv(a, name, truncate(a.Role, 139))
-	out, stderr, code := run(argv)
-	start := strings.Index(out, "{")
-	if code != 0 || start < 0 {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = out
+	description := truncate(a.Role, 139)
+	var out string
+	if r, ok := eng.(manifestRenderer); ok {
+		body, err := r.SlackManifest(a, name, description)
+		if err != nil {
+			return nil, fmt.Errorf("%s slack manifest: %w", eng.Kind(), err)
 		}
-		return nil, fmt.Errorf("%s slack manifest failed: %s", eng.Kind(), msg)
+		out = string(body)
+	} else {
+		drafter, ok := eng.(manifestDrafter)
+		if !ok {
+			return nil, fmt.Errorf("the %s engine cannot draft a Slack app manifest", eng.Kind())
+		}
+		argv := drafter.SlackManifestArgv(a, name, description)
+		stdout, stderr, code := run(argv)
+		if code != 0 || !strings.Contains(stdout, "{") {
+			msg := strings.TrimSpace(stderr)
+			if msg == "" {
+				msg = stdout
+			}
+			return nil, fmt.Errorf("%s slack manifest failed: %s", eng.Kind(), msg)
+		}
+		out = stdout
+	}
+	start := strings.Index(out, "{")
+	if start < 0 {
+		return nil, fmt.Errorf("%s slack manifest: no JSON", eng.Kind())
 	}
 	owners, err := SlashCommandOwners(inst)
 	if err != nil {
