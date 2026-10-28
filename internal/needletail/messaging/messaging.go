@@ -429,6 +429,8 @@ func ParseRoute(to string) (agent string, t Target, canonical string, err error)
 		return "", t, t.String(), nil
 	}
 	switch {
+	case strings.EqualFold(to, "home"):
+		return "", Target{}, "", fmt.Errorf("route to %q: the home channel is slack (an agent is named by its id)", to)
 	case to == "group" || to == "*" || strings.HasPrefix(to, "unit:"):
 		return "", Target{}, "", fmt.Errorf("route to %q refused: a route goes to one agent or one conversation, never a broadcast (group, unit:<id>)", to)
 	case !routeAgentRe.MatchString(to):

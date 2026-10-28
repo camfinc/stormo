@@ -551,18 +551,18 @@ func TestWebSearchRender(t *testing.T) {
 	}
 }
 
-// The providers the agent's schedules name are rendered (with the agent's own) as
-// needletail.yaml model.providers, so a job's provider resolves at run time; none named, none
-// rendered; one that is not an API connection is refused.
+// The agent's own provider and those its schedules name are rendered as needletail.yaml
+// model.providers, so a job's provider (a repo job's, or one the agent made naming its own)
+// resolves at run time; one that is not an API connection is refused.
 func TestScheduleProvidersRender(t *testing.T) {
 	inst, a := atlas(t)
 	conn, _ := inst.Connection(a.Engine.Provider)
-	if p, err := scheduleProviders(a, inst); err != nil || len(p) != 0 {
-		t.Errorf("no schedule names a provider: %+v %v", p, err)
-	}
-	a.Schedules = append(a.Schedules, manifest.Schedule{ID: "pinned", Provider: a.Engine.Provider})
 	p, err := scheduleProviders(a, inst)
 	if err != nil || len(p) != 1 || p[0].Name != a.Engine.Provider || p[0].BaseURL != conn.BaseURL || p[0].KeyEnv != conn.Key {
+		t.Errorf("the agent's own provider: %+v %v", p, err)
+	}
+	a.Schedules = append(a.Schedules, manifest.Schedule{ID: "pinned", Provider: a.Engine.Provider})
+	if p, err = scheduleProviders(a, inst); err != nil || len(p) != 1 {
 		t.Errorf("providers = %+v %v", p, err)
 	}
 	a.Schedules = append(a.Schedules, manifest.Schedule{ID: "bad", Provider: "nowhere"})

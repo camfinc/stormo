@@ -23,7 +23,8 @@ const (
 // thread context or marked data) is an outbound forward of words the agent may not obey: it is put
 // to the approvers as the call that would run (send_message, mcp_core_msg_send), never sent at
 // once. Never a broadcast. The handler's text, if any, is a short acknowledgement in the original
-// conversation, posted as a handler's reply is (none to an unverified ambient author).
+// conversation, posted as a handler's reply is, once the message was passed on (none while it
+// waits for the owner).
 func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v messaging.Verdict) {
 	agent, target, canonical, err := messaging.ParseRoute(v.To)
 	if err != nil {
@@ -49,7 +50,8 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 		return
 	}
 	g.logf("slack: %s: %s routed a message to %s (no turn)%s", session, v.By, canonical, map[bool]string{true: ", put to the approvers", false: ""}[marked])
-	if strings.TrimSpace(v.Text) != "" && (j.verified || !j.ambient) {
+	// the acknowledgement says it was passed on: not while it waits for the owner
+	if strings.TrimSpace(v.Text) != "" && !marked {
 		if err := g.handlerReply(session, j, messaging.Verdict{Text: v.Text, By: v.By}); err != nil {
 			g.logf("slack: %s: %s's acknowledgement not posted: %v", session, v.By, err)
 		}

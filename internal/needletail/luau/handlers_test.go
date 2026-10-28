@@ -83,6 +83,7 @@ func TestParseDecision(t *testing.T) {
 		{OnMention, `{"action":"route","to":"slack:C0HOME0001"}`, "route", ""},
 		{OnMessage, `{"action":"route"}`, "", "route needs to"},
 		{OnMessage, `{"action":"route","to":"group"}`, "", "never a broadcast"},
+		{OnMessage, `{"action":"route","to":"home"}`, "", "slack"},
 		{OnMessage, `{"action":"route","to":"unit:sales"}`, "", "never a broadcast"},
 		{OnMessage, `{"action":"route","to":"slack:#general"}`, "", "could not resolve"},
 		{OnSchedule, `{"action":"route","to":"x"}`, "", `not "route"`},

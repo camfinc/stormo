@@ -339,20 +339,13 @@ func renderConfig(a *manifest.Agent, conn instance.Connection, target manifest.T
 }
 
 // scheduleProviders are the API connections a job may name (needletail.yaml model.providers): the
-// agent's own and each one agent.yaml's schedules name, by their instance names; none when no
-// schedule names a provider (the file stays as an older image reads it).
+// agent's own and each one agent.yaml's schedules name, by their instance names.
 func scheduleProviders(a *manifest.Agent, inst *instance.Instance) ([]wire.Provider, error) {
-	named := []string{}
+	named := []string{a.Engine.Provider}
 	for _, s := range a.Schedules {
 		if s.Provider != "" && !slices.Contains(named, s.Provider) {
 			named = append(named, s.Provider)
 		}
-	}
-	if len(named) == 0 {
-		return nil, nil
-	}
-	if !slices.Contains(named, a.Engine.Provider) {
-		named = append([]string{a.Engine.Provider}, named...)
 	}
 	out := []wire.Provider{}
 	for _, n := range named {

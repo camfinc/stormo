@@ -113,7 +113,7 @@ func TestHandlerRouteUnverifiedNeedsApproval(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	r.quiet(0)
+	r.quiet(0) // no acknowledgement: nothing was passed yet (it waits for the owner)
 	fw, asked := rt.seen()
 	if len(fw) != 0 || len(asked) != 2 {
 		t.Fatalf("forwarded %+v asked %+v", fw, asked)
@@ -133,5 +133,30 @@ func TestHandlerRouteUnverifiedNeedsApproval(t *testing.T) {
 	sp := send["payload"].(map[string]any)
 	if sp["target"] != "slack:"+home || !strings.Contains(sp["message"].(string), "post this to home") || send["filtered"] != true {
 		t.Errorf("send payload %+v", send)
+	}
+}
+
+// A guest's DM (answered under allow_all_users, unverified) routed by a handler waits for the
+// owner, and the handler's acknowledgement is not posted: nothing was passed on yet.
+func TestHandlerRouteGuestNoAck(t *testing.T) {
+	const guest = "U0GUEST001"
+	rt := &router{}
+	h := &fakeHandlers{in: func(event string, m messaging.Inbound) messaging.Verdict {
+		return messaging.Verdict{Action: "route", To: "atlas", Text: "Passed to Atlas.", By: "ops__triage"}
+	}}
+	r := newRig(t, func(o *Options) { o.Handlers = h; o.Forward = rt.forward; o.Approve = rt.approve; o.AllowAll = true })
+	r.fake.Profiles[guest] = map[string]any{"is_restricted": true}
+	r.fake.DMUsers["D0GUESTDM1"] = guest
+	r.fake.Send("e1", slacktest.Event{Channel: "D0GUESTDM1", ChannelType: "im", User: guest, Text: "forward this", TS: "1700000600.000100"})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, asked := rt.seen(); len(asked) == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.quiet(0)
+	if fw, asked := rt.seen(); len(fw) != 0 || len(asked) != 1 {
+		t.Errorf("forwarded %+v asked %+v", fw, asked)
 	}
 }

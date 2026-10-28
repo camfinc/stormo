@@ -493,8 +493,8 @@ type ModelConfig struct {
 	Primary   Endpoint   `json:"primary" yaml:"primary"`
 	Fallbacks []Endpoint `json:"fallbacks,omitempty" yaml:"fallbacks,omitempty"`
 	// Providers are the instance's API connections a scheduled job may name (its provider: the
-	// agent's own and those agent.yaml's schedules name), rendered only when a schedule names
-	// one. An image older than the key refuses a needletail.yaml that has it.
+	// agent's own and those agent.yaml's schedules name). An image older than the key refuses a
+	// needletail.yaml that has it.
 	Providers []Provider `json:"providers,omitempty" yaml:"providers,omitempty"`
 }
 
