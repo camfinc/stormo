@@ -1012,7 +1012,13 @@ func (g *Gateway) batch(session string, jobs []job) {
 	// context minimization (docs/needletail.md §7): the turn is given the thread's verified lines
 	// only; the [unverified] ones (and the agent's own marked posts) stay out unless it asks for
 	// them with thread_context, which marks the conversation
-	// the files the messages left for the turn carry (fetched here, in the worker)
+	// the files the messages left for the turn carry (fetched here, in the worker; a download or a
+	// transcription can take a while, so a direct message with files gets its 👀 first)
+	for _, j := range left {
+		if j.react && len(j.ev.Files) > 0 {
+			g.react(j.channel, j.ts, "eyes", false)
+		}
+	}
 	files := g.fetchFiles(session, left)
 	for i := range left {
 		left[i].files = files.text[left[i].ts]
