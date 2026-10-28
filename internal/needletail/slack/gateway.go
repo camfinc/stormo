@@ -597,7 +597,7 @@ func (g *Gateway) admitted(user, botID string) bool {
 // messages, a name), matched on the text as markerFold folds it: neutralised, so quoted text
 // cannot pass for one. Any spacing (none too) may part the words; (?i) folds case as Unicode
 // does (ſ is s, K is k).
-var markerRe = regexp.MustCompile(`(?i)\[\s*(?:slack\s*message\s*from|thread\s*context|end\s*of\s*thread\s*context|thread\s*parent|assistant|unverified|handler\s*notes|files?\s*attached|file\s|end\s*of\s*file|voice\s*note|forwarded\s*from|end\s*of\s*forwarded)`)
+var markerRe = regexp.MustCompile(`(?i)\[\s*(?:(?:slack|telegram)\s*message\s*from|thread\s*context|end\s*of\s*thread\s*context|thread\s*parent|assistant|unverified|handler\s*notes|files?\s*attached|file\s|end\s*of\s*file|voice\s*note|forwarded\s*from|end\s*of\s*forwarded)`)
 
 // brackets are opening brackets a reader takes for "[".
 var brackets = map[rune]bool{'⟦': true, '〚': true, '【': true, '〔': true, '〖': true, '⁅': true, '⦋': true, '⦍': true, '⦏': true, '﹝': true}

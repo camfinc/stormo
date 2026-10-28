@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -91,8 +92,22 @@ func (g *Gateway) Tell(ctx context.Context, r *approvals.Request) error {
 	return err
 }
 
-// mention is a user as a card shows them (<@U…>, which Slack renders as their name).
-func (g *Gateway) mention(id string) string { return "<@" + id + ">" }
+// mention is a user as a card shows them (<@U…>, which Slack renders as their name); another
+// platform's (telegram:<id>) as inline code.
+func (g *Gateway) mention(id string) string {
+	if !slackUserRe.MatchString(id) {
+		return inlineCode(id)
+	}
+	return "<@" + id + ">"
+}
+
+var slackUserRe = regexp.MustCompile(`^[UWB][A-Z0-9]{2,}$`)
+
+// OutcomeNotice is a request's outcome as the conversation it was asked in is told (Markdown):
+// what another platform's gateway posts there (Tell's text).
+func OutcomeNotice(r *approvals.Request) string {
+	return outcomeLine(r, func(id string) string { return id }, markdownCode)
+}
 
 // Limits of what a card shows of the model's words (Slack's own: 3000 characters a section's
 // text, 2000 a field's, 150 a header's; the message 50 blocks).
