@@ -126,11 +126,14 @@ func (g *Gateway) runCommand(ctx context.Context, c *Commands, p slashPayload) s
 	if c.Approvers != nil {
 		call.Approver = slices.Contains(c.Approvers(), p.UserID)
 	}
-	dm := strings.HasPrefix(p.ChannelID, "D")
 	switch {
-	case dm:
-		g.rememberDM(p.ChannelID, p.UserID) // the DM's person is who writes there
-		call.Conversation = DMSessionID(p.ChannelID)
+	case strings.HasPrefix(p.ChannelID, "D"):
+		// a command runs in any DM, the agent's or one between two people: only the caller's DM
+		// with the agent is a conversation here (its person, as the gateway saw them write there
+		// or as conversations.info says, is the caller)
+		if person, err := g.dmUser(p.ChannelID); err == nil && person == p.UserID {
+			call.Conversation = DMSessionID(p.ChannelID)
+		}
 	case tsRe.MatchString(p.ThreadTS) && g.o.Exists(SessionID(p.ChannelID, p.ThreadTS)):
 		call.Conversation = SessionID(p.ChannelID, p.ThreadTS)
 	}

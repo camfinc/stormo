@@ -43,6 +43,7 @@ func TestSlashCommands(t *testing.T) {
 	owner := "U0OWNER001"
 	r := newRig(t, func(o *Options) { o.AllowedUsers = append(o.AllowedUsers, owner) })
 	log := &cmdLog{}
+	r.fake.DMUsers["D0OWNERDM1"], r.fake.DMUsers["D0MALLET01"], r.fake.DMUsers["D0ALICEBOB"] = owner, mallet, owner
 	// before serve wires the commands: told to try again, nothing done
 	r.fake.Slash("Sl0", "/new", "", alice, dm, nil)
 	if res := r.fake.WaitResponses(1, 5*time.Second); !strings.Contains(res[0].Text, "not running yet") {
@@ -90,11 +91,17 @@ func TestSlashCommands(t *testing.T) {
 	if !strings.Contains(res[6].Text, "may not use my commands") {
 		t.Fatalf("stranger: %q", res[6].Text)
 	}
+	// a command in a DM between two people (the agent is not in it): no conversation there
+	r.fake.Slash("Sl6b", "/new", "", alice, "D0ALICEBOB", nil)
+	res = r.fake.WaitResponses(8, 5*time.Second)
+	if !strings.Contains(res[7].Text, "no conversation") {
+		t.Fatalf("/new in someone else's DM: %q", res[7].Text)
+	}
 	// another app's command (an old Hermes one): named as not mine
 	r.fake.Slash("Sl7", "/model", "gpt", alice, dm, nil)
-	res = r.fake.WaitResponses(8, 5*time.Second)
-	if !strings.Contains(res[7].Text, "is not one of my commands") || !strings.Contains(res[7].Text, "/help") {
-		t.Fatalf("unknown: %q", res[7].Text)
+	res = r.fake.WaitResponses(9, 5*time.Second)
+	if !strings.Contains(res[8].Text, "is not one of my commands") || !strings.Contains(res[8].Text, "/help") {
+		t.Fatalf("unknown: %q", res[8].Text)
 	}
 	want := []string{"status " + DMSessionID(dm), "new " + DMSessionID(dm) + " slack:" + alice, "status " + DMSessionID("D0OWNERDM1"), "trust " + DMSessionID("D0OWNERDM1") + " slack:" + owner}
 	if got := log.get(); strings.Join(got, "|") != strings.Join(want, "|") {
