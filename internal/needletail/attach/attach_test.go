@@ -320,3 +320,59 @@ func canceled() context.Context {
 	cancel()
 	return ctx
 }
+
+// storeBytes is everything under files/ (uploads and indexes).
+func storeBytes(home string) int64 {
+	total := int64(0)
+	_ = filepath.Walk(filepath.Join(home, "files"), func(_ string, fi os.FileInfo, _ error) error {
+		if fi != nil && !fi.IsDir() {
+			total += fi.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// Codex finding (step 4): a transcript grows its index, which counts against the store's bound:
+// room is made for the growth first (the oldest uploads go), a transcript replaced by one as long
+// takes none, and one the store cannot hold is refused.
+func TestStoreBoundAtTranscript(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+	s := &Store{Home: home, MaxBytes: 4000, Now: func() time.Time { now = now.Add(time.Minute); return now }}
+	if _, err := s.Save("convA", Entry{ID: "F1", Name: "a.txt", Kind: KindText}, bytes.Repeat([]byte("a"), 500)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save("convB", Entry{ID: "F2", Name: "voice.m4a", Kind: KindAudio}, bytes.Repeat([]byte("b"), 500)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTranscript("convB", "F2", strings.Repeat("t", 2800)); err != nil {
+		t.Fatal(err)
+	}
+	if n := storeBytes(home); n > 4000 {
+		t.Errorf("the store holds %d bytes after a transcript", n)
+	}
+	if a, _ := s.List("convA"); len(a) != 0 {
+		t.Errorf("the oldest upload stayed past the bound: %+v", a)
+	}
+	if b, _ := s.List("convB"); len(b) != 1 || len(b[0].Transcript) != 2800 {
+		t.Fatalf("convB %+v", b)
+	}
+	// replaced by one as long: no growth, nothing goes
+	if err := s.SetTranscript("convB", "F2", strings.Repeat("u", 2800)); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := s.List("convB"); len(b) != 1 || b[0].Transcript[0] != 'u' {
+		t.Fatalf("convB %+v", b)
+	}
+	// one the store cannot hold is refused, and the store stays within its bound
+	if err := s.SetTranscript("convB", "F2", strings.Repeat("v", 5000)); err == nil {
+		t.Error("a transcript larger than the store was kept")
+	}
+	if n := storeBytes(home); n > 4000 {
+		t.Errorf("the store holds %d bytes", n)
+	}
+	if b, _ := s.List("convB"); len(b) != 1 || b[0].Transcript[0] != 'u' {
+		t.Errorf("a refused transcript removed its upload or changed it: %+v", b)
+	}
+}

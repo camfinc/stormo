@@ -454,7 +454,10 @@ func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
 	return e, nil
 }
 
-// SetTranscript keeps a voice note's transcript in its entry.
+// SetTranscript keeps a voice note's transcript in its entry. The index it grows counts against
+// the store's bound as an upload does: room is made for the growth first (the transcript it
+// replaces counted off; the oldest uploads go), and one the store could not hold even alone with
+// its file is refused.
 func (s *Store) SetTranscript(conv, id, text string) error {
 	if err := validConv(conv); err != nil {
 		return err
@@ -465,13 +468,38 @@ func (s *Store) SetTranscript(conv, id, text string) error {
 	if err != nil {
 		return err
 	}
-	for i := range idx.Files {
-		if idx.Files[i].ID == id {
-			idx.Files[i].Transcript = text
-			return s.write(conv, &idx)
+	i := slices.IndexFunc(idx.Files, func(e Entry) bool { return e.ID == id })
+	if i < 0 {
+		return fmt.Errorf("no file %s in this conversation", id)
+	}
+	idx.Version = IndexVersion
+	before, err := json.MarshalIndent(idx, "", " ")
+	if err != nil {
+		return err
+	}
+	next := index{Version: IndexVersion, Files: slices.Clone(idx.Files)}
+	next.Files[i].Transcript = text
+	after, err := json.MarshalIndent(next, "", " ")
+	if err != nil {
+		return err
+	}
+	if grow := int64(len(after) - len(before)); grow > 0 {
+		if int64(len(after))+idx.Files[i].Size > s.maxBytes() {
+			return fmt.Errorf("the transcript is not kept: over the file store's %d bytes", s.maxBytes())
+		}
+		if err := s.reserve(grow); err != nil {
+			return fmt.Errorf("the transcript is not kept: %w", err)
+		}
+		// reserve may have removed uploads of this conversation (this one too)
+		if idx, err = s.load(conv); err != nil {
+			return err
+		}
+		if i = slices.IndexFunc(idx.Files, func(e Entry) bool { return e.ID == id }); i < 0 {
+			return fmt.Errorf("no file %s in this conversation (removed to keep the file store within its bound)", id)
 		}
 	}
-	return fmt.Errorf("no file %s in this conversation", id)
+	idx.Files[i].Transcript = text
+	return s.write(conv, &idx)
 }
 
 // List is a conversation's uploads, oldest first.
