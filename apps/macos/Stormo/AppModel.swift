@@ -21,6 +21,8 @@ final class AppModel {
     let review: ReviewStore
     /// The Files section's shared space (in memory only: names and contents can name clients).
     let files: FilesStore
+    /// Each agent's Slack people and channels, for the editor's pickers (in memory only).
+    let slack: SlackDirectoryStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -62,6 +64,7 @@ final class AppModel {
         fleet = FleetStore(client: client)
         review = ReviewStore(client: client, instanceRoot: nil)
         files = FilesStore(client: client, instanceRoot: nil)
+        slack = SlackDirectoryStore(client: client)
     }
 
     // MARK: Startup
@@ -114,6 +117,8 @@ final class AppModel {
         review.client = client
         files.client = client
         files.clear()
+        slack.client = client
+        slack.clear()
         fleet.clear()
         avatars = [:]
     }

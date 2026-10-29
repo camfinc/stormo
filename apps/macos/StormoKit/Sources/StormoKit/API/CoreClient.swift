@@ -151,6 +151,9 @@ public struct CoreClient: Sendable {
         try await send(URLRequest(url: base.appending(path: path)))
     }
 
+    /// `send` for the client's extensions in other files (the Slack directory).
+    func sendAuthorized(_ request: URLRequest) async throws -> Data { try await send(request) }
+
     private func send(_ request: URLRequest) async throws -> Data {
         var request = request
         if let token, request.value(forHTTPHeaderField: "Authorization") == nil {

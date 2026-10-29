@@ -214,6 +214,7 @@ struct AgentEditor: View {
 /// show (a channel's local overrides, anything newer than this app) are kept; every choice comes
 /// from the engine (`options`).
 private struct AgentForm: View {
+    @Environment(AppModel.self) private var model
     @Bindable var editor: ConfigEditor
     let options: AgentOptions
     let agent: FleetAgent?
@@ -349,9 +350,12 @@ private struct AgentForm: View {
         let slack = kind == "slack"
         let needs = options.channels.first { $0.kind == kind }?.secrets ?? []
         let missing = needs.filter { !declared($0) }
+        let directory = slack ? model.slack.directory(agentID) : nil
         return Section {
+            if slack { SlackDirectoryStatus(agentID: agentID) }
             StringListRows(title: "Allowed users", items: strings(base + ["allowed_users"]),
-                           prompt: slack ? "Slack member ID (U…)" : "Telegram user id", suggestions: [], monospaced: true)
+                           prompt: slack ? "Slack member ID (U…)" : "Telegram user id", suggestions: [], monospaced: true,
+                           named: directory.map(SlackChoices.people) ?? [], display: directory.map { d in { d.label(for: $0) } })
             Toggle("Anyone may message", isOn: toggle(base + ["allow_all_users"], default: false))
             if slack {
                 Picker("Messages from other bots", selection: text(base + ["allow_bots"])) {
@@ -359,7 +363,12 @@ private struct AgentForm: View {
                     ForEach(options.allowBots, id: \.self) { Text($0).tag($0) }
                 }
             }
-            TextField("Home channel", text: text(base + ["home_channel"]), prompt: Text("where cron results go"))
+            if slack {
+                SlackTargetField(title: "Home channel", text: text(base + ["home_channel"]), prompt: "where cron results go",
+                                 agentID: agentID, delivery: false)
+            } else {
+                TextField("Home channel", text: text(base + ["home_channel"]), prompt: Text("where cron results go"))
+            }
             if slack {
                 Toggle("Owns the workspace's slash commands", isOn: toggle(base + ["slash_commands"], default: false))
             }
@@ -832,8 +841,10 @@ private struct ScheduleRows: View {
                 TextField("Model", text: form.text(path + ["model"]), prompt: Text("the agent's own"))
                 TextField("Provider", text: form.text(path + ["provider"]), prompt: Text("the agent's own"))
             }
-            TextField("Deliver to", text: form.text(path + ["deliver"]), prompt: Text("slack, telegram, local"))
-            TextField("Failures to", text: form.text(path + ["on_failure"]), prompt: Text("where a failed run is reported"))
+            SlackTargetField(title: "Deliver to", text: form.text(path + ["deliver"]), prompt: "slack, telegram, local",
+                             agentID: form.agentID, delivery: true)
+            SlackTargetField(title: "Failures to", text: form.text(path + ["on_failure"]), prompt: "where a failed run is reported",
+                             agentID: form.agentID, delivery: true)
             StringListRows(title: "Tools", items: form.strings(path + ["tools"]), prompt: "toolset (empty: the agent's own)", suggestions: [], monospaced: true)
             HStack {
                 Text("id \(form.get(path + ["id"])?.string ?? "")").font(.caption).foregroundStyle(.tertiary).monospaced()
@@ -886,6 +897,10 @@ private struct StringListRows: View {
     let prompt: String
     let suggestions: [String]
     var monospaced = false
+    /// Picks by name that add an id (a Slack directory's people and bots), grouped.
+    var named: [SlackChoices.Choice] = []
+    /// A name to show beside an id, when one is known.
+    var display: ((String) -> String?)? = nil
     @State private var draft = ""
 
     var body: some View {
@@ -897,6 +912,7 @@ private struct StringListRows: View {
         ForEach(Array(items.enumerated()), id: \.offset) { i, item in
             HStack {
                 Text(item).monospaced(monospaced).textSelection(.enabled)
+                if let name = display?(item) { Text(name).foregroundStyle(.secondary) }
                 Spacer()
                 Button("Remove", systemImage: "minus.circle") { items.remove(at: i) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
@@ -908,6 +924,21 @@ private struct StringListRows: View {
                 .labelsHidden()
                 .monospaced(monospaced)
                 .onSubmit(add)
+            let byName = named.filter { !items.contains($0.id) }
+            if !byName.isEmpty {
+                Menu {
+                    ForEach(SlackChoices.groups.filter { g in byName.contains { $0.group == g } }, id: \.self) { group in
+                        Section(group) {
+                            ForEach(byName.filter { $0.group == group }) { c in Button(c.label) { items.append(c.id) } }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Pick someone from the agent's Slack workspace")
+            }
             let more = suggestions.filter { !items.contains($0) }
             if !more.isEmpty {
                 Menu {
