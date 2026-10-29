@@ -194,9 +194,9 @@ Use the in-process `serve` + `slacktest` fake Slack + stub model pattern from
   `cmd/needletail`, `deploy/needletail`, docs and the registry names needletail. Hermes unchanged.
 - Never touch ports 18600-18700, `swarm-*` containers, real Slack, or secrets. No push, no branch
   operations, no stash.
-- After review (Claude + Codex), roll out: build `needletail:dev-<sha>`, bump `agents/mateo-nt`
-  `engine.version`/`image_tag` in camf-swarm (uncommitted folder), rebuild the app's bundled CLI
-  from a clean archive, restart `mateo-nt`.
+- After review (Claude + Codex), roll out: build `needletail:dev-<sha>`, bump the needletail
+  agents' `engine.version`/`image_tag` in the instance, rebuild the app's bundled CLI from a clean
+  archive, restart those agents.
 
 ## 9. Implementation decisions and verification
 

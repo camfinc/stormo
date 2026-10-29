@@ -10,7 +10,7 @@ Keep the two hot files exactly as they are (`memories/MEMORY.md`, `memories/USER
 Relevance is BM25, plus small boosts for recency, importance and use applied to the BM25 candidates. Each user turn, a gated, budgeted, fenced "recalled memory" block is attached to the user message in the request, never to the system prompt. The model gets `memory_search` and `memory_manage` (ids, CRUD, pin/unpin) beside the unchanged `memory` tool, and Luau gets the same as additive globals behind a new `memory:read|write` grant.
 
 **What it takes.** `RECORDS.md` is napped **Raw**, so it is restored verbatim and never read by the dream. That means the ledger, scrub and promotion invariants hold unchanged: nothing new reaches git, and the only way into the ledger is still the hot files. Two small changes are needed:
-- **Needletail-only:** one snapshot rule plus its `classify.json` case. No needletail agent has napped yet (no CAMF `agent.yaml` has `engine.kind: needletail`), so the §8 freeze has not happened and this is cheap now.
+- **Needletail-only:** one snapshot rule plus its `classify.json` case. When this was written no needletail agent had napped yet (no instance's `agent.yaml` had `engine.kind: needletail`), so the §8 freeze had not happened and this was cheap.
 - **Engine-neutral:** rehydrate writes a hash-only `.swarm/memory-merge.json` listing which hot entries it purged (a reviewer rejected them) or deferred, so the runtime also drops rejected entries from the archive.
 
 Embeddings stay an optional later phase. The core gateway serves no embeddings endpoint, so they need a paid API connection (OpenRouter or OpenAI, $0.01–0.02 per 1M tokens). They are worth adding only if a recall evaluation shows lexical search missing paraphrases or Spanish↔English matches. The design leaves a slot for them (fusing the two rankings with RRF). SQLite FTS5 (verified available in modernc v1.59.0) is the measured fallback index if an agent passes about 50k records. It would be a derived, unnapped index, so even then no `SQLite:true` rule is needed.
@@ -75,7 +75,7 @@ Not stored in the record (they change on reads, so they must not rewrite the rea
 Prefers a balcony cabin, midship, on Mediterranean cruises; never interior cabins.
 §
 <!-- {"id":"m0kq3w8c2d1e","kind":"user","tags":[],"imp":3,"hot":1,"src":"migration","created":"…","updated":"…"} -->
-Ana leads the CAMF Travel sales desk; wants replies in Spanish.
+Ana leads the Acme sales desk; wants replies in Spanish.
 ```
 
 - Entries are joined by `\n§\n` (the hot files' delimiter, the same `engine.Delimited` codec). The first entry is a version header. Each record entry is one header line (`<!-- {json} -->`, keys in this order; unknown keys are kept when rewriting) followed by the text.
