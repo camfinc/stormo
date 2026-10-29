@@ -173,8 +173,10 @@ type Core struct {
 	// loopbackTrust: direct loopback requests may read the open views without a token.
 	loopbackTrust bool
 	ownDB         bool
-	stop          chan struct{}
-	once          sync.Once
+	// slackDirs caches each agent's Slack directory for the owner's pickers (in memory only).
+	slackDirs slackDirectories
+	stop      chan struct{}
+	once      sync.Once
 }
 
 // StopOffice stops the office timer (and the fleet's timers if the core started them).
@@ -592,6 +594,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Referrer-Policy", "no-referrer")
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
+			return
+		case slackDirectoryPath.MatchString(path):
+			m := slackDirectoryPath.FindStringSubmatch(path)
+			c.handleSlackDirectory(w, r, m[1], m[2] == "/dm")
 			return
 		case runtimeLearningPath.MatchString(path):
 			c.handleRuntimeLearning(w, r, runtimeLearningPath.FindStringSubmatch(path)[1], bo.Roster)

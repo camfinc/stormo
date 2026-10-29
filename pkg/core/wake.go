@@ -12,7 +12,6 @@ import (
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
-	"github.com/camfinc/stormo/pkg/secrets"
 )
 
 // What the bus does outside the core: wake an agent with a run on its own API, and mirror an
@@ -72,11 +71,10 @@ func SlackMirror(inst *instance.Instance, client *http.Client) MirrorFn {
 			return err
 		}
 		channel, _ := eng.Env(a, manifest.Local).Get("SLACK_HOME_CHANNEL")
-		file, err := secrets.Load(secrets.Path(inst.Root))
+		token, err := agentSlackToken(inst, a)
 		if err != nil {
 			return err
 		}
-		token, _ := secrets.Resolve(file, a, manifest.Local).Values.Get("SLACK_BOT_TOKEN")
 		if channel == "" || token == "" {
 			return fmt.Errorf("%s has no Slack home channel or bot token for a local run", agent)
 		}
