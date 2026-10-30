@@ -176,6 +176,16 @@ public struct AgentOptions: Codable, Sendable, Equatable {
     public var reasoning: [String]?
     /// Connections the agent may use (absent from an older stormo).
     public var connections: [Connection]?
+    /// Capabilities the instance declares, for the agent's capabilities: (absent from an older stormo).
+    public var capabilities: [Capability]?
+
+    public struct Capability: Codable, Sendable, Equatable, Identifiable {
+        public var name: String
+        public var description: String
+        /// Why it cannot run here.
+        public var unavailable: String?
+        public var id: String { name }
+    }
 
     public struct Connection: Codable, Sendable, Equatable, Identifiable {
         public var name: String

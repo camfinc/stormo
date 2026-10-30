@@ -232,6 +232,7 @@ private struct AgentForm: View {
             addChannel
             ForEach(channelIndices, id: \.self) { i in channel(i) }
             actions
+            capabilities
             secrets
             optionalSecrets
             SecretValuesSection(agentID: agentID, declared: declaredSecrets)
@@ -442,6 +443,39 @@ private struct AgentForm: View {
             }
         } header: {
             SectionTitle("Bridge actions", note: "Actions of the agent's unit and of group.")
+        }
+    }
+
+    /// The instance's capabilities (stormo.yaml) this agent may ask the core for; an older stormo
+    /// lists none, and the section stays out of the way.
+    @ViewBuilder
+    private var capabilities: some View {
+        let chosen = strings(["capabilities"])
+        let declared = options.capabilities ?? []
+        let foreign = chosen.wrappedValue.filter { name in !declared.contains { $0.name == name } }
+        if options.capabilities != nil, !declared.isEmpty || !foreign.isEmpty {
+            Section {
+                ForEach(declared) { c in
+                    Toggle(isOn: member(c.name, of: chosen)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(c.name).monospaced()
+                            if let why = c.unavailable {
+                                Text("Cannot run here: \(why)").font(.caption).foregroundStyle(.orange)
+                            } else if !c.description.isEmpty {
+                                Text(c.description).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(c.unavailable != nil && !chosen.wrappedValue.contains(c.name))
+                }
+                ForEach(foreign, id: \.self) { name in
+                    Toggle(isOn: member(name, of: chosen)) {
+                        Label("\(name): not declared in stormo.yaml", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                }
+            } header: {
+                SectionTitle("Capabilities", note: "Heavy work the core runs for this agent (Capabilities page). No restart needed.")
+            }
         }
     }
 
