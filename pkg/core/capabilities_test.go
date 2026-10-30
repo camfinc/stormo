@@ -532,3 +532,95 @@ func TestCapabilityDefaultFolderIsTheAgentsUnit(t *testing.T) {
 		t.Errorf("an agent no one can place: %v", err)
 	}
 }
+
+// The owner reads one job with its output (scrubbed as previews are) and cancels any job; the
+// agent hears of an owner's cancel.
+func TestCapabilityOwnerJobAndCancel(t *testing.T) {
+	_, inst := fixture(t)
+	hold := make(chan struct{})
+	defer close(hold)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		var body struct {
+			Input struct {
+				Slow bool `json:"slow"`
+			} `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Input.Slow {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		fmt.Fprint(w, `{"text":"call ana@example.com tomorrow"}`)
+	}))
+	defer worker.Close()
+	services := link.NewServices("acme")
+	services.Docker = serviceDocker(strings.TrimPrefix(worker.URL, "http://"))
+	inst.Capabilities = []instance.Capability{{Name: "text.read", Kind: "service", Image: "t:1", Placement: "local", Port: 8080, Health: "/health",
+		IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "in"}}
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true,
+		WorkdirRoot: t.TempDir(), Roster: func() []BusAgent { return []BusAgent{{ID: "atlas", Unit: "sales"}} },
+		CapabilityGrants: func(string) []string { return []string{"text.read"} }, Services: services, CapabilityImage: func(string) error { return nil },
+		CapabilityJobs: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	owner := func(method, path, token string) (int, JobView) {
+		req, _ := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d%s", c.Addr.Port, path), nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var j JobView
+		json.NewDecoder(res.Body).Decode(&j)
+		return res.StatusCode, j
+	}
+	const tok = "owner-token-0123456789"
+
+	done, _ := c.Broker.Start("atlas", StartRequest{Capability: "text.read", Input: json.RawMessage(`{"q":1}`)})
+	eventually(t, "done", func() bool { j, _ := c.Broker.Job("atlas", done.ID); return j.Status == "done" })
+	code, j := owner("GET", fmt.Sprintf("/api/capabilities/jobs/%d", done.ID), tok)
+	if code != 200 || j.Status != "done" || !strings.Contains(string(j.Output), "call") || strings.Contains(string(j.Output), "ana@example.com") {
+		t.Errorf("owner's job: %d %+v %s", code, j, j.Output)
+	}
+	if code, _ := owner("GET", "/api/capabilities/jobs/999", tok); code != 404 {
+		t.Errorf("no such job: %d", code)
+	}
+
+	// a waiting job, cancelled by the owner: its agent hears of it
+	waiting, _ := c.Broker.Start("atlas", StartRequest{Capability: "text.read", FilesPending: 1})
+	if code, _ := owner("POST", fmt.Sprintf("/api/capabilities/jobs/%d/cancel", waiting.ID), ""); code != 401 {
+		t.Errorf("cancel without a token: %d", code)
+	}
+	if code, j := owner("POST", fmt.Sprintf("/api/capabilities/jobs/%d/cancel", waiting.ID), tok); code != 200 || j.Status != "failed" || j.Error != cancelledByOwner {
+		t.Errorf("cancel waiting: %d %+v", code, j)
+	}
+	// a running one: stopped, and the notice says so
+	running, _ := c.Broker.Start("atlas", StartRequest{Capability: "text.read", Input: json.RawMessage(`{"slow":true}`)})
+	eventually(t, "running", func() bool { j, _ := c.Broker.Job("atlas", running.ID); return j.Status == "running" })
+	owner("POST", fmt.Sprintf("/api/capabilities/jobs/%d/cancel", running.ID), tok)
+	eventually(t, "cancelled", func() bool {
+		j, _ := c.Broker.Job("atlas", running.ID)
+		return j.Status == "failed" && j.Error == cancelledByOwner
+	})
+	eventually(t, "the notices", func() bool { inbox, _ := c.Bus.Inbox("atlas", true, 10); return len(inbox) == 3 })
+	inbox, _ := c.Bus.Inbox("atlas", true, 10)
+	subjects := []string{}
+	for _, m := range inbox {
+		subjects = append(subjects, m.Subject)
+	}
+	all := strings.Join(subjects, " | ")
+	if !strings.Contains(all, fmt.Sprintf("job %d cancelled", waiting.ID)) || !strings.Contains(all, fmt.Sprintf("job %d failed", running.ID)) {
+		t.Errorf("notices: %s", all)
+	}
+}

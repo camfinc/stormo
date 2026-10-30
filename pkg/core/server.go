@@ -146,6 +146,9 @@ type CoreOptions struct {
 	LearnDeps LearnDeps
 }
 
+// capJobPath is one capability job for the owner, and its cancel.
+var capJobPath = regexp.MustCompile(`^/api/capabilities/jobs/([0-9]{1,18})(/cancel)?$`)
+
 // capUploadPath is an agent's upload to its waiting capability job.
 var capUploadPath = regexp.MustCompile(`^/v1/capabilities/jobs/([0-9]{1,18})/files$`)
 
@@ -640,6 +643,32 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return
 			}
 			writeJSONBody(w, 200, v)
+			return
+		case capJobPath.MatchString(path) && (get || r.Method == http.MethodPost):
+			// One job for the owner (GET), or the owner's cancel (POST …/cancel).
+			m := capJobPath.FindStringSubmatch(path)
+			id, _ := strconv.ParseInt(m[1], 10, 64)
+			var j *JobView
+			var err error
+			switch {
+			case get && m[2] == "":
+				j, err = broker.OwnerJob(id)
+			case r.Method == http.MethodPost && m[2] == "/cancel":
+				j, err = broker.CancelAsOwner(id, who.Actor())
+			default:
+				writeJSONBody(w, 405, errBody("method", "GET a job, POST …/cancel"))
+				return
+			}
+			if err != nil {
+				var te ToolError
+				if errors.As(err, &te) {
+					writeJSONBody(w, 404, errBody("not_found", err.Error()))
+				} else {
+					writeJSONBody(w, 500, errBody("core_internal", "could not read the job"))
+				}
+				return
+			}
+			writeJSONBody(w, 200, j)
 			return
 		case r.Method == http.MethodPost && capUploadPath.MatchString(path):
 			// An agent's file for its own waiting job, streamed into the job's folder.

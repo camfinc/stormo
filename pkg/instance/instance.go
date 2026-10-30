@@ -287,6 +287,17 @@ func Load(root string) (*Instance, error) {
 	if err != nil {
 		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
 	}
+	return Parse(abs, body)
+}
+
+// Parse reads an instance from a stormo.yaml's bytes, as Load does from the file: what an editor
+// checks before it writes the file (agents' sidecars read it live).
+func Parse(root string, body []byte) (*Instance, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(abs, File)
 	var raw rawFile
 	if err := yaml.Unmarshal(body, &raw); err != nil {
 		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}

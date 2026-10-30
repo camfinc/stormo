@@ -73,6 +73,7 @@ type Broker struct {
 	mu      sync.Mutex
 	running map[string]int
 	cancels map[int64]context.CancelFunc
+	byOwner map[int64]bool // running jobs the owner cancelled (their agent gets the notice)
 	builds  map[string]*sync.Mutex
 	wake    chan struct{}
 }
@@ -122,7 +123,7 @@ func NewBroker(o BrokerOptions) *Broker {
 			return a.Capabilities
 		}
 	}
-	return &Broker{o: o, running: map[string]int{}, cancels: map[int64]context.CancelFunc{}, builds: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
+	return &Broker{o: o, running: map[string]int{}, cancels: map[int64]context.CancelFunc{}, byOwner: map[int64]bool{}, builds: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
 }
 
 // JobView is a job as its agent (and the owner) sees it.
@@ -413,6 +414,84 @@ func (b *Broker) Recover() {
 	_ = os.RemoveAll(b.o.JobsDir)
 }
 
+// cancelledByOwner is the error of a job the owner cancelled: unlike the agent's own cancel, its
+// agent gets the notice.
+const cancelledByOwner = "cancelled by the owner"
+
+// maxOwnerOutput bounds the output the owner's job view carries.
+const maxOwnerOutput = 64 << 10
+
+// OwnerJob is one job for the owner: everything the list shows plus its output, scrubbed as the
+// previews are and clipped.
+func (b *Broker) OwnerJob(id int64) (*JobView, error) {
+	j, err := scanJob(b.o.DB.QueryRow(`SELECT `+jobCols+` FROM cap_jobs WHERE id = ?`, id), true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, toolErr("no job %d", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range [][]string{j.Inputs, j.Files, j.Uploads} {
+		for k := range l {
+			l[k] = b.o.Scrub(l[k])
+		}
+	}
+	j.Out = b.o.Scrub(j.Out)
+	if len(j.Output) > 0 {
+		out := b.o.Scrub(string(j.Output))
+		if len(out) > maxOwnerOutput {
+			j.Note = fmt.Sprintf("output cut at %d KB", maxOwnerOutput>>10)
+			out = out[:maxOwnerOutput]
+		}
+		if json.Valid([]byte(out)) {
+			j.Output = json.RawMessage(out)
+		} else {
+			q, _ := json.Marshal(out)
+			j.Output = q
+		}
+	}
+	return j, nil
+}
+
+// CancelAsOwner stops any job (a queued or waiting one never runs, a running one is stopped); its
+// agent gets the notice when it asked for one.
+func (b *Broker) CancelAsOwner(id int64, actor string) (*JobView, error) {
+	j, err := b.OwnerJob(id)
+	if err != nil {
+		return nil, err
+	}
+	switch j.Status {
+	case "queued", "waiting":
+		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = ?, finished = ? WHERE id = ? AND status IN ('queued', 'waiting')`,
+			cancelledByOwner, b.o.Now().UnixMilli(), id)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return b.CancelAsOwner(id, actor) // it just started
+		}
+		_ = os.RemoveAll(b.jobDir(j.Capability, id))
+		if j.Notify && b.o.Notify != nil {
+			_ = b.o.Notify(j.Agent, fmt.Sprintf("%s job %d cancelled", j.Capability, id),
+				fmt.Sprintf("The owner cancelled your %s job %d before it ran.", j.Capability, id), nil)
+		}
+	case "running":
+		b.mu.Lock()
+		cancel := b.cancels[id]
+		if cancel != nil {
+			b.byOwner[id] = true
+		}
+		b.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	default:
+		return j, nil
+	}
+	b.o.DB.Audit(actor, "cap.cancel", j.Capability, fmt.Sprintf("job %d of %s", id, j.Agent))
+	return b.OwnerJob(id)
+}
+
 // Run works the queue until stop (Recover settled the last core's jobs first). Idle services go to
 // sleep; all of them do when the core stops.
 func (b *Broker) Run(stop <-chan struct{}) {
@@ -495,6 +574,12 @@ func (b *Broker) dispatch() {
 			out, files, err := b.exec(ctx, c, q)
 			if errors.Is(ctx.Err(), context.Canceled) {
 				err = errors.New("cancelled")
+				b.mu.Lock()
+				if b.byOwner[q.id] {
+					err = errors.New(cancelledByOwner)
+				}
+				delete(b.byOwner, q.id)
+				b.mu.Unlock()
 			} else if errors.Is(err, context.DeadlineExceeded) {
 				err = fmt.Errorf("it took over its %d minutes", c.TimeoutMinutes)
 			}

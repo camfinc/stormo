@@ -5,6 +5,7 @@ package yamlfmt
 
 import (
 	"bytes"
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -32,7 +33,9 @@ var beforeComment = regexp.MustCompile(`(\S)[ \t]{2,}#`)
 // norm is what a line means, for matching an encoded line with the original it came from: the
 // spacing before a comment does not count, and a one-line `key: value` (or `- value`) is compared
 // by its key, decoded value and comment, so a scalar the encoder only re-quoted (yaml.v3 escapes
-// emoji in double quotes) still matches its original.
+// emoji in double quotes) still matches its original. A line holding a flow collection
+// (`- { city: Lisbon }`, `key: [a, b]`) is compared by its decoded value and comments too: the
+// encoder respaces the braces.
 func norm(line string) string {
 	trimmed := strings.TrimRight(line, " \t")
 	body := strings.TrimLeft(trimmed, " ")
@@ -48,10 +51,39 @@ func norm(line string) string {
 			case n.Kind == yaml.SequenceNode && len(n.Content) == 1 && n.Content[0].Kind == yaml.ScalarNode && n.Content[0].Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0:
 				v := n.Content[0]
 				return indent + "\x00s\x00" + v.ShortTag() + "\x00" + v.Value + "\x00" + strings.TrimSpace(v.LineComment)
+			case strings.ContainsAny(body, "{[") && hasFlow(n):
+				var v any
+				if doc.Decode(&v) == nil {
+					if j, err := json.Marshal(v); err == nil {
+						return indent + "\x00f\x00" + string(j) + "\x00" + strings.TrimSpace(comments(n))
+					}
+				}
 			}
 		}
 	}
 	return beforeComment.ReplaceAllString(trimmed, "$1 #")
+}
+
+// hasFlow is whether a node holds a flow mapping or sequence.
+func hasFlow(n *yaml.Node) bool {
+	if (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) && n.Style&yaml.FlowStyle != 0 {
+		return true
+	}
+	for _, c := range n.Content {
+		if hasFlow(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// comments are a node's line comments, depth first.
+func comments(n *yaml.Node) string {
+	out := n.LineComment
+	for _, c := range n.Content {
+		out += comments(c)
+	}
+	return out
 }
 
 // restore walks a longest common subsequence of the two files' lines (compared by norm): common

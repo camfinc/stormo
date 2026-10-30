@@ -120,7 +120,13 @@ needletail's quarantine; starting, running and cancelling are writes.
 
 - `stormo capability list` (`GET /api/capabilities`): each capability with its worker state,
   queue, grants, and this month's spend per agent; `stormo capability jobs` the latest jobs with
-  scrubbed previews, never inputs or outputs.
+  scrubbed previews. One job (`GET /api/capabilities/jobs/<id>`) shows its output too, through the
+  same scrubber, cut at 64 KB; `POST …/cancel` stops any job (its agent gets the notice).
+- `stormo capability show|set|remove` declare, change and remove capabilities in stormo.yaml (a JSON
+  merge patch per capability, the rest of the file kept as written, checked whole before it is
+  written); grants are `config apply` on an agent.yaml (`{"capabilities": [...]}`), refused for a
+  capability not declared or not runnable. The core loads a change at its next restart. The macOS
+  app does all of this from its Capabilities page and the agent editor.
 - `stormo capability try <name> [input] [file…]` runs one job of a local container or service
   here without the core, from local files, and puts the worker back to sleep: the way to see a
   worker answer before granting it.

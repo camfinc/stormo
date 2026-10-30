@@ -31,6 +31,15 @@ type Options struct {
 	Reasoning []string        `json:"reasoning"` // limits.reasoning levels the agent's engine accepts
 	// Connections the agent may use: API ones for model.provider, ChatGPT ones for model.local.
 	Connections []ConnectionOption `json:"connections"`
+	// Capabilities the instance declares (stormo.yaml capabilities:), for the agent's capabilities:.
+	Capabilities []CapabilityOption `json:"capabilities"`
+}
+
+// CapabilityOption is a capability an agent may be granted; Unavailable says why it cannot run here.
+type CapabilityOption struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 type ConnectionOption struct {
@@ -57,7 +66,10 @@ type ChannelOption struct {
 func options(inst *instance.Instance, agent string) *Options {
 	o := &Options{Units: []manifest.Unit{}, Actions: []ActionOption{}, Skills: []string{}, Personas: []string{},
 		Engines: engines.Kinds(), Channels: []ChannelOption{}, AllowBots: manifest.AllowBots, Secrets: []string{},
-		Scripts: []string{}, Reasoning: []string{}, Connections: []ConnectionOption{}}
+		Scripts: []string{}, Reasoning: []string{}, Connections: []ConnectionOption{}, Capabilities: []CapabilityOption{}}
+	for _, c := range inst.Capabilities {
+		o.Capabilities = append(o.Capabilities, CapabilityOption{c.Name, c.Description, c.Unavailable})
+	}
 	for _, c := range inst.Connections {
 		k, _ := instance.KindOf(c.Kind)
 		o.Connections = append(o.Connections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})

@@ -134,7 +134,11 @@ agent's own layers and write files back into them, attributed to the agent. Jobs
 when the core stopped fail; jobs are kept 30 days. The owner sees the registry, worker states,
 grants, queue, this month's spend per agent (`cost_usd` per job that did not fail) and the latest
 jobs with scrubbed previews (`GET /api/capabilities`, `/api/capabilities/jobs`, `stormo capability
-list|jobs`, the app's Capabilities page); every start, cancel, wake and sleep is audited.
+list|jobs`, the app's Capabilities page); one job's detail carries its output too, scrubbed and cut
+at 64 KB (`/api/capabilities/jobs/<id>`), and the owner may cancel any job. Declaring, changing and
+removing capabilities (`stormo capability set|remove`, the app) edits stormo.yaml, checked whole
+before it is written; the core loads it at its next restart. Every start, cancel, wake and sleep is
+audited.
 
 `stormo core up` starts it in the background (pid and log in `.swarm/core/`), `stormo core down`
 stops it, `stormo core serve` runs it in the foreground. A launchd plist can come later.

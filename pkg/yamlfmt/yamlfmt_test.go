@@ -27,3 +27,24 @@ func TestEncodeKeepsTheFileAsWritten(t *testing.T) {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}
 }
+
+// A line holding a flow collection keeps its spelling when its value did not change (the encoder
+// respaces `{ a: 1 }` as `{a: 1}`), and takes the new one when it did.
+func TestFlowLinesKeepTheirSpelling(t *testing.T) {
+	original := []byte("office:\n  clocks:\n    - { city: Lisbon, tz: Europe/Lisbon }   # home\n    - { city: Caracas, tz: America/Caracas }\nlist: [ a, b ]\nname: x\n")
+	var doc yaml.Node
+	if err := yaml.Unmarshal(original, &doc); err != nil {
+		t.Fatal(err)
+	}
+	root := doc.Content[0]
+	root.Content[len(root.Content)-1].Value = "y"                             // name: y
+	root.Content[1].Content[1].Content[1].Content[3].Value = "America/Bogota" // the second clock's tz
+	out, err := Encode(&doc, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "office:\n  clocks:\n    - { city: Lisbon, tz: Europe/Lisbon }   # home\n    - {city: Caracas, tz: America/Bogota}\nlist: [ a, b ]\nname: y\n"
+	if string(out) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}
