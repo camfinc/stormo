@@ -451,8 +451,22 @@ func TestCapabilityUploads(t *testing.T) {
 	if code, _ := upload(atlasKey, j.ID, "clip.mp4", "again"); code != 409 {
 		t.Errorf("a name twice: %d", code)
 	}
-	if code, body := upload(atlasKey, j.ID, "voice.m4a", "audio"); code != 200 || !strings.Contains(body, `"status":"queued"`) {
-		t.Fatalf("last upload: %d %s", code, body)
+	// the agent's own sidecar relay (what the engine calls instead of the core) passes the upload on,
+	// streamed, with the agent's key
+	relay := httptest.NewServer(link.NewAgent(link.AgentOptions{Agent: "atlas", CoreURL: fmt.Sprintf("http://127.0.0.1:%d", c.Addr.Port), CoreKey: atlasKey}).Relay())
+	defer relay.Close()
+	req, _ := http.NewRequest(http.MethodPost, relay.URL+UploadPath(j.ID)+"?name=voice.m4a", strings.NewReader("audio"))
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 || !strings.Contains(string(body), `"status":"queued"`) {
+		t.Fatalf("last upload, through the relay: %d %s", res.StatusCode, body)
+	}
+	if res, _ := http.Post(relay.URL+"/v1/chat/other", "application/json", strings.NewReader("{}")); res == nil || res.StatusCode != 404 {
+		t.Error("the relay passed a route it does not serve")
 	}
 	if code, _ := upload(atlasKey, j.ID, "late.mp4", "x"); code != 409 {
 		t.Errorf("an upload to a queued job: %d", code)

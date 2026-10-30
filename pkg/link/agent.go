@@ -99,7 +99,8 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 // Relay is the handler the agent's engine calls instead of the core: /ingest/* and /mcp go on to
-// the core; what the core cannot take now is held (hooks always, msg_send calls) or refused fast.
+// the core, and so does a file the agent uploads to its waiting capability job (streamed, never
+// held); what the core cannot take now is held (hooks always, msg_send calls) or refused fast.
 func (a *Agent) Relay() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -110,10 +111,46 @@ func (a *Agent) Relay() http.Handler {
 			a.relayIngest(w, r)
 		case r.URL.Path == "/mcp":
 			a.relayMCP(w, r)
+		case r.Method == http.MethodPost && capUpload.MatchString(r.URL.Path):
+			a.relayUpload(w, r)
 		default:
 			http.Error(w, "not relayed", http.StatusNotFound)
 		}
 	})
+}
+
+// capUpload is the core's route for a file an agent uploads to its waiting capability job.
+var capUpload = regexp.MustCompile(`^/v1/capabilities/jobs/[0-9]{1,18}/files$`)
+
+// relayUpload streams an upload to the core as it comes (a video is too big to hold, and a job
+// that waits for it times out anyway): with the agent's key, its name and its length.
+func (a *Agent) relayUpload(w http.ResponseWriter, r *http.Request) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, a.o.CoreURL+r.URL.Path+"?"+r.URL.RawQuery, r.Body)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req.ContentLength = r.ContentLength
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+a.o.CoreKey)
+	}
+	// No client timeout: a large file takes as long as it takes; the engine's request bounds it.
+	res, err := (&http.Client{Transport: a.client.Transport}).Do(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error":{"code":"core_unreachable","message":"the core is unreachable right now; try again later"}}`)
+		return
+	}
+	defer res.Body.Close()
+	if v := res.Header.Get("Content-Type"); v != "" {
+		w.Header().Set("Content-Type", v)
+	}
+	w.WriteHeader(res.StatusCode)
+	_, _ = io.Copy(w, io.LimitReader(res.Body, 1<<20))
 }
 
 var keptHeaders = []string{"Content-Type", "Authorization", "Accept", "Mcp-Protocol-Version"}
