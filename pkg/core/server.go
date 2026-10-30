@@ -216,10 +216,10 @@ func (c *Core) Close() error {
 	for _, b := range c.bridge {
 		_ = b.Close()
 	}
+	err := c.Server.Close() // first: a stopping core no longer answers, so `core up` never takes it for a running one
 	if c.Broker != nil {
 		c.Broker.o.Services.StopAll() // capability workers sleep with the core
 	}
-	err := c.Server.Close()
 	if c.ownDB {
 		c.DB.Close()
 	}

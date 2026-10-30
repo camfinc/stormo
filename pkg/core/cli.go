@@ -167,6 +167,14 @@ func down(inst *instance.Instance, o *out.Writer) error {
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
 		return err
 	}
+	// Stopped means gone: it puts its capability workers to sleep on the way out, and a `core up`
+	// right after must find no core.
+	for deadline := time.Now().Add(30 * time.Second); syscall.Kill(pid, 0) == nil && time.Now().Before(deadline); {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if syscall.Kill(pid, 0) == nil {
+		return fmt.Errorf("core (pid %d) is still stopping after 30 s: check it before starting another", pid)
+	}
 	_ = os.Remove(pidPath(root))
 	o.Result(DownResult{Stopped: true, PID: pid}, func(w io.Writer) { fmt.Fprintf(w, "core stopped (pid %d)\n", pid) })
 	return nil
