@@ -168,6 +168,9 @@ func (b *Broker) granted(agent, capability string) (instance.Capability, error) 
 	if !ok {
 		return c, toolErr("no capability %q in this instance (cap_list shows yours)", capability)
 	}
+	if c.Unavailable != "" {
+		return c, toolErr("%s cannot run here: %s", capability, c.Unavailable)
+	}
 	if !slices.Contains(b.o.Grants(agent), capability) {
 		return c, toolErr("%s is not granted to you (agent.yaml capabilities:)", capability)
 	}
@@ -842,6 +845,9 @@ func (b *Broker) Wake(name string) (link.ServiceState, error) {
 	}
 	if c.Kind != "service" || c.Placement != "local" {
 		return link.ServiceState{}, fmt.Errorf("%s is not a service on this host: its worker starts with each job", name)
+	}
+	if c.Unavailable != "" {
+		return link.ServiceState{}, fmt.Errorf("%s cannot run here: %s", name, c.Unavailable)
 	}
 	go func() {
 		if err := b.image(c); err != nil {

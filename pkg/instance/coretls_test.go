@@ -78,7 +78,6 @@ func TestCapabilitiesAreDeclaredWithAWorker(t *testing.T) {
 		"capabilities:\n  Bad: {kind: http, url: \"https://a\"}\n":                                         "lowercase",
 		"capabilities:\n  x: {kind: lambda}\n":                                                             "http, container or service",
 		"capabilities:\n  x: {kind: container, image: a, secrets: [key]}\n":                                "env var NAME",
-		"capabilities:\n  x: {template: nope}\n":                                                           "no template",
 		"capabilities:\n  x: {kind: container, image: a, port: 80}\n":                                      "for kind service",
 		"capabilities:\n  x: {kind: http, url: \"https://a\", files: in}\n":                                "files work only",
 		"placements:\n  gpu: {kind: runner}\ncapabilities:\n  x: {template: transcribe, placement: gpu}\n": "files work only",
@@ -117,5 +116,22 @@ func TestCapabilitiesFromTemplates(t *testing.T) {
 		t.Errorf("plain service: %+v", e)
 	} else if _, ok := e.TemplateImage(); ok {
 		t.Error("a plain service is no template's")
+	}
+}
+
+// A template this engine does not ship (a newer stormo.yaml read by an older binary, an agent's
+// sidecar) is kept as unavailable, not a failed load.
+func TestUnknownTemplateIsUnavailableNotFatal(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "stormo.yaml"), []byte("name: Acme\nslug: acme\ncapabilities:\n  x.y: {template: from-the-future}\n  a.b: {template: media}\n"), 0o644)
+	i, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := i.CapabilityNamed("x.y"); !strings.Contains(c.Unavailable, "from-the-future") {
+		t.Errorf("x.y: %+v", c)
+	}
+	if c, _ := i.CapabilityNamed("a.b"); c.Unavailable != "" {
+		t.Errorf("a.b: %+v", c)
 	}
 }

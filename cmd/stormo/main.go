@@ -838,6 +838,11 @@ func check(inst *instance.Instance, ids []string) ([]checked, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, c := range inst.Capabilities {
+		if c.Unavailable != "" {
+			return nil, fmt.Errorf("stormo.yaml capabilities.%s: %s", c.Name, c.Unavailable)
+		}
+	}
 	rows := []checked{}
 	for _, id := range ids {
 		a, err := manifest.Load(inst.Root, id, inst.Names.Secret)

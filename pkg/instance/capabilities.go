@@ -49,6 +49,10 @@ type Capability struct {
 	// Files: none | in | out | both: jobs take files from the agent's shared space, give files back.
 	// Only where the core reaches the worker's disk: container and service on this host.
 	Files string `json:"files"`
+	// Unavailable says why it cannot run here (a template this engine does not ship): kept, not
+	// fatal, so an older binary reading a newer stormo.yaml (an agent's sidecar) still loads it;
+	// `stormo check` refuses it and the core refuses its jobs.
+	Unavailable string `json:"unavailable,omitempty"`
 	// Jobs at once (default 1), minutes one may take (default 15), and the estimated cost of one
 	// in USD (for metering; 0 is unknown).
 	Concurrency    int     `json:"concurrency"`
@@ -104,7 +108,9 @@ func parseCapabilities(raw map[string]rawCapability, placements []Placement) ([]
 		if r.Template != "" {
 			t, ok := capability.Lookup(r.Template)
 			if !ok {
-				return nil, fmt.Errorf("%s: no template %q (%s)", where, r.Template, strings.Join(capability.Names(), ", "))
+				out = append(out, Capability{Name: n, Template: r.Template, Kind: "service", Description: r.Description, Files: "none", Placement: "local",
+					Concurrency: 1, TimeoutMinutes: 15, Unavailable: fmt.Sprintf("this engine ships no template %q (%s)", r.Template, strings.Join(capability.Names(), ", "))})
+				continue
 			}
 			r = fromTemplate(r, t)
 		}
