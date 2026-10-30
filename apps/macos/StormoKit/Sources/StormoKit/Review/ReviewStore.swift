@@ -5,7 +5,12 @@ import Observation
 /// only (lessons are scrubbed, but skill files are the agent's own writing).
 @MainActor @Observable
 public final class ReviewStore {
-    public private(set) var view: ReviewView?
+    public private(set) var view: ReviewView? {
+        didSet { if view == nil { diffs = [:] } }
+    }
+    /// Each proposed skill file's diff, by `diffKey`: made once per load off the main thread, not in
+    /// every row's body (a backlog is a thousand files, re-diffed on each Accept).
+    public private(set) var diffs: [String: LineDiff] = [:]
     public private(set) var loading = false
     private var loadContext: UUID?
     /// The last failure, in the core's words when it gave some.
@@ -51,13 +56,36 @@ public final class ReviewStore {
         loading = true
         defer { if loadContext == context { loading = false; loadContext = nil } }
         do {
-            let result = try await client.review(owner: owner)
+            // Proposed skills carry their files' text: a backlog is megabytes, more than 2 s. Its own
+            // task: the view's reload task is cancelled when the pending count changes mid-load, and
+            // the reload it starts returns while this one is in flight, leaving "cancelled" shown.
+            let client = client.with(timeout: 40)
+            let result = try await Task { try await client.review(owner: owner) }.value
+            let diffs = await Task.detached { Self.diffs(of: result) }.value
             guard contextID == context else { return }
             view = result
+            self.diffs = diffs
             problem = nil
         } catch {
             if contextID == context { problem = Self.describe(error) }
         }
+    }
+
+    nonisolated public static func diffKey(agent: String, skill: String, path: String) -> String {
+        [agent, skill, path].joined(separator: "\u{0}")
+    }
+
+    nonisolated static func diffs(of view: ReviewView) -> [String: LineDiff] {
+        var out: [String: LineDiff] = [:]
+        for agent in view.agents {
+            for skill in agent.skills {
+                for file in skill.files {
+                    guard let text = file.text else { continue }
+                    out[diffKey(agent: agent.id, skill: skill.skill, path: file.path)] = LineDiff(old: file.current ?? "", new: text)
+                }
+            }
+        }
+        return out
     }
 
     public func decide(_ decision: ReviewDecision) async {

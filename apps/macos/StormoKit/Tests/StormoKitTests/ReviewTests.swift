@@ -109,4 +109,46 @@ import Testing
         #expect(d.added == 2 && d.removed == 0 && d.hunks.count == 1)
         #expect(LineDiff(old: "same\n", new: "same\n").isEmpty)
     }
+
+    @Test func truncatedKeepsTheFirstLinesAndCountsTheRest() {
+        let old = (1...40).map { "line \($0)" }.joined(separator: "\n")
+        let new = old.replacingOccurrences(of: "line 5\n", with: "five\n").replacingOccurrences(of: "line 30\n", with: "thirty\n")
+        let d = LineDiff(old: old, new: new, context: 2)
+        #expect(d.shownLines == 12 && d.hunks.count == 2)
+        #expect(d.truncated(maxLines: 12).hidden == 0 && d.truncated(maxLines: 12).diff == d)
+
+        let (cut, hidden) = d.truncated(maxLines: 8)
+        #expect(hidden == 4 && cut.shownLines == 8)
+        #expect(cut.hunks.count == 2 && cut.hunks[1].lines.count == 2 && cut.hunks[1].skippedBefore == d.hunks[1].skippedBefore)
+        #expect(cut.added == d.added && cut.removed == d.removed)
+
+        let whole = LineDiff(old: "", new: (1...1000).map(String.init).joined(separator: "\n"))
+        let first = whole.truncated(maxLines: LineDiff.maxShownLines)
+        #expect(first.diff.shownLines == LineDiff.maxShownLines && first.hidden == 700 && first.diff.skippedAfter == 0)
+    }
+
+    @Test func storeDiffsEveryTextualSkillFileOnce() throws {
+        let body = #"""
+        {"autoAccept":false,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[
+         {"id":"atlas","name":"Atlas","unit":"sales","state":"running","busy":false,"unapplied":false,"lessons":[],
+          "skills":[{"skill":"notes","pii":[],"nap":"n","new":false,"files":[
+            {"path":"SKILL.md","size":4,"text":"a\nc\n","current":"a\nb\n"},
+            {"path":"logo.png","size":9000}]}]}]}
+        """#
+        let v = try JSONDecoder().decode(ReviewView.self, from: Data(body.utf8))
+        let diffs = ReviewStore.diffs(of: v)
+        #expect(diffs.count == 1)
+        let d = try #require(diffs[ReviewStore.diffKey(agent: "atlas", skill: "notes", path: "SKILL.md")])
+        #expect(d.added == 1 && d.removed == 1)
+        #expect(diffs[ReviewStore.diffKey(agent: "atlas", skill: "notes", path: "logo.png")] == nil)
+    }
+
+    @Test func onlyShortDiffsOfAFewProposalsOpenByDefault() {
+        let short = LineDiff(old: "a\n", new: "b\n")
+        let long = LineDiff(old: "", new: (1...500).map(String.init).joined(separator: "\n"))
+        #expect(LineDiff.opensByDefault(short, skillProposals: 1))
+        #expect(!LineDiff.opensByDefault(long, skillProposals: 1))
+        #expect(!LineDiff.opensByDefault(short, skillProposals: 58))
+        #expect(!LineDiff.opensByDefault(nil, skillProposals: 1))
+    }
 }

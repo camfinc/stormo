@@ -70,6 +70,38 @@ public struct LineDiff: Sendable, Equatable {
 
     public var isEmpty: Bool { added == 0 && removed == 0 }
 
+    /// The lines the hunks show (changes and their context): what a diff view draws.
+    public var shownLines: Int { hunks.reduce(0) { $0 + $1.lines.count } }
+
+    /// A diff view draws at most this many lines until the owner asks for the rest: every line is
+    /// a live view, and a new skill's diff is its whole file.
+    public static let maxShownLines = 300
+
+    /// The first `maxLines` shown lines, and how many it leaves out (0 when it all fits).
+    public func truncated(maxLines: Int) -> (diff: LineDiff, hidden: Int) {
+        let total = shownLines
+        guard total > maxLines else { return (self, 0) }
+        var cut = self, budget = maxLines
+        cut.hunks = []
+        for hunk in hunks where budget > 0 {
+            var h = hunk
+            h.lines = Array(hunk.lines.prefix(budget))
+            budget -= h.lines.count
+            cut.hunks.append(h)
+        }
+        // What follows the cut is hidden, not "unchanged".
+        cut.skippedAfter = 0
+        return (cut, total - maxLines)
+    }
+
+    /// Whether a skill's first file starts with its diff open: only a short diff, and only while the
+    /// agent has a few skill proposals. A backlog of hundreds opened at once is tens of thousands of
+    /// rows laid out in one pass, more than SwiftUI's graph holds.
+    public static func opensByDefault(_ diff: LineDiff?, skillProposals: Int) -> Bool {
+        guard let diff else { return false }
+        return skillProposals <= 5 && diff.shownLines <= 120
+    }
+
     static func lines(_ s: String) -> [String] {
         if s.isEmpty { return [] }
         var parts = s.components(separatedBy: "\n")

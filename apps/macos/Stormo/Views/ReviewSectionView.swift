@@ -88,7 +88,7 @@ private struct AgentReview: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(agent.proposedLessons) { LessonRow(agent: agent.id, lesson: $0) }
-            ForEach(agent.skills) { SkillRow(agent: agent.id, skill: $0) }
+            ForEach(agent.skills) { SkillRow(agent: agent.id, skill: $0, proposals: agent.skills.count) }
             if let schedules = agent.schedules { SchedulesRow(agent: agent.id, schedules: schedules) }
             ForEach(agent.runtimeSettings) { SettingRow(agent: agent.id, setting: $0) }
             if agent.proposedLessons.count > 1 {
@@ -178,6 +178,8 @@ private struct SkillRow: View {
     @Environment(AppModel.self) private var model
     let agent: String
     let skill: ReviewSkill
+    /// The agent's skill proposals: with many, every diff starts closed (LineDiff.opensByDefault).
+    let proposals: Int
     /// Files whose diff is shown. Not a DisclosureGroup: in a Form row it takes the row's clicks,
     /// so Reject and Accept toggled the diff instead of deciding.
     @State private var open: Set<String>?
@@ -207,10 +209,10 @@ private struct SkillRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(skill.files) { file in
-                let diff = file.text.map { LineDiff(old: file.current ?? "", new: $0) }
-                let shown = (open ?? Set(skill.files.prefix(1).map(\.path))).contains(file.path)
+                let diff = diff(file)
+                let shown = (open ?? defaultOpen).contains(file.path)
                 Button {
-                    var set = open ?? Set(skill.files.prefix(1).map(\.path))
+                    var set = open ?? defaultOpen
                     if shown { set.remove(file.path) } else { set.insert(file.path) }
                     open = set
                 } label: {
@@ -242,6 +244,19 @@ private struct SkillRow: View {
     }
 
     private var stale: Bool { skill.stale ?? false }
+
+    /// The first file, when its diff is short enough to show unasked.
+    private var defaultOpen: Set<String> {
+        guard let first = skill.files.first else { return [] }
+        return LineDiff.opensByDefault(diff(first), skillProposals: proposals) ? [first.path] : []
+    }
+
+    /// The store's diff from this load; made here only if it has none.
+    private func diff(_ file: ReviewFile) -> LineDiff? {
+        guard let text = file.text else { return nil }
+        return model.review.diffs[ReviewStore.diffKey(agent: agent, skill: skill.skill, path: file.path)]
+            ?? LineDiff(old: file.current ?? "", new: text)
+    }
 
     private var busy: Bool { model.review.deciding.contains(ReviewDecision.skill(skill.skill, of: agent, .accept).key) }
 
@@ -430,23 +445,33 @@ private struct SettingRow: View {
 /// A unified diff: removed lines red, added green, a few lines of context, the rest collapsed.
 private struct DiffView: View {
     let diff: LineDiff
+    /// Every line, after the owner asked for the ones past LineDiff.maxShownLines.
+    @State private var all = false
 
     var body: some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(diff.hunks) { hunk in
-                    if hunk.skippedBefore > 0 { skipped(hunk.skippedBefore) }
-                    ForEach(hunk.lines) { row($0) }
+        let (shown, hidden) = all ? (diff, 0) : diff.truncated(maxLines: LineDiff.maxShownLines)
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown.hunks) { hunk in
+                        if hunk.skippedBefore > 0 { skipped(hunk.skippedBefore) }
+                        ForEach(hunk.lines) { row($0) }
+                    }
+                    if shown.skippedAfter > 0 { skipped(shown.skippedAfter) }
                 }
-                if diff.skippedAfter > 0 { skipped(diff.skippedAfter) }
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
             }
-            .font(.caption.monospaced())
-            .textSelection(.enabled)
+            // Its full height: it scrolls only sideways, and a Form row sizes to what it reports (a
+            // flexible height let the row collapse and the diff draw over the rows above).
+            .fixedSize(horizontal: false, vertical: true)
+            .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+            if hidden > 0 {
+                Button("Show \(hidden) more line\(hidden == 1 ? "" : "s")") { all = true }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
         }
-        // Its full height: it scrolls only sideways, and a Form row sizes to what it reports (a
-        // flexible height let the row collapse and the diff draw over the rows above).
-        .fixedSize(horizontal: false, vertical: true)
-        .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func row(_ l: LineDiff.Line) -> some View {
