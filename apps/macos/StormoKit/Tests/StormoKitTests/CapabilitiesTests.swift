@@ -82,5 +82,7 @@ import Testing
         #expect(o.capabilities?.map(\.name) == ["media.tools", "x.y"] && o.capabilities?.last?.unavailable != nil)
         let t = try JSONDecoder().decode(CapabilityTemplate.self, from: Data(#"{"name":"browser","description":"Chromium","files":"both"}"#.utf8))
         #expect(t.suggestedName == "web.browse")
+        let i = try JSONDecoder().decode(CapabilityTemplate.self, from: Data(#"{"name":"image","description":"pictures","files":"both"}"#.utf8))
+        #expect(i.suggestedName == "image.generate")
     }
 }

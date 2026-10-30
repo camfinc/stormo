@@ -148,6 +148,7 @@ public struct CapabilityTemplate: Codable, Sendable, Equatable, Identifiable {
         case "video": "video.render"
         case "media": "media.tools"
         case "hyperframes": "motion.frames"
+        case "image": "image.generate"
         default: name
         }
     }
