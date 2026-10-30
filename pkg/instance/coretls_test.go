@@ -110,7 +110,7 @@ func TestCapabilitiesFromTemplates(t *testing.T) {
 	if tpl, ok := c.TemplateImage(); !ok || tpl != "transcribe" {
 		t.Errorf("TemplateImage: %q %v", tpl, ok)
 	}
-	if b, _ := i.CapabilityNamed("web.browse"); b.Description != "Browse for research" || b.ShmMB != 1024 || b.Files != "out" {
+	if b, _ := i.CapabilityNamed("web.browse"); b.Description != "Browse for research" || b.ShmMB != 1024 || b.Files != "both" {
 		t.Errorf("browser: %+v", b)
 	}
 	if e, _ := i.CapabilityNamed("echo.svc"); e.Port != 8080 || e.IdleMinutes != 10 || e.BootMinutes != 5 || e.Files != "none" {
