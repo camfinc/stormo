@@ -62,7 +62,9 @@ type BrokerOptions struct {
 	Image func(template string) error
 	// JobsDir holds jobs' files while they run (.swarm/capabilities/jobs).
 	JobsDir string
-	Now     func() time.Time
+	// Unit is an agent's unit when the fleet does not know it yet (its manifest's).
+	Unit func(agent string) string
+	Now  func() time.Time
 }
 
 // Broker runs capability jobs.
@@ -101,6 +103,15 @@ func NewBroker(o BrokerOptions) *Broker {
 	}
 	if o.Scrub == nil {
 		o.Scrub = func(s string) string { return s }
+	}
+	if o.Unit == nil {
+		o.Unit = func(id string) string {
+			a, err := manifest.Load(o.Inst.Root, id, o.Inst.Names.Secret)
+			if err != nil {
+				return ""
+			}
+			return a.Unit
+		}
 	}
 	if o.Grants == nil {
 		o.Grants = func(id string) []string {
@@ -223,6 +234,14 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 			return nil, err
 		}
 	}
+	unit := ""
+	if gives && req.Out == "" {
+		// the default folder is in the agent's own unit's layer: never guessed (another unit's
+		// agents read group)
+		if unit = b.unitOf(agent); unit == "" {
+			return nil, toolErr("the core does not know your unit yet: name a folder of yours with out, or try again in a moment")
+		}
+	}
 	notify := req.Notify == nil || *req.Notify
 	now := b.o.Now().UnixMilli()
 	preview := b.o.Scrub(clip(string(input), 200))
@@ -244,7 +263,7 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	}
 	id, _ := res.LastInsertId()
 	if gives && out == "" {
-		out = b.o.Workdir.jobOutDefault(agent, c.Name, id)
+		out = jobOutDefault(unit, c.Name, id)
 		if _, err := tx.Exec(`UPDATE cap_jobs SET out = ? WHERE id = ?`, out, id); err != nil {
 			return nil, err
 		}
@@ -998,10 +1017,21 @@ func (b *Broker) Describe(agent, capability string) (map[string]any, error) {
 }
 
 func (b *Broker) outDefaultHint(agent, capability string) string {
-	if b.o.Workdir == nil {
-		return ""
+	unit := b.unitOf(agent)
+	if unit == "" {
+		unit = "<your unit>"
 	}
-	return b.o.Workdir.jobOutBase(agent, capability) + "/job-<n>"
+	return jobOutBase(unit, capability) + "/job-<n>"
+}
+
+// unitOf is agent's unit: the fleet's, else its manifest's ("" when neither says).
+func (b *Broker) unitOf(agent string) string {
+	if b.o.Workdir != nil {
+		if a, ok := b.o.Workdir.agent(agent); ok && a.Unit != "" {
+			return a.Unit
+		}
+	}
+	return b.o.Unit(agent)
 }
 
 // Await waits up to d for one of agent's jobs; one still running gets its notice when it ends.

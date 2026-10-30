@@ -277,20 +277,12 @@ func (w *Workdir) Deliver(agent, out, src, how string) ([]string, error) {
 	return delivered, err
 }
 
-// unitOf is agent's unit layer (group when it has none).
-func (w *Workdir) unitOf(agent string) string {
-	if a, ok := w.agent(agent); ok && a.Unit != "" {
-		return a.Unit
-	}
-	return "group"
-}
-
-// jobOutBase holds agent's job folders of a capability.
-func (w *Workdir) jobOutBase(agent, capability string) string {
-	return fmt.Sprintf("%s/%s/capabilities/%s", shared.Root, w.unitOf(agent), strings.ReplaceAll(capability, ".", "-"))
+// jobOutBase holds an agent's job folders of a capability, in its unit's layer.
+func jobOutBase(unit, capability string) string {
+	return fmt.Sprintf("%s/%s/capabilities/%s", shared.Root, unit, strings.ReplaceAll(capability, ".", "-"))
 }
 
 // jobOutDefault is where a job's files go when the agent names no folder.
-func (w *Workdir) jobOutDefault(agent, capability string, job int64) string {
-	return fmt.Sprintf("%s/job-%d", w.jobOutBase(agent, capability), job)
+func jobOutDefault(unit, capability string, job int64) string {
+	return fmt.Sprintf("%s/job-%d", jobOutBase(unit, capability), job)
 }

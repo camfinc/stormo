@@ -492,3 +492,29 @@ func TestCapabilityUploads(t *testing.T) {
 		t.Error("a late job's uploads stayed")
 	}
 }
+
+// A job's default folder is in the agent's own unit's layer even before the fleet knows the agent
+// (the first seconds of a core): its manifest says the unit. One no one can place is refused,
+// never sent to group, which every unit reads.
+func TestCapabilityDefaultFolderIsTheAgentsUnit(t *testing.T) {
+	_, inst := fixture(t)
+	inst.Capabilities = []instance.Capability{{Name: "media.cover", Kind: "service", Image: "m:1", Placement: "local", Port: 8080, Health: "/health",
+		IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "both"}}
+	services := link.NewServices("acme")
+	services.Docker = serviceDocker("127.0.0.1:1")
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true,
+		WorkdirRoot: t.TempDir(), Roster: func() []BusAgent { return nil }, // the fleet knows no one yet
+		CapabilityGrants: func(string) []string { return []string{"media.cover"} }, Services: services, CapabilityImage: func(string) error { return nil },
+		CapabilityJobs: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	j, err := c.Broker.Start("atlas", StartRequest{Capability: "media.cover", FilesPending: 1})
+	if err != nil || !strings.HasPrefix(j.Out, "/shared/sales/capabilities/media-cover/job-") {
+		t.Fatalf("atlas (unit sales in its manifest): %+v %v", j, err)
+	}
+	if _, err := c.Broker.Start("ghost", StartRequest{Capability: "media.cover", FilesPending: 1}); err == nil || !strings.Contains(err.Error(), "does not know your unit") {
+		t.Errorf("an agent no one can place: %v", err)
+	}
+}
