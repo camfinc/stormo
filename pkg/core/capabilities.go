@@ -133,6 +133,10 @@ type JobView struct {
 	Files  []string `json:"files,omitempty"`
 	Notify bool     `json:"notify"`
 	Note   string   `json:"note,omitempty"`
+	// Uploads are the files the agent uploaded to the job; Pending how many it still waits for, at Upload.
+	Uploads []string `json:"uploads,omitempty"`
+	Pending int      `json:"pending,omitempty"`
+	Upload  string   `json:"upload,omitempty"`
 }
 
 const maxJobInput = 256 << 10
@@ -167,7 +171,16 @@ type StartRequest struct {
 	Files  []string `json:"files"`
 	Out    string   `json:"out"`
 	Notify *bool    `json:"notify"`
+	// FilesPending: files the agent uploads to the job itself (POST /v1/capabilities/jobs/<id>/files),
+	// straight into its folder: the job waits for them before it is queued.
+	FilesPending int `json:"files_pending"`
 }
+
+// Uploads into a waiting job: how many, how long it waits for them.
+const (
+	maxPending  = 10
+	pendingWait = 15 * time.Minute
+)
 
 // Start queues a job for agent.
 func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
@@ -188,6 +201,12 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	}
 	if req.Out != "" && !gives {
 		return nil, toolErr("%s writes no files, so it takes no out folder", c.Name)
+	}
+	if req.FilesPending < 0 || req.FilesPending > maxPending {
+		return nil, toolErr("files_pending is 0 to %d", maxPending)
+	}
+	if req.FilesPending > 0 && (!takes || c.Kind == "http" || c.Placement != "local") {
+		return nil, toolErr("%s takes no uploaded files (only a container or service on the core's host that takes files does)", c.Name)
 	}
 	if (takes || gives) && b.o.Workdir == nil {
 		return nil, toolErr("this core has no shared space to hand files over")
@@ -214,8 +233,12 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
-		c.Name, agent, string(input), preview, c.CostUSD, now, string(files), out, notify)
+	status, waitUntil := "queued", int64(0)
+	if req.FilesPending > 0 {
+		status, waitUntil = "waiting", b.o.Now().Add(pendingWait).UnixMilli()
+	}
+	res, err := tx.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify, pending, wait_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, agent, status, string(input), preview, c.CostUSD, now, string(files), out, notify, req.FilesPending, waitUntil)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +254,14 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	}
 	b.o.DB.Audit("agent:"+agent, "cap.start", c.Name, fmt.Sprintf("job %d", id))
 	b.poke()
-	v := &JobView{ID: id, Capability: c.Name, Agent: agent, Status: "queued", Preview: preview, CostUSD: c.CostUSD, Created: now, Inputs: inputs, Out: out, Notify: notify}
+	v := &JobView{ID: id, Capability: c.Name, Agent: agent, Status: status, Preview: preview, CostUSD: c.CostUSD, Created: now, Inputs: inputs, Out: out, Notify: notify,
+		Pending: req.FilesPending}
+	if req.FilesPending > 0 {
+		v.Upload = UploadPath(id)
+		v.Note = fmt.Sprintf("waiting for %d file(s): upload each to %s?name=<file name> (your core key; cap_attach does it for a file you were sent), within %s",
+			req.FilesPending, v.Upload, pendingWait)
+		return v, nil
+	}
 	if c.Kind == "service" && c.Placement == "local" && b.o.Services.State(c.Name).State != "awake" {
 		v.Note = "its worker is asleep and boots for this job: the first one takes longer"
 	}
@@ -247,11 +277,15 @@ func (b *Broker) poke() {
 
 func scanJob(row interface{ Scan(...any) error }, withOutput bool) (*JobView, error) {
 	var j JobView
-	var out, inputs, files string
+	var out, inputs, files, uploads string
 	var started, finished sql.NullInt64
 	if err := row.Scan(&j.ID, &j.Capability, &j.Agent, &j.Status, &j.Error, &out, &j.Preview, &j.CostUSD, &j.Created, &started, &finished,
-		&inputs, &j.Out, &j.Notify, &files); err != nil {
+		&inputs, &j.Out, &j.Notify, &files, &uploads, &j.Pending); err != nil {
 		return nil, err
+	}
+	_ = json.Unmarshal([]byte(uploads), &j.Uploads)
+	if j.Status == "waiting" {
+		j.Upload = UploadPath(j.ID)
 	}
 	j.Started, j.Finished = nullable(started), nullable(finished)
 	_ = json.Unmarshal([]byte(inputs), &j.Inputs)
@@ -267,7 +301,7 @@ func scanJob(row interface{ Scan(...any) error }, withOutput bool) (*JobView, er
 	return &j, nil
 }
 
-const jobCols = `id, capability, agent, status, error, output, preview, cost, created, started, finished, files, out, notify, outputs`
+const jobCols = `id, capability, agent, status, error, output, preview, cost, created, started, finished, files, out, notify, outputs, uploads, pending`
 
 // Job is one of agent's jobs, with its output once done.
 func (b *Broker) Job(agent string, id int64) (*JobView, error) {
@@ -282,7 +316,7 @@ func (b *Broker) Job(agent string, id int64) (*JobView, error) {
 func (b *Broker) Jobs(limit int) ([]JobView, error) {
 	jobs, err := b.jobs(`SELECT `+jobCols+` FROM cap_jobs ORDER BY id DESC LIMIT ?`, limit)
 	for i := range jobs {
-		for _, l := range [][]string{jobs[i].Inputs, jobs[i].Files} {
+		for _, l := range [][]string{jobs[i].Inputs, jobs[i].Files, jobs[i].Uploads} {
 			for k := range l {
 				l[k] = b.o.Scrub(l[k])
 			}
@@ -324,14 +358,15 @@ func (b *Broker) Cancel(agent string, id int64) (*JobView, error) {
 		return nil, err
 	}
 	switch j.Status {
-	case "queued":
-		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'cancelled', finished = ? WHERE id = ? AND status = 'queued'`, b.o.Now().UnixMilli(), id)
+	case "queued", "waiting":
+		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'cancelled', finished = ? WHERE id = ? AND status IN ('queued', 'waiting')`, b.o.Now().UnixMilli(), id)
 		if err != nil {
 			return nil, err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return b.Cancel(agent, id) // it just started
 		}
+		_ = os.RemoveAll(b.jobDir(j.Capability, id))
 	case "running":
 		b.mu.Lock()
 		cancel := b.cancels[id]
@@ -346,10 +381,19 @@ func (b *Broker) Cancel(agent string, id int64) (*JobView, error) {
 	return b.Job(agent, id)
 }
 
-// Run works the queue until stop. Jobs that were running when the core stopped have failed. Idle
-// services go to sleep; all of them do when the core stops.
+// Recover settles what a stopped core left: its running jobs failed, jobs waiting for uploads
+// failed (their files went with it), and the job folders removed. StartCore calls it before it
+// serves anything, so no job of this run is touched.
+func (b *Broker) Recover() {
+	now := b.o.Now().UnixMilli()
+	_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'the core stopped while it ran', finished = ? WHERE status = 'running'`, now)
+	_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'the core restarted before its files arrived', finished = ? WHERE status = 'waiting'`, now)
+	_ = os.RemoveAll(b.o.JobsDir)
+}
+
+// Run works the queue until stop (Recover settled the last core's jobs first). Idle services go to
+// sleep; all of them do when the core stops.
 func (b *Broker) Run(stop <-chan struct{}) {
-	_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'the core stopped while it ran', finished = ? WHERE status = 'running'`, b.o.Now().UnixMilli())
 	for _, c := range b.o.Inst.Capabilities {
 		if c.Kind == "service" && c.Placement == "local" {
 			b.o.Services.Clean() // containers a stopped core left behind
@@ -375,20 +419,23 @@ type queued struct {
 	capability, agent string
 	input             string
 	inputs            []string
+	uploads           []string
 	out               string
 }
 
 func (b *Broker) dispatch() {
-	rows, err := b.o.DB.Query(`SELECT id, capability, agent, input, files, out FROM cap_jobs WHERE status = 'queued' ORDER BY id LIMIT 200`)
+	b.expireWaiting()
+	rows, err := b.o.DB.Query(`SELECT id, capability, agent, input, files, out, uploads FROM cap_jobs WHERE status = 'queued' ORDER BY id LIMIT 200`)
 	if err != nil {
 		return
 	}
 	var qs []queued
 	for rows.Next() {
 		var q queued
-		var files string
-		if rows.Scan(&q.id, &q.capability, &q.agent, &q.input, &files, &q.out) == nil {
+		var files, uploads string
+		if rows.Scan(&q.id, &q.capability, &q.agent, &q.input, &files, &q.out, &uploads) == nil {
 			_ = json.Unmarshal([]byte(files), &q.inputs)
+			_ = json.Unmarshal([]byte(uploads), &q.uploads)
 			qs = append(qs, q)
 		}
 	}
@@ -596,8 +643,7 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]b
 		// The job's folder: in/ holds its inputs, out/ what it writes; gone once delivered.
 		dir := ""
 		if c.Files != "none" {
-			dir = filepath.Join(b.o.JobsDir, jobDirName(c.Name), strconv.FormatInt(q.id, 10))
-			_ = os.RemoveAll(dir)
+			dir = b.jobDir(c.Name, q.id) // in/ may already hold the agent's uploads
 			for _, d := range []string{"in", "out"} {
 				if err := os.MkdirAll(filepath.Join(dir, d), 0o777); err != nil {
 					return nil, nil, err
@@ -632,6 +678,9 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]b
 			for _, p := range q.inputs {
 				files = append(files, mount+"/in/"+path.Base(p))
 			}
+			for _, u := range q.uploads {
+				files = append(files, mount+"/in/"+u)
+			}
 			outDir := ""
 			if c.Files == "out" || c.Files == "both" {
 				outDir = mount + "/out"
@@ -651,6 +700,119 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]b
 		return out, delivered, nil
 	}
 	return nil, nil, fmt.Errorf("kind %q", c.Kind)
+}
+
+// UploadPath is where an agent uploads a file to its waiting job.
+func UploadPath(id int64) string { return fmt.Sprintf("/v1/capabilities/jobs/%d/files", id) }
+
+func (b *Broker) jobDir(capability string, id int64) string {
+	return filepath.Join(b.o.JobsDir, jobDirName(capability), strconv.FormatInt(id, 10))
+}
+
+// expireWaiting fails waiting jobs whose files did not all arrive in time.
+func (b *Broker) expireWaiting() {
+	rows, err := b.o.DB.Query(`SELECT id, capability, agent, out FROM cap_jobs WHERE status = 'waiting' AND wait_until < ?`, b.o.Now().UnixMilli())
+	if err != nil {
+		return
+	}
+	var late []queued
+	for rows.Next() {
+		var q queued
+		if rows.Scan(&q.id, &q.capability, &q.agent, &q.out) == nil {
+			late = append(late, q)
+		}
+	}
+	rows.Close()
+	for _, q := range late {
+		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = ?, finished = ? WHERE id = ? AND status = 'waiting'`,
+			fmt.Sprintf("its files did not arrive within %s", pendingWait), b.o.Now().UnixMilli(), q.id)
+		if n, _ := res.RowsAffected(); err == nil && n == 1 {
+			_ = os.RemoveAll(b.jobDir(q.capability, q.id))
+		}
+	}
+}
+
+var uploadName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$`)
+
+// Upload takes one of the files a waiting job of agent's waits for, straight into the job's folder
+// (never the shared space): at most the hand-over's size. The last one queues the job.
+func (b *Broker) Upload(agent string, id int64, name string, body io.Reader, size int64) (*JobView, error) {
+	j, err := b.Job(agent, id)
+	if err != nil {
+		return nil, err
+	}
+	if j.Status != "waiting" || j.Pending <= 0 {
+		return nil, toolErr("job %d is %s: it waits for no files", id, j.Status)
+	}
+	name = strings.TrimSpace(name)
+	if !uploadName.MatchString(name) || strings.Contains(name, "..") {
+		return nil, toolErr("name is a plain file name (letters, digits, spaces, . _ -; up to 120)")
+	}
+	for _, have := range append(append([]string{}, j.Uploads...), baseNames(j.Inputs)...) {
+		if strings.EqualFold(have, name) {
+			return nil, toolErr("job %d already has a file named %s", id, name)
+		}
+	}
+	if size > maxStageSize {
+		return nil, toolErr("a file is at most %d GB", maxStageSize>>30)
+	}
+	in := filepath.Join(b.jobDir(j.Capability, id), "in")
+	if err := os.MkdirAll(in, 0o777); err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(in, 0o777)
+	tmp, err := os.CreateTemp(in, ".upload-*")
+	if err != nil {
+		return nil, err
+	}
+	n, err := io.Copy(tmp, io.LimitReader(body, maxStageSize+1))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && n > maxStageSize {
+		err = toolErr("a file is at most %d GB", maxStageSize>>30)
+	}
+	if err == nil && size >= 0 && n != size {
+		err = toolErr("the upload ended after %d of %d bytes", n, size)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+		return nil, err
+	}
+	_ = os.Chmod(tmp.Name(), 0o644)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// recorded under the lock: two uploads arriving together never both take the last slot
+	cur, err := b.Job(agent, id)
+	if err != nil || cur.Status != "waiting" || cur.Pending <= 0 {
+		os.Remove(tmp.Name())
+		return nil, toolErr("job %d no longer waits for files", id)
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(in, name)); err != nil {
+		os.Remove(tmp.Name())
+		return nil, err
+	}
+	uploads, _ := json.Marshal(append(cur.Uploads, name))
+	status := "waiting"
+	if cur.Pending == 1 {
+		status = "queued"
+	}
+	if _, err := b.o.DB.Exec(`UPDATE cap_jobs SET uploads = ?, pending = pending - 1, status = ? WHERE id = ?`, string(uploads), status, id); err != nil {
+		return nil, err
+	}
+	b.o.DB.Audit("agent:"+agent, "cap.upload", j.Capability, fmt.Sprintf("job %d: %d bytes", id, n))
+	if status == "queued" {
+		b.poke()
+	}
+	return b.Job(agent, id)
+}
+
+func baseNames(paths []string) []string {
+	out := []string{}
+	for _, p := range paths {
+		out = append(out, path.Base(p))
+	}
+	return out
 }
 
 // Wake boots a local service capability now (the owner's), in the background.
@@ -822,11 +984,11 @@ func (b *Broker) Describe(agent, capability string) (map[string]any, error) {
 	how := "cap_start {capability, input} queues a job and a notice wakes you when it is done; cap_run waits for it up to wait_seconds."
 	switch c.Files {
 	case "in":
-		how += " Hand it files with files: [\"/shared/…\"] (yours: group and your unit)."
+		how += " Hand it files with files: [\"/shared/…\"] (yours: group and your unit), or upload ones you were sent (files_pending, then cap_attach)."
 	case "out":
 		how += fmt.Sprintf(" Its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
 	case "both":
-		how += fmt.Sprintf(" Hand it files with files: [\"/shared/…\"] (yours: group and your unit); its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
+		how += fmt.Sprintf(" Hand it files with files: [\"/shared/…\"] (yours: group and your unit), or upload ones you were sent (files_pending, then cap_attach); its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
 	}
 	if st := b.workerState(c); st == "asleep" {
 		how += " Its worker is asleep: the next job boots it, which takes longer."
@@ -877,7 +1039,8 @@ func CapabilityTools(b *Broker) []MCPTool {
 		"files":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared paths (files or folders) to hand it, for those that take files"},
 		"out":        str("shared folder its files go to, for those that write files (default: one per job in your unit's capabilities/ folder)"),
 	}
-	startArgs := map[string]any{"notify": boolean("leave you a notice that wakes you when it is done (default true)")}
+	startArgs := map[string]any{"notify": boolean("leave you a notice that wakes you when it is done (default true)"),
+		"files_pending": integer("files you will upload to the job yourself (a file you were sent, with cap_attach): it waits for them, up to 15 minutes, before it runs")}
 	for k, v := range jobArgs {
 		startArgs[k] = v
 	}
@@ -946,6 +1109,9 @@ func CapabilityTools(b *Broker) []MCPTool {
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
+				if req.FilesPending > 0 {
+					return nil, toolErr("a job that waits for uploads starts with cap_start (cap_run cannot wait for them)")
+				}
 				off := false
 				req.Notify = &off
 				j, err := b.Start(c.Agent, req.StartRequest)
@@ -961,7 +1127,7 @@ func CapabilityTools(b *Broker) []MCPTool {
 		},
 		{
 			Name:        "cap_status",
-			Description: "A job you started: queued, running, done (with its answer and the files it wrote) or failed (with why).",
+			Description: "A job you started: waiting (for the files you upload), queued, running, done (with its answer and the files it wrote) or failed (with why).",
 			InputSchema: schema([]string{"job"}, map[string]any{"job": integer("the job number cap_start or cap_run gave")}),
 			Run: func(c ToolCall) (any, error) {
 				id, err := jobOf(c)

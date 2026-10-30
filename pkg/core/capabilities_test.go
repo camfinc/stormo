@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/link"
@@ -229,12 +233,11 @@ func TestCapabilityServicesFilesAndNotices(t *testing.T) {
 			return []BusAgent{{ID: "atlas", Unit: "sales"}, {ID: "nova", Unit: "media"}}
 		},
 		CapabilityGrants: func(string) []string { return []string{"text.upper"} },
-		Services:         services, CapabilityImage: func(string) error { return nil }})
+		Services:         services, CapabilityImage: func(string) error { return nil }, CapabilityJobs: jobs})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	c.Broker.o.JobsDir = jobs
 	tools := map[string]MCPTool{}
 	for _, tl := range CapabilityTools(c.Broker) {
 		tools[tl.Name] = tl
@@ -349,4 +352,143 @@ func TestCapabilityServicesFilesAndNotices(t *testing.T) {
 		t.Error("still awake")
 	}
 	close(hold)
+}
+
+// A job can wait for files its agent uploads itself (a file it was sent, never in the shared
+// space): they stream into the job's folder, the last one queues it, and a job whose files never
+// come fails and leaves nothing behind.
+func TestCapabilityUploads(t *testing.T) {
+	_, inst := fixture(t)
+	wroot, jobs := t.TempDir(), t.TempDir()
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		var body struct {
+			Files []string `json:"files"`
+			Out   string   `json:"out"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		host := func(p string) string { return filepath.Join(jobs, "media-cover", strings.TrimPrefix(p, "/jobs/")) }
+		names := []string{}
+		for _, f := range body.Files {
+			b, _ := os.ReadFile(host(f))
+			names = append(names, fmt.Sprintf("%s=%s", filepath.Base(f), b))
+		}
+		os.WriteFile(filepath.Join(host(body.Out), "cover.jpg"), []byte(strings.Join(names, ",")), 0o644)
+		fmt.Fprintf(w, `{"saw":%q}`, strings.Join(names, ","))
+	}))
+	defer worker.Close()
+	services := link.NewServices("acme")
+	services.Docker = serviceDocker(strings.TrimPrefix(worker.URL, "http://"))
+	inst.Capabilities = []instance.Capability{
+		{Name: "media.cover", Kind: "service", Image: "m:1", Placement: "local", Port: 8080, Health: "/health", IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "both"},
+		{Name: "web.read", Kind: "service", Image: "w:1", Placement: "local", Port: 8080, Health: "/health", IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "out"},
+	}
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true,
+		WorkdirRoot: wroot, Roster: func() []BusAgent { return []BusAgent{{ID: "atlas", Unit: "sales"}, {ID: "nova", Unit: "media"}} },
+		CapabilityGrants: func(string) []string { return []string{"media.cover", "web.read"} },
+		Services:         services, CapabilityImage: func(string) error { return nil }, CapabilityJobs: jobs,
+		CapabilityNow: func() time.Time { return time.Unix(0, clock.Load()) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	upload := func(key string, id int64, name, body string) (int, string) {
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d%s?name=%s", c.Addr.Port, UploadPath(id), url.QueryEscape(name)), strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	tools := map[string]MCPTool{}
+	for _, tl := range CapabilityTools(c.Broker) {
+		tools[tl.Name] = tl
+	}
+	call := func(tool string, args any) (any, error) {
+		b, _ := json.Marshal(args)
+		return tools[tool].Run(ToolCall{Agent: "atlas", Args: b})
+	}
+
+	v, err := call("cap_start", map[string]any{"capability": "media.cover", "files_pending": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := v.(*JobView)
+	if j.Status != "waiting" || j.Pending != 2 || j.Upload != UploadPath(j.ID) {
+		t.Fatalf("start: %+v", j)
+	}
+	for _, refused := range []map[string]any{
+		{"capability": "web.read", "files_pending": 1},     // takes no files
+		{"capability": "media.cover", "files_pending": 11}, // too many
+	} {
+		if _, err := call("cap_start", refused); err == nil {
+			t.Errorf("%v accepted", refused)
+		}
+	}
+	if _, err := call("cap_run", map[string]any{"capability": "media.cover", "files_pending": 1}); err == nil {
+		t.Error("cap_run waits for no uploads")
+	}
+	// someone else's job, a path for a name, no key
+	if code, _ := upload(novaKey, j.ID, "a.mp4", "x"); code != 409 {
+		t.Errorf("nova uploaded to atlas's job: %d", code)
+	}
+	if code, _ := upload(atlasKey, j.ID, "../escape.mp4", "x"); code != 409 {
+		t.Errorf("a path as a name: %d", code)
+	}
+	if code, _ := upload("", j.ID, "a.mp4", "x"); code != 401 {
+		t.Errorf("no key: %d", code)
+	}
+	if code, body := upload(atlasKey, j.ID, "clip.mp4", "video-bytes"); code != 200 || !strings.Contains(body, `"status":"waiting"`) {
+		t.Fatalf("first upload: %d %s", code, body)
+	}
+	if code, _ := upload(atlasKey, j.ID, "clip.mp4", "again"); code != 409 {
+		t.Errorf("a name twice: %d", code)
+	}
+	if code, body := upload(atlasKey, j.ID, "voice.m4a", "audio"); code != 200 || !strings.Contains(body, `"status":"queued"`) {
+		t.Fatalf("last upload: %d %s", code, body)
+	}
+	if code, _ := upload(atlasKey, j.ID, "late.mp4", "x"); code != 409 {
+		t.Errorf("an upload to a queued job: %d", code)
+	}
+	eventually(t, "the job", func() bool { j, _ := c.Broker.Job("atlas", j.ID); return j.Status == "done" })
+	done, _ := c.Broker.Job("atlas", j.ID)
+	if !strings.Contains(string(done.Output), "clip.mp4=video-bytes,voice.m4a=audio") || len(done.Files) != 1 || len(done.Uploads) != 2 {
+		t.Errorf("done: %+v %s", done, done.Output)
+	}
+	if _, err := os.Stat(filepath.Join(jobs, "media-cover", fmt.Sprint(j.ID))); !os.IsNotExist(err) {
+		t.Error("the uploads outlived the job")
+	}
+	// the uploads never touched the shared space: only the cover the job wrote is there
+	filepath.WalkDir(wroot, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && (strings.HasSuffix(p, ".mp4") || strings.HasSuffix(p, ".m4a")) {
+			t.Errorf("an upload in the shared space: %s", p)
+		}
+		return nil
+	})
+
+	// files that never come: the job fails after its wait and its folder goes
+	v, _ = call("cap_start", map[string]any{"capability": "media.cover", "files_pending": 1})
+	late := v.(*JobView)
+	if code, _ := upload(atlasKey, late.ID, "half.mp4", "x"); code != 200 {
+		t.Fatal("upload")
+	}
+	v, _ = call("cap_start", map[string]any{"capability": "media.cover", "files_pending": 2})
+	late = v.(*JobView)
+	upload(atlasKey, late.ID, "one.mp4", "x")
+	clock.Add(int64(pendingWait + time.Minute))
+	c.Broker.poke()
+	eventually(t, "the late job failed", func() bool { j, _ := c.Broker.Job("atlas", late.ID); return j.Status == "failed" })
+	if j, _ := c.Broker.Job("atlas", late.ID); !strings.Contains(j.Error, "did not arrive") {
+		t.Errorf("late: %+v", j)
+	}
+	if _, err := os.Stat(filepath.Join(jobs, "media-cover", fmt.Sprint(late.ID))); !os.IsNotExist(err) {
+		t.Error("a late job's uploads stayed")
+	}
 }

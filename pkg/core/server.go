@@ -126,7 +126,10 @@ type CoreOptions struct {
 	CapabilityGrants func(agent string) []string
 	Services         *link.Services
 	CapabilityImage  func(template string) error
-	Container        func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
+	// CapabilityJobs and CapabilityNow replace the jobs' folder and the broker's clock (tests).
+	CapabilityJobs string
+	CapabilityNow  func() time.Time
+	Container      func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
 	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
 	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
@@ -142,6 +145,9 @@ type CoreOptions struct {
 	// LearnDeps are the learning cycle's nap, dream and counts; zero values take the real ones.
 	LearnDeps LearnDeps
 }
+
+// capUploadPath is an agent's upload to its waiting capability job.
+var capUploadPath = regexp.MustCompile(`^/v1/capabilities/jobs/([0-9]{1,18})/files$`)
 
 // capabilityPath is the owner's wake and sleep of a service capability.
 var capabilityPath = regexp.MustCompile(`^/api/capabilities/([a-z][a-z0-9.-]*)/(wake|sleep)$`)
@@ -423,6 +429,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	runners := NewLinkHub(db)
 	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
 		Grants: o.CapabilityGrants, Container: o.Container, Services: o.Services, Image: o.CapabilityImage, Workdir: workdir, Notify: bus.Notify,
+		JobsDir: o.CapabilityJobs, Now: o.CapabilityNow,
 		Secret: func(name string) (string, bool) {
 			f, err := secrets.Load(secrets.Path(inst.Root))
 			if err != nil {
@@ -430,6 +437,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			return secrets.SharedValue(f, name)
 		}})
+	broker.Recover() // before anything is served: a job of this run is never taken for a leftover
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker))
 	deps := o.LearnDeps
 	if deps.NapNow == nil {
@@ -632,6 +640,25 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return
 			}
 			writeJSONBody(w, 200, v)
+			return
+		case r.Method == http.MethodPost && capUploadPath.MatchString(path):
+			// An agent's file for its own waiting job, streamed into the job's folder.
+			if who.Agent == "" {
+				writeJSONBody(w, 401, errBody("unauthorized", "an agent's core key uploads to its own job"))
+				return
+			}
+			id, _ := strconv.ParseInt(capUploadPath.FindStringSubmatch(path)[1], 10, 64)
+			j, err := broker.Upload(who.Agent, id, r.URL.Query().Get("name"), r.Body, r.ContentLength)
+			if err != nil {
+				code := 500
+				var te ToolError
+				if errors.As(err, &te) {
+					code = 409
+				}
+				writeJSONBody(w, code, errBody("refused", err.Error()))
+				return
+			}
+			writeJSONBody(w, 200, j)
 			return
 		case r.Method == http.MethodPost && capabilityPath.MatchString(path):
 			m := capabilityPath.FindStringSubmatch(path)

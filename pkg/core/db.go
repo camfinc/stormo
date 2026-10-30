@@ -198,6 +198,11 @@ var migrations = []string{
 	ALTER TABLE cap_jobs ADD COLUMN out TEXT NOT NULL DEFAULT '';
 	ALTER TABLE cap_jobs ADD COLUMN notify INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE cap_jobs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]';`,
+	// 11: files an agent uploads to its job (straight into the job's folder) and how many the job
+	// still waits for, until when (status 'waiting').
+	`ALTER TABLE cap_jobs ADD COLUMN uploads TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE cap_jobs ADD COLUMN pending INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE cap_jobs ADD COLUMN wait_until INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // DB is core.db.

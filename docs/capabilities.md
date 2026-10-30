@@ -88,6 +88,14 @@ What the worker writes to `out` lands in the agent's `out` folder, by default
 by the agent through `capability:<name>`; a file under another agent's hard or temporary lock is
 not overwritten. The job's own folder (`.swarm/capabilities/jobs/`) is gone once delivered.
 
+**Files an agent was sent** (a video in a chat) never need the shared space: `cap_start` with
+`files_pending: n` creates the job **waiting**, and the agent uploads each file to
+`POST /v1/capabilities/jobs/<id>/files?name=<file name>` with its core key (needletail's
+`cap_attach` does it for an upload; a script can with curl). Each streams into the job's own `in/`
+(the same 4 GB bound), the last one queues the job, and the folder goes with the job. A job whose
+files do not all arrive within 15 minutes fails; a core restart fails waiting jobs. The worker gets
+uploads after the shared inputs in `files`.
+
 ## What agents call
 
 The core's MCP tools (every engine; needletail's Luau reaches them with `core_call` and a
@@ -97,9 +105,9 @@ The core's MCP tools (every engine; needletail's Luau reaches them with `core_ca
 |---|---|
 | `cap_list` | the agent's capabilities: name, description, files, whether the worker is awake |
 | `cap_describe {capability}` | docs, input schema, examples, limits, queue, how to call it. Never wakes the worker |
-| `cap_start {capability, input, files, out, notify}` | queue a job; `notify` (default on) leaves a notice that wakes the agent when it ends |
+| `cap_start {capability, input, files, out, notify, files_pending}` | queue a job; `notify` (default on) leaves a notice that wakes the agent when it ends; `files_pending` makes it wait for uploads |
 | `cap_run {capability, input, files, out, wait_seconds}` | start and wait up to 45 s: the answer if it ends in time, else the running job with its notice on |
-| `cap_status {job}` | queued, running, done with the answer and files, failed with why |
+| `cap_status {job}` | waiting (for uploads), queued, running, done with the answer and files, failed with why |
 | `cap_jobs {limit}` | the agent's latest jobs |
 | `cap_cancel {job}` | a queued job never runs; a running one is stopped |
 
