@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { bundle } from "@remotion/bundler";
-import { ensureBrowser, renderMedia, selectComposition } from "@remotion/renderer";
+import { ensureBrowser, renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 
 const run = promisify(execFile);
 const PORT = Number(process.env.PORT || 8080);
@@ -100,6 +100,17 @@ async function render(job) {
       composition = await selectComposition({ serveUrl, id: input.composition, inputProps: props });
     } catch (e) {
       throw new JobError(`composition ${input.composition}: ${String(e.message || e).split("\n")[0]}`);
+    }
+    if (typeof input.still === "number" && input.still >= 0) {
+      // one frame as a PNG (a poster frame, a check of a moment) instead of the video
+      const frame = Math.min(composition.durationInFrames - 1, Math.round(input.still * composition.fps));
+      const png = path.join(job.out, `${name}.png`);
+      try {
+        await renderStill({ composition, serveUrl, inputProps: props, output: png, frame, scale: typeof input.scale === "number" ? input.scale : 1 });
+      } catch (e) {
+        throw new JobError(`still failed: ${String(e.message || e).slice(0, 1500)}`);
+      }
+      return { file: path.basename(png), files: [path.basename(png)], width: composition.width, height: composition.height, frame };
     }
     const opts = { composition, serveUrl, codec, outputLocation: outFile, inputProps: props, concurrency: cpuCount(), logLevel: "warn" };
     if (Number.isInteger(input.crf)) opts.crf = input.crf;

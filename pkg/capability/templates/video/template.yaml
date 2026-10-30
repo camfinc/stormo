@@ -24,6 +24,7 @@ input_schema:
     scale: {type: number, description: "resolution factor (0.5 for a quick draft)"}
     master: {type: object, properties: {lufs: {type: number}, true_peak: {type: number}}, description: "normalize the audio to this loudness, like {lufs: -16, true_peak: -1.5}"}
     stills: {type: array, items: {type: number}, description: "seconds to grab PNG stills at; also writes contact.png"}
+    still: {type: number, description: "render only the frame at this second, as <name>.png (a poster frame)"}
     name: {type: string, description: "output file name without extension (default the composition id)"}
 examples:
   - {composition: Main}
