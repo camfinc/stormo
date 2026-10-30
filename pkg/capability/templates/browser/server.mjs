@@ -6,6 +6,8 @@ import http from "node:http";
 import dns from "node:dns/promises";
 import net from "node:net";
 import path from "node:path";
+import fs from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { chromium } from "playwright-core";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -33,9 +35,10 @@ function privateIP(ip) {
 }
 
 const verdicts = new Map(); // host → {ok, at}
-async function hostAllowed(host) {
-  if (ALLOW_PRIVATE) return true;
+async function hostAllowed(host, port) {
   host = host.replace(/^\[|\]$/g, "");
+  if (host === "127.0.0.1" && pageServers.has(Number(port))) return true;
+  if (ALLOW_PRIVATE) return true;
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".internal") || host.endsWith(".local")) return false;
   if (net.isIP(host)) return !privateIP(host);
   const seen = verdicts.get(host);
@@ -55,8 +58,13 @@ async function hostAllowed(host) {
 // included), which resolves the host itself, refuses private addresses and connects to the address
 // it checked, so a redirect or a DNS answer that changes cannot reach the host's network.
 const PROXY_PORT = 3128;
-async function vetted(host) {
+// A page job's own static server (127.0.0.1:<port>, its handed-over folder only) is the one
+// loopback address a page may reach, and only while that job runs.
+const pageServers = new Set();
+
+async function vetted(host, port) {
   host = host.replace(/^\[|\]$/g, "");
+  if (host === "127.0.0.1" && pageServers.has(Number(port))) return host;
   if (ALLOW_PRIVATE) return host;
   if (net.isIP(host)) return privateIP(host) ? null : host;
   if (host === "localhost" || host.endsWith(".localhost")) return null;
@@ -75,7 +83,7 @@ const proxy = http.createServer(async (req, res) => {
   } catch {
     return res.writeHead(400).end();
   }
-  const ip = u.protocol === "http:" ? await vetted(u.hostname) : null;
+  const ip = u.protocol === "http:" ? await vetted(u.hostname, u.port || 80) : null;
   if (!ip) return res.writeHead(403, { "content-type": "text/plain" }).end("blocked: a private address");
   const headers = { ...req.headers, host: u.host };
   delete headers["proxy-connection"];
@@ -88,7 +96,7 @@ const proxy = http.createServer(async (req, res) => {
 });
 proxy.on("connect", async (req, sock, head) => {
   const m = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(req.url || "");
-  const ip = m ? await vetted(m[1]) : null;
+  const ip = m ? await vetted(m[1], m[2]) : null;
   if (!ip) return sock.end("HTTP/1.1 403 Forbidden\r\n\r\n");
   const up = net.connect(Number(m[2]), ip, () => {
     sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -104,7 +112,7 @@ async function guard(context) {
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (["data:", "blob:", "about:"].includes(url.protocol)) return route.continue();
-    if (!["http:", "https:"].includes(url.protocol) || !(await hostAllowed(url.hostname))) return route.abort("blockedbyclient");
+    if (!["http:", "https:"].includes(url.protocol) || !(await hostAllowed(url.hostname, url.port || (url.protocol === "https:" ? 443 : 80)))) return route.abort("blockedbyclient");
     return route.continue();
   });
 }
@@ -242,8 +250,76 @@ async function step(page, s, i, out) {
   }
 }
 
+const TYPES = { ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript",
+  ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".avif": "image/avif", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+  ".mp4": "video/mp4", ".webm": "video/webm", ".mp3": "audio/mpeg", ".wav": "audio/wav" };
+
+// serveFolder serves one folder on a loopback port of its own: nothing outside it, no listing.
+function serveFolder(root) {
+  return new Promise((ok, fail) => {
+    const srv = http.createServer(async (req, res) => {
+      const rel = decodeURIComponent(new URL(req.url, "http://x").pathname);
+      const p = path.resolve(root, "." + rel);
+      if (p !== root && !p.startsWith(root + path.sep)) return res.writeHead(403).end();
+      try {
+        const real = await fs.realpath(p);
+        if (real !== root && !real.startsWith(root + path.sep)) return res.writeHead(403).end();
+        const st = await fs.stat(real);
+        if (!st.isFile()) return res.writeHead(404).end();
+        res.writeHead(200, { "content-type": TYPES[path.extname(real).toLowerCase()] || "application/octet-stream", "content-length": st.size });
+        createReadStream(real).pipe(res);
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    srv.on("error", fail);
+    srv.listen(0, "127.0.0.1", () => ok(srv));
+  });
+}
+
+// renderPage renders an HTML page of a handed-over folder to an image (or PDF) of an exact size.
+async function renderPage(job) {
+  const input = job.input || {};
+  if (!job.files?.length) throw Object.assign(new Error("hand over the page's folder as the first file"), { code: 400 });
+  if (!job.out) throw Object.assign(new Error("no out folder for the image"), { code: 400 });
+  const root = await fs.realpath(job.files[0]);
+  if (!(await fs.stat(root)).isDirectory()) throw Object.assign(new Error("the first file must be the page's folder"), { code: 400 });
+  const rel = String(input.page || "index.html").replace(/^\/+/, "");
+  const html = await fs.readFile(path.resolve(root, rel), "utf8").catch(() => null);
+  if (html === null || !path.resolve(root, rel).startsWith(root + path.sep)) throw Object.assign(new Error(`no page ${rel} in the folder`), { code: 400 });
+  const meta = /<meta\s+name="still-size"\s+content="(\d+)x(\d+)"/.exec(html);
+  const width = clampInt(input.width ?? (meta && Number(meta[1])), 16, 8000, 1080);
+  const height = clampInt(input.height ?? (meta && Number(meta[2])), 16, 8000, 1350);
+  const format = ["png", "jpeg", "pdf"].includes(input.format) ? input.format : "png";
+  const srv = await serveFolder(root);
+  const port = srv.address().port;
+  pageServers.add(port);
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
+  try {
+    await guard(context);
+    const page = await context.newPage();
+    page.setDefaultTimeout(clampInt(input.timeout_seconds, 1, 120, 30) * 1000);
+    const failed = [];
+    page.on("requestfailed", (r) => failed.length < 20 && failed.push(`${r.url()}: ${r.failure()?.errorText}`));
+    await page.goto(`http://127.0.0.1:${port}/${rel.split("/").map(encodeURIComponent).join("/")}`, { waitUntil: "networkidle" });
+    await page.evaluate(() => document.fonts && document.fonts.ready);
+    await page.waitForTimeout(Math.min(Math.max(Number(input.wait_ms) || 300, 0), 10_000));
+    const size = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight }));
+    const name = fileName(input.name || path.basename(rel, path.extname(rel)), format === "jpeg" ? ".jpg" : "." + format, 0);
+    if (format === "pdf") await page.pdf({ path: path.join(job.out, name), width: `${width}px`, height: `${height}px`, printBackground: true });
+    else await page.screenshot({ path: path.join(job.out, name), type: format, quality: format === "jpeg" ? 92 : undefined, clip: { x: 0, y: 0, width, height } });
+    return { file: name, files: [name], width, height, page_size: size, fits: size.width <= width && size.height <= height, failed_requests: failed };
+  } finally {
+    pageServers.delete(port);
+    srv.close();
+    await context.close().catch(() => {});
+  }
+}
+
 async function run(job) {
   const input = job.input || {};
+  if (input.page !== undefined) return renderPage(job);
   const steps = Array.isArray(input.steps) ? input.steps : [];
   if (!input.url && !steps.length) throw Object.assign(new Error("give a url, steps, or both"), { code: 400 });
   if (steps.length > 100) throw Object.assign(new Error("at most 100 steps"), { code: 400 });
