@@ -51,6 +51,14 @@ import Testing
         #expect(g.pendingRestart(core: try JSONDecoder().decode(CapabilitiesView.self, from: Data(Self.core.utf8))) == ["media.tools", "video.render"])
     }
 
+    @Test func envEditsTakeNamesOutAsNull() {
+        let old = ["A": "1", "B": "2"]
+        #expect(CapabilityInfo.envPatch(from: old, to: old) == nil)
+        #expect(CapabilityInfo.envPatch(from: old, to: ["B": "3", "C": "4"]) == .object(["A": .null, "B": .string("3"), "C": .string("4")]))
+        #expect(CapabilityInfo.envPatch(from: old, to: [:]) == .null, "an empty env removes the setting")
+        #expect(CapabilityInfo.envPatch(from: nil, to: ["A": "1"]) == .object(["A": .string("1")]))
+    }
+
     @Test func aJobWithItsOutput() throws {
         let json = #"""
         {"job":12,"capability":"media.tools","agent":"atlas","status":"running","preview":"{\"op\":\"qa\"}","costUSD":0,"created":1,"started":2,

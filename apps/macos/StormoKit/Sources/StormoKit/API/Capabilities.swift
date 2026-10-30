@@ -185,6 +185,18 @@ extension CapabilityInfo {
         public var unavailable: String?
     }
 
+    /// What to patch env: with to make it `new`. A merge patch merges maps, so a name taken out is
+    /// sent as null and an empty env removes the setting; nil when nothing changed.
+    public static func envPatch(from old: [String: String]?, to new: [String: String]) -> JSONValue? {
+        let old = old ?? [:]
+        guard new != old else { return nil }
+        if new.isEmpty { return .null }
+        var p: [String: JSONValue] = [:]
+        for k in old.keys where new[k] == nil { p[k] = .null }
+        for (k, v) in new where old[k] != v { p[k] = .string(v) }
+        return .object(p)
+    }
+
     /// What of this capability a restart would change, compared with stormo.yaml's version.
     func differs(from s: Settings) -> Bool {
         description != s.description || kind != s.kind || (template ?? "") != (s.template ?? "") || (image ?? "") != (s.image ?? "")

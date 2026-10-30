@@ -449,7 +449,7 @@ struct CapabilityEditorSheet: View {
             let mem = Int(memory.trimmingCharacters(in: .whitespaces)) ?? 0
             if mem != (e.memoryMB ?? 0) { p["memory_mb"] = mem == 0 ? .null : .int(Int64(mem)) }
             let now = Dictionary(env.filter { !$0.key.isEmpty }.map { ($0.key, $0.value) }, uniquingKeysWith: { _, b in b })
-            if now != (e.env ?? [:]) { p["env"] = .object(now.mapValues { .string($0) }) }
+            if let env = CapabilityInfo.envPatch(from: e.env, to: now) { p["env"] = env }
         }
         let c = Double(cost.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")) ?? 0
         if c != e.costUSD { p["cost_usd"] = .double(c) }
