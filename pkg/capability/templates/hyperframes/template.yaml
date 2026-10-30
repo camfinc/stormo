@@ -1,0 +1,27 @@
+description: Render a HyperFrames project (HTML + CSS + GSAP compositions) from your shared space to MP4, WebM, MOV or GIF, or lint, validate and inspect it first.
+files: both
+port: 8080
+health: /health
+concurrency: 1
+timeout_minutes: 45
+idle_minutes: 10
+boot_minutes: 2
+memory_mb: 4096
+shm_mb: 1024
+notes: HyperFrames (hyperframes.dev) is pinned at 0.8.97; telemetry and update checks are off, and publish, auth, upgrade and preview are never run.
+input_schema:
+  type: object
+  properties:
+    op: {type: string, enum: [render, lint, validate, inspect, compositions, info], description: "default render"}
+    quality: {type: string, enum: [draft, looks, delivery, standard, high], description: "render: draft for a quick check (default), delivery for the final"}
+    format: {type: string, enum: [mp4, webm, mov, gif], description: "render: default mp4 (webm and mov keep transparency)"}
+    composition: {type: string, description: "render: a composition file inside the project instead of index.html"}
+    fps: {type: integer, description: "render: frame rate (default the composition's data-fps, else 30)"}
+    crf: {type: integer, description: "render: encoder CRF for mp4/webm"}
+    variables: {type: object, description: "render: values merged over the composition's data-composition-variables"}
+    strict: {type: boolean, description: "render: fail on lint errors"}
+    name: {type: string, description: "render: output file name without extension (default render)"}
+examples:
+  - {op: lint}
+  - {op: render, quality: draft}
+  - {op: render, quality: delivery, name: final, variables: {title: "Spring sale"}}

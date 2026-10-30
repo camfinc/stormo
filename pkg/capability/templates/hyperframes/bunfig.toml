@@ -1,0 +1,4 @@
+[install]
+# Two weeks: no package newer than that is installed.
+minimumReleaseAge = 1209600
+exact = true
