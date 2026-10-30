@@ -9,7 +9,7 @@ import (
 
 func TestBundledTemplates(t *testing.T) {
 	names := Names()
-	if strings.Join(names, ",") != "browser,transcribe,video" {
+	if strings.Join(names, ",") != "browser,media,transcribe,video" {
 		t.Fatalf("templates: %v", names)
 	}
 	tag := regexp.MustCompile(`^stormo-cap-[a-z]+:[0-9a-f]{12}$`)

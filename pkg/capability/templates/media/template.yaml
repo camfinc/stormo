@@ -1,0 +1,28 @@
+description: Work on a video or audio file with ffmpeg - probe it, QA it (loudness and stills), grab stills, master its loudness, or find its strongest moments and cut covers for social media from one.
+files: both
+port: 8080
+health: /health
+concurrency: 2
+timeout_minutes: 20
+idle_minutes: 10
+boot_minutes: 2
+memory_mb: 2048
+input_schema:
+  type: object
+  required: [op]
+  properties:
+    op: {type: string, enum: [probe, qa, stills, loudness, master, cover_candidates, cover]}
+    at: {description: "stills: seconds to grab (a list); cover: the moment, in seconds (omit for the best scored one)"}
+    count: {type: integer, description: "stills and qa: how many, spread across the file (default 3)"}
+    n: {type: integer, description: "cover_candidates: how many moments to offer (default 9, at most 12)"}
+    formats: {type: array, items: {type: string, enum: [story, portrait, square, landscape]}, description: "cover: story 1080x1920 (default), portrait 1080x1350, square 1080x1080, landscape 1920x1080"}
+    fit: {type: string, enum: [auto, crop, blur], description: "cover: crop, or the whole frame over a blurred copy of itself; auto picks by how far the shapes differ"}
+    focus: {type: array, items: {type: number}, description: "cover: [x, y] from 0 to 1, where a crop centres (default [0.5, 0.5])"}
+    lufs: {type: number, description: "master: integrated loudness target (default -16)"}
+    true_peak: {type: number, description: "master: true-peak ceiling in dBTP (default -1.5)"}
+    name: {type: string, description: "base name of the files written (default the input's)"}
+examples:
+  - {op: qa, count: 3}
+  - {op: cover_candidates, n: 9}
+  - {op: cover, at: 4.2, formats: [story, square]}
+  - {op: master, lufs: -16, true_peak: -1.5}

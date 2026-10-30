@@ -34,6 +34,7 @@ The engine bundles generic workers; an instance uses one by name and overrides w
 capabilities:
   audio.transcribe: {template: transcribe}
   web.browse:       {template: browser, concurrency: 3}
+  media.tools:      {template: media}
   video.render:     {template: video, idle_minutes: 5, memory_mb: 8192}
 ```
 
@@ -41,6 +42,7 @@ capabilities:
 |---|---|---|---|
 | `transcribe` | speech to text with timed segments; `.txt/.srt/.vtt/.json` | audio or video in, transcripts out | whisper.cpp v1.9.5 server, CPU; model `large-v3-turbo-q5_0` (env `WHISPER_MODEL`), fetched into `/cache` on the first boot |
 | `browser` | headless Chromium: open, click, fill, read text/links/HTML, eval, screenshots, PDFs; sessions per agent | screenshots and PDFs out | Playwright 1.64.1; every connection goes through a proxy in the worker that refuses private, loopback and link-local addresses (redirects and DNS answers included) unless `BROWSER_ALLOW_PRIVATE: "1"` |
+| `media` | ffmpeg on one file: `probe`, `qa` (loudness and stills), `stills`, `loudness`, `master` (two-pass loudnorm, video copied), `cover_candidates` (the strongest moments as a labelled contact sheet: scene cuts and samples scored for sharpness, contrast and exposure, black and look-alike frames left out) and `cover` (a moment fitted to story/portrait/square/landscape, cropped or over a blurred copy) | the file in, stills, sheets, covers and masters out | ffmpeg (Debian bookworm) behind a stdlib Go adapter |
 | `video` | renders a Remotion project to MP4/WebM/ProRes/GIF; optional loudness master, stills and contact sheet | the project folder in, the video and stills out | Remotion 4.0.535 with Chrome Headless Shell and ffmpeg. Remotion needs a company licence for companies of more than 3 people (remotion.dev/license) |
 
 `stormo capability templates` lists them; `stormo capability build <template>` builds one's image
