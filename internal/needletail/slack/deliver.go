@@ -2,9 +2,12 @@ package slack
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -212,12 +215,15 @@ func (g *Gateway) engaged(channel, thread string) bool {
 // the messaging policy.
 func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent, error) {
 	ctx = messaging.WithQuarantine(ctx, nil)
-	if strings.TrimSpace(r.Text) == "" {
-		return messaging.Sent{}, errors.New("message is required")
+	if strings.TrimSpace(r.Text) == "" && len(r.Files) == 0 {
+		return messaging.Sent{}, errors.New("message is required (or files to send)")
 	}
 	t, err := messaging.Parse(r.Target)
 	if err != nil {
 		return messaging.Sent{}, err
+	}
+	if t.Platform != "slack" && len(r.Files) > 0 {
+		return messaging.Sent{}, fmt.Errorf("%w: files are sent to Slack only", messaging.ErrRefused)
 	}
 	if t.Platform != "slack" {
 		g.mu.Lock()
@@ -259,6 +265,13 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 		if r.Broadcast {
 			bound["broadcast"] = true
 		}
+		if len(r.Files) > 0 {
+			paths := []string{}
+			for _, f := range r.Files {
+				paths = append(paths, f.Path)
+			}
+			bound["files"] = paths // the card binds their content (describeBound)
+		}
 		need.Payload, _ = json.Marshal(bound)
 		need.Filtered = true
 		return messaging.Sent{}, need
@@ -276,11 +289,46 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	case channel == "":
 		channel = g.o.HomeChannel
 	}
+	if len(r.Files) > 0 {
+		ts, err := g.postFiles(ctx, channel, thread, text, broadcast, r.Files)
+		if err != nil {
+			return messaging.Sent{}, err
+		}
+		return messaging.Sent{Platform: "slack", Channel: channel, TS: ts, Home: channel == g.o.HomeChannel && thread == ""}, nil
+	}
 	ts, err := g.postAs(ctx, channel, thread, text, broadcast)
 	if err != nil {
 		return messaging.Sent{}, err
 	}
 	return messaging.Sent{Platform: "slack", Channel: channel, TS: ts, Home: channel == g.o.HomeChannel && thread == ""}, nil
+}
+
+// postFiles posts files with the message's text as their comment (a text too long for one
+// message goes first on its own, the files after it in the same thread). Slack does not say
+// which message ts the files got, so the ts is the text's when it went alone, else "".
+func (g *Gateway) postFiles(ctx context.Context, channel, thread, text string, broadcast bool, files []messaging.File) (string, error) {
+	comment, ts := "", ""
+	if strings.TrimSpace(text) != "" {
+		parts := Split(Format(g.o.Redact(text), broadcast), MaxMessage)
+		if len(parts) == 1 {
+			comment = parts[0]
+		} else {
+			var err error
+			if ts, err = g.postAs(ctx, channel, thread, text, broadcast); err != nil {
+				return "", err
+			}
+			if thread == "" {
+				thread = ts
+			}
+		}
+	}
+	if _, err := g.o.Web.UploadFiles(ctx, channel, thread, comment, files); err != nil {
+		return ts, err
+	}
+	if thread != "" {
+		g.threads.add(channel + ":" + thread)
+	}
+	return ts, nil
 }
 
 // SendTool is Hermes' send_message for Slack, under the messaging policy (Send). The scheduler
@@ -289,13 +337,14 @@ func (g *Gateway) SendTool() tools.Tool {
 	return tools.Tool{Name: messaging.SendTool, Description: sendDescription, Schema: json.RawMessage(sendSchema),
 		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
 			var a struct {
-				Action      string `json:"action"`
-				Query       string `json:"query"`
-				Cursor      string `json:"cursor"`
-				ChannelType string `json:"channel_type"`
-				Target      string `json:"target"`
-				Message     string `json:"message"`
-				Broadcast   bool   `json:"broadcast"`
+				Action      string   `json:"action"`
+				Query       string   `json:"query"`
+				Cursor      string   `json:"cursor"`
+				ChannelType string   `json:"channel_type"`
+				Target      string   `json:"target"`
+				Message     string   `json:"message"`
+				Broadcast   bool     `json:"broadcast"`
+				Files       []string `json:"files"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return nil, fmt.Errorf("bad arguments: %v", err)
@@ -323,11 +372,25 @@ func (g *Gateway) SendTool() tools.Tool {
 					ctx = messaging.WithUntrusted(ctx, why)
 				}
 			}
-			sent, err := g.Send(ctx, messaging.Request{Target: a.Target, Text: a.Message, Broadcast: a.Broadcast})
+			if strings.EqualFold(strings.TrimSpace(a.Target), "here") {
+				t, err := hereTarget(env)
+				if err != nil {
+					return nil, err
+				}
+				a.Target = t
+			}
+			files, err := SendFiles(ctx, env, a.Files)
+			if err != nil {
+				return nil, err
+			}
+			sent, err := g.Send(ctx, messaging.Request{Target: a.Target, Text: a.Message, Broadcast: a.Broadcast, Files: files})
 			if err != nil {
 				return nil, err
 			}
 			out := map[string]any{"success": true, "platform": sent.Platform, "chat_id": sent.Channel, "message_id": sent.TS}
+			if len(files) > 0 {
+				out["files"] = len(files)
+			}
 			if sent.Home {
 				out["note"] = fmt.Sprintf("Sent to slack home channel (chat_id: %s)", sent.Channel)
 			}
@@ -335,17 +398,71 @@ func (g *Gateway) SendTool() tools.Tool {
 		}}
 }
 
+// MaxSendFiles is the most files one message carries.
+const MaxSendFiles = 4
+
+// SendFiles reads the files a send names (send_message files) under the agent's read rules. A
+// send a person approved runs only on the files as the card showed them: a file changed since
+// (its sha256 bound as file_sha256:<path>) is refused.
+func SendFiles(ctx context.Context, env *tools.Env, paths []string) ([]messaging.File, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if len(paths) > MaxSendFiles {
+		return nil, fmt.Errorf("at most %d files per message", MaxSendFiles)
+	}
+	out := []messaging.File{}
+	for _, p := range paths {
+		data, display, err := tools.ReadAgentFile(env, p, MaxUpload)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(data)
+		hash := hex.EncodeToString(sum[:])
+		if want := messaging.Bound(ctx, BindFile+p); want != "" && want != hash {
+			return nil, fmt.Errorf("%w: %s changed after the owner approved sending it; it is not sent", messaging.ErrBlocked, display)
+		}
+		out = append(out, messaging.File{Name: path.Base(display), Path: p, Data: data, SHA256: hash})
+	}
+	return out, nil
+}
+
+// BindFile prefixes the approval binding of a file a send carries (its sha256).
+const BindFile = "file_sha256:"
+
+// hereTarget is the conversation the tool was called from, as a send_message target.
+func hereTarget(env *tools.Env) (string, error) {
+	if env == nil {
+		return "", errors.New(`target "here" is the conversation you are in: there is none here`)
+	}
+	conv := env.Session
+	if env.Conversation != nil {
+		if c := env.Conversation(env.Session); c != "" {
+			conv = c
+		}
+	}
+	channel, thread, ok := Origin(conv)
+	if !ok {
+		return "", errors.New(`target "here" is a Slack conversation's: this one is not (name a target)`)
+	}
+	if thread == "" {
+		return "slack:" + channel, nil
+	}
+	return "slack:" + channel + ":" + thread, nil
+}
+
 const sendDescription = `Send a message to Slack, or list the targets you may use.
 
-Targets: 'slack' (the home channel), 'slack:<channel id>' for a channel you have a conversation in, 'slack:<channel id>:<thread ts>' for a thread you are in, or 'slack:<user id>' for an allowed user's DM. Call action 'list' to see known targets. Use 'channels' to discover Slack-visible channel IDs and names (query filters one page; follow next_cursor until has_more is false), then 'channel_info' with the exact target ID to check current metadata and runtime policy. By default it lists public channels and the private channels you are a member of (is_private: true); channel_type public_channel or private_channel narrows it. To read a channel's recent messages use ` + ReadTool + `. Discovery never joins channels or grants permission to send; metadata is not a delivery receipt. Your reply in this conversation reaches it anyway: use this only to post somewhere else. @channel, @here, @everyone and user groups are never pinged unless you set broadcast and the agent is granted it.`
+Targets: 'slack' (the home channel), 'slack:<channel id>' for a channel you have a conversation in, 'slack:<channel id>:<thread ts>' for a thread you are in, or 'slack:<user id>' for an allowed user's DM. Call action 'list' to see known targets. Use 'channels' to discover Slack-visible channel IDs and names (query filters one page; follow next_cursor until has_more is false), then 'channel_info' with the exact target ID to check current metadata and runtime policy. By default it lists public channels and the private channels you are a member of (is_private: true); channel_type public_channel or private_channel narrows it. To read a channel's recent messages use ` + ReadTool + `. Discovery never joins channels or grants permission to send; metadata is not a delivery receipt. Your reply in this conversation reaches it anyway: use this only to post somewhere else, or to send files (files: up to 4 paths from your home or shared space, 100 MB each; target 'here' is this conversation). @channel, @here, @everyone and user groups are never pinged unless you set broadcast and the agent is granted it.`
 
 const sendSchema = `{"type":"object","properties":{
 "action":{"type":"string","enum":["send","list","channels","channel_info"],"description":"send (default), list known targets, channels to discover channels, or channel_info to check an exact channel ID."},
-"target":{"type":"string","description":"'slack' (home channel), 'slack:<channel>', 'slack:<channel>:<thread_ts>' or 'slack:<user id>'; on Telegram too, 'telegram' (its home chat) or 'telegram:<chat id>' (list shows them)."},
+"target":{"type":"string","description":"'here' (this conversation), 'slack' (home channel), 'slack:<channel>', 'slack:<channel>:<thread_ts>' or 'slack:<user id>'; on Telegram too, 'telegram' (its home chat) or 'telegram:<chat id>' (list shows them)."},
 "query":{"type":"string","description":"channels: case-insensitive channel-name substring, optionally starting with #; filters this page only."},
 "cursor":{"type":"string","description":"channels: next_cursor from the preceding page; continue even if there were no matches."},
 "channel_type":{"type":"string","enum":["public_channel","private_channel"],"description":"channels: leave it out for public channels and the private channels you are a member of; public_channel or private_channel for one kind only."},
 "message":{"type":"string","description":"The message (Markdown)."},
+"files":{"type":"array","items":{"type":"string"},"description":"Files to post with the message (images, videos, PDFs…): paths in your home or shared space, up to 4. The message may be empty then. Slack only."},
 "broadcast":{"type":"boolean","description":"Ping @channel, @here, @everyone or a user group the message names. Refused unless the agent is granted broadcasts; leave it out otherwise."}
 }}`
 

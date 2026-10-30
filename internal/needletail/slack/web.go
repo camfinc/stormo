@@ -6,6 +6,7 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/camfinc/stormo/internal/needletail/messaging"
 )
 
 // DefaultAPI is Slack's Web API.
@@ -390,4 +393,88 @@ func orDefault(s, d string) string {
 		return d
 	}
 	return s
+}
+
+// MaxUpload is the most one file posted with a message may hold.
+const MaxUpload = 100 << 20
+
+// checkUploadURL accepts the upload URL Slack hands out (https on files.slack.com) or, while the
+// API is a loopback test server, a loopback URL: the file's bytes never go anywhere else.
+func (w *Web) checkUploadURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("slack gave an upload URL that does not parse")
+	}
+	if u.Scheme == "https" && u.Hostname() == "files.slack.com" {
+		return nil
+	}
+	if w.BaseURL != "" && w.BaseURL != DefaultAPI && CheckBaseURL(raw) == nil {
+		return nil
+	}
+	return fmt.Errorf("slack gave an upload URL on %q, not files.slack.com: the file is not sent", u.Hostname())
+}
+
+// UploadFiles posts files to a channel (in a thread when thread is set) as one message with
+// comment as its text: files.getUploadURLExternal for each, its bytes to the URL Slack gave, then
+// files.completeUploadExternal sharing them all. It gives the files' ids.
+func (w *Web) UploadFiles(ctx context.Context, channel, thread, comment string, files []messaging.File) ([]string, error) {
+	hc := w.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 5 * time.Minute}
+	}
+	type done struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	var shared []done
+	for _, f := range files {
+		if len(f.Data) > MaxUpload {
+			return nil, fmt.Errorf("%s is over %d MB", f.Name, MaxUpload>>20)
+		}
+		var slot struct {
+			UploadURL string `json:"upload_url"`
+			FileID    string `json:"file_id"`
+		}
+		p := url.Values{"filename": {f.Name}, "length": {strconv.Itoa(len(f.Data))}}
+		if err := w.call(ctx, "files.getUploadURLExternal", w.BotToken, p, &slot); err != nil {
+			return nil, err
+		}
+		if slot.FileID == "" {
+			return nil, fmt.Errorf("slack files.getUploadURLExternal gave no file id")
+		}
+		if err := w.checkUploadURL(slot.UploadURL); err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, slot.UploadURL, bytes.NewReader(f.Data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		res, err := hc.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("uploading %s: %w", f.Name, err)
+		}
+		io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("uploading %s: HTTP %d", f.Name, res.StatusCode)
+		}
+		shared = append(shared, done{ID: slot.FileID, Title: f.Name})
+	}
+	list, _ := json.Marshal(shared)
+	p := url.Values{"files": {string(list)}, "channel_id": {channel}}
+	if thread != "" {
+		p.Set("thread_ts", thread)
+	}
+	if comment != "" {
+		p.Set("initial_comment", comment)
+	}
+	if err := w.call(ctx, "files.completeUploadExternal", w.BotToken, p, nil); err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, d := range shared {
+		ids = append(ids, d.ID)
+	}
+	return ids, nil
 }

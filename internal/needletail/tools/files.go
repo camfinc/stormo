@@ -170,6 +170,37 @@ func openRead(env *Env, real, display string) (*os.File, os.FileInfo, error) {
 	return f, got, nil
 }
 
+// ReadAgentFile reads a file the agent names (relative to the home, or absolute in the shared
+// space) under read_file's rules: no private runtime data, no store of uploads, no other
+// conversation's work directory, a regular file reached without links, of at most max bytes. It
+// gives the bytes and the path as the agent sees it. send_message's files and view_file's path use it.
+func ReadAgentFile(env *Env, p string, max int64) ([]byte, string, error) {
+	if env == nil {
+		return nil, "", errors.New("files are read only in an agent's conversation")
+	}
+	real, err := env.Sandbox.Resolve(p)
+	if err != nil {
+		return nil, "", err
+	}
+	display := env.Sandbox.Display(real)
+	f, info, err := openRead(env, real, display)
+	if err != nil {
+		return nil, display, err
+	}
+	defer f.Close()
+	if info.Size() > max {
+		return nil, display, fmt.Errorf("%s is %d MB, over the %d MB a file may have here", display, info.Size()>>20, max>>20)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, display, err
+	}
+	if int64(len(data)) > max {
+		return nil, display, fmt.Errorf("%s grew past %d MB while it was read", display, max>>20)
+	}
+	return data, display, nil
+}
+
 // writeFile replaces the content of the resolved path real (created with mode when missing): a
 // regular file only, opened without following a final symlink, and only when the path still
 // resolves to itself and names the file opened (nothing was swapped in since Resolve). The file

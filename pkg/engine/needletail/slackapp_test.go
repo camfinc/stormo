@@ -47,7 +47,7 @@ func TestSlackManifest(t *testing.T) {
 	if !slices.Equal(cmds, []string{"/new", "/agent-status", "/memory", "/jobs", "/stop", "/trust", "/help"}) {
 		t.Fatalf("commands %v", cmds)
 	}
-	for _, s := range []string{"chat:write", "reactions:write", "assistant:write", "files:read", "im:write", "commands", "users:read", "app_mentions:read"} {
+	for _, s := range []string{"chat:write", "reactions:write", "assistant:write", "files:read", "files:write", "im:write", "commands", "users:read", "app_mentions:read"} {
 		if !slices.Contains(m.OAuth.Scopes.Bot, s) {
 			t.Errorf("scope %s missing: %v", s, m.OAuth.Scopes.Bot)
 		}

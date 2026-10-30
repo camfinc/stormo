@@ -188,6 +188,18 @@ type Request struct {
 	Text string
 	// Broadcast asks to keep @channel, @here, @everyone and user groups (granted or refused).
 	Broadcast bool
+	// Files are posted with the message (send_message files): read when the send was asked for,
+	// under the agent's read rules, and posted from exactly those bytes.
+	Files []File
+}
+
+// File is a file a message carries.
+type File struct {
+	// Name is the file name shown in the chat; Path the file as the agent named it.
+	Name, Path string
+	Data       []byte
+	// SHA256 is Data's, hex: what an approval of the send binds.
+	SHA256 string
 }
 
 // Sent is a message posted.

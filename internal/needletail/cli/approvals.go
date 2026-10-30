@@ -360,6 +360,23 @@ func (rt *runtime) describeBound(env *tools.Env, tool string, raw json.RawMessag
 			card.Payload, card.PayloadKind = rec.Text, "text"
 		}
 		card.Payload = "(" + head + ")\n" + card.Payload
+	case tool == messaging.SendTool && a["files"] != nil:
+		// the files as the card shows them are what runs: each one's sha256 is bound, and a file
+		// changed after the card was made is refused when it runs (slack.SendFiles)
+		raw, _ := json.Marshal(a["files"])
+		var paths []string
+		_ = json.Unmarshal(raw, &paths)
+		files, err := slack.SendFiles(context.Background(), env, paths)
+		if err != nil {
+			return card, nil, fmt.Errorf("its files cannot be shown: %w", err)
+		}
+		lines := []string{}
+		for _, f := range files {
+			bind[slack.BindFile+f.Path] = f.SHA256
+			lines = append(lines, fmt.Sprintf("%s (%s, %d KB, sha256 %s…)", f.Name, f.Path, (len(f.Data)+1023)/1024, f.SHA256[:12]))
+		}
+		card.Title += fmt.Sprintf(" with %d file(s)", len(files))
+		card.Payload += "\n\nFiles:\n" + strings.Join(lines, "\n")
 	case tool == "memory" && env != nil && env.Memory != nil && (str("action") == "replace" || str("action") == "remove"):
 		entries, err := env.Memory.Entries(str("target"))
 		if err != nil {

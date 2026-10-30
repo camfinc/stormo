@@ -19,8 +19,9 @@ import (
 // chat.postEphemeral (chat:write), reactions.add/remove (reactions:write), the thread status line
 // (assistant:write), conversations.replies (the *:history scopes), users.info (users:read),
 // conversations.info and conversations.list (the *:read scopes), conversations.open (im:write),
-// file downloads (files:read), mentions (app_mentions:read) and slash commands (commands).
-var slackBotScopes = []string{"app_mentions:read", "assistant:write", "channels:history", "channels:read", "chat:write", "commands", "files:read",
+// file downloads (files:read), files sent with a message (files:write: send_message files),
+// mentions (app_mentions:read) and slash commands (commands).
+var slackBotScopes = []string{"app_mentions:read", "assistant:write", "channels:history", "channels:read", "chat:write", "commands", "files:read", "files:write",
 	"groups:history", "groups:read", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "reactions:write", "users:read"}
 
 // slackBotEvents are the events the gateway hears.

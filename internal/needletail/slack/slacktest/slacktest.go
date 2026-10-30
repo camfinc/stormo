@@ -7,6 +7,7 @@ package slacktest
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -61,6 +62,8 @@ type Server struct {
 	mu         sync.Mutex
 	calls      []Call
 	posts      []Post
+	uploaded   map[string][]byte // file id → bytes sent to its upload URL
+	shares     []Share
 	updates    []Update
 	ephemerals []Ephemeral
 	acks       []string
@@ -166,6 +169,7 @@ func New(t *testing.T) *Server {
 	mux.HandleFunc("/api/", s.api)
 	mux.HandleFunc("/link", s.link)
 	mux.HandleFunc("/files/", s.file)
+	mux.HandleFunc("/upload/", s.upload)
 	mux.HandleFunc("/respond/", s.respond)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -227,6 +231,29 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		n := s.opens
 		s.mu.Unlock()
 		reply(map[string]any{"ok": true, "url": fmt.Sprintf("ws%s/link?n=%d", strings.TrimPrefix(s.URL, "http"), n)})
+	case "files.getUploadURLExternal":
+		s.mu.Lock()
+		id := fmt.Sprintf("F0UP%06d", len(s.uploaded)+len(s.shares)*10+1)
+		if s.uploaded == nil {
+			s.uploaded = map[string][]byte{}
+		}
+		s.uploaded[id] = nil
+		s.mu.Unlock()
+		reply(map[string]any{"ok": true, "upload_url": s.URL + "/upload/" + id, "file_id": id})
+	case "files.completeUploadExternal":
+		var files []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		}
+		_ = json.Unmarshal([]byte(params["files"]), &files)
+		sh := Share{Channel: params["channel_id"], Thread: params["thread_ts"], Comment: params["initial_comment"], Files: map[string][]byte{}}
+		s.mu.Lock()
+		for _, f := range files {
+			sh.Files[f.Title] = s.uploaded[f.ID]
+		}
+		s.shares = append(s.shares, sh)
+		s.mu.Unlock()
+		reply(map[string]any{"ok": true, "files": files})
 	case "chat.postMessage":
 		s.mu.Lock()
 		ts := fmt.Sprintf("1800000000.%06d", s.nextTS)
@@ -529,6 +556,32 @@ func (s *Server) Disconnect(reason string) {
 }
 
 // Posts are the messages posted so far.
+// Share is a files.completeUploadExternal: where the files went, their comment, and each file's
+// bytes by name.
+type Share struct {
+	Channel, Thread, Comment string
+	Files                    map[string][]byte
+}
+
+// Shares are the files posted so far.
+func (s *Server) Shares() []Share {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Share{}, s.shares...)
+}
+
+func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/upload/")
+	b, _ := io.ReadAll(r.Body)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.uploaded[id]; !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	s.uploaded[id] = b
+}
+
 func (s *Server) Posts() []Post {
 	s.mu.Lock()
 	defer s.mu.Unlock()
