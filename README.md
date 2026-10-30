@@ -123,7 +123,8 @@ a skill named `stormo` that Stormo did not write is left alone unless you pass `
 - **Dream** reads only what an agent learned (never its conversations) and proposes it back.
 
 The design in depth: [ARCHITECTURE.md](ARCHITECTURE.md). The core and the office:
-[docs/core.md](docs/core.md). What other programs can rely on (the core's API, `--json`):
+[docs/core.md](docs/core.md). Capabilities agents call (transcription, a browser, video renders):
+[docs/capabilities.md](docs/capabilities.md). What other programs can rely on (the core's API, `--json`):
 [docs/api.md](docs/api.md).
 
 ## Everyday commands

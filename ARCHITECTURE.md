@@ -58,6 +58,7 @@ pkg/
   inspect/ review/             `stormo inspect` (agent as JSON), `stormo review` (fleet sweep)
   out/                         CLI output: text, or --json events (docs/api.md)
   core/ core/llm/              control plane: fleet registry, office UI (embedded), model gateway (docs/core.md)
+  capability/                  bundled capability templates: worker images agents use through the core (docs/capabilities.md)
 docker/sidecar.Dockerfile      the engine's sidecar image (rehydrate + nap), one per engine version
 docker/instance.Dockerfile     one agent's ECS sidecar: that image + the instance's files
 apps/macos/                    the native macOS app (SwiftUI) and StormoKit, its logic as a Swift package

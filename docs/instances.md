@@ -67,7 +67,20 @@ office:
   clocks:                         # lobby wall of the office UI
     - { city: Lisbon, tz: Europe/Lisbon }
 
-capabilities:                     # heavy or shared calls the core runs for agents (docs/core.md): granted in agent.yaml capabilities:
+capabilities:                     # heavy or shared calls the core runs for agents (docs/capabilities.md): granted in agent.yaml capabilities:
+  # audio.transcribe: {template: transcribe}   # a bundled template (transcribe, browser, video): a service booted on demand, asleep when idle
+  # web.browse: {template: browser, concurrency: 3, env: {BROWSER_ALLOW_PRIVATE: "0"}}   # anything set here wins over the template
+  # pdf.ocr:                        # your own service: any image speaking the worker contract (docs/capabilities.md)
+  #   kind: service
+  #   image: "acme/ocr:2"
+  #   port: 8080                    # its HTTP port (default 8080); health: /health
+  #   idle_minutes: 10              # asleep after this long without jobs (default 10); boot_minutes: 5
+  #   memory_mb: 2048               # limits: memory_mb, shm_mb, cpus
+  #   env: {OCR_LANGS: "eng+spa"}   # plain settings; secrets: [NAME] for values from the secrets file
+  #   files: both                   # none | in | out | both: jobs take shared files, give files back (placement local only)
+  #   docs: "Give PDFs; answers their text and writes .txt files."   # what agents read with cap_describe
+  #   input_schema: {type: object, properties: {pages: {type: string}}}
+  #   examples: [{pages: "1-3"}]
   # media.bake:
   #   description: Render an image from a prompt; input {prompt, size}, answers {url}
   #   kind: http                    # http: the core POSTs {job, agent, input}; or container: image + command, input on stdin
@@ -76,7 +89,7 @@ capabilities:                     # heavy or shared calls the core runs for agen
   #   concurrency: 2                # jobs at once (default 1)
   #   timeout_minutes: 20           # default 15
   #   cost_usd: 0.4                 # estimated cost of one job, for metering
-  # gpu.render: {kind: container, image: "acme/render:1", command: [render], secrets: [RENDER_KEY], placement: gpu}   # placement: local or a runner
+  # gpu.render: {kind: container, image: "acme/render:1", command: [render], secrets: [RENDER_KEY], placement: gpu}   # placement: local or a runner (container, service)
 placements:                       # where agents run besides local (compose here) and remote (ECS): docs/remote-core.md §6a
   # vps: {kind: runner}           # a host running `stormo runner vps`; its agents reach the core at core.urls.vps
 core:
