@@ -48,3 +48,21 @@ func TestFlowLinesKeepTheirSpelling(t *testing.T) {
 		t.Errorf("got:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// A comment that continues the one above it, aligned under it, stays where it was written (the
+// encoder indents it like the next key).
+func TestAlignedCommentLinesStay(t *testing.T) {
+	original := []byte("core:\n  review: auto     # one\n                   # two\n  prompt: x\n")
+	var doc yaml.Node
+	if err := yaml.Unmarshal(original, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.Content[0].Content[1].Content[3].Value = "y"
+	out, err := Encode(&doc, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "core:\n  review: auto     # one\n                   # two\n  prompt: y\n"; string(out) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+}

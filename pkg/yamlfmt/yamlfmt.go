@@ -31,7 +31,7 @@ func Encode(doc *yaml.Node, original []byte) ([]byte, error) {
 var beforeComment = regexp.MustCompile(`(\S)[ \t]{2,}#`)
 
 // norm is what a line means, for matching an encoded line with the original it came from: the
-// spacing before a comment does not count, and a one-line `key: value` (or `- value`) is compared
+// spacing before a comment does not count, nor a whole-line comment's indentation, and a one-line `key: value` (or `- value`) is compared
 // by its key, decoded value and comment, so a scalar the encoder only re-quoted (yaml.v3 escapes
 // emoji in double quotes) still matches its original. A line holding a flow collection
 // (`- { city: Lisbon }`, `key: [a, b]`) is compared by its decoded value and comments too: the
@@ -40,7 +40,12 @@ func norm(line string) string {
 	trimmed := strings.TrimRight(line, " \t")
 	body := strings.TrimLeft(trimmed, " ")
 	indent := trimmed[:len(trimmed)-len(body)]
-	if body != "" && !strings.HasPrefix(body, "#") {
+	if strings.HasPrefix(body, "#") {
+		// a comment on its own line is its text wherever it sits: the encoder re-indents one that was
+		// aligned under the comment of the line above
+		return "\x00c\x00" + body
+	}
+	if body != "" {
 		var doc yaml.Node
 		if yaml.Unmarshal([]byte(body), &doc) == nil && len(doc.Content) == 1 {
 			n := doc.Content[0]
