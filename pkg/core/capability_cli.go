@@ -227,6 +227,7 @@ func tryCapability(inst *instance.Instance, args []string, o *out.Writer) error 
 		}
 		svc := link.NewServices(inst.Slug + "-try")
 		svc.Logf = func(f string, a ...any) { o.Step(f, a...) }
+		svc.Clean() // a try interrupted earlier
 		defer svc.StopAll()
 		mount := "/jobs/" + stamp
 		in := []string{}

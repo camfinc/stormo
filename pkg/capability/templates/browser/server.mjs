@@ -51,6 +51,55 @@ async function hostAllowed(host) {
   return ok;
 }
 
+// Every connection the browser makes goes through this proxy (redirects, subresources, websockets
+// included), which resolves the host itself, refuses private addresses and connects to the address
+// it checked, so a redirect or a DNS answer that changes cannot reach the host's network.
+const PROXY_PORT = 3128;
+async function vetted(host) {
+  host = host.replace(/^\[|\]$/g, "");
+  if (ALLOW_PRIVATE) return host;
+  if (net.isIP(host)) return privateIP(host) ? null : host;
+  if (host === "localhost" || host.endsWith(".localhost")) return null;
+  try {
+    const addrs = await dns.lookup(host, { all: true });
+    return addrs.length && addrs.every((a) => !privateIP(a.address)) ? addrs[0].address : null;
+  } catch {
+    return null;
+  }
+}
+
+const proxy = http.createServer(async (req, res) => {
+  let u;
+  try {
+    u = new URL(req.url);
+  } catch {
+    return res.writeHead(400).end();
+  }
+  const ip = u.protocol === "http:" ? await vetted(u.hostname) : null;
+  if (!ip) return res.writeHead(403, { "content-type": "text/plain" }).end("blocked: a private address");
+  const headers = { ...req.headers, host: u.host };
+  delete headers["proxy-connection"];
+  const up = http.request({ host: ip, port: u.port || 80, method: req.method, path: u.pathname + u.search, headers, setHost: false }, (r) => {
+    res.writeHead(r.statusCode, r.headers);
+    r.pipe(res);
+  });
+  up.on("error", () => (res.headersSent ? res.destroy() : res.writeHead(502).end()));
+  req.pipe(up);
+});
+proxy.on("connect", async (req, sock, head) => {
+  const m = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(req.url || "");
+  const ip = m ? await vetted(m[1]) : null;
+  if (!ip) return sock.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+  const up = net.connect(Number(m[2]), ip, () => {
+    sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head?.length) up.write(head);
+    up.pipe(sock);
+    sock.pipe(up);
+  });
+  up.on("error", () => sock.destroy());
+  sock.on("error", () => up.destroy());
+});
+
 async function guard(context) {
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -250,6 +299,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-browser = await chromium.launch({ args: ["--no-sandbox", "--disable-gpu"] }); // the container is the sandbox
+await new Promise((ok) => proxy.listen(PROXY_PORT, "127.0.0.1", ok));
+browser = await chromium.launch({
+  args: ["--no-sandbox", "--disable-gpu"], // the container is the sandbox
+  // `<-loopback>`: loopback goes through the proxy too, where it is refused.
+  proxy: { server: `http://127.0.0.1:${PROXY_PORT}`, bypass: "<-loopback>" },
+});
 browser.on("disconnected", () => process.exit(1)); // the core boots a fresh worker
 server.listen(PORT, () => console.log(`browser: listening on :${PORT}`));

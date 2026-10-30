@@ -204,8 +204,6 @@ func (w *Workdir) Deliver(agent, out, src, how string) ([]string, error) {
 		return nil, err
 	}
 	defer root.Close()
-	w.writeMus.Lock()
-	defer w.writeMus.Unlock()
 	delivered := []string{}
 	var size int64
 	err = filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
@@ -225,6 +223,9 @@ func (w *Workdir) Deliver(agent, out, src, how string) ([]string, error) {
 		sub, _ := filepath.Rel(src, p)
 		rel := filepath.Join(outRel, sub)
 		key := outKey + "/" + filepath.ToSlash(sub)
+		// One file at a time under the write lock: a large delivery does not hold up fs_write.
+		w.writeMus.Lock()
+		defer w.writeMus.Unlock()
 		locks, err := w.covering(key, agent)
 		if err != nil {
 			return err

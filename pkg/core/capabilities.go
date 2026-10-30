@@ -208,7 +208,13 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	now := b.o.Now().UnixMilli()
 	preview := b.o.Scrub(clip(string(input), 200))
 	files, _ := json.Marshal(inputs)
-	res, err := b.o.DB.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
+	// One transaction: the dispatcher never sees the job before its default folder is set.
+	tx, err := b.o.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
 		c.Name, agent, string(input), preview, c.CostUSD, now, string(files), out, notify)
 	if err != nil {
 		return nil, err
@@ -216,7 +222,12 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	id, _ := res.LastInsertId()
 	if gives && out == "" {
 		out = b.o.Workdir.jobOutDefault(agent, c.Name, id)
-		_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET out = ? WHERE id = ?`, out, id)
+		if _, err := tx.Exec(`UPDATE cap_jobs SET out = ? WHERE id = ?`, out, id); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	b.o.DB.Audit("agent:"+agent, "cap.start", c.Name, fmt.Sprintf("job %d", id))
 	b.poke()
@@ -267,9 +278,18 @@ func (b *Broker) Job(agent string, id int64) (*JobView, error) {
 	return j, err
 }
 
-// Jobs are the newest jobs for the owner: previews, never inputs or outputs.
+// Jobs are the newest jobs for the owner: previews and file paths scrubbed, never inputs or outputs.
 func (b *Broker) Jobs(limit int) ([]JobView, error) {
-	return b.jobs(`SELECT `+jobCols+` FROM cap_jobs ORDER BY id DESC LIMIT ?`, limit)
+	jobs, err := b.jobs(`SELECT `+jobCols+` FROM cap_jobs ORDER BY id DESC LIMIT ?`, limit)
+	for i := range jobs {
+		for _, l := range [][]string{jobs[i].Inputs, jobs[i].Files} {
+			for k := range l {
+				l[k] = b.o.Scrub(l[k])
+			}
+		}
+		jobs[i].Out = b.o.Scrub(jobs[i].Out)
+	}
+	return jobs, err
 }
 
 // AgentJobs are agent's newest jobs, without outputs (cap_status gives one).
@@ -390,7 +410,8 @@ func (b *Broker) dispatch() {
 			continue // cancelled meanwhile
 		}
 		b.running[c.Name]++
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.TimeoutMinutes)*time.Minute)
+		// Cancellable from the start; the job's own minutes start once its worker is ready (exec).
+		ctx, cancel := context.WithCancel(context.Background())
 		b.cancels[q.id] = cancel
 		b.mu.Unlock()
 		go func(q queued, c instance.Capability) {
@@ -405,7 +426,7 @@ func (b *Broker) dispatch() {
 			out, files, err := b.exec(ctx, c, q)
 			if errors.Is(ctx.Err(), context.Canceled) {
 				err = errors.New("cancelled")
-			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			} else if errors.Is(err, context.DeadlineExceeded) {
 				err = fmt.Errorf("it took over its %d minutes", c.TimeoutMinutes)
 			}
 			b.finish(q, out, files, err)
@@ -503,10 +524,17 @@ func (b *Broker) spec(c instance.Capability) link.ServiceSpec {
 
 func jobDirName(capability string) string { return strings.ReplaceAll(capability, ".", "-") }
 
+// exec runs one job. ctx is the job's cancellation; its minutes (timeout_minutes) count from when
+// its worker is ready, so building a template's image or booting a sleeping service does not eat them.
 func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]byte, []string, error) {
 	input := []byte(q.input)
+	clock := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes)*time.Minute)
+	}
 	switch c.Kind {
 	case "http":
+		ctx, cancel := clock()
+		defer cancel()
 		body, _ := json.Marshal(map[string]any{"job": q.id, "agent": q.agent, "input": json.RawMessage(input)})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
 		if err != nil {
@@ -540,6 +568,9 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]b
 		return out, nil, nil
 	case "container", "service":
 		if p, ok := b.o.Inst.PlacementNamed(c.Placement); ok && p.Kind == instance.PlacementRunner {
+			// The runner keeps the job's minutes itself, after building and booting.
+			ctx, cancel := context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes+c.BootMinutes)*time.Minute+30*time.Minute)
+			defer cancel()
 			job := &link.Job{ID: q.id, Capability: c.Name, Image: c.Image, Command: c.Command, Secrets: c.Secrets, Input: input, TimeoutMinutes: c.TimeoutMinutes}
 			if c.Kind == "service" {
 				tpl, _ := c.TemplateImage()
@@ -580,6 +611,19 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]b
 		}
 		var out []byte
 		var err error
+		if c.Kind == "service" {
+			boot, cancel := context.WithTimeout(ctx, time.Duration(c.BootMinutes)*time.Minute+time.Minute)
+			_, err = b.o.Services.Ensure(boot, b.spec(c))
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil, nil, ctx.Err()
+				}
+				return nil, nil, fmt.Errorf("the worker did not boot: %w", err)
+			}
+		}
+		ctx, cancel := clock()
+		defer cancel()
 		if c.Kind == "container" {
 			out, err = b.o.Container(ctx, c.Image, c.Command, b.secrets(c), input, dir)
 		} else {

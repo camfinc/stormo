@@ -40,7 +40,7 @@ capabilities:
 | template | does | files | worker |
 |---|---|---|---|
 | `transcribe` | speech to text with timed segments; `.txt/.srt/.vtt/.json` | audio or video in, transcripts out | whisper.cpp v1.9.5 server, CPU; model `large-v3-turbo-q5_0` (env `WHISPER_MODEL`), fetched into `/cache` on the first boot |
-| `browser` | headless Chromium: open, click, fill, read text/links/HTML, eval, screenshots, PDFs; sessions per agent | screenshots and PDFs out | Playwright 1.64.1; private and loopback addresses blocked unless `BROWSER_ALLOW_PRIVATE: "1"` |
+| `browser` | headless Chromium: open, click, fill, read text/links/HTML, eval, screenshots, PDFs; sessions per agent | screenshots and PDFs out | Playwright 1.64.1; every connection goes through a proxy in the worker that refuses private, loopback and link-local addresses (redirects and DNS answers included) unless `BROWSER_ALLOW_PRIVATE: "1"` |
 | `video` | renders a Remotion project to MP4/WebM/ProRes/GIF; optional loudness master, stills and contact sheet | the project folder in, the video and stills out | Remotion 4.0.535 with Chrome Headless Shell and ffmpeg. Remotion needs a company licence for companies of more than 3 people (remotion.dev/license) |
 
 `stormo capability templates` lists them; `stormo capability build <template>` builds one's image
@@ -71,6 +71,8 @@ service`, `image:`) that speaks the contract below to use one of those on a GPU 
   only, with `memory_mb`, `shm_mb` and `cpus` as limits. Settings come from `env:` (plain values) and
   `secrets:` (names, values from the secrets file), both through the environment, never argv.
 - A one-shot `container` with files gets the same folders at `/job/in` and `/job/out`.
+- A job's `timeout_minutes` count from when its worker is ready: building a template's image and
+  booting a sleeping worker (`boot_minutes`) come on top.
 
 ## Files
 
