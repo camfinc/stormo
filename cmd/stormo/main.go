@@ -26,6 +26,7 @@ import (
 	"github.com/camfinc/stormo/pkg/bridge"
 	"github.com/camfinc/stormo/pkg/build"
 	"github.com/camfinc/stormo/pkg/config"
+	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/deploy"
 	"github.com/camfinc/stormo/pkg/engines"
@@ -688,6 +689,9 @@ func run(args []string) error {
 
 	case "core":
 		return runCore(inst, sub, rest)
+
+	case "capability", "capabilities":
+		return core.CapabilityCommand(inst, sub, rest, output())
 
 	case "runner":
 		if sub == "" {

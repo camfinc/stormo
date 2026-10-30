@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/capability"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/link"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -77,7 +80,26 @@ func runRunner(inst *instance.Instance, placement string) error {
 			return link.OrderResult{State: state}, err
 		},
 	})
+	if runnerSvc != nil {
+		runnerSvc.StopAll() // its services sleep with it
+	}
 	return nil
+}
+
+// The runner's service capabilities, one manager for the process: started with its reaper on first use.
+var (
+	runnerSvcOnce sync.Once
+	runnerSvc     *link.Services
+)
+
+func runnerServices(inst *instance.Instance) *link.Services {
+	runnerSvcOnce.Do(func() {
+		runnerSvc = link.NewServices(inst.Slug + "-" + os.Getenv("SWARM_PLACEMENT"))
+		runnerSvc.Logf = log.Printf
+		runnerSvc.Clean()
+		go runnerSvc.Run(make(chan struct{}), 30*time.Second)
+	})
+	return runnerSvc
 }
 
 // runJob runs a capability's container here for the core, with the secrets it names from this
@@ -98,6 +120,25 @@ func runJob(ctx context.Context, inst *instance.Instance, o link.Order) (link.Or
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(j.TimeoutMinutes)*time.Minute)
 	defer cancel()
+	if sv := j.Service; sv != nil {
+		if sv.Template != "" {
+			if _, err := capability.EnsureImage(sv.Template, func(s string) { log.Print(s) }); err != nil {
+				return link.OrderResult{}, err
+			}
+		}
+		for k, v := range sv.Env {
+			if _, set := env[k]; !set {
+				env[k] = v
+			}
+		}
+		body, _ := json.Marshal(map[string]any{"job": j.ID, "agent": o.Agent, "input": j.Input, "files": []string{}, "out": ""})
+		out, err := runnerServices(inst).Call(ctx, link.ServiceSpec{Name: j.Capability, Image: j.Image, Command: j.Command, Port: sv.Port, Health: sv.Health, Env: env,
+			MemoryMB: sv.MemoryMB, ShmMB: sv.ShmMB, CPUs: sv.CPUs, Idle: time.Duration(sv.IdleMinutes) * time.Minute, Boot: time.Duration(sv.BootMinutes) * time.Minute}, body)
+		if err != nil {
+			return link.OrderResult{}, err
+		}
+		return link.OrderResult{Output: out}, nil
+	}
 	out, err := link.RunContainer(ctx, j.Image, j.Command, env, j.Input)
 	if err != nil {
 		return link.OrderResult{}, err

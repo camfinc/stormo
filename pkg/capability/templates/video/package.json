@@ -1,0 +1,21 @@
+{
+  "name": "stormo-capability-video",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@react-three/fiber": "^9.0.0",
+    "@remotion/bundler": "4.0.535",
+    "@remotion/google-fonts": "4.0.535",
+    "@remotion/media-utils": "4.0.535",
+    "@remotion/noise": "4.0.535",
+    "@remotion/paths": "4.0.535",
+    "@remotion/renderer": "4.0.535",
+    "@remotion/shapes": "4.0.535",
+    "@remotion/three": "4.0.535",
+    "@remotion/transitions": "4.0.535",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "4.0.535",
+    "three": "^0.180.0"
+  }
+}

@@ -1,0 +1,31 @@
+description: Render a Remotion video project from your shared space to MP4 (or WebM, ProRes, GIF), optionally mastered to a loudness target with still frames and a contact sheet for review.
+files: both
+port: 8080
+health: /health
+concurrency: 1
+timeout_minutes: 60
+idle_minutes: 10
+boot_minutes: 3
+memory_mb: 6144
+shm_mb: 2048
+env:
+  RENDER_CONCURRENCY: "0"   # Chrome tabs rendering frames at once; 0: half the CPUs the container sees
+notes: Remotion is free for individuals and companies of up to 3 people; larger companies need a Remotion company licence (remotion.dev/license) to use this template.
+input_schema:
+  type: object
+  required: [composition]
+  properties:
+    composition: {type: string, description: "the composition id to render"}
+    entry: {type: string, description: "entry file inside the project, the one calling registerRoot (default: src/index.ts, src/index.tsx, src/index.js or remotion/index.ts, whichever exists)"}
+    props: {type: object, description: "input props for the composition"}
+    codec: {type: string, enum: [h264, h265, vp9, prores, gif], description: "default h264 (.mp4)"}
+    crf: {type: integer, description: "quality (lower is better; codec default when unset)"}
+    frames: {type: string, description: "a range to render, like 0-89 (default all)"}
+    scale: {type: number, description: "resolution factor (0.5 for a quick draft)"}
+    master: {type: object, properties: {lufs: {type: number}, true_peak: {type: number}}, description: "normalize the audio to this loudness, like {lufs: -16, true_peak: -1.5}"}
+    stills: {type: array, items: {type: number}, description: "seconds to grab PNG stills at; also writes contact.png"}
+    name: {type: string, description: "output file name without extension (default the composition id)"}
+examples:
+  - {composition: Main}
+  - {composition: Promo, props: {title: "Spring sale"}, scale: 0.5, stills: [1, 4.5]}
+  - {composition: Promo, entry: src/index.tsx, master: {lufs: -16, true_peak: -1.5}, stills: [2, 6, 10]}

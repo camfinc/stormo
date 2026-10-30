@@ -10,23 +10,32 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/capability"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/link"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
 
-// The capabilities broker (docs/remote-core.md §6): heavy or shared calls an instance declares
-// (stormo.yaml capabilities:) and grants per agent (agent.yaml capabilities:). Agents start jobs
-// with cap_start and follow them with cap_status; the core queues them in core.db, keeps each
-// capability to its concurrency, runs them through a worker that is never the core itself (an
-// HTTP endpoint, a container here or on a runner), and meters what they cost. The credential a
-// worker needs stays with the core or the runner; agents only hold their grant.
+// The capabilities broker (docs/remote-core.md §6, docs/core.md "Capabilities"): heavy or shared
+// calls an instance declares (stormo.yaml capabilities:) and grants per agent (agent.yaml
+// capabilities:). Agents explore them (cap_list, cap_describe, which work while the worker sleeps),
+// queue jobs (cap_start, with a notice that wakes them when it is done) or run one and wait a little
+// (cap_run), follow (cap_status, cap_jobs) and cancel (cap_cancel). The core queues jobs in core.db,
+// keeps each capability to its concurrency, runs them through a worker that is never the core itself
+// (an HTTP endpoint, a one-shot container, or a service container booted on demand and put to sleep
+// when idle, here or on a runner), hands files over through its disk within the agent's own layers,
+// and meters what they cost. The credential a worker needs stays with the core or the runner; agents
+// only hold their grant.
 
 // BrokerOptions configure the broker.
 type BrokerOptions struct {
@@ -41,9 +50,19 @@ type BrokerOptions struct {
 	// Scrub cleans the previews kept for the owner's views.
 	Scrub func(string) string
 	HTTP  *http.Client
-	// Container runs a container job on this host (link.RunContainer).
-	Container func(ctx context.Context, image string, command []string, env map[string]string, input []byte) ([]byte, error)
-	Now       func() time.Time
+	// Container runs a one-shot container job on this host (link.RunContainerIn); jobDir is mounted at /job.
+	Container func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
+	// Services runs this host's service capabilities (link.NewServices).
+	Services *link.Services
+	// Workdir hands job files over (nil: no files).
+	Workdir *Workdir
+	// Notify leaves an agent the notice that a job is done (Bus.Notify).
+	Notify func(agent, subject, body string, attach []string) error
+	// Image makes a template's image available on this host (capability.EnsureImage).
+	Image func(template string) error
+	// JobsDir holds jobs' files while they run (.swarm/capabilities/jobs).
+	JobsDir string
+	Now     func() time.Time
 }
 
 // Broker runs capability jobs.
@@ -51,6 +70,8 @@ type Broker struct {
 	o       BrokerOptions
 	mu      sync.Mutex
 	running map[string]int
+	cancels map[int64]context.CancelFunc
+	builds  map[string]*sync.Mutex
 	wake    chan struct{}
 }
 
@@ -60,7 +81,20 @@ func NewBroker(o BrokerOptions) *Broker {
 		o.HTTP = &http.Client{}
 	}
 	if o.Container == nil {
-		o.Container = link.RunContainer
+		o.Container = link.RunContainerIn
+	}
+	if o.Services == nil {
+		o.Services = link.NewServices(o.Inst.Slug)
+		o.Services.Logf = log.Printf
+	}
+	if o.Image == nil {
+		o.Image = func(t string) error {
+			_, err := capability.EnsureImage(t, func(s string) { log.Printf("capabilities: %s", s) })
+			return err
+		}
+	}
+	if o.JobsDir == "" {
+		o.JobsDir = filepath.Join(o.Inst.Root, ".swarm", "capabilities", "jobs")
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -77,7 +111,7 @@ func NewBroker(o BrokerOptions) *Broker {
 			return a.Capabilities
 		}
 	}
-	return &Broker{o: o, running: map[string]int{}, wake: make(chan struct{}, 1)}
+	return &Broker{o: o, running: map[string]int{}, cancels: map[int64]context.CancelFunc{}, builds: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
 }
 
 // JobView is a job as its agent (and the owner) sees it.
@@ -93,6 +127,12 @@ type JobView struct {
 	Created    int64           `json:"created"`
 	Started    *int64          `json:"started,omitempty"`
 	Finished   *int64          `json:"finished,omitempty"`
+	// Inputs are the shared files handed to it, Out the folder its files go to, Files the ones it wrote.
+	Inputs []string `json:"inputs,omitempty"`
+	Out    string   `json:"out,omitempty"`
+	Files  []string `json:"files,omitempty"`
+	Notify bool     `json:"notify"`
+	Note   string   `json:"note,omitempty"`
 }
 
 const maxJobInput = 256 << 10
@@ -108,32 +148,83 @@ func (b *Broker) Granted(agent string) []instance.Capability {
 	return out
 }
 
-// Start queues a job for agent.
-func (b *Broker) Start(agent, capability string, input json.RawMessage) (*JobView, error) {
+func (b *Broker) granted(agent, capability string) (instance.Capability, error) {
 	c, ok := b.o.Inst.CapabilityNamed(capability)
 	if !ok {
-		return nil, toolErr("no capability %q in this instance", capability)
+		return c, toolErr("no capability %q in this instance (cap_list shows yours)", capability)
 	}
 	if !slices.Contains(b.o.Grants(agent), capability) {
-		return nil, toolErr("%s is not granted to you (agent.yaml capabilities:)", capability)
+		return c, toolErr("%s is not granted to you (agent.yaml capabilities:)", capability)
 	}
-	if len(input) == 0 {
+	return c, nil
+}
+
+// StartRequest is a job an agent asks for.
+type StartRequest struct {
+	Capability string          `json:"capability"`
+	Input      json.RawMessage `json:"input"`
+	// Files are shared paths (files or folders) handed to the worker; Out the shared folder its files go to.
+	Files  []string `json:"files"`
+	Out    string   `json:"out"`
+	Notify *bool    `json:"notify"`
+}
+
+// Start queues a job for agent.
+func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
+	c, err := b.granted(agent, req.Capability)
+	if err != nil {
+		return nil, err
+	}
+	input := req.Input
+	if len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage("{}")
 	}
 	if len(input) > maxJobInput || !json.Valid(input) {
 		return nil, toolErr("input is JSON up to %d KB", maxJobInput>>10)
 	}
+	takes, gives := c.Files == "in" || c.Files == "both", c.Files == "out" || c.Files == "both"
+	if len(req.Files) > 0 && !takes {
+		return nil, toolErr("%s takes no files (cap_describe says what it takes)", c.Name)
+	}
+	if req.Out != "" && !gives {
+		return nil, toolErr("%s writes no files, so it takes no out folder", c.Name)
+	}
+	if (takes || gives) && b.o.Workdir == nil {
+		return nil, toolErr("this core has no shared space to hand files over")
+	}
+	inputs := []string{}
+	if len(req.Files) > 0 {
+		if inputs, err = b.o.Workdir.JobInputs(agent, req.Files); err != nil {
+			return nil, err
+		}
+	}
+	out := ""
+	if req.Out != "" {
+		if out, err = b.o.Workdir.JobOut(agent, req.Out); err != nil {
+			return nil, err
+		}
+	}
+	notify := req.Notify == nil || *req.Notify
 	now := b.o.Now().UnixMilli()
 	preview := b.o.Scrub(clip(string(input), 200))
-	res, err := b.o.DB.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created) VALUES (?, ?, 'queued', ?, ?, ?, ?)`,
-		c.Name, agent, string(input), preview, c.CostUSD, now)
+	files, _ := json.Marshal(inputs)
+	res, err := b.o.DB.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, agent, string(input), preview, c.CostUSD, now, string(files), out, notify)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
+	if gives && out == "" {
+		out = b.o.Workdir.jobOutDefault(agent, c.Name, id)
+		_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET out = ? WHERE id = ?`, out, id)
+	}
 	b.o.DB.Audit("agent:"+agent, "cap.start", c.Name, fmt.Sprintf("job %d", id))
 	b.poke()
-	return &JobView{ID: id, Capability: c.Name, Agent: agent, Status: "queued", Preview: preview, CostUSD: c.CostUSD, Created: now}, nil
+	v := &JobView{ID: id, Capability: c.Name, Agent: agent, Status: "queued", Preview: preview, CostUSD: c.CostUSD, Created: now, Inputs: inputs, Out: out, Notify: notify}
+	if c.Kind == "service" && c.Placement == "local" && b.o.Services.State(c.Name).State != "awake" {
+		v.Note = "its worker is asleep and boots for this job: the first one takes longer"
+	}
+	return v, nil
 }
 
 func (b *Broker) poke() {
@@ -145,12 +236,15 @@ func (b *Broker) poke() {
 
 func scanJob(row interface{ Scan(...any) error }, withOutput bool) (*JobView, error) {
 	var j JobView
-	var out string
+	var out, inputs, files string
 	var started, finished sql.NullInt64
-	if err := row.Scan(&j.ID, &j.Capability, &j.Agent, &j.Status, &j.Error, &out, &j.Preview, &j.CostUSD, &j.Created, &started, &finished); err != nil {
+	if err := row.Scan(&j.ID, &j.Capability, &j.Agent, &j.Status, &j.Error, &out, &j.Preview, &j.CostUSD, &j.Created, &started, &finished,
+		&inputs, &j.Out, &j.Notify, &files); err != nil {
 		return nil, err
 	}
 	j.Started, j.Finished = nullable(started), nullable(finished)
+	_ = json.Unmarshal([]byte(inputs), &j.Inputs)
+	_ = json.Unmarshal([]byte(files), &j.Files)
 	if withOutput && out != "" {
 		if json.Valid([]byte(out)) {
 			j.Output = json.RawMessage(out)
@@ -162,7 +256,7 @@ func scanJob(row interface{ Scan(...any) error }, withOutput bool) (*JobView, er
 	return &j, nil
 }
 
-const jobCols = `id, capability, agent, status, error, output, preview, cost, created, started, finished`
+const jobCols = `id, capability, agent, status, error, output, preview, cost, created, started, finished, files, out, notify, outputs`
 
 // Job is one of agent's jobs, with its output once done.
 func (b *Broker) Job(agent string, id int64) (*JobView, error) {
@@ -175,10 +269,19 @@ func (b *Broker) Job(agent string, id int64) (*JobView, error) {
 
 // Jobs are the newest jobs for the owner: previews, never inputs or outputs.
 func (b *Broker) Jobs(limit int) ([]JobView, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	return b.jobs(`SELECT `+jobCols+` FROM cap_jobs ORDER BY id DESC LIMIT ?`, limit)
+}
+
+// AgentJobs are agent's newest jobs, without outputs (cap_status gives one).
+func (b *Broker) AgentJobs(agent string, limit int) ([]JobView, error) {
+	return b.jobs(`SELECT `+jobCols+` FROM cap_jobs WHERE agent = ? ORDER BY id DESC LIMIT ?`, agent, limit)
+}
+
+func (b *Broker) jobs(q string, args ...any) ([]JobView, error) {
+	if limit := args[len(args)-1].(int); limit <= 0 || limit > 500 {
+		args[len(args)-1] = 100
 	}
-	rows, err := b.o.DB.Query(`SELECT `+jobCols+` FROM cap_jobs ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := b.o.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +297,46 @@ func (b *Broker) Jobs(limit int) ([]JobView, error) {
 	return out, rows.Err()
 }
 
-// Run works the queue until stop. Jobs that were running when the core stopped have failed.
+// Cancel stops one of agent's jobs: a queued one never runs, a running one is interrupted.
+func (b *Broker) Cancel(agent string, id int64) (*JobView, error) {
+	j, err := b.Job(agent, id)
+	if err != nil {
+		return nil, err
+	}
+	switch j.Status {
+	case "queued":
+		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'cancelled', finished = ? WHERE id = ? AND status = 'queued'`, b.o.Now().UnixMilli(), id)
+		if err != nil {
+			return nil, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return b.Cancel(agent, id) // it just started
+		}
+	case "running":
+		b.mu.Lock()
+		cancel := b.cancels[id]
+		b.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	default:
+		return j, nil
+	}
+	b.o.DB.Audit("agent:"+agent, "cap.cancel", j.Capability, fmt.Sprintf("job %d", id))
+	return b.Job(agent, id)
+}
+
+// Run works the queue until stop. Jobs that were running when the core stopped have failed. Idle
+// services go to sleep; all of them do when the core stops.
 func (b *Broker) Run(stop <-chan struct{}) {
 	_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = 'the core stopped while it ran', finished = ? WHERE status = 'running'`, b.o.Now().UnixMilli())
+	for _, c := range b.o.Inst.Capabilities {
+		if c.Kind == "service" && c.Placement == "local" {
+			b.o.Services.Clean() // containers a stopped core left behind
+			go b.o.Services.Run(stop, 30*time.Second)
+			break
+		}
+	}
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
@@ -210,20 +350,25 @@ func (b *Broker) Run(stop <-chan struct{}) {
 	}
 }
 
+type queued struct {
+	id                int64
+	capability, agent string
+	input             string
+	inputs            []string
+	out               string
+}
+
 func (b *Broker) dispatch() {
-	rows, err := b.o.DB.Query(`SELECT id, capability, agent, input FROM cap_jobs WHERE status = 'queued' ORDER BY id LIMIT 200`)
+	rows, err := b.o.DB.Query(`SELECT id, capability, agent, input, files, out FROM cap_jobs WHERE status = 'queued' ORDER BY id LIMIT 200`)
 	if err != nil {
 		return
-	}
-	type queued struct {
-		id                int64
-		capability, agent string
-		input             string
 	}
 	var qs []queued
 	for rows.Next() {
 		var q queued
-		if rows.Scan(&q.id, &q.capability, &q.agent, &q.input) == nil {
+		var files string
+		if rows.Scan(&q.id, &q.capability, &q.agent, &q.input, &files, &q.out) == nil {
+			_ = json.Unmarshal([]byte(files), &q.inputs)
 			qs = append(qs, q)
 		}
 	}
@@ -231,7 +376,7 @@ func (b *Broker) dispatch() {
 	for _, q := range qs {
 		c, ok := b.o.Inst.CapabilityNamed(q.capability)
 		if !ok {
-			b.finish(q.id, nil, errors.New("the capability is no longer declared"))
+			b.finish(q, nil, nil, errors.New("the capability is no longer declared"))
 			continue
 		}
 		b.mu.Lock()
@@ -239,46 +384,133 @@ func (b *Broker) dispatch() {
 			b.mu.Unlock()
 			continue
 		}
+		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'`, b.o.Now().UnixMilli(), q.id)
+		if n, _ := res.RowsAffected(); err != nil || n == 0 {
+			b.mu.Unlock()
+			continue // cancelled meanwhile
+		}
 		b.running[c.Name]++
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.TimeoutMinutes)*time.Minute)
+		b.cancels[q.id] = cancel
 		b.mu.Unlock()
-		_, _ = b.o.DB.Exec(`UPDATE cap_jobs SET status = 'running', started = ? WHERE id = ?`, b.o.Now().UnixMilli(), q.id)
 		go func(q queued, c instance.Capability) {
 			defer func() {
+				cancel()
 				b.mu.Lock()
 				b.running[c.Name]--
+				delete(b.cancels, q.id)
 				b.mu.Unlock()
 				b.poke()
 			}()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.TimeoutMinutes)*time.Minute)
-			defer cancel()
-			out, err := b.exec(ctx, c, q.id, q.agent, []byte(q.input))
-			b.finish(q.id, out, err)
+			out, files, err := b.exec(ctx, c, q)
+			if errors.Is(ctx.Err(), context.Canceled) {
+				err = errors.New("cancelled")
+			} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				err = fmt.Errorf("it took over its %d minutes", c.TimeoutMinutes)
+			}
+			b.finish(q, out, files, err)
 		}(q, c)
 	}
 }
 
-func (b *Broker) finish(id int64, out []byte, err error) {
+func (b *Broker) finish(q queued, out []byte, files []string, err error) {
 	status, msg := "done", ""
 	if err != nil {
-		status, msg = "failed", clip(err.Error(), 500)
+		status, msg = "failed", clip(err.Error(), 1500)
 	}
 	if len(out) > link.MaxOutput {
 		status, msg, out = "failed", "the answer is over 1 MB", nil
 	}
-	if _, e := b.o.DB.Exec(`UPDATE cap_jobs SET status = ?, error = ?, output = ?, finished = ? WHERE id = ?`, status, msg, string(out), b.o.Now().UnixMilli(), id); e != nil {
-		log.Printf("capabilities: job %d: %v", id, e)
+	if files == nil {
+		files = []string{}
 	}
+	fb, _ := json.Marshal(files)
+	if _, e := b.o.DB.Exec(`UPDATE cap_jobs SET status = ?, error = ?, output = ?, outputs = ?, finished = ? WHERE id = ?`, status, msg, string(out), string(fb), b.o.Now().UnixMilli(), q.id); e != nil {
+		log.Printf("capabilities: job %d: %v", q.id, e)
+		return
+	}
+	var notify bool
+	if b.o.DB.QueryRow(`SELECT notify FROM cap_jobs WHERE id = ?`, q.id).Scan(&notify) != nil || !notify || b.o.Notify == nil || msg == "cancelled" {
+		return
+	}
+	subject := fmt.Sprintf("%s job %d %s", q.capability, q.id, status)
+	body := fmt.Sprintf("Your %s job %d is %s. cap_status(job=%d) gives its answer.", q.capability, q.id, status, q.id)
+	if err != nil {
+		body = fmt.Sprintf("Your %s job %d failed: %s\ncap_status(job=%d) has the details.", q.capability, q.id, msg, q.id)
+	} else if len(files) > 0 {
+		body += fmt.Sprintf("\nIt wrote %d file(s) to %s.", len(files), q.out)
+	}
+	if e := b.o.Notify(q.agent, subject, body, clipList(files, 10)); e != nil {
+		log.Printf("capabilities: notice for job %d: %v", q.id, e)
+	}
+}
+
+func clipList(s []string, n int) []string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 var secretRef = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)\}`)
 
-func (b *Broker) exec(ctx context.Context, c instance.Capability, id int64, agent string, input []byte) ([]byte, error) {
+func (b *Broker) secrets(c instance.Capability) map[string]string {
+	env := map[string]string{}
+	for _, n := range c.Secrets {
+		if v, ok := b.o.Secret(n); ok {
+			env[n] = v
+		}
+	}
+	return env
+}
+
+// image makes sure a template's image is here (one build at a time per template).
+func (b *Broker) image(c instance.Capability) error {
+	t, ok := c.TemplateImage()
+	if !ok {
+		return nil
+	}
+	b.mu.Lock()
+	m := b.builds[t]
+	if m == nil {
+		m = &sync.Mutex{}
+		b.builds[t] = m
+	}
+	b.mu.Unlock()
+	m.Lock()
+	defer m.Unlock()
+	if err := b.o.Image(t); err != nil {
+		return fmt.Errorf("building the %s worker image: %w", t, err)
+	}
+	return nil
+}
+
+// spec is how a local service capability runs.
+func (b *Broker) spec(c instance.Capability) link.ServiceSpec {
+	env := b.secrets(c)
+	for k, v := range c.Env {
+		if _, set := env[k]; !set {
+			env[k] = v
+		}
+	}
+	sp := link.ServiceSpec{Name: c.Name, Image: c.Image, Command: c.Command, Port: c.Port, Health: c.Health, Env: env, MemoryMB: c.MemoryMB, ShmMB: c.ShmMB,
+		CPUs: c.CPUs, Idle: time.Duration(c.IdleMinutes) * time.Minute, Boot: time.Duration(c.BootMinutes) * time.Minute}
+	if c.Files != "none" {
+		sp.JobsDir = filepath.Join(b.o.JobsDir, jobDirName(c.Name))
+	}
+	return sp
+}
+
+func jobDirName(capability string) string { return strings.ReplaceAll(capability, ".", "-") }
+
+func (b *Broker) exec(ctx context.Context, c instance.Capability, q queued) ([]byte, []string, error) {
+	input := []byte(q.input)
 	switch c.Kind {
 	case "http":
-		body, _ := json.Marshal(map[string]any{"job": id, "agent": agent, "input": json.RawMessage(input)})
+		body, _ := json.Marshal(map[string]any{"job": q.id, "agent": q.agent, "input": json.RawMessage(input)})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		for k, v := range c.Headers {
@@ -292,53 +524,150 @@ func (b *Broker) exec(ctx context.Context, c instance.Capability, id int64, agen
 				return s
 			})
 			if missing != "" {
-				return nil, fmt.Errorf("the core has no %s (secrets.local.yaml shared)", missing)
+				return nil, nil, fmt.Errorf("the core has no %s (secrets.local.yaml shared)", missing)
 			}
 			req.Header.Set(k, v)
 		}
 		res, err := b.o.HTTP.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		defer res.Body.Close()
 		out, _ := io.ReadAll(io.LimitReader(res.Body, link.MaxOutput+1))
 		if res.StatusCode < 200 || res.StatusCode > 299 {
-			return nil, fmt.Errorf("%s answered %d: %s", c.Name, res.StatusCode, clip(strings.TrimSpace(string(out)), 300))
+			return nil, nil, fmt.Errorf("%s answered %d: %s", c.Name, res.StatusCode, clip(strings.TrimSpace(string(out)), 300))
 		}
-		return out, nil
-	case "container":
+		return out, nil, nil
+	case "container", "service":
 		if p, ok := b.o.Inst.PlacementNamed(c.Placement); ok && p.Kind == instance.PlacementRunner {
-			raw, err := b.o.Runners.Call(ctx, p.Name, link.TypeOrder, link.Order{Action: "capability", Agent: agent,
-				Job: &link.Job{ID: id, Capability: c.Name, Image: c.Image, Command: c.Command, Secrets: c.Secrets, Input: input, TimeoutMinutes: c.TimeoutMinutes}})
+			job := &link.Job{ID: q.id, Capability: c.Name, Image: c.Image, Command: c.Command, Secrets: c.Secrets, Input: input, TimeoutMinutes: c.TimeoutMinutes}
+			if c.Kind == "service" {
+				tpl, _ := c.TemplateImage()
+				job.Service = &link.ServiceJob{Template: tpl, Port: c.Port, Health: c.Health, Env: c.Env, MemoryMB: c.MemoryMB, ShmMB: c.ShmMB, CPUs: c.CPUs,
+					IdleMinutes: c.IdleMinutes, BootMinutes: c.BootMinutes}
+			}
+			raw, err := b.o.Runners.Call(ctx, p.Name, link.TypeOrder, link.Order{Action: "capability", Agent: q.agent, Job: job})
 			if errors.Is(err, ErrNoLink) {
-				return nil, fmt.Errorf("no runner serves %s now", p.Name)
+				return nil, nil, fmt.Errorf("no runner serves %s now", p.Name)
 			}
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			var r link.OrderResult
 			if err := json.Unmarshal(raw, &r); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			return r.Output, nil
+			return r.Output, nil, nil
 		}
-		env := map[string]string{}
-		for _, n := range c.Secrets {
-			if v, ok := b.o.Secret(n); ok {
-				env[n] = v
+		if err := b.image(c); err != nil {
+			return nil, nil, err
+		}
+		// The job's folder: in/ holds its inputs, out/ what it writes; gone once delivered.
+		dir := ""
+		if c.Files != "none" {
+			dir = filepath.Join(b.o.JobsDir, jobDirName(c.Name), strconv.FormatInt(q.id, 10))
+			_ = os.RemoveAll(dir)
+			for _, d := range []string{"in", "out"} {
+				if err := os.MkdirAll(filepath.Join(dir, d), 0o777); err != nil {
+					return nil, nil, err
+				}
+				_ = os.Chmod(filepath.Join(dir, d), 0o777) // the worker may run as another user
+			}
+			defer os.RemoveAll(dir)
+			if err := b.o.Workdir.StageIn(q.agent, q.inputs, filepath.Join(dir, "in")); err != nil {
+				return nil, nil, err
 			}
 		}
-		return b.o.Container(ctx, c.Image, c.Command, env, input)
+		var out []byte
+		var err error
+		if c.Kind == "container" {
+			out, err = b.o.Container(ctx, c.Image, c.Command, b.secrets(c), input, dir)
+		} else {
+			mount := "/jobs/" + strconv.FormatInt(q.id, 10)
+			files := []string{}
+			for _, p := range q.inputs {
+				files = append(files, mount+"/in/"+path.Base(p))
+			}
+			outDir := ""
+			if c.Files == "out" || c.Files == "both" {
+				outDir = mount + "/out"
+			}
+			body, _ := json.Marshal(map[string]any{"job": q.id, "agent": q.agent, "input": json.RawMessage(input), "files": files, "out": outDir})
+			out, err = b.o.Services.Call(ctx, b.spec(c), body)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		var delivered []string
+		if dir != "" && q.out != "" {
+			if delivered, err = b.o.Workdir.Deliver(q.agent, q.out, filepath.Join(dir, "out"), "capability:"+c.Name); err != nil {
+				return out, delivered, fmt.Errorf("its files were not all delivered: %w", err)
+			}
+		}
+		return out, delivered, nil
 	}
-	return nil, fmt.Errorf("kind %q", c.Kind)
+	return nil, nil, fmt.Errorf("kind %q", c.Kind)
 }
 
-// CapabilityView is a capability in the owner's view: how busy, who may use it, what it cost.
+// Wake boots a local service capability now (the owner's), in the background.
+func (b *Broker) Wake(name string) (link.ServiceState, error) {
+	c, ok := b.o.Inst.CapabilityNamed(name)
+	if !ok {
+		return link.ServiceState{}, fmt.Errorf("no capability %q", name)
+	}
+	if c.Kind != "service" || c.Placement != "local" {
+		return link.ServiceState{}, fmt.Errorf("%s is not a service on this host: its worker starts with each job", name)
+	}
+	go func() {
+		if err := b.image(c); err != nil {
+			log.Printf("capabilities: %v", err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.BootMinutes)*time.Minute+time.Minute)
+		defer cancel()
+		if _, err := b.o.Services.Ensure(ctx, b.spec(c)); err != nil {
+			log.Printf("capabilities: waking %s: %v", name, err)
+		}
+	}()
+	return b.o.Services.State(name), nil
+}
+
+// Sleep stops a local service capability now (the owner's); refused while jobs run in it.
+func (b *Broker) Sleep(name string) (link.ServiceState, error) {
+	c, ok := b.o.Inst.CapabilityNamed(name)
+	if !ok {
+		return link.ServiceState{}, fmt.Errorf("no capability %q", name)
+	}
+	if c.Kind != "service" || c.Placement != "local" {
+		return link.ServiceState{}, fmt.Errorf("%s is not a service on this host", name)
+	}
+	if err := b.o.Services.Sleep(name); err != nil {
+		return b.o.Services.State(name), err
+	}
+	return b.o.Services.State(name), nil
+}
+
+// workerState is how a capability's worker is now: asleep | booting | awake for a service on this
+// host, "runner" for one on a runner placement, "" when each job starts its own.
+func (b *Broker) workerState(c instance.Capability) string {
+	switch {
+	case c.Kind != "service":
+		return ""
+	case c.Placement != "local":
+		return "runner"
+	}
+	return b.o.Services.State(c.Name).State
+}
+
+// CapabilityView is a capability in the owner's view: how busy, its worker, who may use it.
 type CapabilityView struct {
 	instance.Capability
 	Queued  int      `json:"queued"`
 	Running int      `json:"running"`
 	Agents  []string `json:"agents"`
+	// Worker: asleep | booting | awake (a service here), runner, or "" (a worker per job).
+	Worker  string             `json:"worker,omitempty"`
+	Service *link.ServiceState `json:"service,omitempty"`
 }
 
 // Spend is what an agent's jobs of a capability cost since a time.
@@ -374,7 +703,11 @@ func (b *Broker) View(agents []string) (map[string]any, error) {
 	caps := []CapabilityView{}
 	for _, c := range b.o.Inst.Capabilities {
 		c.Headers = nil // header templates can name secrets; not for clients
-		v := CapabilityView{Capability: c, Queued: counts[c.Name][0], Running: counts[c.Name][1], Agents: []string{}}
+		v := CapabilityView{Capability: c, Queued: counts[c.Name][0], Running: counts[c.Name][1], Agents: []string{}, Worker: b.workerState(c)}
+		if v.Worker != "" && v.Worker != "runner" {
+			st := b.o.Services.State(c.Name)
+			v.Service = &st
+		}
 		for _, a := range agents {
 			if slices.Contains(b.o.Grants(a), c.Name) {
 				v.Agents = append(v.Agents, a)
@@ -406,51 +739,222 @@ func (b *Broker) Prune(keep time.Duration) error {
 	return err
 }
 
+// capabilitySummary is a capability as cap_list shows it.
+func (b *Broker) capabilitySummary(c instance.Capability) map[string]any {
+	m := map[string]any{"name": c.Name, "description": c.Description, "files": c.Files}
+	if st := b.workerState(c); st != "" {
+		m["worker"] = st
+	}
+	return m
+}
+
+// Describe is everything an agent needs to call one of its capabilities.
+func (b *Broker) Describe(agent, capability string) (map[string]any, error) {
+	c, err := b.granted(agent, capability)
+	if err != nil {
+		return nil, err
+	}
+	m := b.capabilitySummary(c)
+	if c.Docs != "" {
+		m["docs"] = c.Docs
+	}
+	if c.InputSchema != nil {
+		m["input_schema"] = c.InputSchema
+	}
+	if len(c.Examples) > 0 {
+		m["examples"] = c.Examples
+	}
+	m["concurrency"] = c.Concurrency
+	m["timeout_minutes"] = c.TimeoutMinutes
+	if c.CostUSD > 0 {
+		m["cost_usd_per_job"] = c.CostUSD
+	}
+	if c.Kind == "service" {
+		m["idle_minutes"] = c.IdleMinutes
+	}
+	var queued int
+	_ = b.o.DB.QueryRow(`SELECT COUNT(*) FROM cap_jobs WHERE capability = ? AND status IN ('queued', 'running')`, c.Name).Scan(&queued)
+	m["jobs_ahead"] = queued
+	how := "cap_start {capability, input} queues a job and a notice wakes you when it is done; cap_run waits for it up to wait_seconds."
+	switch c.Files {
+	case "in":
+		how += " Hand it files with files: [\"/shared/…\"] (yours: group and your unit)."
+	case "out":
+		how += fmt.Sprintf(" Its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
+	case "both":
+		how += fmt.Sprintf(" Hand it files with files: [\"/shared/…\"] (yours: group and your unit); its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
+	}
+	if st := b.workerState(c); st == "asleep" {
+		how += " Its worker is asleep: the next job boots it, which takes longer."
+	}
+	m["how"] = how
+	return m, nil
+}
+
+func (b *Broker) outDefaultHint(agent, capability string) string {
+	if b.o.Workdir == nil {
+		return ""
+	}
+	return b.o.Workdir.jobOutBase(agent, capability) + "/job-<n>"
+}
+
+// Await waits up to d for one of agent's jobs; one still running gets its notice when it ends.
+func (b *Broker) Await(agent string, id int64, d time.Duration) (*JobView, error) {
+	deadline := b.o.Now().Add(d)
+	for {
+		j, err := b.Job(agent, id)
+		if err != nil || j.Status == "done" || j.Status == "failed" {
+			return j, err
+		}
+		if !b.o.Now().Before(deadline) {
+			res, err := b.o.DB.Exec(`UPDATE cap_jobs SET notify = 1 WHERE id = ? AND status IN ('queued', 'running')`, id)
+			if err != nil {
+				return nil, err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return b.Job(agent, id) // it just ended
+			}
+			j.Notify = true
+			j.Note = "still " + j.Status + ": a notice wakes you when it ends (or follow it with cap_status)"
+			return j, nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// maxAwait stays under the 60 seconds engines give one core tool call.
+const maxAwait = 45 * time.Second
+
 // CapabilityTools are the agents' MCP tools for the broker.
 func CapabilityTools(b *Broker) []MCPTool {
+	jobArgs := map[string]any{
+		"capability": str("the capability's name (cap_list)"),
+		"input":      map[string]any{"type": "object", "description": "what it takes: cap_describe gives its input schema and examples"},
+		"files":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared paths (files or folders) to hand it, for those that take files"},
+		"out":        str("shared folder its files go to, for those that write files (default: one per job in your unit's capabilities/ folder)"),
+	}
+	startArgs := map[string]any{"notify": boolean("leave you a notice that wakes you when it is done (default true)")}
+	for k, v := range jobArgs {
+		startArgs[k] = v
+	}
+	runArgs := map[string]any{"wait_seconds": integer("how long to wait for it, up to 45 (default 30); past that it keeps running and its notice wakes you")}
+	for k, v := range jobArgs {
+		runArgs[k] = v
+	}
+	jobOf := func(c ToolCall) (int64, error) {
+		var req struct {
+			Job int64 `json:"job"`
+		}
+		err := decodeArgs(c, &req)
+		return req.Job, err
+	}
 	return []MCPTool{
 		{
-			Name:        "cap_list",
-			Description: "The heavy or shared capabilities the core runs for you (media renders, scraping…): their names and what they do. Start one with cap_start.",
+			Name: "cap_list",
+			Description: "The capabilities the core runs for you (transcription, a browser, video renders…): their names, what they do, whether they take or give files " +
+				"and whether their worker is awake. cap_describe one before its first use.",
 			InputSchema: schema(nil, map[string]any{}),
 			Run: func(c ToolCall) (any, error) {
-				out := []map[string]string{}
+				out := []map[string]any{}
 				for _, cp := range b.Granted(c.Agent) {
-					out = append(out, map[string]string{"name": cp.Name, "description": cp.Description})
+					out = append(out, b.capabilitySummary(cp))
 				}
 				return map[string]any{"capabilities": out}, nil
 			},
 		},
 		{
-			Name:        "cap_start",
-			Description: "Start a job of one of your capabilities (cap_list) with its input. It runs on its own; follow it with cap_status, which gives the output when it is done.",
-			InputSchema: schema([]string{"capability"}, map[string]any{
-				"capability": str("the capability's name"),
-				"input":      map[string]any{"type": "object", "description": "what the capability takes (its description says)"},
-			}),
+			Name:        "cap_describe",
+			Description: "How to use one of your capabilities: its docs, input schema, examples, files, limits and how busy it is. Reading it never wakes its worker.",
+			InputSchema: schema([]string{"capability"}, map[string]any{"capability": str("the capability's name")}),
 			Run: func(c ToolCall) (any, error) {
 				var req struct {
-					Capability string          `json:"capability"`
-					Input      json.RawMessage `json:"input"`
+					Capability string `json:"capability"`
 				}
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
-				return b.Start(c.Agent, req.Capability, req.Input)
+				return b.Describe(c.Agent, req.Capability)
+			},
+		},
+		{
+			Name: "cap_start",
+			Description: "Queue a job of one of your capabilities. It runs on its own (its worker boots if asleep); a notice wakes you when it is done, " +
+				"and cap_status gives its answer and files. Start several and carry on with other work.",
+			InputSchema: schema([]string{"capability"}, startArgs),
+			Run: func(c ToolCall) (any, error) {
+				var req StartRequest
+				if err := decodeArgs(c, &req); err != nil {
+					return nil, err
+				}
+				return b.Start(c.Agent, req)
+			},
+		},
+		{
+			Name: "cap_run",
+			Description: "Run a job of one of your capabilities and wait for it (up to 45 seconds): its answer when it ends in time, " +
+				"else the job, still running, with a notice to wake you when it ends. For quick jobs; long ones go through cap_start.",
+			InputSchema: schema([]string{"capability"}, runArgs),
+			Run: func(c ToolCall) (any, error) {
+				var req struct {
+					StartRequest
+					Wait int `json:"wait_seconds"`
+				}
+				if err := decodeArgs(c, &req); err != nil {
+					return nil, err
+				}
+				off := false
+				req.Notify = &off
+				j, err := b.Start(c.Agent, req.StartRequest)
+				if err != nil {
+					return nil, err
+				}
+				wait := time.Duration(req.Wait) * time.Second
+				if wait <= 0 {
+					wait = 30 * time.Second
+				}
+				return b.Await(c.Agent, j.ID, min(wait, maxAwait))
 			},
 		},
 		{
 			Name:        "cap_status",
-			Description: "A job you started: queued, running, done (with its output) or failed (with why).",
-			InputSchema: schema([]string{"job"}, map[string]any{"job": integer("the job number cap_start gave")}),
+			Description: "A job you started: queued, running, done (with its answer and the files it wrote) or failed (with why).",
+			InputSchema: schema([]string{"job"}, map[string]any{"job": integer("the job number cap_start or cap_run gave")}),
+			Run: func(c ToolCall) (any, error) {
+				id, err := jobOf(c)
+				if err != nil {
+					return nil, err
+				}
+				return b.Job(c.Agent, id)
+			},
+		},
+		{
+			Name:        "cap_jobs",
+			Description: "Your latest capability jobs and their status (answers through cap_status).",
+			InputSchema: schema(nil, map[string]any{"limit": integer("how many (default 20)")}),
 			Run: func(c ToolCall) (any, error) {
 				var req struct {
-					Job int64 `json:"job"`
+					Limit int `json:"limit"`
 				}
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
-				return b.Job(c.Agent, req.Job)
+				if req.Limit <= 0 {
+					req.Limit = 20
+				}
+				jobs, err := b.AgentJobs(c.Agent, req.Limit)
+				return map[string]any{"jobs": jobs}, err
+			},
+		},
+		{
+			Name:        "cap_cancel",
+			Description: "Cancel a job of yours: a queued one never runs, a running one is stopped.",
+			InputSchema: schema([]string{"job"}, map[string]any{"job": integer("the job number")}),
+			Run: func(c ToolCall) (any, error) {
+				id, err := jobOf(c)
+				if err != nil {
+					return nil, err
+				}
+				return b.Cancel(c.Agent, id)
 			},
 		},
 	}

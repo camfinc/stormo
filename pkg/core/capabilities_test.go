@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/camfinc/stormo/pkg/instance"
@@ -51,7 +52,7 @@ func TestCapabilitiesBroker(t *testing.T) {
 			}
 			return nil
 		},
-		Container: func(_ context.Context, image string, _ []string, env map[string]string, input []byte) ([]byte, error) {
+		Container: func(_ context.Context, image string, _ []string, env map[string]string, input []byte, _ string) ([]byte, error) {
 			containerEnv = env
 			return []byte(`{"echo":` + string(input) + `}`), nil
 		}})
@@ -150,4 +151,202 @@ func TestCapabilitiesBroker(t *testing.T) {
 	if strings.Contains(string(jb), "ana@example.com") || strings.Contains(string(jb), `"output"`) {
 		t.Errorf("owner jobs leak input or output: %s", jb)
 	}
+}
+
+// serviceDocker plays docker for service capabilities whose container is an httptest server.
+func serviceDocker(addr string) func(context.Context, []string, ...string) ([]byte, error) {
+	var mu sync.Mutex
+	running := false
+	return func(_ context.Context, _ []string, args ...string) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch args[0] {
+		case "run":
+			running = true
+		case "port":
+			return []byte(addr + "\n"), nil
+		case "inspect":
+			return []byte(fmt.Sprint(running) + "\n"), nil
+		case "stop", "rm":
+			running = false
+		}
+		return nil, nil
+	}
+}
+
+func TestCapabilityServicesFilesAndNotices(t *testing.T) {
+	_, inst := fixture(t)
+	wroot := t.TempDir()
+	jobs := t.TempDir()
+	hold := make(chan struct{})
+	// The worker: upper-cases its input files into out/, or waits when asked to be slow.
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		var body struct {
+			Job   int64 `json:"job"`
+			Input struct {
+				Slow bool `json:"slow"`
+			} `json:"input"`
+			Files []string `json:"files"`
+			Out   string   `json:"out"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Input.Slow {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		host := func(p string) string { return filepath.Join(jobs, "text-upper", strings.TrimPrefix(p, "/jobs/")) }
+		for _, f := range body.Files {
+			b, err := os.ReadFile(host(f))
+			if err != nil {
+				w.WriteHeader(500)
+				fmt.Fprint(w, err)
+				return
+			}
+			os.MkdirAll(filepath.Join(host(body.Out), "sub"), 0o755)
+			os.WriteFile(filepath.Join(host(body.Out), "sub", filepath.Base(f)), []byte(strings.ToUpper(string(b))), 0o644)
+		}
+		fmt.Fprintf(w, `{"job":%d,"files":%d}`, body.Job, len(body.Files))
+	}))
+	defer worker.Close()
+	services := link.NewServices("acme")
+	services.Docker = serviceDocker(strings.TrimPrefix(worker.URL, "http://"))
+	inst.Capabilities = []instance.Capability{{Name: "text.upper", Kind: "service", Image: "upper:1", Placement: "local", Port: 8080, Health: "/health",
+		IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "both", Docs: "Upper-cases files.",
+		InputSchema: map[string]any{"type": "object"}, Examples: []map[string]any{{"slow": false}}}}
+	os.MkdirAll(filepath.Join(wroot, "sales", "notes"), 0o755)
+	os.WriteFile(filepath.Join(wroot, "sales", "notes", "a.txt"), []byte("hello"), 0o644)
+	os.MkdirAll(filepath.Join(wroot, "media"), 0o755)
+	os.WriteFile(filepath.Join(wroot, "media", "secret.txt"), []byte("x"), 0o644)
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true,
+		WorkdirRoot: wroot,
+		Roster: func() []BusAgent {
+			return []BusAgent{{ID: "atlas", Unit: "sales"}, {ID: "nova", Unit: "media"}}
+		},
+		CapabilityGrants: func(string) []string { return []string{"text.upper"} },
+		Services:         services, CapabilityImage: func(string) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Broker.o.JobsDir = jobs
+	tools := map[string]MCPTool{}
+	for _, tl := range CapabilityTools(c.Broker) {
+		tools[tl.Name] = tl
+	}
+	call := func(tool string, args any) (any, error) {
+		b, _ := json.Marshal(args)
+		return tools[tool].Run(ToolCall{Agent: "atlas", Args: b})
+	}
+
+	// Exploring never wakes the worker.
+	d, err := call("cap_describe", map[string]any{"capability": "text.upper"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := d.(map[string]any); m["docs"] != "Upper-cases files." || m["worker"] != "asleep" || !strings.Contains(m["how"].(string), "/shared/sales/capabilities/text-upper/job-<n>") {
+		t.Errorf("describe: %v", m)
+	}
+	if services.State("text.upper").State != "asleep" {
+		t.Error("describe woke it")
+	}
+
+	// Files only from the agent's own layers.
+	if _, err := call("cap_start", map[string]any{"capability": "text.upper", "files": []string{"/shared/media/secret.txt"}}); err == nil || !strings.Contains(err.Error(), "not mounted for you") {
+		t.Errorf("another unit's file: %v", err)
+	}
+	if _, err := call("cap_start", map[string]any{"capability": "text.upper", "out": "/shared/media/out"}); err == nil {
+		t.Error("out in another unit's layer")
+	}
+
+	// cap_run: boots it, hands the file over, delivers what it wrote, answers in time.
+	v, err := call("cap_run", map[string]any{"capability": "text.upper", "files": []string{"/shared/sales/notes/a.txt"}, "wait_seconds": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := v.(*JobView)
+	want := fmt.Sprintf("/shared/sales/capabilities/text-upper/job-%d/sub/a.txt", j.ID)
+	if j.Status != "done" || len(j.Files) != 1 || j.Files[0] != want || !strings.Contains(string(j.Output), `"files":1`) {
+		t.Fatalf("run: %+v", j)
+	}
+	if b, _ := os.ReadFile(filepath.Join(wroot, strings.TrimPrefix(want, "/shared/"))); string(b) != "HELLO" {
+		t.Errorf("delivered: %q", b)
+	}
+	if info, _ := c.Workdir.Info("atlas", want); info.LastWriter != "atlas" || info.How != "capability:text.upper" {
+		t.Errorf("attribution: %+v", info)
+	}
+	if _, err := os.Stat(filepath.Join(jobs, "text-upper", fmt.Sprint(j.ID))); !os.IsNotExist(err) {
+		t.Error("the job folder outlived the job")
+	}
+	if services.State("text.upper").State != "awake" {
+		t.Error("not awake after a job")
+	}
+	if inbox, _ := c.Bus.Inbox("atlas", true, 10); len(inbox) != 0 {
+		t.Errorf("cap_run that ended in time left a notice: %+v", inbox)
+	}
+
+	// cap_start: a notice from the core when it is done, its files attached, into a folder it names.
+	v, _ = call("cap_start", map[string]any{"capability": "text.upper", "files": []string{"/shared/sales/notes/a.txt"}, "out": "/shared/group/upper"})
+	j = v.(*JobView)
+	eventually(t, "the notice", func() bool {
+		inbox, _ := c.Bus.Inbox("atlas", true, 10)
+		return len(inbox) == 1
+	})
+	inbox, _ := c.Bus.Inbox("atlas", true, 10)
+	if m := inbox[0]; m.From != CoreSender || !strings.Contains(m.Subject, fmt.Sprintf("text.upper job %d done", j.ID)) || len(m.Attach) != 1 || m.Attach[0] != "/shared/group/upper/sub/a.txt" {
+		t.Errorf("notice: %+v", m)
+	}
+	if wakeInput([]string{CoreSender}, "x", 1, 1)[:13] != "[CORE NOTICE]" {
+		t.Error("core notices wake as notices")
+	}
+
+	// A slow one keeps running past cap_run's wait and gets its notice; the next waits in the queue
+	// and is cancelled there; the running one is cancelled too.
+	v, _ = call("cap_run", map[string]any{"capability": "text.upper", "input": map[string]any{"slow": true}, "wait_seconds": 1})
+	slow := v.(*JobView)
+	if slow.Status != "running" || !slow.Notify || slow.Note == "" {
+		t.Errorf("slow: %+v", slow)
+	}
+	v, _ = call("cap_start", map[string]any{"capability": "text.upper", "input": map[string]any{"slow": true}})
+	next := v.(*JobView)
+	if v, _ := call("cap_cancel", map[string]any{"job": next.ID}); v.(*JobView).Status != "failed" || v.(*JobView).Error != "cancelled" {
+		t.Errorf("cancel queued: %+v", v)
+	}
+	if _, err := c.Broker.Sleep("text.upper"); err == nil || !strings.Contains(err.Error(), "running") {
+		t.Errorf("sleep while a job runs: %v", err)
+	}
+	call("cap_cancel", map[string]any{"job": slow.ID})
+	eventually(t, "the running job cancelled", func() bool {
+		j, _ := c.Broker.Job("atlas", slow.ID)
+		return j.Status == "failed" && j.Error == "cancelled"
+	})
+	if jl, _ := call("cap_jobs", map[string]any{}); len(jl.(map[string]any)["jobs"].([]JobView)) != 4 {
+		t.Errorf("jobs: %v", jl)
+	}
+
+	// The owner: the worker's state in the view, and sleep through the API.
+	vw, _ := c.Broker.View([]string{"atlas"})
+	b, _ := json.Marshal(vw)
+	if !strings.Contains(string(b), `"worker":"awake"`) {
+		t.Errorf("view: %s", b)
+	}
+	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/api/capabilities/text.upper/sleep", c.Addr.Port), nil)
+	req.Header.Set("Authorization", "Bearer owner-token-0123456789")
+	eventually(t, "sleep once idle", func() bool {
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return false
+		}
+		res.Body.Close()
+		return res.StatusCode == 200
+	})
+	if services.State("text.upper").State != "asleep" {
+		t.Error("still awake")
+	}
+	close(hold)
 }

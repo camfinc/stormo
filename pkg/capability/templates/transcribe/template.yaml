@@ -1,0 +1,24 @@
+description: Transcribe speech in an audio or video file (Whisper, many languages); answers the text with timed segments and writes .txt/.srt/.vtt/.json transcripts.
+files: both
+port: 8080
+health: /health
+concurrency: 1
+timeout_minutes: 60
+idle_minutes: 10
+boot_minutes: 20          # the first boot downloads the model into the cache volume
+memory_mb: 4096
+env:
+  WHISPER_MODEL: large-v3-turbo-q5_0   # a ggml model name from huggingface.co/ggerganov/whisper.cpp
+  WHISPER_THREADS: "0"                 # 0: one per CPU the container sees
+notes: CPU by default (whisper.cpp). Set env WHISPER_MODEL to another ggml model (base, small, medium, large-v3…) for speed or accuracy.
+input_schema:
+  type: object
+  properties:
+    language: {type: string, description: "spoken language as an ISO code (es, en, pt…), or auto (default) to detect it"}
+    translate: {type: boolean, description: "translate the speech to English instead of transcribing it (default false)"}
+    prompt: {type: string, description: "names, terms or spellings to expect (helps proper nouns)"}
+    formats: {type: array, items: {type: string, enum: [txt, srt, vtt, json]}, description: "transcript files to write (default [txt, srt])"}
+    segments: {type: boolean, description: "include timed segments in the answer (default true; the files always have them)"}
+examples:
+  - {language: auto}
+  - {language: es, formats: [srt, vtt], prompt: "Lisboa, Oporto, Ana Gómez"}

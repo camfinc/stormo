@@ -73,14 +73,49 @@ func TestCapabilitiesAreDeclaredWithAWorker(t *testing.T) {
 		t.Errorf("gpu.render: %+v", c)
 	}
 	for body, want := range map[string]string{
-		"capabilities:\n  x: {kind: http}\n":                                   "needs url",
-		"capabilities:\n  x: {kind: container, image: a, placement: remote}\n": "not local or a runner",
-		"capabilities:\n  Bad: {kind: http, url: \"https://a\"}\n":             "lowercase",
-		"capabilities:\n  x: {kind: lambda}\n":                                 "http or container",
-		"capabilities:\n  x: {kind: container, image: a, secrets: [key]}\n":    "env var NAME",
+		"capabilities:\n  x: {kind: http}\n":                                                               "needs url",
+		"capabilities:\n  x: {kind: container, image: a, placement: remote}\n":                             "not local or a runner",
+		"capabilities:\n  Bad: {kind: http, url: \"https://a\"}\n":                                         "lowercase",
+		"capabilities:\n  x: {kind: lambda}\n":                                                             "http, container or service",
+		"capabilities:\n  x: {kind: container, image: a, secrets: [key]}\n":                                "env var NAME",
+		"capabilities:\n  x: {template: nope}\n":                                                           "no template",
+		"capabilities:\n  x: {kind: container, image: a, port: 80}\n":                                      "for kind service",
+		"capabilities:\n  x: {kind: http, url: \"https://a\", files: in}\n":                                "files work only",
+		"placements:\n  gpu: {kind: runner}\ncapabilities:\n  x: {template: transcribe, placement: gpu}\n": "files work only",
+		"capabilities:\n  x: {kind: service, image: a, files: some}\n":                                     "none, in, out or both",
+		"capabilities:\n  x: {kind: service, image: a, env: {lower: x}}\n":                                 "env var NAME",
 	} {
 		if _, err := write(body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", body, err, want)
 		}
+	}
+}
+
+func TestCapabilitiesFromTemplates(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "stormo.yaml"), []byte("name: Acme\nslug: acme\ncapabilities:\n"+
+		"  audio.transcribe: {template: transcribe, env: {WHISPER_MODEL: small}, idle_minutes: 3}\n"+
+		"  web.browse: {template: browser, description: Browse for research}\n"+
+		"  echo.svc: {kind: service, image: \"acme/echo:1\"}\n"), 0o644)
+	i, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := i.CapabilityNamed("audio.transcribe")
+	if c.Kind != "service" || !strings.HasPrefix(c.Image, "stormo-cap-transcribe:") || c.Files != "both" || c.Port != 8080 || c.Health != "/health" ||
+		c.IdleMinutes != 3 || c.BootMinutes != 20 || c.Env["WHISPER_MODEL"] != "small" || c.Env["WHISPER_THREADS"] != "0" ||
+		c.Docs == "" || c.InputSchema["type"] != "object" || len(c.Examples) == 0 || c.Placement != "local" {
+		t.Errorf("transcribe: %+v", c)
+	}
+	if tpl, ok := c.TemplateImage(); !ok || tpl != "transcribe" {
+		t.Errorf("TemplateImage: %q %v", tpl, ok)
+	}
+	if b, _ := i.CapabilityNamed("web.browse"); b.Description != "Browse for research" || b.ShmMB != 1024 || b.Files != "out" {
+		t.Errorf("browser: %+v", b)
+	}
+	if e, _ := i.CapabilityNamed("echo.svc"); e.Port != 8080 || e.IdleMinutes != 10 || e.BootMinutes != 5 || e.Files != "none" {
+		t.Errorf("plain service: %+v", e)
+	} else if _, ok := e.TemplateImage(); ok {
+		t.Error("a plain service is no template's")
 	}
 }

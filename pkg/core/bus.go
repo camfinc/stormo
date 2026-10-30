@@ -361,6 +361,51 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 	return out, nil
 }
 
+// CoreSender is the sender of the core's own notices. It cannot be an agent id.
+const CoreSender = "<core>"
+
+// Notify leaves agent a notice from the core (a capability job finished…): a message it is woken
+// for like any other, outside the agents' rate limits (the wake cap still holds). attach are shared
+// paths in agent's layers.
+func (b *Bus) Notify(agent, subject, body string, attach []string) error {
+	if _, ok := b.roster()[agent]; !ok {
+		return fmt.Errorf("the core does not know agent %s", agent)
+	}
+	subject = clip(strings.TrimSpace(subject), maxSubject)
+	if len(body) > maxBody {
+		body = body[:maxBody]
+	}
+	if attach == nil {
+		attach = []string{}
+	}
+	if len(attach) > maxAttach {
+		attach = attach[:maxAttach]
+	}
+	att, _ := json.Marshal(attach)
+	tx, err := b.o.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created) VALUES(0,?,?,?,?,'normal',?,1,?)`,
+		CoreSender, agent, subject, body, string(att), b.o.Now().UnixMilli())
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	if _, err := tx.Exec(`UPDATE messages SET thread = ? WHERE id = ?`, id, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO deliveries(message, agent) VALUES(?, ?)`, id, agent); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	b.Kick()
+	return nil
+}
+
 // Kick asks the wake loop for a round now.
 func (b *Bus) Kick() {
 	select {
@@ -389,6 +434,10 @@ func wakeInput(from []string, subject string, n int, thread int64) string {
 	more := ""
 	if n > 1 {
 		more = fmt.Sprintf(" (and %d more)", n-1)
+	}
+	if len(from) == 1 && from[0] == CoreSender {
+		return fmt.Sprintf("[CORE NOTICE] %s%s. Read it with msg_inbox and msg_read, act on it if it asks for something, and msg_ack it; "+
+			"it needs no reply. This turn has no person watching: post to Slack only if your work calls for it.", subject, more)
 	}
 	return fmt.Sprintf("[AGENT MESSAGE from %s] %s%s. Read your swarm inbox with msg_inbox and msg_read. "+
 		"If it needs an answer, reply with msg_send(thread=%d); acknowledge with msg_ack when you have dealt with it. "+

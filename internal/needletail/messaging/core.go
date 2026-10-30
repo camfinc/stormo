@@ -4,7 +4,7 @@ package messaging
 // invoke. Unknown/new tools are writes until explicitly reviewed here.
 func ReadOnlyCoreTool(name string) bool {
 	switch name {
-	case "msg_inbox", "msg_read", "msg_thread", "fs_ls", "fs_info", "fs_locks", "cap_list", "cap_status":
+	case "msg_inbox", "msg_read", "msg_thread", "fs_ls", "fs_info", "fs_locks", "cap_list", "cap_describe", "cap_status", "cap_jobs":
 		return true
 	default:
 		return false

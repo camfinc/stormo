@@ -121,9 +121,12 @@ type CoreOptions struct {
 	DB *DB
 	// Keys map core keys to agents; nil reads the instance's secrets file.
 	Keys *AgentKeys
-	// CapabilityGrants and Container replace the broker's manifest grants and docker (tests).
+	// CapabilityGrants, Container, Services and CapabilityImage replace the broker's manifest grants,
+	// docker and template builds (tests).
 	CapabilityGrants func(agent string) []string
-	Container        func(ctx context.Context, image string, command []string, env map[string]string, input []byte) ([]byte, error)
+	Services         *link.Services
+	CapabilityImage  func(template string) error
+	Container        func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
 	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
 	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
@@ -138,6 +141,16 @@ type CoreOptions struct {
 	WorkdirRoot string
 	// LearnDeps are the learning cycle's nap, dream and counts; zero values take the real ones.
 	LearnDeps LearnDeps
+}
+
+// capabilityPath is the owner's wake and sleep of a service capability.
+var capabilityPath = regexp.MustCompile(`^/api/capabilities/([a-z][a-z0-9.-]*)/(wake|sleep)$`)
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Core is a running core service.
@@ -196,6 +209,9 @@ func (c *Core) Close() error {
 	}
 	for _, b := range c.bridge {
 		_ = b.Close()
+	}
+	if c.Broker != nil {
+		c.Broker.o.Services.StopAll() // capability workers sleep with the core
 	}
 	err := c.Server.Close()
 	if c.ownDB {
@@ -406,7 +422,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 		Units: func() []string { return manifest.UnitIDs(inst.Root) }})
 	runners := NewLinkHub(db)
 	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
-		Grants: o.CapabilityGrants, Container: o.Container,
+		Grants: o.CapabilityGrants, Container: o.Container, Services: o.Services, Image: o.CapabilityImage, Workdir: workdir, Notify: bus.Notify,
 		Secret: func(name string) (string, bool) {
 			f, err := secrets.Load(secrets.Path(inst.Root))
 			if err != nil {
@@ -616,6 +632,22 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return
 			}
 			writeJSONBody(w, 200, v)
+			return
+		case r.Method == http.MethodPost && capabilityPath.MatchString(path):
+			m := capabilityPath.FindStringSubmatch(path)
+			var st link.ServiceState
+			var err error
+			if m[2] == "wake" {
+				st, err = broker.Wake(m[1])
+			} else {
+				st, err = broker.Sleep(m[1])
+			}
+			c.DB.Audit(who.Actor(), "cap."+m[2], m[1], errString(err))
+			if err != nil {
+				writeJSONBody(w, 409, errBody("refused", err.Error()))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"capability": m[1], "service": st})
 			return
 		case get && path == "/api/capabilities/jobs":
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))

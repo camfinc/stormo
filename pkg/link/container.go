@@ -15,7 +15,19 @@ const MaxOutput = 1 << 20
 // RunContainer runs a capability container: `docker run --rm -i` with input on stdin and env
 // values passed through the environment (`-e NAME`), never on argv; its stdout is the answer.
 func RunContainer(ctx context.Context, image string, command []string, env map[string]string, input []byte) ([]byte, error) {
+	return RunContainerIn(ctx, image, command, env, input, "")
+}
+
+// RunContainerIn is RunContainer with the job's directory (in/, out/) mounted at /job, run as the
+// user running it so the files it writes are theirs.
+func RunContainerIn(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error) {
 	args := []string{"run", "--rm", "-i", "--network", "bridge", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
+	if jobDir != "" {
+		args = append(args, "-v", jobDir+":/job")
+		if uid := os.Getuid(); uid > 0 {
+			args = append(args, "--user", fmt.Sprintf("%d:%d", uid, os.Getgid()))
+		}
+	}
 	vars := os.Environ()
 	for k, v := range env {
 		args = append(args, "-e", k)

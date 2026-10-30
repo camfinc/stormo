@@ -1,0 +1,44 @@
+description: Drive a headless Chromium browser (Playwright) - open pages, click, fill forms, read text and links, take screenshots or PDFs; sessions keep cookies between jobs.
+files: out
+port: 8080
+health: /health
+concurrency: 2
+timeout_minutes: 10
+idle_minutes: 15
+boot_minutes: 3
+memory_mb: 2048
+shm_mb: 1024
+env:
+  BROWSER_ALLOW_PRIVATE: "0"   # 1 lets pages reach private and loopback addresses (off: the host's network stays out of reach)
+input_schema:
+  type: object
+  properties:
+    url: {type: string, description: "page to open first (http or https)"}
+    session: {type: string, description: "keep this browser session (cookies, storage, the open page) for your next jobs with the same name; gone when the worker sleeps"}
+    steps:
+      type: array
+      description: "actions in order; without steps the answer is the page's title, text and links"
+      items:
+        type: object
+        required: [action]
+        properties:
+          action: {type: string, enum: [goto, click, fill, press, select, check, hover, scroll, wait, wait_for, text, html, links, eval, screenshot, pdf]}
+          selector: {type: string, description: "Playwright selector: CSS, text=…, role=button[name=\"…\"]"}
+          url: {type: string, description: "goto"}
+          value: {type: string, description: "fill / press (a key like Enter) / select (an option) / eval (a JavaScript expression)"}
+          ms: {type: integer, description: "wait"}
+          full_page: {type: boolean, description: "screenshot"}
+          name: {type: string, description: "file name for screenshot or pdf"}
+    viewport: {type: object, properties: {width: {type: integer}, height: {type: integer}}, description: "default 1280x800"}
+    screenshot: {type: boolean, description: "also take a screenshot at the end"}
+    timeout_seconds: {type: integer, description: "per step (default 30)"}
+examples:
+  - {url: "https://example.com"}
+  - url: "https://example.com/search"
+    session: research
+    steps:
+      - {action: fill, selector: "input[name=q]", value: "quarterly report"}
+      - {action: press, selector: "input[name=q]", value: Enter}
+      - {action: wait_for, selector: "#results"}
+      - {action: text, selector: "#results"}
+      - {action: screenshot, full_page: true, name: results.png}

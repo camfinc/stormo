@@ -58,6 +58,23 @@ type Job struct {
 	Secrets        []string        `json:"secrets,omitempty"`
 	Input          json.RawMessage `json:"input"`
 	TimeoutMinutes int             `json:"timeoutMinutes"`
+	// Service set: the runner keeps the capability's service container (booted on demand, asleep when
+	// idle) and posts the job to it instead of running a one-shot container.
+	Service *ServiceJob `json:"service,omitempty"`
+}
+
+// ServiceJob is how a runner runs a service capability; Env holds plain settings only (secrets come
+// from the runner's own file, by name). Template: a bundled template the runner builds the image of.
+type ServiceJob struct {
+	Template    string            `json:"template,omitempty"`
+	Port        int               `json:"port"`
+	Health      string            `json:"health"`
+	Env         map[string]string `json:"env,omitempty"`
+	MemoryMB    int               `json:"memoryMB,omitempty"`
+	ShmMB       int               `json:"shmMB,omitempty"`
+	CPUs        float64           `json:"cpus,omitempty"`
+	IdleMinutes int               `json:"idleMinutes"`
+	BootMinutes int               `json:"bootMinutes"`
 }
 
 // OrderResult is what a runner did: its log lines, the agent's state after, a job's output.

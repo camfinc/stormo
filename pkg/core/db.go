@@ -192,6 +192,12 @@ var migrations = []string{
 	ALTER TABLE learn_runs ADD COLUMN passed INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE learn_runs ADD COLUMN review_note TEXT NOT NULL DEFAULT '';`,
+	// 10: capability jobs' files (the shared inputs handed over, the folder for what they write, what
+	// they wrote) and whether the agent gets a notice when one ends.
+	`ALTER TABLE cap_jobs ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE cap_jobs ADD COLUMN out TEXT NOT NULL DEFAULT '';
+	ALTER TABLE cap_jobs ADD COLUMN notify INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE cap_jobs ADD COLUMN outputs TEXT NOT NULL DEFAULT '[]';`,
 }
 
 // DB is core.db.
