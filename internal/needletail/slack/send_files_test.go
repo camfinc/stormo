@@ -95,6 +95,28 @@ func TestSendMessageFiles(t *testing.T) {
 		t.Errorf("approved, changed: %s", out)
 	}
 
+	// "here" in a DM is where the turn replies: the thread the person wrote in, else the DM itself
+	write(home, "work/slack-"+dm+"-dm/cover.jpg", "dm cover")
+	env.Session = DMSessionID(dm)
+	r.turns.mu.Lock()
+	r.turns.sessions[DMSessionID(dm)] = wire.Session{Source: "slack"}
+	r.turns.mu.Unlock()
+	inThread := messaging.WithInput(context.Background(), messaging.Input{Verified: true, Users: []string{"U0ALLOWED1"}, Thread: "1700000099.000100"})
+	if _, out, failed := call(inThread, map[string]any{"target": "here", "message": "Here it is", "files": []string{"work/slack-" + dm + "-dm/cover.jpg"}}); failed {
+		t.Fatalf("here in a DM thread: %s", out)
+	}
+	sh = r.fake.Shares()
+	if last := sh[len(sh)-1]; last.Channel != dm || last.Thread != "1700000099.000100" {
+		t.Errorf("here in a DM thread went to %s/%q, want the thread", last.Channel, last.Thread)
+	}
+	if _, out, failed := call(context.Background(), map[string]any{"target": "here", "files": []string{"work/slack-" + dm + "-dm/cover.jpg"}}); failed {
+		t.Fatalf("here in a DM: %s", out)
+	}
+	sh = r.fake.Shares()
+	if last := sh[len(sh)-1]; last.Channel != dm || last.Thread != "" {
+		t.Errorf("here in a DM went to %s/%q, want the DM itself", last.Channel, last.Thread)
+	}
+
 	// "here" outside a Slack conversation
 	env.Session = "api-1"
 	if _, out, failed := call(context.Background(), map[string]any{"target": "here", "files": []string{"work/slack-C0DEVCHAN1-1700000070.000100/cover.jpg"}}); !failed || !strings.Contains(out, "not") {

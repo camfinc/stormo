@@ -373,7 +373,7 @@ func (g *Gateway) SendTool() tools.Tool {
 				}
 			}
 			if strings.EqualFold(strings.TrimSpace(a.Target), "here") {
-				t, err := hereTarget(env)
+				t, err := hereTarget(ctx, env)
 				if err != nil {
 					return nil, err
 				}
@@ -430,8 +430,10 @@ func SendFiles(ctx context.Context, env *tools.Env, paths []string) ([]messaging
 // BindFile prefixes the approval binding of a file a send carries (its sha256).
 const BindFile = "file_sha256:"
 
-// hereTarget is the conversation the tool was called from, as a send_message target.
-func hereTarget(env *tools.Env) (string, error) {
+// hereTarget is the conversation the tool was called from, as a send_message target. A DM is one
+// conversation, but the person may have written in a thread of it: then "here" is that thread, where
+// the turn's own reply goes too (the turn's input names it).
+func hereTarget(ctx context.Context, env *tools.Env) (string, error) {
 	if env == nil {
 		return "", errors.New(`target "here" is the conversation you are in: there is none here`)
 	}
@@ -444,6 +446,11 @@ func hereTarget(env *tools.Env) (string, error) {
 	channel, thread, ok := Origin(conv)
 	if !ok {
 		return "", errors.New(`target "here" is a Slack conversation's: this one is not (name a target)`)
+	}
+	if thread == "" && strings.HasPrefix(channel, "D") {
+		if in, ok := messaging.InputOf(ctx); ok {
+			thread = in.Thread
+		}
 	}
 	if thread == "" {
 		return "slack:" + channel, nil
