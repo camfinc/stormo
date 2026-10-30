@@ -29,6 +29,7 @@ import (
 	"github.com/camfinc/stormo/pkg/core"
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/deploy"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/inspect"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -765,7 +766,8 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		rep, err := loop.Rehydrate(loop.RehydrateOptions{Agent: a, Engine: eng, Home: sc.home, BaselineDir: sc.baselineDir, Store: sc.store, Scrubber: learning.NewScrubber(inst)})
+		rep, err := loop.Rehydrate(loop.RehydrateOptions{Agent: a, Engine: eng, Home: sc.home, BaselineDir: sc.baselineDir, Store: sc.store, Scrubber: learning.NewScrubber(inst),
+			Engines: func(kind string) (engine.Engine, error) { return engines.Get(kind, inst) }})
 		if err != nil {
 			return err
 		}

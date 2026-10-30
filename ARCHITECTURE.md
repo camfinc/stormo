@@ -360,7 +360,9 @@ plus the latest nap:
   headroom to keep learning.
 - A runtime skill patch is restored only if the repo has not changed that skill since the nap was
   taken (per-skill hashes in `.swarm/baseline.json`); otherwise the repo version wins.
-  Agent-created skills always come back. Engine-bundled skills are left to the image.
+  Agent-created skills always come back. Engine-bundled skills are left to the image, and so,
+  after an engine switch, are the ones the former engine's image seeded (the dream proposes
+  neither); one the agent should keep is accepted into the repo.
 - Cron: repo jobs win by id; jobs the agent created at runtime survive.
 - State and raw history come back verbatim, so session search and tool state survive a redeploy.
 

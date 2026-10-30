@@ -166,6 +166,33 @@ type RehydrateOptions struct {
 	BaselineDir string
 	Store       Store // nil: baseline only
 	Scrubber    *learning.Scrubber
+	// Engines resolves an engine kind (engines.Get), for a nap another engine took: the agent
+	// switched engines. nil: only Engine says which skills are the image's.
+	Engines func(kind string) (engine.Engine, error)
+}
+
+// ownedSkills are the skills (by directory name) the engine's image ships, as the nap's home
+// records them (read), plus, when another engine took the nap (the agent switched engines and the
+// home carried over), the ones that engine's image seeded: those are no more the agent's work than
+// the current image's. Rehydrate leaves both to the image and the dream proposes neither; a former
+// image's skill the agent should keep is accepted into the repo.
+func ownedSkills(eng engine.Engine, napEngine string, resolve func(string) (engine.Engine, error), read func(string) []byte) map[string]bool {
+	owned := map[string]bool{}
+	for s := range eng.EngineOwnedSkills(read) {
+		owned[s] = true
+	}
+	if napEngine == "" || napEngine == eng.Kind() || resolve == nil {
+		return owned
+	}
+	prev, err := resolve(napEngine)
+	if err != nil {
+		log.Printf("[skills] the nap's engine %q: %v; its image's skills read as the agent's", napEngine, err)
+		return owned
+	}
+	for s := range prev.EngineOwnedSkills(read) {
+		owned[s] = true
+	}
+	return owned
 }
 
 func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
@@ -212,7 +239,11 @@ func Rehydrate(o RehydrateOptions) (*RehydrateReport, error) {
 	for p := range live {
 		livePaths = append(livePaths, p)
 	}
-	engineOwned := o.Engine.EngineOwnedSkills(func(p string) []byte { return live[p].body })
+	napEngine := ""
+	if nap != nil {
+		napEngine = nap.Engine
+	}
+	engineOwned := ownedSkills(o.Engine, napEngine, o.Engines, func(p string) []byte { return live[p].body })
 	withheld := map[string]bool{}
 	for _, w := range info.Withheld {
 		withheld[w] = true

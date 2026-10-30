@@ -332,7 +332,8 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	}
 	if last != nil {
 		var readErr error
-		bundled := eng.EngineOwnedSkills(func(p string) []byte {
+		resolve := func(kind string) (engine.Engine, error) { return engineFor(kind, inst) }
+		bundled := ownedSkills(eng, last.Engine, resolve, func(p string) []byte {
 			b, err := learningBlob(s, agentID, last, p)
 			if err != nil {
 				readErr = err
