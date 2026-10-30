@@ -159,6 +159,8 @@ func (s *Store) Tool(neutralise Neutralise) tools.Tool {
 				if cut {
 					out["truncated"] = fmt.Sprintf("only the first %d bytes", MaxText)
 				}
+			case KindVideo:
+				out["why"] = "a video cannot be shown to you: hand it to a capability (cap_start with files_pending, then cap_attach)"
 			case KindAudio:
 				if e.Transcript != "" {
 					out["transcript"] = neutralise(e.Transcript)

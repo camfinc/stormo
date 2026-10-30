@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -340,4 +341,35 @@ func (c *Client) Register(ctx context.Context, reg *tools.Registry, minWait, max
 		}
 		wait = min(wait*2, maxWait)
 	}
+}
+
+// Upload sends one file to a capability job of this agent that waits for it (the core's
+// POST /v1/capabilities/jobs/<id>/files) and gives the job as the core answers it.
+func (c *Client) Upload(ctx context.Context, job int64, name string, body []byte) (json.RawMessage, error) {
+	base := strings.TrimSuffix(strings.TrimRight(c.URL, "/"), "/mcp")
+	u := fmt.Sprintf("%s/v1/capabilities/jobs/%d/files?name=%s", base, job, url.QueryEscape(name))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Key)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = int64(len(body))
+	hc := &http.Client{Timeout: 10 * time.Minute} // a video is not a tool call: its own bound
+	res, err := hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("the core: %w", err)
+	}
+	defer res.Body.Close()
+	out, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode != http.StatusOK {
+		var e struct {
+			Error struct{ Message string } `json:"error"`
+		}
+		if json.Unmarshal(out, &e) == nil && e.Error.Message != "" {
+			return nil, fmt.Errorf("the core refused it: %s", e.Error.Message)
+		}
+		return nil, fmt.Errorf("the core answered HTTP %d", res.StatusCode)
+	}
+	return out, nil
 }

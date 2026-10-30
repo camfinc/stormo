@@ -90,7 +90,9 @@ func TestFileKind(t *testing.T) {
 		{File{Mimetype: "audio/mp4", Filetype: "m4a", URLPrivateDownload: "u"}, attach.KindAudio},
 		{File{Mimetype: "audio/mpeg", Filetype: "mp3", URLPrivateDownload: "u"}, attach.KindAudio},
 		{File{Mimetype: "video/mp4", Filetype: "mp4", Subtype: "slack_audio", URLPrivateDownload: "u"}, attach.KindAudio},
-		{File{Mimetype: "video/mp4", Filetype: "mp4", URLPrivateDownload: "u"}, ""},
+		{File{Mimetype: "video/mp4", Filetype: "mp4", URLPrivateDownload: "u"}, attach.KindVideo}, // a video is kept for a capability (cap_attach)
+		{File{Mimetype: "video/quicktime", Filetype: "mov", URLPrivateDownload: "u"}, attach.KindVideo},
+		{File{Mimetype: "application/zip", Filetype: "zip", URLPrivateDownload: "u"}, ""},
 		{File{Mimetype: "image/png", Mode: "tombstone", URLPrivateDownload: "u"}, ""},
 		{File{Mimetype: "image/png", Mode: "external", URLPrivateDownload: "u"}, ""},
 		{File{Mimetype: "image/png"}, ""},

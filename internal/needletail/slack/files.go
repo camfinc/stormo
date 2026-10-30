@@ -51,6 +51,8 @@ const (
 	maxVoice = 15 * time.Minute
 	// fileTimeout bounds one download.
 	fileTimeout = time.Minute
+	// videoTimeout bounds a video's download (up to attach.MaxVideoBytes).
+	videoTimeout = 5 * time.Minute
 )
 
 // fileHostAllowed is whether a file URL may get the bot token: Slack's own https hosts
@@ -158,6 +160,8 @@ func fileKind(f File) (string, string) {
 		return attach.KindText, ""
 	case f.Subtype == "slack_audio" && (strings.HasPrefix(mime, "audio/") || strings.HasPrefix(mime, "video/") || mime == ""):
 		return attach.KindAudio, ""
+	case strings.HasPrefix(mime, "video/") && is("mp4", "mov", "m4v", "webm", "mkv", "avi") || mime == "" && is("mov", "m4v", "mkv", "avi"):
+		return attach.KindVideo, ""
 	case strings.HasPrefix(mime, "audio/") && is("m4a", "mp3", "mpga", "ogg", "oga", "opus", "webm", "wav", "mp4", "aac") ||
 		mime == "audio/mp4" || mime == "audio/x-m4a" || mime == "audio/mpeg" || mime == "audio/ogg" || mime == "audio/webm" || mime == "audio/wav" || mime == "audio/x-wav":
 		return attach.KindAudio, ""
@@ -216,15 +220,19 @@ func (g *Gateway) fetchFiles(session string, jobs []job) incoming {
 			case kind == "":
 				lines = append(lines, fmt.Sprintf("- %s: attached file not fetched (%s)", name, why))
 				continue
-			case f.Size > MaxFileBytes:
-				lines = append(lines, fmt.Sprintf("- %s: attached file not fetched (%s, over the %d MB limit)", name, size(f.Size), MaxFileBytes>>20))
+			case f.Size > attach.MaxBytesOf(kind):
+				lines = append(lines, fmt.Sprintf("- %s: attached file not fetched (%s, over the %d MB limit)", name, size(f.Size), attach.MaxBytesOf(kind)>>20))
 				continue
 			case kind == attach.KindAudio && f.DurationMS > maxVoice.Milliseconds():
 				lines = append(lines, fmt.Sprintf("- %s: voice note not fetched (longer than %d minutes)", name, int(maxVoice.Minutes())))
 				continue
 			}
-			ctx, cancel := context.WithTimeout(g.base, fileTimeout)
-			body, err := g.o.Web.Download(ctx, orDefault(f.URLPrivateDownload, f.URLPrivate), MaxFileBytes)
+			timeout := fileTimeout
+			if kind == attach.KindVideo {
+				timeout = videoTimeout
+			}
+			ctx, cancel := context.WithTimeout(g.base, timeout)
+			body, err := g.o.Web.Download(ctx, orDefault(f.URLPrivateDownload, f.URLPrivate), attach.MaxBytesOf(kind))
 			cancel()
 			if err != nil {
 				g.logf("slack: %s: file %s (%s) not fetched: %v", session, f.ID, kind, err)

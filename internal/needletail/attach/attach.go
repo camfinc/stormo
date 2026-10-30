@@ -57,7 +57,20 @@ const (
 	KindText  = "text"
 	KindPDF   = "pdf"
 	KindAudio = "audio"
+	// KindVideo is a video: kept for a capability job (cap_attach), never shown to the model.
+	KindVideo = "video"
 )
+
+// MaxVideoBytes is the most one stored video may hold (the store's bound holds as for any upload).
+const MaxVideoBytes = 200 << 20
+
+// MaxBytesOf is the most one stored upload of a kind may hold.
+func MaxBytesOf(kind string) int64 {
+	if kind == KindVideo {
+		return MaxVideoBytes
+	}
+	return MaxFileBytes
+}
 
 // Entry is one stored upload.
 type Entry struct {
@@ -283,7 +296,9 @@ func (s *Store) rebuild(conv string) index {
 				e.Kind = KindImage
 			case e.MIME == "application/pdf":
 				e.Kind = KindPDF
-			case strings.HasPrefix(e.MIME, "audio/"), strings.HasPrefix(e.MIME, "video/"):
+			case strings.HasPrefix(e.MIME, "video/"):
+				e.Kind = KindVideo
+			case strings.HasPrefix(e.MIME, "audio/"):
 				e.Kind = KindAudio
 			case strings.HasPrefix(e.MIME, "text/"):
 				e.Kind = KindText
@@ -414,8 +429,8 @@ func (s *Store) Save(conv string, e Entry, body []byte) (Entry, error) {
 	if !idRe.MatchString(e.ID) {
 		return Entry{}, fmt.Errorf("file id %q is not one the store keeps", e.ID)
 	}
-	if int64(len(body)) > MaxFileBytes {
-		return Entry{}, fmt.Errorf("over %d bytes", MaxFileBytes)
+	if int64(len(body)) > MaxBytesOf(e.Kind) {
+		return Entry{}, fmt.Errorf("over %d bytes", MaxBytesOf(e.Kind))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -547,7 +562,32 @@ func (s *Store) Read(e Entry) ([]byte, error) {
 	if !strings.HasPrefix(e.Path, Root+"/") {
 		return nil, fmt.Errorf("%s is not in the file store", e.Path)
 	}
-	return fsx.ReadFileBelow(s.Home, e.Path, MaxFileBytes)
+	return fsx.ReadFileBelow(s.Home, e.Path, MaxBytesOf(e.Kind))
+}
+
+// Remove deletes one of a conversation's uploads and its entry (cap_attach consume: the file
+// went to the job and is not kept).
+func (s *Store) Remove(conv, id string) error {
+	if err := validConv(conv); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, err := s.load(conv)
+	if err != nil {
+		return err
+	}
+	for i, e := range idx.Files {
+		if e.ID != id {
+			continue
+		}
+		idx.Files = append(idx.Files[:i], idx.Files[i+1:]...)
+		if err := s.write(conv, &idx); err != nil {
+			return err
+		}
+		return fsx.RemoveBelow(s.Home, e.Path, false)
+	}
+	return fmt.Errorf("no file %s in this conversation", id)
 }
 
 // orphanAge is how old a file the index does not name must be before Sweep removes it (a write
