@@ -16,7 +16,7 @@ import (
 // does not own them). Rendered in process: no image is run.
 
 // slackBotScopes are the scopes of what the gateway calls: chat.postMessage, chat.update and
-// chat.postEphemeral (chat:write), reactions.add/remove (reactions:write), the thread status line
+// chat.postEphemeral (chat:write), reactions.add/remove (reactions:write), a thread's status line
 // (assistant:write), conversations.replies (the *:history scopes), users.info (users:read),
 // conversations.info and conversations.list (the *:read scopes), conversations.open (im:write),
 // file downloads (files:read), files sent with a message (files:write: send_message files),
@@ -65,9 +65,11 @@ func SlackManifestJSON(name, description string, names map[string]string) ([]byt
 		"_metadata":           map[string]any{"major_version": 1, "minor_version": 1},
 		"display_information": map[string]any{"name": clip(name, 35), "description": clip(description, 140)},
 		"features": map[string]any{
-			"app_home":       map[string]any{"home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false},
-			"bot_user":       map[string]any{"display_name": clip(name, 80), "always_online": true},
-			"assistant_view": map[string]any{"assistant_description": clip(description, 140)},
+			"app_home": map[string]any{"home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false},
+			"bot_user": map[string]any{"display_name": clip(name, 80), "always_online": true},
+			// Slack's agent messaging view: one DM timeline (no Chat/History tabs, where whatever the agent
+			// posted on its own started a conversation of its own, hidden under History)
+			"agent_view":     map[string]any{"agent_description": clip(description, 140)},
 			"slash_commands": slashes,
 		},
 		"oauth_config": map[string]any{"scopes": map[string]any{"bot": scopes}},

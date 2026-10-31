@@ -1490,9 +1490,15 @@ func (g *Gateway) runTurn(slot Slot, root string, j job, in messaging.Input, inp
 		g.mu.Lock()
 		delete(g.running, root)
 		g.mu.Unlock()
-		g.status(j.channel, orDefault(j.thread, j.ts), "")
+		if j.thread != "" {
+			g.status(j.channel, j.thread, "")
+		}
 	}()
-	g.status(j.channel, orDefault(j.thread, j.ts), "is thinking...")
+	// the status line only where the reply goes into a thread: on a top-level DM message (Slack's
+	// agent view) it would open a thread the reply never comes to; the eyes reaction shows the work
+	if j.thread != "" {
+		g.status(j.channel, j.thread, "is thinking...")
+	}
 	opts := loop.Options{Observer: used, Untrusted: in.Untrusted() || in.NotesMarked, Images: images}
 	if opts.Untrusted {
 		opts.Taint = g.taintOf(j, in)

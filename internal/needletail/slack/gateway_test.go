@@ -244,6 +244,15 @@ func TestDMAndThreads(t *testing.T) {
 			t.Errorf("a DM thread got its own session %s", k)
 		}
 	}
+	// the status line goes where the reply goes: the DM thread, never a top-level DM message (it
+	// would open a thread there that the reply does not come to)
+	statuses := map[string]bool{}
+	for _, c := range r.fake.Calls("assistant.threads.setStatus") {
+		statuses[c.Params["thread_ts"]] = true
+	}
+	if statuses["1700000000.000200"] || !statuses["1700000000.000100"] {
+		t.Errorf("status lines on %v", statuses)
+	}
 	// a channel message without a mention: ignored; with one: answered in its thread, the
 	// mention stripped and another person's mention named
 	r.fake.Send("e2", slacktest.Event{Channel: dev, ChannelType: "channel", User: alice, Text: "lunch?", TS: "1700000001.000100"})

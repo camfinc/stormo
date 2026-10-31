@@ -20,6 +20,8 @@ func TestSlackManifest(t *testing.T) {
 	}
 	var m struct {
 		Features struct {
+			AgentView     map[string]string `json:"agent_view"`
+			AssistantView map[string]string `json:"assistant_view"`
 			SlashCommands []struct {
 				Command, Description, URL string
 			} `json:"slash_commands"`
@@ -39,6 +41,10 @@ func TestSlackManifest(t *testing.T) {
 	}
 	if err := json.Unmarshal(body, &m); err != nil {
 		t.Fatal(err)
+	}
+	// the agent view (one DM timeline), never the legacy assistant view's Chat/History tabs
+	if m.Features.AgentView["agent_description"] != "Answers the team" || m.Features.AssistantView != nil {
+		t.Fatalf("view: agent %v, assistant %v", m.Features.AgentView, m.Features.AssistantView)
 	}
 	cmds := []string{}
 	for _, c := range m.Features.SlashCommands {
