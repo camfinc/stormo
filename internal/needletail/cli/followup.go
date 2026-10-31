@@ -239,7 +239,7 @@ func (f *followUps) prompt(ctx context.Context, it followup.Item) error {
 		return err
 	}
 	text := res.Text
-	if sched.Silent(text) || strings.TrimSpace(text) == "" {
+	if sched.Silent(text) || strings.TrimSpace(text) == "" || text == loop.NoAnswer {
 		f.logf(fmt.Sprintf("follow-up %s: the turn answered [SILENT]; nothing posted", it.ID))
 		return nil
 	}

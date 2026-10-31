@@ -951,6 +951,9 @@ func (g *Gateway) turn(session string, jobs []job, images []llm.Image) {
 		return
 	}
 	text := res.Text
+	if text == loop.NoAnswer {
+		text = "" // no words (a tool may have said it all): nothing to post
+	}
 	if sched.Silent(text) || silentEdge(text) {
 		if text = withoutSilence(text); strings.TrimSpace(text) == "" {
 			g.logf("telegram: %s: the agent chose not to answer; nothing posted", session)

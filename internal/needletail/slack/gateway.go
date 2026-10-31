@@ -1445,6 +1445,9 @@ func (g *Gateway) turn(session string, jobs []job, lines []messaging.ContextLine
 		return
 	}
 	text := res.Text
+	if text == loop.NoAnswer {
+		text = "" // no words (a tool may have said it all): nothing to post, the message is done
+	}
 	if noReply || sched.Silent(text) {
 		if !direct {
 			// the agent stays out of a conversation between others

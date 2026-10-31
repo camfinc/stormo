@@ -113,6 +113,8 @@ func (s *fakeSlot) Turn(ctx context.Context, input string, opts loop.Options) (*
 	switch last := lines[len(lines)-1]; last {
 	case "SILENTMSG":
 		return &loop.Result{Text: "[SILENT]", Session: s.session}, nil
+	case "NOANSWERMSG":
+		return &loop.Result{Text: loop.NoAnswer, Session: s.session}, nil
 	case "HALFSILENT":
 		return &loop.Result{Text: "[SILENT]\nOn second thought: yes.", Session: s.session}, nil
 	case "PANIC":
@@ -799,6 +801,16 @@ func TestGroupSilence(t *testing.T) {
 	r.fake.Send("g6", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "NOREPLY", TS: "1700000111.000300"})
 	if p := r.fake.WaitPosts(3, 5*time.Second); p[2].Text != "re: NOREPLY" {
 		t.Errorf("no_reply in a DM %+v", p[2])
+	}
+	// a turn that ended with no words (it said it all with a tool, a file sent "here"): nothing
+	// posted, never the history's placeholder
+	r.fake.Send("g7", slacktest.Event{Channel: dm, ChannelType: "im", User: alice, Text: "NOANSWERMSG", TS: "1700000111.000400", ThreadTS: "1700000111.000100"})
+	time.Sleep(200 * time.Millisecond)
+	r.quiet(3)
+	for _, p := range r.fake.Posts() {
+		if strings.Contains(p.Text, loop.NoAnswer) {
+			t.Errorf("the placeholder was posted: %+v", p)
+		}
 	}
 	// the guidance the system prompt carries
 	if g := r.g.Guidance(); !strings.Contains(g, "[SILENT]") || !strings.Contains(g, "no_reply") {

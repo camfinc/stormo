@@ -187,6 +187,11 @@ func (a *Agent) logf(format string, args ...any) {
 	}
 }
 
+// NoAnswer is what the history keeps (and Result.Text says) for a turn that ended with no words and
+// no tool calls: the agent may have said it all with a tool (a file sent, a reaction). A chat gateway
+// posts nothing for it; it is not a reply.
+const NoAnswer = "(no answer)"
+
 // Run is one turn of session (any session of its lineage: the turn goes to the tip). The caller
 // makes sure one turn at a time runs per conversation.
 func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (res *Result, err error) {
@@ -356,7 +361,7 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		// found by session_search, they are marked data too)
 		msg := wire.Message{Role: "assistant", Content: resp.Content, ToolCalls: calls, Untrusted: messaging.UntrustedWhy(ctx) != ""}
 		if msg.Content == "" && len(calls) == 0 {
-			msg.Content = "(no answer)"
+			msg.Content = NoAnswer
 		}
 		stored, err := a.Store.Append(res.Session, msg)
 		if err != nil {
