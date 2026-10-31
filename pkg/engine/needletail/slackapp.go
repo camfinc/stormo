@@ -24,8 +24,9 @@ import (
 var slackBotScopes = []string{"app_mentions:read", "assistant:write", "channels:history", "channels:read", "chat:write", "commands", "files:read", "files:write",
 	"groups:history", "groups:read", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "reactions:write", "users:read"}
 
-// slackBotEvents are the events the gateway hears.
-var slackBotEvents = []string{"app_mention", "message.channels", "message.groups", "message.im", "message.mpim"}
+// slackBotEvents are the events the gateway hears (app_home_opened: Slack's agent view expects the
+// subscription; the gateway acks it and does nothing with it).
+var slackBotEvents = []string{"app_home_opened", "app_mention", "message.channels", "message.groups", "message.im", "message.mpim"}
 
 // SlackManifest renders the agent's Slack app manifest (pkg/slack's in-process renderer).
 func (n *Needletail) SlackManifest(a *manifest.Agent, name, description string) ([]byte, error) {

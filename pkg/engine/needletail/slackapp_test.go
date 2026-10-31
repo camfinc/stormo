@@ -58,7 +58,7 @@ func TestSlackManifest(t *testing.T) {
 			t.Errorf("scope %s missing: %v", s, m.OAuth.Scopes.Bot)
 		}
 	}
-	if !m.Settings.Socket || !m.Settings.Interactivity.On || !slices.Contains(m.Settings.Events.Bot, "message.im") {
+	if !m.Settings.Socket || !m.Settings.Interactivity.On || !slices.Contains(m.Settings.Events.Bot, "message.im") || !slices.Contains(m.Settings.Events.Bot, "app_home_opened") {
 		t.Fatalf("settings %+v", m.Settings)
 	}
 	names, _ := commands.SlackNames("ops-", nil)
