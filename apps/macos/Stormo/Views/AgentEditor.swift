@@ -354,7 +354,12 @@ private struct AgentForm: View {
         let directory = slack ? model.slack.directory(agentID) : nil
         return Section {
             if slack { SlackDirectoryStatus(agentID: agentID) }
-            if kind == "whatsapp" { WhatsAppSetup(agentID: agentID) }
+            if kind == "whatsapp" {
+                WhatsAppSetup(agentID: agentID, hasUnsavedChanges: editor.isDirty) {
+                    guard let cli = model.cli else { return false }
+                    return await editor.save(with: cli)
+                }
+            }
             StringListRows(title: "Allowed users", items: strings(base + ["allowed_users"]),
                            prompt: slack ? "Slack member ID (U…)" : (kind == "whatsapp" ? "+country code and phone number" : "Telegram user id"), suggestions: [], monospaced: true,
                            named: directory.map(SlackChoices.people) ?? [], display: directory.map { d in { d.label(for: $0) } })

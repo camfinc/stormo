@@ -5,6 +5,9 @@ import StormoKit
 struct WhatsAppSetup: View {
     @Environment(AppModel.self) private var model
     let agentID: String
+    let hasUnsavedChanges: Bool
+    let saveSettings: () async -> Bool
+    @State private var needsSave = false
     @State private var status: WhatsAppStatus?
     @State private var problem: String?
     @State private var busy = false
@@ -13,7 +16,7 @@ struct WhatsAppSetup: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(status?.state.replacingOccurrences(of: "_", with: " ").capitalized ?? "Not linked", systemImage: "message")
-            Text("Save your channel settings, then link a dedicated WhatsApp account. The agent must run locally on this core. Keep both running for replies. Direct text chats only.")
+            Text("Link a dedicated WhatsApp account. The agent must run locally on this core. Keep both running for replies. Direct text chats only.")
                 .font(.callout).foregroundStyle(.secondary)
             if let code = status?.qr, let image = qrImage(code) {
                 Image(nsImage: image).interpolation(.none).resizable().frame(width: 240, height: 240)
@@ -22,12 +25,25 @@ struct WhatsAppSetup: View {
                 Text("On the bot’s phone, open WhatsApp → Settings → Linked devices → Link a device, then scan this code.")
                     .font(.callout)
             }
+            if needsSave {
+                Text("Save this WhatsApp channel to begin pairing.").font(.callout).foregroundStyle(.secondary)
+            }
             if let error = problem ?? status?.error {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.callout)
             }
             HStack {
-                Button(status?.state == "connected" ? "Refresh status" : "Link / reconnect") {
-                    Task { await update(status?.state == "connected" ? "GET" : "POST") }
+                Button(hasUnsavedChanges ? "Save and link" : (status?.state == "connected" ? "Refresh status" : "Link / reconnect")) {
+                    Task {
+                        busy = true
+                        if hasUnsavedChanges {
+                            guard await saveSettings() else {
+                                problem = "The settings could not be saved. Check the editor’s validation message."
+                                busy = false
+                                return
+                            }
+                        }
+                        await update(status?.state == "connected" ? "GET" : "POST")
+                    }
                 }.disabled(busy || !model.core.state.isRunning)
                 Button("Unlink", role: .destructive) { confirmUnlink = true }
                     .disabled(busy || !model.core.state.isRunning)
@@ -53,10 +69,15 @@ struct WhatsAppSetup: View {
         do {
             status = try await model.slack.client.with(timeout: 30).whatsApp(agent: agentID, method: method)
             problem = nil
+            needsSave = false
         } catch CoreClient.Failure.notFound {
             problem = "This core does not support WhatsApp yet. Restart the core from Settings using this app’s bundled Stormo."
         } catch CoreClient.Failure.unreachable {
             problem = "The core is not reachable. Start it in Settings, then try again."
+        } catch CoreClient.Failure.refused(409, let message) {
+            needsSave = true
+            status = nil
+            problem = polling ? nil : message
         } catch CoreClient.Failure.refused(_, let message) {
             problem = message
         } catch CoreClient.Failure.status(let code) {
