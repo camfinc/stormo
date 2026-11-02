@@ -197,6 +197,7 @@ type Core struct {
 	ownDB         bool
 	// slackDirs caches each agent's Slack directory for the owner's pickers (in memory only).
 	slackDirs slackDirectories
+	whatsapp  whatsappConnections
 	stop      chan struct{}
 	once      sync.Once
 }
@@ -207,6 +208,7 @@ func (c *Core) StopOffice() { c.once.Do(func() { close(c.stop) }) }
 // Close stops the office and the HTTP servers.
 func (c *Core) Close() error {
 	c.StopOffice()
+	c.closeWhatsApp()
 	if c.publicServer != nil {
 		_ = c.publicServer.Close()
 	}
@@ -622,6 +624,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 			w.Header().Set("Referrer-Policy", "no-referrer")
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
 			return
+		case whatsappPath.MatchString(path):
+			c.handleWhatsApp(w, r, whatsappPath.FindStringSubmatch(path)[1])
+			return
 		case slackDirectoryPath.MatchString(path):
 			m := slackDirectoryPath.FindStringSubmatch(path)
 			c.handleSlackDirectory(w, r, m[1], m[2] == "/dm")
@@ -936,6 +941,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 		c.bridge = append(c.bridge, b)
 		go serve(b, bl)
 	}
+	c.startWhatsApp()
 	return c, nil
 }
 

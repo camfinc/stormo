@@ -242,7 +242,7 @@ func TestShowOffersTheFormsChoices(t *testing.T) {
 	if !slices.Equal(units, []string{"group", "sales", "support"}) || !slices.Contains(o.Engines, "hermes") ||
 		!slices.Contains(o.Skills, "crm/crm-api") || !slices.Contains(o.Personas, "personas/atlas") ||
 		!slices.Contains(o.Secrets, "CRM_API_TOKEN") || !slices.Equal(o.AllowBots, []string{"none", "mentions", "all"}) ||
-		len(o.Channels) != 2 || o.Channels[0].Kind != "slack" {
+		len(o.Channels) != 3 || o.Channels[0].Kind != "slack" || o.Channels[2].Kind != "whatsapp" {
 		t.Errorf("options = %+v", o)
 	}
 	if !slices.ContainsFunc(o.Actions, func(a ActionOption) bool { return a.Name == "sales.crm.deals.list" && a.Unit == "sales" }) {

@@ -354,8 +354,9 @@ private struct AgentForm: View {
         let directory = slack ? model.slack.directory(agentID) : nil
         return Section {
             if slack { SlackDirectoryStatus(agentID: agentID) }
+            if kind == "whatsapp" { WhatsAppSetup(agentID: agentID) }
             StringListRows(title: "Allowed users", items: strings(base + ["allowed_users"]),
-                           prompt: slack ? "Slack member ID (U…)" : "Telegram user id", suggestions: [], monospaced: true,
+                           prompt: slack ? "Slack member ID (U…)" : (kind == "whatsapp" ? "+country code and phone number" : "Telegram user id"), suggestions: [], monospaced: true,
                            named: directory.map(SlackChoices.people) ?? [], display: directory.map { d in { d.label(for: $0) } })
             Toggle("Anyone may message", isOn: toggle(base + ["allow_all_users"], default: false))
             if slack {
@@ -367,7 +368,7 @@ private struct AgentForm: View {
             if slack {
                 SlackTargetField(title: "Home channel", text: text(base + ["home_channel"]), prompt: "where cron results go",
                                  agentID: agentID, delivery: false)
-            } else {
+            } else if kind != "whatsapp" {
                 TextField("Home channel", text: text(base + ["home_channel"]), prompt: Text("where cron results go"))
             }
             if slack {

@@ -66,6 +66,7 @@ var AllowBots = []string{"none", "mentions", "all"}
 var ChannelSecrets = map[string][]string{
 	"slack":    {"SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"},
 	"telegram": {"TELEGRAM_BOT_TOKEN"},
+	"whatsapp": {},
 }
 
 // CoreEndpoints are the swarm core's addresses as local agent containers see it. Each agent
@@ -634,7 +635,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	for _, c := range m.Channels {
 		kind := str(c["kind"])
 		needs, known := ChannelSecrets[kind]
-		if err := req(known, `%s: unknown channel kind "%s" (known: slack, telegram)`, where, kind); err != nil {
+		if err := req(known, `%s: unknown channel kind "%s" (known: slack, telegram, whatsapp)`, where, kind); err != nil {
 			return nil, err
 		}
 		for _, n := range needs {
@@ -655,6 +656,10 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 		for _, u := range users {
 			if kind == "slack" {
 				if err := req(memberRe.MatchString(u), `%s: slack allowed_users entry "%s" is not a Member ID (U…)`, where, u); err != nil {
+					return nil, err
+				}
+			} else if kind == "whatsapp" {
+				if err := req(regexp.MustCompile(`^\+?[1-9][0-9]{6,14}$`).MatchString(u), `%s: WhatsApp allowed_users entry "%s" must be an international phone number`, where, u); err != nil {
 					return nil, err
 				}
 			} else if err := req(numericRe.MatchString(u), `%s: telegram allowed_users entry "%s" is not a numeric user id`, where, u); err != nil {
