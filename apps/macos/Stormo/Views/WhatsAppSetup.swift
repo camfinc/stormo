@@ -53,7 +53,19 @@ struct WhatsAppSetup: View {
         do {
             status = try await model.slack.client.with(timeout: 30).whatsApp(agent: agentID, method: method)
             problem = nil
-        } catch { problem = error.localizedDescription }
+        } catch CoreClient.Failure.notFound {
+            problem = "This core does not support WhatsApp yet. Restart the core from Settings using this app’s bundled Stormo."
+        } catch CoreClient.Failure.unreachable {
+            problem = "The core is not reachable. Start it in Settings, then try again."
+        } catch CoreClient.Failure.refused(_, let message) {
+            problem = message
+        } catch CoreClient.Failure.status(let code) {
+            problem = "The core returned HTTP \(code). Check its status in Settings, then try again."
+        } catch is CancellationError {
+            return
+        } catch {
+            problem = "Could not read WhatsApp status: \(error.localizedDescription)"
+        }
     }
 
     private func qrImage(_ code: String) -> NSImage? {
