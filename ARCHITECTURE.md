@@ -362,7 +362,9 @@ plus the latest nap:
   taken (per-skill hashes in `.swarm/baseline.json`); otherwise the repo version wins.
   Agent-created skills always come back. Engine-bundled skills are left to the image, and so,
   after an engine switch, are the ones the former engine's image seeded (the dream proposes
-  neither); one the agent should keep is accepted into the repo.
+  neither); one the agent should keep is accepted into the repo. Each nap records the image's
+  skills it holds (`imageSkills`, dir → hash) and carries a former image's forward while unchanged,
+  so they stay the image's however many naps the new engine takes; one the agent edits is its own.
 - Cron: repo jobs win by id; jobs the agent created at runtime survive.
 - State and raw history come back verbatim, so session search and tool state survive a redeploy.
 

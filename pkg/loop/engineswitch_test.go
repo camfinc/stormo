@@ -112,4 +112,59 @@ func TestEngineSwitchLeavesFormerImageSkills(t *testing.T) {
 			t.Errorf("agent's skill not restored: %v", r.RestoredSkills)
 		}
 	})
+
+	// The nap records the image's skills, so a first boot that can't resolve the former engine
+	// still leaves them behind.
+	home3 := filepath.Join(tmp, "home3")
+	if _, err := Rehydrate(RehydrateOptions{Agent: agent, Engine: cur, Home: home3, BaselineDir: b.Out, Store: store, Scrubber: scrubber}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(home3, "skills/productivity/airtable")) {
+		t.Error("former image's skill restored without the engines")
+	}
+
+	// The home kept the former image's skill anyway (a boot older than the record, a kept home) and
+	// the new engine napped: the nap's engine is the new one, and its record must still tell.
+	t.Run("a nap on the new engine still knows the former image's skill", func(t *testing.T) {
+		write(t, filepath.Join(home3, "skills/productivity/airtable/SKILL.md"), "---\nname: airtable\ndescription: the image's\n---\nbody\n")
+		if m, err := NapOnce(NapOptions{Agent: "atlas", Unit: agent.Unit, Engine: cur, Home: home3, Store: store, Instance: "task-b", BaselineDir: b.Out, Now: time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)}); err != nil || m == nil {
+			t.Fatalf("nap: %v %v", m, err)
+		} else if m.ImageSkills.Map()["productivity/airtable"] == "" {
+			t.Errorf("image skills = %v", m.ImageSkills)
+		}
+		r, err := Dream(inst, "atlas", store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range r.SkillProposals {
+			if p.Skill == "productivity/airtable" {
+				t.Errorf("former image's skill proposed: %v", r.SkillProposals)
+			}
+		}
+		home4 := filepath.Join(tmp, "home4")
+		if _, err := Rehydrate(RehydrateOptions{Agent: agent, Engine: cur, Home: home4, BaselineDir: b.Out, Store: store, Scrubber: scrubber}); err != nil {
+			t.Fatal(err)
+		}
+		if exists(filepath.Join(home4, "skills/productivity/airtable")) {
+			t.Error("former image's skill restored on the next boot")
+		}
+
+		// The agent edits it: from then on it is the agent's work.
+		write(t, filepath.Join(home3, "skills/productivity/airtable/SKILL.md"), "---\nname: airtable\ndescription: the image's, with our base id\n---\nUse base CRM.\n")
+		if m, err := NapOnce(NapOptions{Agent: "atlas", Unit: agent.Unit, Engine: cur, Home: home3, Store: store, Instance: "task-b", BaselineDir: b.Out, Now: time.Date(2026, 10, 31, 11, 0, 0, 0, time.UTC)}); err != nil || m == nil {
+			t.Fatalf("nap: %v %v", m, err)
+		} else if len(m.ImageSkills) != 0 {
+			t.Errorf("an edited skill is still the image's: %v", m.ImageSkills)
+		}
+		if r, err = Dream(inst, "atlas", store); err != nil {
+			t.Fatal(err)
+		}
+		got := false
+		for _, p := range r.SkillProposals {
+			got = got || p.Skill == "productivity/airtable"
+		}
+		if !got {
+			t.Errorf("the agent's edit of the former image's skill not proposed: %v", r.SkillProposals)
+		}
+	})
 }

@@ -57,6 +57,35 @@ type Nap struct {
 	Reason   string       `json:"reason"` // interval | shutdown | manual
 	Baseline *NapBaseline `json:"baseline"`
 	Files    []NapFile    `json:"files"`
+	// ImageSkills are the skills (dir → build.SkillHash) an engine's image seeded into the home:
+	// the nap's engine's, and the ones an earlier nap recorded that the home still holds unchanged.
+	// They outlive an engine switch, so however many naps the new engine takes, rehydrate and the
+	// dream still leave a former image's skills to it. One the agent changed is its own work.
+	ImageSkills build.OrderedHashes `json:"imageSkills,omitempty"`
+}
+
+// imageSkills is Nap.ImageSkills for a home's files, under the engine taking the nap, after prev.
+func imageSkills(eng engine.Engine, prev *Nap, files []SnapshotFile) build.OrderedHashes {
+	bodies := map[string][]byte{}
+	hashes := map[string]string{}
+	paths := make([]string, len(files))
+	for i, f := range files {
+		bodies[f.Path], hashes[f.Path], paths[i] = f.Body, f.Sha256, f.Path
+	}
+	owned := eng.EngineOwnedSkills(func(p string) []byte { return bodies[p] })
+	var carried map[string]string
+	if prev != nil {
+		carried = prev.ImageSkills.Map()
+	}
+	out := build.OrderedHashes{}
+	dirs := build.SkillDirs(paths, eng.Layout().SkillsDir)
+	for _, dir := range sortedKeys(dirs) {
+		h := build.SkillHash(hashes, dirs[dir])
+		if owned[dir[strings.LastIndex(dir, "/")+1:]] || (carried[dir] != "" && carried[dir] == h) {
+			out = append(out, build.KV{Key: dir, Value: h})
+		}
+	}
+	return out
 }
 
 func BlobKey(agent string, cls engine.FileClass, sha string) string {
@@ -182,6 +211,7 @@ func NapOnce(o NapOptions) (*Nap, error) {
 		ID:    strings.NewReplacer("-", "", ":", "", ".", "").Replace(takenAt) + "-" + o.Instance,
 		Agent: o.Agent, Unit: o.Unit, Engine: o.Engine.Kind(), Instance: o.Instance,
 		TakenAt: takenAt, Reason: reason, Baseline: baseline, Files: meta,
+		ImageSkills: imageSkills(o.Engine, prev, files),
 	}
 	body, err := learning.MarshalIndent(n)
 	if err != nil {
