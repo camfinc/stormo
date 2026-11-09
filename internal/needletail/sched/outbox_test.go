@@ -52,7 +52,8 @@ func outboxFixture(t *testing.T, d *outboxDeliverer) (*Scheduler, *Job, *time.Ti
 	t.Helper()
 	now := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
 	s := New(Options{Home: t.TempDir(), Deliver: d, Now: func() time.Time { return now }})
-	t.Cleanup(s.cancelRuns)
+	// Before the home is removed: stop and wait for background work (a discard's alert sync).
+	t.Cleanup(func() { s.cancelRuns(); s.wg.Wait() })
 	for _, p := range []string{s.state, s.tmp} {
 		if e := os.MkdirAll(p, 0700); e != nil {
 			t.Fatal(e)
