@@ -302,6 +302,14 @@ type Engine interface {
 	ParseBench(stdout string, exitCode int) BenchRun
 }
 
+// PublishedImage is an engine whose image runs under a local name (Image) and is also published
+// to a registry under another. A local start that does not find the image pulls it from there and
+// tags it with the local name, so a local build and a published one are the same to compose.
+// An engine without one names a registry image in Image, which compose pulls itself.
+type PublishedImage interface {
+	PublishedImage(a *manifest.Agent) string
+}
+
 // VersionValidator is an engine with its own rule for agent.yaml's engine.version and
 // engine.image_tag (each is checked when set). An engine without one accepts any non-empty
 // version, which manifest loading already requires.

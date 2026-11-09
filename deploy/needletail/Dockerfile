@@ -2,11 +2,15 @@
 # (CGO_ENABLED=0) on Alpine with the tools skill scripts use from the terminal (bash, python3, git,
 # curl, jq) and the IANA time zone database (tzdata: Python's zoneinfo, `TZ=`, `date`).
 #
-# The Go stage runs on the build machine and cross-compiles for each target platform, so a
-# multi-arch build needs no emulation. Build from the repository root:
+# The Go stage runs on the build machine and cross-compiles for each target platform. The final
+# stage's apk runs on the target platform, so a multi-arch build needs QEMU for the other
+# architecture (OrbStack and Docker Desktop have it; scripts/needletail-image.sh registers it in CI).
+# Build from the repository root:
 #
 #   docker buildx build -f deploy/needletail/Dockerfile --platform linux/amd64,linux/arm64 \
 #     --build-arg VERSION=<version> -t needletail:<version> .
+#
+# Published builds: scripts/needletail-image.sh (ghcr.io/camfinc/needletail, docs/needletail.md §1).
 #
 # Base images are pinned by their multi-arch index digest; bump tag and digest together.
 FROM --platform=$BUILDPLATFORM golang:1.26.2-alpine@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS build
