@@ -51,6 +51,27 @@ import Testing
         #expect(g.pendingRestart(core: try JSONDecoder().decode(CapabilitiesView.self, from: Data(Self.core.utf8))) == ["media.tools", "video.render"])
     }
 
+    @Test func anIngressCapabilityDecodesOnBothSides() throws {
+        let file = #"""
+        {"path":"stormo.yaml","hash":"c0ffee","capabilities":[{"name":"devices.gateway","spec":{"template":"device-gateway","publish":"127.0.0.1:18650"},
+         "effective":{"name":"devices.gateway","description":"The way in for linked devices.","kind":"service","template":"device-gateway","placement":"local",
+          "files":"none","concurrency":1,"timeoutMinutes":15,"costUSD":0,"alwaysOn":true,"ingress":true,"publish":"127.0.0.1:18650","readOnly":true},"agents":[]}]}
+        """#
+        let core = #"""
+        {"capabilities":[{"name":"devices.gateway","description":"The way in for linked devices.","kind":"service","template":"device-gateway","placement":"local",
+          "files":"none","concurrency":1,"timeoutMinutes":15,"costUSD":0,"queued":0,"running":0,"agents":[],"worker":"awake",
+          "alwaysOn":true,"ingress":true,"publish":"127.0.0.1:18650","readOnly":true}],"spend":[]}
+        """#
+        let f = try JSONDecoder().decode(CapabilitiesFile.self, from: Data(file.utf8))
+        let e = try #require(f.capabilities.first?.effective)
+        #expect(e.ingress == true && e.alwaysOn == true && e.publish == "127.0.0.1:18650" && e.readOnly == true)
+        var v = try JSONDecoder().decode(CapabilitiesView.self, from: Data(core.utf8))
+        #expect(v.capabilities.first?.isIngress == true && v.capabilities.first?.isLocalService == true)
+        #expect(f.pendingRestart(core: v).isEmpty)
+        v.capabilities[0].publish = "127.0.0.1:18651"
+        #expect(f.pendingRestart(core: v) == ["devices.gateway"], "a new publish address needs a restart")
+    }
+
     @Test func envEditsTakeNamesOutAsNull() {
         let old = ["A": "1", "B": "2"]
         #expect(CapabilityInfo.envPatch(from: old, to: old) == nil)

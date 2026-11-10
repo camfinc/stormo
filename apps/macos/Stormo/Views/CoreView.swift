@@ -1,10 +1,44 @@
 import StormoKit
 import SwiftUI
 
+/// A page pushed in the Core section.
+enum CoreRoute: String, Hashable {
+    case devices
+}
+
 struct CoreView: View {
     @Environment(AppModel.self) private var model
+    @State private var path: [CoreRoute] = Self.initialPath
 
     var body: some View {
+        NavigationStack(path: $path) {
+            form
+                .navigationDestination(for: CoreRoute.self) { route in
+                    switch route {
+                    case .devices: LinkedDevicesView()
+                    }
+                }
+        }
+    }
+
+    /// Debug builds can open a page at launch (STORMO_CORE_PAGE=devices), for a visual check.
+    private static var initialPath: [CoreRoute] {
+        #if DEBUG
+        if let r = ProcessInfo.processInfo.environment["STORMO_CORE_PAGE"].flatMap(CoreRoute.init(rawValue:)) { return [r] }
+        #endif
+        return []
+    }
+
+    private var devicesSummary: String {
+        let d = model.devices
+        guard model.core.state.isRunning else { return "" }
+        guard d.loaded else { return d.problem == nil ? "" : "Unavailable" }
+        var parts = ["\(d.linked.count) linked"]
+        if !d.pairings.isEmpty { parts.append("\(d.pairings.count) waiting for a code") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var form: some View {
         Form {
             Section {
                 LabeledContent("Status") { CoreStatusBadge(state: model.core.state) }
@@ -41,6 +75,16 @@ struct CoreView: View {
                 }
             }
             ChatGPTSection()
+            Section {
+                NavigationLink(value: CoreRoute.devices) {
+                    LabeledContent("Linked devices") { Text(devicesSummary) }
+                }
+                .task(id: model.core.state.isRunning) {
+                    if model.core.state.isRunning { await model.devices.load() }
+                }
+            } header: {
+                SectionTitle("Devices", note: "Watches and phones that reach the fleet through the device gateway, with what each may do.")
+            }
             Section("Command line") {
                 if let note = model.commandLineNote { CommandLineNote(note: note) }
                 if let p = model.pinned, let info = p.info {
