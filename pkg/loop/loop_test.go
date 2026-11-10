@@ -385,7 +385,7 @@ func TestLearningLoop(t *testing.T) {
 		if slices.Contains(r.RestoredSkills, "crm/payment-plan") || !strings.Contains(read(t, filepath.Join(h, "skills/crm/payment-plan/SKILL.md")), "Repo edit the agent never saw.") {
 			t.Errorf("restored %v: the repo's payment-plan edit was undone", r.RestoredSkills)
 		}
-		// Rigoberto's case: an instance booted from the current baseline holds an old copy of a
+		// The live case: an instance booted from the current baseline holds an old copy of a
 		// skill (restored by the bug above). It reads as the agent's change; rejecting it must keep
 		// it from coming back on the next boot.
 		h4plan := filepath.Join(h, "skills/crm/payment-plan/SKILL.md")

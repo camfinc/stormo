@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct ChatDecodingTests {
     @Test func transcriptFromCLI() throws {
-        let line = #"{"event":"result","data":{"agent":"sofia","id":"api_1","tip":"api_1b","compacted":true,"messages":[{"id":"82","role":"user","kind":"text","content":"Hi","at":"2026-10-09T19:12:52Z"},{"role":"assistant","kind":"tool","content":"","tools":["web_search"]},{"id":"83","role":"assistant","kind":"text","content":"OK","at":"2026-10-09T19:12:55Z"}]}}"#
+        let line = #"{"event":"result","data":{"agent":"atlas","id":"api_1","tip":"api_1b","compacted":true,"messages":[{"id":"82","role":"user","kind":"text","content":"Hi","at":"2026-10-09T19:12:52Z"},{"role":"assistant","kind":"tool","content":"","tools":["web_search"]},{"id":"83","role":"assistant","kind":"text","content":"OK","at":"2026-10-09T19:12:55Z"}]}}"#
         let t = try #require(try CLIEvent(line: line)?.decode(Transcript.self))
         #expect(t.compacted && t.tip == "api_1b" && t.messages.count == 3)
         #expect(t.messages[1].isTool && t.messages[1].tools == ["web_search"])
@@ -13,7 +13,7 @@ import Testing
     }
 
     @Test func followUpRows() throws {
-        let line = #"{"event":"result","data":{"agent":"sofia","id":"api_1","tip":"api_1","compacted":false,"messages":[{"id":"1","role":"user","kind":"text","content":"Say hola in 10 s"},{"id":"2","role":"assistant","kind":"text","content":"Will do"},{"id":"3","role":"user","kind":"text","content":"Say hola","source":"follow_up"},{"id":"4","role":"user","kind":"text","content":"x","source":"something_new"},{"id":"5","role":"assistant","kind":"text","content":"hola","source":"follow_up"}]}}"#
+        let line = #"{"event":"result","data":{"agent":"atlas","id":"api_1","tip":"api_1","compacted":false,"messages":[{"id":"1","role":"user","kind":"text","content":"Say hola in 10 s"},{"id":"2","role":"assistant","kind":"text","content":"Will do"},{"id":"3","role":"user","kind":"text","content":"Say hola","source":"follow_up"},{"id":"4","role":"user","kind":"text","content":"x","source":"something_new"},{"id":"5","role":"assistant","kind":"text","content":"hola","source":"follow_up"}]}}"#
         let rows = try #require(try CLIEvent(line: line)?.decode(Transcript.self)).messages
         #expect(!rows[0].isFollowUp && rows[0].isUser && rows[0].source == nil)
         #expect(rows[2].isFollowUp && rows[2].isUser && rows[2].source == "follow_up")
@@ -23,7 +23,7 @@ import Testing
     }
 
     @Test func rowsWithoutIDsStayTheSameAcrossReads() throws {
-        let line = #"{"event":"result","data":{"agent":"sofia","id":"api_1","tip":"api_1","compacted":false,"messages":[{"role":"user","kind":"text","content":"a"},{"id":"82","role":"user","kind":"text","content":"Hi"},{"role":"assistant","kind":"tool","content":"","tools":["web_search"]},{"role":"tool","kind":"tool","content":"r","tool":"web_search"},{"id":"83","role":"assistant","kind":"text","content":"OK"},{"id":"83","role":"assistant","kind":"text","content":"again"}]}}"#
+        let line = #"{"event":"result","data":{"agent":"atlas","id":"api_1","tip":"api_1","compacted":false,"messages":[{"role":"user","kind":"text","content":"a"},{"id":"82","role":"user","kind":"text","content":"Hi"},{"role":"assistant","kind":"tool","content":"","tools":["web_search"]},{"role":"tool","kind":"tool","content":"r","tool":"web_search"},{"id":"83","role":"assistant","kind":"text","content":"OK"},{"id":"83","role":"assistant","kind":"text","content":"again"}]}}"#
         let a = try #require(try CLIEvent(line: line)?.decode(Transcript.self))
         let b = try #require(try CLIEvent(line: line)?.decode(Transcript.self))
         #expect(a == b)
@@ -32,7 +32,7 @@ import Testing
     }
 
     @Test func conversationsFromCLI() throws {
-        let line = #"{"event":"result","data":{"agent":"sofia","conversations":[{"id":"a","title":"Plan","source":"api_server","lastActive":"2026-10-09T19:12:55Z","messages":4,"ended":false,"compacted":true},{"id":"b","source":"cron","preview":"Daily report","messages":6,"ended":true}]}}"#
+        let line = #"{"event":"result","data":{"agent":"atlas","conversations":[{"id":"a","title":"Plan","source":"api_server","lastActive":"2026-10-09T19:12:55Z","messages":4,"ended":false,"compacted":true},{"id":"b","source":"cron","preview":"Daily report","messages":6,"ended":true}]}}"#
         let list = try #require(try CLIEvent(line: line)?.decode(ConversationsResult.self)).conversations
         #expect(list[0].isDirect && list[0].displayTitle == "Plan" && list[0].activeDate != nil && list[0].compacted == true)
         #expect(!list[1].isDirect && list[1].displayTitle == "Daily report" && list[1].sourceLabel == "Scheduled")
