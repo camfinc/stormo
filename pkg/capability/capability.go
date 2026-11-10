@@ -41,6 +41,14 @@ type Template struct {
 	MemoryMB       int               `yaml:"memory_mb" json:"memoryMB"`
 	ShmMB          int               `yaml:"shm_mb" json:"shmMB"`
 	Env            map[string]string `yaml:"env" json:"env,omitempty"`
+	// AlwaysOn: the worker boots with the core and is kept running, never put to sleep for idling.
+	AlwaysOn bool `yaml:"always_on" json:"alwaysOn,omitempty"`
+	// Ingress: the worker is a way in from outside (docs/devices.md), never a worker for agents: the
+	// broker queues no job for it, no agent may be granted it, and the core hands it a key of its own.
+	// Only a template can make a capability one.
+	Ingress bool `yaml:"ingress" json:"ingress,omitempty"`
+	// ReadOnly: the worker's root filesystem is read-only, with a small tmpfs /tmp.
+	ReadOnly bool `yaml:"read_only" json:"readOnly,omitempty"`
 	// Notes for the owner (licences, hardware), shown by `stormo capability templates`.
 	Notes string `yaml:"notes" json:"notes,omitempty"`
 }

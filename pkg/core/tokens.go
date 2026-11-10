@@ -211,10 +211,17 @@ func (d *DB) AuditLog(limit int) ([]AuditEntry, error) {
 	return out, rows.Err()
 }
 
+// proxyHeaders are what a proxy or tunnel in front adds: a request carrying any came through one,
+// however it reached the loopback listener (a tunnel daemon on this host dials 127.0.0.1).
+var proxyHeaders = []string{"X-Forwarded-For", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip", "Via",
+	"Cf-Connecting-Ip", "Cf-Ray", "True-Client-Ip", "Tailscale-User-Login", "X-Stormo-Client-Ip"}
+
 // fromLoopback: the request reached the loopback listener directly (no proxy in front).
 func fromLoopback(r *http.Request) bool {
-	if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Forwarded") != "" {
-		return false
+	for _, h := range proxyHeaders {
+		if r.Header.Get(h) != "" {
+			return false
+		}
 	}
 	la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
 	if !ok {

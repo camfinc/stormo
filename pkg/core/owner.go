@@ -65,9 +65,16 @@ type Caller struct {
 	Name  string
 	Scope Scope
 	Agent string // set when an agent's core key authenticated it
+	// Ingress is the ingress capability whose per-boot key authenticated it (docs/devices.md); it
+	// reaches /api/ingress/* only. Device and DeviceName are the linked device it acts for, once
+	// the ingress route checked it.
+	Ingress    string
+	Device     string
+	DeviceName string
 }
 
-// Can reports whether the caller holds at least the scope.
+// Can reports whether the caller holds at least the scope. Agents, the ingress key and devices
+// hold none: they never reach the operator API.
 func (c Caller) Can(s Scope) bool { return c.Owner && c.Scope >= s }
 
 // Actor names the caller in the audit log.
@@ -77,6 +84,10 @@ func (c Caller) Actor() string {
 		return c.Name
 	case c.Agent != "":
 		return "agent:" + c.Agent
+	case c.Device != "":
+		return "device:" + c.DeviceName + " (" + c.Ingress + ")"
+	case c.Ingress != "":
+		return "ingress:" + c.Ingress
 	}
 	return "anonymous"
 }

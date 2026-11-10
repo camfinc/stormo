@@ -1,0 +1,16 @@
+description: The way in for linked devices (a watch, a phone) - pairing, hardware-key sessions and a small device API - in front of a core that stays on loopback. Not a worker for agents.
+files: none
+port: 8080
+health: /device/v1/health
+boot_minutes: 1
+memory_mb: 64
+always_on: true
+ingress: true
+read_only: true
+env:
+  CLIENT_IP_HEADER: ""
+  CLIENT_COUNTRY_HEADER: ""
+  TOKEN_MINUTES: "60"
+  MAX_PENDING: "20"
+  MAX_PENDING_PER_IP: "3"
+notes: "Needs core.loopback_trust: false and publish: \"127.0.0.1:<port>\"; point a tunnel or reverse proxy at that address and serve nothing else on its hostname (docs/devices.md)."

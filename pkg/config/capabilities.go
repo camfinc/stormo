@@ -226,6 +226,9 @@ func grantable(inst *instance.Instance, names []string) error {
 		if c.Unavailable != "" {
 			return refuse("invalid", "capability %q cannot run here: %s", n, c.Unavailable)
 		}
+		if c.Ingress {
+			return refuse("invalid", "capability %q is a way in for linked devices: no agent may be granted it", n)
+		}
 	}
 	return nil
 }

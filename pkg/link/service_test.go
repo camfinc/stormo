@@ -2,9 +2,11 @@ package link
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -148,5 +150,64 @@ func TestServicesBootFailureKeepsTheReason(t *testing.T) {
 	}
 	if st := s.State("x"); st.State != "asleep" || !strings.Contains(st.Error, "stopped while booting") {
 		t.Fatalf("state: %+v", st)
+	}
+}
+
+// An always-on ingress worker: a fixed loopback port, a read-only root, no cache, a key made at each
+// boot that never counts as a change; never reaped for idling, booted again when it dies, and held
+// down by the owner's sleep until a release.
+func TestAlwaysOnServiceKeepAndHold(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	f := &fakeDocker{addr: strings.TrimPrefix(srv.URL, "http://")}
+	now := time.Unix(1000, 0)
+	s := NewServices("acme")
+	s.Docker, s.Now = f.run, func() time.Time { return now }
+	boots := 0
+	sp := ServiceSpec{Name: "devices.gateway", Image: "gw:1", Port: 8080, Health: "/device/v1/health", Boot: time.Minute,
+		Publish: "127.0.0.1:18650", ReadOnly: true, NoCache: true, ExtraHosts: []string{"host.docker.internal:host-gateway"},
+		BootEnv: func() map[string]string {
+			boots++
+			return map[string]string{"STORMO_INGRESS_KEY": fmt.Sprintf("sti_key%d", boots)}
+		}}
+	ctx := context.Background()
+	if err := s.Keep(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	run := f.calls[slices.IndexFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "run ") })]
+	for _, want := range []string{"-p 127.0.0.1:18650:8080", "--read-only", "--tmpfs /tmp:rw,noexec,nosuid,size=16m", "--add-host host.docker.internal:host-gateway", "-e STORMO_INGRESS_KEY"} {
+		if !strings.Contains(run, want) {
+			t.Errorf("run lacks %q: %s", want, run)
+		}
+	}
+	if strings.Contains(run, "/cache") || strings.Contains(run, "sti_key") || !slices.Contains(f.env, "STORMO_INGRESS_KEY=sti_key1") {
+		t.Errorf("cache volume or key in argv: %s / %v", run, f.env)
+	}
+	// Running with the same spec: not booted again, though BootEnv would give a new key.
+	if err := s.Keep(ctx, sp); err != nil || f.count("run ") != 1 || boots != 1 {
+		t.Fatalf("kept running: %v, %d boots", err, f.count("run "))
+	}
+	now = now.Add(48 * time.Hour)
+	s.Reap()
+	if s.State("devices.gateway").State != "awake" {
+		t.Error("an always-on service was reaped")
+	}
+	// It died: the next keep boots it with a new key.
+	f.mu.Lock()
+	f.running = false
+	f.mu.Unlock()
+	if err := s.Keep(ctx, sp); err != nil || f.count("run ") != 2 || !slices.Contains(f.env, "STORMO_INGRESS_KEY=sti_key2") {
+		t.Fatalf("not booted again: %v, %d boots, %v", err, f.count("run "), f.env)
+	}
+	// The owner's sleep holds it down; a release lets the keeper bring it back.
+	if err := s.Sleep("devices.gateway"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Keep(ctx, sp); err != nil || f.count("run ") != 2 || s.State("devices.gateway").State != "asleep" {
+		t.Fatalf("held: %v, %d boots", err, f.count("run "))
+	}
+	s.Release("devices.gateway")
+	if err := s.Keep(ctx, sp); err != nil || f.count("run ") != 3 {
+		t.Fatalf("released: %v, %d boots", err, f.count("run "))
 	}
 }

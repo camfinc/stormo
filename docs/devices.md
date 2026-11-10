@@ -65,9 +65,10 @@ Each device gets grants when it is linked; the owner can change them later.
 ```
 
 - `status`: the compact fleet view.
-- `review`: proposals, and **accept or reject** (never promote) on **lessons and settings** that carry
-  no PII flag and are not sensitive. Skills, schedules and scripts, and anything flagged, are shown
-  with `appOnly: true`: they are decided in the app, by a person reading the full diff.
+- `review`: proposals, and **accept or reject** (never promote) on **lessons** the agent keeps to itself
+  (not about a person, nothing the scrubber flagged) and **settings** that neither widen what the
+  agent may do nor carry a flag. Skills, schedules and scripts, and everything else, are shown with
+  `appOnly: true` and a `why`: they are decided in the app, by a person reading them in full.
 - `chat`: the agents it may talk with; `["*"]` is every agent, `[]` none.
 
 Nothing else is reachable by a device: no lifecycle, secrets, config, files, tokens, capabilities or
@@ -75,7 +76,8 @@ learning runs.
 
 ## The device API (the gateway, `/device/v1/*`)
 
-JSON in and out; request bodies at most 16 KB, unknown fields refused. Every answer carries
+JSON in and out; request bodies at most 16 KB (a pairing request, with its attestation chain, 96 KB),
+unknown fields refused. Every answer carries
 `Cache-Control: no-store`. Errors are `{"error": {"code": "...", "message": "..."}}`; the codes a
 client branches on:
 
@@ -225,7 +227,7 @@ the route.
 
 | route | body → answer |
 |---|---|
-| `POST /api/ingress/pairings` | `{userCode, name, model, os, appVersion, publicKey, attestation, ip, country}` → 201 `{pairing: "pr_…", fingerprint, expiresIn}` |
+| `POST /api/ingress/pairings` | `{name, model, os, appVersion, publicKey, attestation, ip, country}` → 201 `{pairing: "pr_…", userCode, fingerprint, expiresIn}`: the core makes the code (unique among pending ones) and checks the key is a point on P-256 |
 | `GET /api/ingress/pairings/<id>` | → `{state: pending \| approved \| denied \| expired \| consumed, deviceId?, name?}`; reading `approved` consumes it |
 | `GET /api/ingress/devices/<id>` | → `{id, publicKey}`, 401 `device_unknown` when not linked |
 | `GET /api/ingress/me`, `/fleet`, `/review`; `POST /api/ingress/review` | as the device routes |

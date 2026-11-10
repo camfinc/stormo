@@ -160,6 +160,9 @@ func tryCapability(inst *instance.Instance, args []string, o *out.Writer) error 
 	if c.Kind == "http" || c.Placement != "local" {
 		return fmt.Errorf("%s runs elsewhere (%s): try runs local containers and services", c.Name, c.Kind)
 	}
+	if c.Ingress {
+		return fmt.Errorf("%s is a way in for linked devices, not a worker that takes jobs: the core keeps it running (docs/devices.md)", c.Name)
+	}
 	input := json.RawMessage("{}")
 	rest := args[1:]
 	if len(rest) > 0 && (strings.HasPrefix(rest[0], "{") || strings.HasPrefix(rest[0], "@")) {
