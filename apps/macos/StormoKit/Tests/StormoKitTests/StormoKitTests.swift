@@ -69,6 +69,7 @@ func fakeStormo(_ s: Scratch, _ path: String, version: String, api: Int = 1) thr
     @Test func gateway() throws {
         let g = try JSONDecoder().decode(GatewayStatus.self, from: fixture("api_gateway"))
         #expect(g.login == "missing" && g.models?.first?.id == "gpt-6-luna" && g.models?.first?.contextLength == 272000)
+        #expect(g.termsUrl == ChatGPTPlanTerms.terms.absoluteString && g.docsUrl == ChatGPTPlanTerms.docs.absoluteString)
     }
 }
 

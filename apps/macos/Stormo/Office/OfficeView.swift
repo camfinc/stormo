@@ -272,6 +272,7 @@ struct CorePanel: View {
                         LabeledContent("Plan limit") { Text("until \(until, format: .dateTime.hour().minute())").foregroundStyle(.red) }
                     }
                     if let url = g.manageUsageUrl.flatMap(URL.init(string:)), g.login == "ok" { Link("Manage usage", destination: url) }
+                    Link("Sign in with ChatGPT terms", destination: g.termsUrl.flatMap(URL.init(string:)) ?? ChatGPTPlanTerms.terms)
                 } header: {
                     Label("Swarm core", systemImage: "server.rack")
                 }

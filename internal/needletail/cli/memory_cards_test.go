@@ -21,7 +21,7 @@ func TestMemoryApprovalCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.AddAs(memory.Audience{}, "chat", memory.TargetMemory, "Simon prefers Spanish."); err != nil {
+	if _, err := mem.AddAs(memory.Audience{}, "chat", memory.TargetMemory, "Ada prefers Spanish."); err != nil {
 		t.Fatal(err)
 	}
 	rt := &runtime{sched: sched.New(sched.Options{Home: h})}
@@ -46,8 +46,8 @@ func TestMemoryApprovalCards(t *testing.T) {
 	if !strings.Contains(p, "-The CRM export runs on Fridays.") || !strings.Contains(p, "+The CRM export runs on Mondays.") || bind["record_revision"] != rev {
 		t.Errorf("an update card: %q %v", p, bind)
 	}
-	_, p, bind = describe("memory", map[string]any{"action": "replace", "target": "memory", "old_text": "Spanish", "content": "Simon prefers English."})
-	if !strings.Contains(p, "-Simon prefers Spanish.") || !strings.Contains(p, "+Simon prefers English.") || bind["memory_entry"] != "Simon prefers Spanish." {
+	_, p, bind = describe("memory", map[string]any{"action": "replace", "target": "memory", "old_text": "Spanish", "content": "Ada prefers English."})
+	if !strings.Contains(p, "-Ada prefers Spanish.") || !strings.Contains(p, "+Ada prefers English.") || bind["memory_entry"] != "Ada prefers Spanish." {
 		t.Errorf("a hot memory change: %q %v", p, bind)
 	}
 }

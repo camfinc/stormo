@@ -245,11 +245,23 @@ public struct AgentUsage: Codable, Sendable, Equatable {
     public var lastStatus: Int?
 }
 
+/// Sign in with ChatGPT's notice and the OpenAI pages it points to. The core serves the same pages as
+/// `termsUrl` / `docsUrl`; these stand in when no core answers. The engine does not judge whether a
+/// use complies with OpenAI's terms: it shows them before a sign-in.
+public enum ChatGPTPlanTerms {
+    public static let notice = "Using a ChatGPT plan through Sign in with ChatGPT is governed by OpenAI's terms and documentation. Making sure your use complies is your responsibility: read them before you sign in."
+    public static let terms = URL(string: "https://openai.com/policies/sign-in-with-chatgpt-terms/")!
+    public static let docs = URL(string: "https://developers.openai.com/siwc/token-sharing-open-source")!
+}
+
 /// The gateway as `/api/fleet` carries it (no account).
 public struct GatewaySummary: Codable, Sendable, Equatable {
     public var login: String
     public var planLimitedUntil: String?
     public var manageUsageUrl: String?
+    /// OpenAI's Sign in with ChatGPT terms and plan-usage docs (absent from an older core).
+    public var termsUrl: String?
+    public var docsUrl: String?
     public var inflight: Int
     public var queued: Int
     public var concurrency: Int
@@ -308,6 +320,9 @@ public struct GatewayStatus: Codable, Sendable, Equatable {
     /// Every ChatGPT connection the core serves (absent from an older core).
     public var connections: [GatewayConnection]?
     public var manageUsageUrl: String?
+    /// OpenAI's Sign in with ChatGPT terms and plan-usage docs (absent from an older core).
+    public var termsUrl: String?
+    public var docsUrl: String?
     public var planLimitedUntil: String?
     public var inflight: Int
     public var queued: Int

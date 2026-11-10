@@ -268,6 +268,8 @@ type gatewayView struct {
 	Login            llm.LoginState            `json:"login"`
 	PlanLimitedUntil *string                   `json:"planLimitedUntil"`
 	ManageUsageURL   string                    `json:"manageUsageUrl"`
+	TermsURL         string                    `json:"termsUrl"`
+	DocsURL          string                    `json:"docsUrl"`
 	Inflight         int                       `json:"inflight"`
 	Queued           int                       `json:"queued"`
 	Concurrency      int                       `json:"concurrency"`
@@ -596,7 +598,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 				fs = fleet.Snapshot()
 			}
 			view := fleetView{PolledAt: fs.PolledAt, Units: fs.Units, Agents: []fleetAgentView{}, Now: time.Now().UnixMilli(), Robot: office.Robot(),
-				Gateway: gatewayView{s.Login, s.PlanLimitedUntil, s.ManageUsageURL, s.Inflight, s.Queued, s.Concurrency, s.Usage, s.Active}}
+				Gateway: gatewayView{s.Login, s.PlanLimitedUntil, s.ManageUsageURL, s.TermsURL, s.DocsURL, s.Inflight, s.Queued, s.Concurrency, s.Usage, s.Active}}
 			counts, _ := bus.Counts()
 			locks := workdir.LockCounts()
 			for _, a := range fs.Agents {

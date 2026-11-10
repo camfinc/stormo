@@ -166,13 +166,14 @@ one gateway per connection and routes each agent's calls by its manifest's `mode
 connection `chatgpt` keeps the original files below; another's tokens live in `auth/<name>/`, and the
 registration (host id and the app's client id) is shared, one app with several accounts signed in:
 **unverified with a second real account** (`ChatGPTPaths` is the one place to give each its own).
-`stormo core login|logout --connection <name>`. Open decision 5 applies to every account.
+`stormo core login|logout --connection <name>`. The sign-in notice (below) applies to every account.
 
-Core holds the one ChatGPT sign-in and serves model calls to every local agent. The sign-in is
-OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage (developers.openai.com/siwc), OpenAI's
-program for open-source, locally hosted apps; whether an instance's use qualifies is its owner's
-decision (open decision 5). Its refresh tokens rotate, so exactly
-one process holds and refreshes them: core.
+Core holds the one ChatGPT sign-in and serves model calls to the agents on it (`model.local`).
+The sign-in is OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage
+(developers.openai.com/siwc/token-sharing-open-source). The engine does not judge whether a use
+complies with OpenAI's terms: every sign-in first shows a notice pointing to OpenAI's terms and
+documentation (below), and checking them is the operator's responsibility. Its refresh tokens
+rotate, so exactly one process holds and refreshes them: core.
 
 - Agent side (unchanged contract): `POST /v1/chat/completions` (streaming and not), `GET /v1/models`,
   `GET /health`, each agent with its own `SWARM_CORE_KEY`.
@@ -196,14 +197,37 @@ one process holds and refreshes them: core.
   (a core translation bug). Not signed in or refresh rejected → **401**; upstream failure → **502**;
   timeouts → **504**; fleet queue full → **503**. A failure after output has started can only be a
   stream error event.
-- Sign-in: `stormo core login` on the owner's Mac ("Continue with ChatGPT"): browser loopback on
+- Sign-in: `stormo core login` on the machine the core runs on ("Continue with ChatGPT"): browser loopback on
   `127.0.0.1:1455/auth/callback` (`SWARM_CORE_LOGIN_PORT`; an OS-assigned port when busy) with PKCE,
   state and nonce. First sign-in registers with `client_id=dynamic_agent_client`,
   `agent_name_hint=<instance name>` and a stable `ext_agent_host_id` (`urn:uuid:…`); the issued
   `oaiapp_…` client id is saved before the code exchange, and later sign-ins reuse it. The ID token
   is verified against OpenAI's JWKS (signature, issuer, audience, nonce, subject). Tokens and the
-  registration live in `.swarm/core/auth/` (0600, gitignored): local and under the owner's control,
-  as the program's terms require. `stormo core logout` drops the tokens and keeps the registration.
+  registration live in `.swarm/core/auth/` (0600, gitignored) on that machine, held by the core
+  alone: nothing copies them to a secret store, a container or another agent. `stormo core logout`
+  drops the tokens and keeps the registration.
+- Notice (built): before the sign-in page, `core login` prints `llm.PlanNotice` and links OpenAI's
+  Sign in with ChatGPT terms and plan-usage documentation (`llm.SIWC.TermsURL`, `DocsURL`; `step`
+  events with `--json`). `/api/gateway` and `/api/fleet`'s gateway carry them as `termsUrl` and
+  `docsUrl`. The app shows the notice beside Sign In, in the sign-in sheet and when a ChatGPT
+  connection is added; the app's office and the web UI link the terms beside Manage usage. The
+  engine does not decide whether a use complies.
+- A core on another machine (a home server, a VPS) signs in there, with the browser on yours. The
+  callback is a loopback address on the machine running `core login`, so forward the same port to it
+  and print the page instead of opening a browser:
+
+  ```
+  ssh -L 1455:127.0.0.1:1455 user@host                     # keep this session open
+  SWARM_CORE_LOGIN_PORT=1455 stormo core login --no-open   # in it, on the host
+  ```
+
+  Open the printed page locally; the callback reaches the host through the forward and the tokens
+  never leave it. A port busy on either side: choose one free on both, for both commands. OpenAI
+  documents the forward for loopback sign-ins on headless machines (developers.openai.com/codex/auth,
+  "Forward the localhost callback over SSH") and self-hosted hosts in
+  developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms. Moving an existing sign-in
+  between machines (that page's copy procedure) is not built: the copy would carry the first
+  machine's host id, which OpenAI wants distinct per host.
 - Refresh: only the server refreshes (`grant_type=refresh_token`, `client_id`, `resource`), one at a
   time under a lock shared with `stormo core login`; the rotated token is written atomically before
   use, the file is re-read under the lock, and a refreshed ID token must be the same account.
@@ -213,8 +237,9 @@ one process holds and refreshes them: core.
 - Never logged: tokens, prompt or completion bodies. Logged: agent, model, status, duration, tokens.
 - Fleet limits: one plan (and its weekly per-app cap, set by the owner in ChatGPT) is shared by every
   agent: concurrency cap stormo.yaml `core.llm_concurrency` (default 3; the env `SWARM_CORE_LLM_CONCURRENCY` overrides it) and per-agent usage counters.
-- Scope: **local only.** A paid or remotely hosted app needs OpenAI's interest form; agents on AWS
-  keep their own API keys and never call this. Agents keep OpenRouter as `fallback_providers[0]`.
+- Where: wherever the core runs, for the agents on it; they keep OpenRouter as
+  `fallback_providers[0]`. An ECS build has no route to a core's gateway (ARCHITECTURE.md, Local
+  subscription model): agents on ECS use their API connections.
 
 ## 2. Registry and monitoring
 
@@ -698,13 +723,13 @@ which another session owns right now:
    may trigger them on its own or only suggest.
 4. **Alert channel**: a `#swarm-ops` Slack channel through the core agent's app vs. a plain webhook
    from the service (works before the core agent exists).
-5. **ChatGPT plan usage: eligibility and allocation.** The program is documented for open-source,
-   locally hosted apps. Each instance's owner reads the Sign in with ChatGPT terms
-   (openai.com/policies/sign-in-with-chatgpt-terms) and decides whether their use qualifies before
-   the first `stormo core login`. It is still a better footing than the Codex-CLI login it replaced (own
-   OAuth client, public API, tokens local). If it goes ahead: every local agent shares one plan and
-   its weekly per-app cap, so decide which agents go through core first and which go straight to
-   OpenRouter.
+5. **ChatGPT plan usage: compliance and allocation.** Whether a use complies with OpenAI's Sign in
+   with ChatGPT terms and documentation is each operator's to check before the first
+   `stormo core login`; the engine shows the notice and links (§1) and does not decide. It is a better
+   footing than the Codex-CLI login it replaced (own OAuth client, public API, tokens held by the
+   core). Each instance still decides allocation: every agent on the gateway shares one plan and its
+   weekly per-app cap, so choose which agents go through the core and which go straight to an API
+   connection.
 6. **Retention** for activity previews (7 days) and messages (90 days after a thread's last
    message), as built; change `RetainActivity` / `RetainMessages` if the owner decides otherwise.
 

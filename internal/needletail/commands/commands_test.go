@@ -18,11 +18,11 @@ func TestSlackNames(t *testing.T) {
 			t.Errorf("%s: %q, want %q", k, names[k], v)
 		}
 	}
-	names, err = SlackNames("mateo-", map[string]string{Help: "/mateo"})
+	names, err = SlackNames("atlas-", map[string]string{Help: "/atlas"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names[Status] != "mateo-status" || names[New] != "mateo-new" || names[Help] != "mateo" {
+	if names[Status] != "atlas-status" || names[New] != "atlas-new" || names[Help] != "atlas" {
 		t.Fatalf("prefixed: %v", names)
 	}
 	for _, bad := range []struct {

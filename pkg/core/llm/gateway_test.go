@@ -910,3 +910,15 @@ func TestReadsExistingConnectionFile(t *testing.T) {
 		t.Fatalf("account %+v", acc)
 	}
 }
+
+// The engine does not judge compliance with OpenAI's terms; every status points to them.
+func TestStatusLinksTheTerms(t *testing.T) {
+	e := setup(t, newFake(t), nil, true, nil)
+	s := e.gw.Status()
+	if s.TermsURL != llm.SIWC.TermsURL || s.DocsURL != llm.SIWC.DocsURL || !strings.HasPrefix(s.TermsURL, "https://openai.com/") || !strings.HasPrefix(s.DocsURL, "https://developers.openai.com/") {
+		t.Errorf("terms %q, docs %q", s.TermsURL, s.DocsURL)
+	}
+	if !strings.Contains(llm.PlanNotice, "your responsibility") {
+		t.Errorf("notice %q", llm.PlanNotice)
+	}
+}

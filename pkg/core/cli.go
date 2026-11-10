@@ -638,6 +638,9 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 			port = n
 		}
 		paths := ChatGPTPaths(inst.Root, name)
+		o.Line(llm.PlanNotice)
+		o.Line("  Terms: " + llm.SIWC.TermsURL)
+		o.Line("  Documentation: " + llm.SIWC.DocsURL)
 		var open func(string) error // nil: llm opens the default browser
 		if opts.NoOpen || o.JSON {
 			open = func(u string) error {

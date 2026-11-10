@@ -34,6 +34,7 @@ struct ChatGPTSection: View {
             if let failure {
                 Text(failure).foregroundStyle(.red).textSelection(.enabled)
             }
+            PlanTermsNotice(gateway: model.fleet.fleet?.gateway)
             HStack {
                 if signedIn {
                     Button("Sign Out…") { confirmSignOut = true }
@@ -108,8 +109,9 @@ struct ChatGPTSignInSheet: View {
                     ProgressView().controlSize(.small)
                     Text(url == nil ? "Starting the sign-in…" : "Continue in your browser. This window closes itself when you are done.")
                 }
-                Text("The sign-in stays on this Mac: the core keeps the tokens in the instance's .swarm/core/auth. Whether your use qualifies for the ChatGPT plan is your call under OpenAI's Sign in with ChatGPT terms.")
+                Text("The core keeps the tokens on the machine it runs on, in the instance's .swarm/core/auth.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                PlanTermsNotice(gateway: model.fleet.fleet?.gateway)
             }
             HStack {
                 if let url, result == nil, failure == nil {
@@ -159,5 +161,23 @@ struct ChatGPTSignInSheet: View {
                 if !Task.isCancelled { failure = error.localizedDescription }
             }
         }
+    }
+}
+
+/// OpenAI's terms and documentation, linked before every sign-in: the engine does not judge whether
+/// a use complies (ChatGPTPlanTerms). The links come from the core when it serves them.
+struct PlanTermsNotice: View {
+    var gateway: GatewaySummary?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ChatGPTPlanTerms.notice)
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 14) {
+                Link("Sign in with ChatGPT terms", destination: gateway?.termsUrl.flatMap(URL.init(string:)) ?? ChatGPTPlanTerms.terms)
+                Link("Plan usage documentation", destination: gateway?.docsUrl.flatMap(URL.init(string:)) ?? ChatGPTPlanTerms.docs)
+            }
+        }
+        .font(.callout)
     }
 }
