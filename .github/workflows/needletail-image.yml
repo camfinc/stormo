@@ -1,0 +1,40 @@
+# Every commit on main gets its needletail image, so an agent can pin it before a release:
+#   ghcr.io/<owner>/needletail:dev-<sha7> for linux/amd64 and linux/arm64, built with
+#   VERSION=0.1.0-dev.<sha7> (the runtime's own version, as docs/instances.md builds it locally).
+# Run it by hand (Actions › needletail image › Run workflow) for an older commit, e.g. the one an
+# instance already pins. A release's image (:<tag>) comes from release.yml.
+name: needletail image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build (default the selected branch)
+        required: false
+
+permissions:
+  contents: read
+  packages: write # push the image
+
+concurrency:
+  group: needletail-image-${{ inputs.ref || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: needletail image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="$(echo "ghcr.io/$GITHUB_REPOSITORY_OWNER/needletail" | tr '[:upper:]' '[:lower:]')"
+          SHA="$(git rev-parse --short=7 HEAD)"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          IMAGE="$IMAGE" scripts/needletail-image.sh "dev-$SHA" "0.1.0-dev.$SHA"

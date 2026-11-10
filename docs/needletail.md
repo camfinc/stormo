@@ -83,7 +83,12 @@ The runtime lives under `internal/` so no other module can import it. The adapte
 - The final stage is `alpine:3.22` pinned by digest, with `bash`, `python3`, `git`, `curl`, `jq` and `ca-certificates` (Alpine's packages, unpinned within the pinned base: `apk add --no-cache`). Existing skill scripts are bash and python, and call HTTP APIs with curl and read JSON with jq, so the `terminal` tool needs them; they run like every other command, jailed and as the exec user (§7). Nothing else: no compiler, no package manager cache, no setuid or setgid file (§7; checked in `needletail:dev-4770a03`, built with curl and jq: `find / -xdev -perm -4000 -o -perm -2000` prints nothing).
 - No `USER`: the container starts as root and the runtime splits itself (§7): it lays the home out, then runs as 10000:10000 (`shared.PosixUID`, `wire.RuntimeUID`) keeping only `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL`, and starts what the agent executes as 10001:10000 (`wire.ExecUID`). `AGENT_HOME=/opt/data` (made and owned by 10000 in the image), a `HEALTHCHECK` running `needletail healthcheck` (an HTTP GET; it never boots a runtime).
 - `ENTRYPOINT ["/usr/local/bin/needletail"]`, `CMD ["serve"]`. The bench runs `<image> needletail oneshot …` (`BenchArgv`), so the binary drops a first argument equal to its own name.
-- Built locally as `needletail:<tag>`; where it is published is open (§11). `Image()` builds `<repo>:<image_tag or v+version>` and returns an error for an empty tag or `latest`.
+- **Local name.** The image runs as `needletail:<tag>`. `Image()` builds `<repo>:<image_tag or v+version>` and returns an error for an empty tag or `latest`.
+- **Published images.** It is published publicly at `ghcr.io/camfinc/needletail` for linux/amd64 and linux/arm64 (§11 question 3: GHCR):
+  - release.yml pushes `:<tag>` for each release;
+  - needletail-image.yml pushes `:dev-<sha7>` for every commit on main;
+  - both use `scripts/needletail-image.sh`.
+- **Pulling.** The engine implements `engine.PublishedImage`. When `needletail:<tag>` is missing, a local `stormo start` pulls the published image and tags it with the local name. A local build stays first.
 
 ## 3. Engine contract
 
@@ -922,7 +927,9 @@ A `pkg/engines` test checks that `needletail` resolves for both `Get` and `Runti
 **Open questions**
 1. **Default Luau grants.** Is `core:msg_*` on by default acceptable, or should every core cap be explicit?
 2. **First cutover agent:** the test agent or a named low-risk production agent?
-3. **Image registry:** ghcr or ECR?
+3. **Image registry:** decided: GHCR, public (§1, Image).
+   - Still open for ECS: a task definition names `Image()`, the local `needletail:<tag>`, which Fargate cannot pull.
+   - Pointing the task definition at the published name is the next step there.
 4. **Handler actions** (M6b): `route` built 2026-10-28 (§5.5: needs a `route:` grant; an unverified message's route waits for the owner's approval). (`before_send` fails closed for every kind: decided.)
 5. **Archived records in the ledger**: should they ever be reviewable (a third kind the dream reads from RECORDS.md and never seeds)? Today: no; the ledger sees the hot files only.
 6. **Recall's default**: on for user turns and off for scheduled runs, as built; keep it?

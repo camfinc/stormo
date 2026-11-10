@@ -577,9 +577,11 @@ func (s *Scheduler) retargetAllowed(p *pendingDelivery, t Target) bool {
 }
 
 // syncAlertLater brings the home notice in line after a change made by a tool call (a discard):
-// in the background, never holding the tool.
+// in the background, never holding the tool. It counts as running work, so Shutdown waits for it.
 func (s *Scheduler) syncAlertLater() {
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		if !s.deliverySendMu.TryLock() {
 			return // a delivery under way syncs it when it ends
 		}

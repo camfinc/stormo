@@ -2,6 +2,10 @@
 #   - stormo_<tag>_<os>_<arch>.tar.gz for linux and darwin, amd64 and arm64, plus SHA256SUMS;
 #   - ghcr.io/<owner>/stormo-sidecar:<tag> for linux/amd64 and linux/arm64, the image a released
 #     binary pulls on `stormo start` (its version is the tag).
+#   - ghcr.io/<owner>/needletail:<tag> for linux/amd64 and linux/arm64, the engine image an agent
+#     pinned to that version runs (`engine: {kind: needletail, version: <tag without v>}`), pulled
+#     by `stormo start` when it is not here. Main's commits get :dev-<sha7> (needletail-image.yml).
+#   Both packages are public (set once in each package's settings), so hosts pull them without a login.
 #   - Stormo-<tag>.dmg, the macOS app, signed and notarized (job macos).
 #
 #   git tag v0.1.0 && git push origin v0.1.0
@@ -13,7 +17,7 @@ on:
 
 permissions:
   contents: write # create the release
-  packages: write # push the sidecar image
+  packages: write # push the sidecar and needletail images
 
 concurrency:
   group: release-${{ github.ref }}
@@ -55,16 +59,26 @@ jobs:
             --label org.opencontainers.image.version="$VERSION" \
             -t "$IMAGE:$VERSION" .
 
+      - name: needletail image
+        # Logged in to ghcr.io by the step above. VERSION is the runtime's: the tag without its v.
+        run: |
+          IMAGE="$(echo "ghcr.io/$GITHUB_REPOSITORY_OWNER/needletail" | tr '[:upper:]' '[:lower:]')" \
+            scripts/needletail-image.sh "$VERSION" "${VERSION#v}"
+
       - name: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          NEEDLETAIL="$(echo "ghcr.io/$GITHUB_REPOSITORY_OWNER/needletail" | tr '[:upper:]' '[:lower:]')"
           cat > notes.md <<NOTES
           Install: download the archive for your platform, check it against \`SHA256SUMS\`, and put
           \`stormo\` on your PATH (\`stormo version\` prints \`$VERSION\`).
 
           Sidecar image: \`$IMAGE:$VERSION\` (linux/amd64, linux/arm64), pulled by \`stormo start\`.
+
+          Needletail image: \`$NEEDLETAIL:$VERSION\` (linux/amd64, linux/arm64): pin it with
+          \`engine: {kind: needletail, version: ${VERSION#v}}\`; \`stormo start\` pulls it when missing.
           NOTES
           prerelease=""
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac

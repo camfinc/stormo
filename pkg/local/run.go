@@ -151,6 +151,9 @@ func Up(inst *instance.Instance, id string, o UpOptions) (int, []manifest.Off, e
 	if err != nil {
 		return 0, nil, err
 	}
+	if err := EnsureEngineImage(eng, r.Agent, o.Log); err != nil {
+		return 0, nil, err
+	}
 	port, err := Port(root, id)
 	if err != nil {
 		return 0, nil, err

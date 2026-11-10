@@ -39,4 +39,9 @@ func TestImagePinned(t *testing.T) {
 	if err := engine.CheckVersion(n, a); err != nil || n.Image(a) != Repository+":v0.1.1" {
 		t.Errorf("pinned tag: %v, %s", err, n.Image(a))
 	}
+	// Published under the same tag: a local start pulls it from there when it is missing.
+	var e engine.Engine = n
+	if p, ok := e.(engine.PublishedImage); !ok || p.PublishedImage(a) != "ghcr.io/camfinc/needletail:v0.1.1" {
+		t.Errorf("published image: %v", ok)
+	}
 }

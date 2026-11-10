@@ -190,11 +190,21 @@ instance: inside a sidecar it is the agent's engine home.
     instance made from the example template starts on it, and `stormo new agent` borrows the
     instance's most common engine, version and tag. Its settings are
     `engine/needletail/config.yaml` (timezone, Luau grants, Slack listening; the example's atlas
-    shows each). No image is published yet: the example pins `version: 0.1.0-dev.2084e89`,
-    `image_tag: dev-2084e89`, a local build of the runtime at that commit, made from a checkout of
-    the engine before the first `stormo start`:
-    `docker buildx build -f deploy/needletail/Dockerfile --build-arg VERSION=0.1.0-dev.2084e89 -t needletail:dev-2084e89 --load .`
-    (a later commit's build, tagged `dev-<sha>`, with the agents' tags moved to it, works the same).
+    shows each).
+    - **Published images.** The image is public at `ghcr.io/camfinc/needletail` for linux/amd64 and
+      linux/arm64. Each release is published as `:<tag>` (pin it with `version: 0.5.2`), and every
+      commit on main as `:dev-<sha7>` (pin it with `version: 0.1.0-dev.<sha7>`,
+      `image_tag: dev-<sha7>`).
+    - **What `stormo start` does with it.** It runs the image as `needletail:<tag>`. When that is
+      not on the machine, it pulls the published one and tags it with that name, so no checkout
+      and no build is needed.
+    - **The example's pin.** The example pins `version: 0.1.0-dev.2084e89`,
+      `image_tag: dev-2084e89`, a commit from before main's images were published. Either move its
+      agents to a published tag, or build that one from a checkout of the engine, which is still
+      how to run an unpublished commit:
+      `docker buildx build -f deploy/needletail/Dockerfile --build-arg VERSION=0.1.0-dev.2084e89 -t needletail:dev-2084e89 --load .`
+      A later commit's build, tagged `dev-<sha>` with the agents' tags moved to it, works the same.
+      A local build always wins over the published image.
   - **Hermes** (`engine.kind: hermes`): the image `nousresearch/hermes-agent`, pinned by
     `image_tag` (for example `version: 0.21.5`, `image_tag: v2026.9.24`); its settings are
     `engine/hermes/config.yaml`. Choose it for what needletail does not run yet: pairing, spoken (voice)
@@ -252,8 +262,8 @@ stormo new instance ~/acme --name "Acme Swarm"           # stormo.yaml, the grou
 stormo new instance ~/demo --name "Demo" --template example   # the Acme example under the new name
 ```
 
-The example's agents run needletail: build its image first (see "Engines" above), or switch an
-agent to Hermes before starting it.
+The example's agents run needletail. Pin them to a published image or build theirs first (see
+"Engines" above), or switch an agent to Hermes before starting it.
 
 The macOS app does the same from File › New Instance…, in `~/Library/Application Support/Stormo/Instances/`
 by default. By hand, from a checkout of the engine:

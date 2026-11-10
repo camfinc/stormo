@@ -19,9 +19,12 @@ import (
 const (
 	home = "/opt/data"
 	port = 8642
-	// Repository is the image's name. Where it is published (a registry prefix) is an open
-	// question for the owner (docs/needletail.md §11); until then it is the locally built name.
+	// Repository is the image's local name: what a local build is tagged and what agents run.
 	Repository = "needletail"
+	// Published is where CI pushes the image (public, linux/amd64 and linux/arm64): a release's
+	// tag (v0.5.2) and every main commit's dev-<sha7>. A local start pulls a missing image from
+	// here and tags it as Repository (engine.PublishedImage).
+	Published = "ghcr.io/camfinc/needletail"
 	// ConfigFile is the agent's needletail-only settings (Luau grants), read only by the adapter.
 	ConfigFile = "engine/needletail/config.yaml"
 )
@@ -141,7 +144,12 @@ func (n *Needletail) Reasoning() []string {
 // Image is the pinned image: image_tag, else the version as the tag, with a "v" added only to a
 // semver written without one (0.1.0 and v0.1.0 are both :v0.1.0; a tag such as stable stays as
 // it is). ValidVersion refuses empty and latest, and build checks it before anything uses the image.
-func (n *Needletail) Image(a *manifest.Agent) string {
+func (n *Needletail) Image(a *manifest.Agent) string { return Repository + ":" + imageTag(a) }
+
+// PublishedImage is the same tag in the published repository (engine.PublishedImage).
+func (n *Needletail) PublishedImage(a *manifest.Agent) string { return Published + ":" + imageTag(a) }
+
+func imageTag(a *manifest.Agent) string {
 	tag := a.Engine.ImageTag
 	if tag == "" {
 		tag = a.Engine.Version
@@ -149,7 +157,7 @@ func (n *Needletail) Image(a *manifest.Agent) string {
 			tag = "v" + tag
 		}
 	}
-	return Repository + ":" + tag
+	return tag
 }
 
 var (
