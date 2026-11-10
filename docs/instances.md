@@ -93,7 +93,7 @@ capabilities:                     # heavy or shared calls the core runs for agen
   # audio.warm: {template: transcribe, always_on: true}   # any service: booted with the core, kept up, never asleep for idling (read_only: true for a read-only root)
   # devices.gateway:              # linked devices sign in here (docs/devices.md): an ingress capability, never granted to agents
   #   template: device-gateway
-  #   publish: "127.0.0.1:18650"  # the fixed loopback address your tunnel or proxy points at; needs core.loopback_trust: false
+  #   publish: "127.0.0.1:18630"  # the fixed loopback address your tunnel or proxy points at (below the agents' ports, 18642 up); needs core.loopback_trust: false
   #   env: {CLIENT_IP_HEADER: Cf-Connecting-Ip, CLIENT_COUNTRY_HEADER: Cf-Ipcountry}   # the headers your edge sets
 placements:                       # where agents run besides local (compose here) and remote (ECS): docs/remote-core.md §6a
   # vps: {kind: runner}           # a host running `stormo runner vps`; its agents reach the core at core.urls.vps

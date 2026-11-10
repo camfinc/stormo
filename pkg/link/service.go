@@ -49,7 +49,7 @@ type ServiceSpec struct {
 	Cache string
 	Idle  time.Duration
 	Boot  time.Duration
-	// Publish is a fixed host address for its port ("127.0.0.1:18650"; "": a free loopback port).
+	// Publish is a fixed host address for its port ("127.0.0.1:18630"; "": a free loopback port).
 	Publish string
 	// ReadOnly: a read-only root filesystem with a small tmpfs /tmp. NoCache: no /cache volume.
 	ReadOnly bool

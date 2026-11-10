@@ -51,7 +51,7 @@ type Capability struct {
 	// granted it, the broker queues no job for it, and each boot gets a fresh key of its own to the
 	// core (docs/devices.md). Always on, read-only, on this host, published at Publish.
 	Ingress bool `json:"ingress,omitempty"`
-	// Publish (ingress): the fixed loopback address its port is published on ("127.0.0.1:18650"),
+	// Publish (ingress): the fixed loopback address its port is published on ("127.0.0.1:18630"),
 	// for the tunnel or proxy in front of it.
 	Publish string `json:"publish,omitempty"`
 	// ReadOnly (service): a read-only root filesystem with a small tmpfs /tmp.
@@ -307,7 +307,7 @@ func checkPublish(addr string) error {
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("publish %q is host:port (\"127.0.0.1:18650\")", addr)
+		return fmt.Errorf("publish %q is host:port (\"127.0.0.1:18630\")", addr)
 	}
 	p, err := strconv.Atoi(port)
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() || err != nil || p < 1024 || p > 65535 {

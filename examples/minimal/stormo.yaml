@@ -43,7 +43,7 @@ deploy:
 # capabilities:                   # heavy calls the core runs for agents (docs/capabilities.md), granted in agent.yaml capabilities:
 #   audio.transcribe: {template: transcribe}   # bundled templates: transcribe, browser, video (services, asleep when idle)
 #   web.browse: {template: browser}
-#   devices.gateway: {template: device-gateway, publish: "127.0.0.1:18650"}   # linked devices sign in here (docs/devices.md); needs core.loopback_trust: false
+#   devices.gateway: {template: device-gateway, publish: "127.0.0.1:18630"}   # linked devices sign in here (docs/devices.md); needs core.loopback_trust: false
 
 core:
   web_ui: false                   # the office and review pages in a browser; the macOS app needs none of it

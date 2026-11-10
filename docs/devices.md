@@ -27,7 +27,7 @@ core:
 capabilities:
   devices.gateway:
     template: device-gateway
-    publish: "127.0.0.1:18650"   # the stable address your tunnel or proxy points at (loopback only)
+    publish: "127.0.0.1:18630"   # the stable address your tunnel or proxy points at: loopback only, clear of the cores' ports (18600 up) and the agents' (18642 up)
     env:
       CLIENT_IP_HEADER: Cf-Connecting-Ip      # the header your edge puts the client's IP in ("" : the peer)
       CLIENT_COUNTRY_HEADER: Cf-Ipcountry     # optional
@@ -37,7 +37,7 @@ capabilities:
   devices.gateway` takes every device offline until `stormo capability wake devices.gateway`; a wake
   mints a new ingress key, so a stolen one is dead.
 - Point a tunnel or reverse proxy at the `publish` address: Cloudflare Tunnel (`cloudflared tunnel
-  --url http://127.0.0.1:18650`, or a named tunnel), Tailscale Funnel (`tailscale funnel 18650`), Caddy.
+  --url http://127.0.0.1:18630`, or a named tunnel), Tailscale Funnel (`tailscale funnel 18630`), Caddy.
   Serve nothing else on that hostname, allow only `/device/v1/`, rate-limit `/device/v1/pair*`, and
   cache nothing. Never point a tunnel at the core's own port.
 - A Cloudflare or other edge that terminates TLS sees the traffic in clear, chats included. Tailscale
