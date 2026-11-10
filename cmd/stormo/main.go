@@ -190,6 +190,8 @@ var (
 	fBaseURL     = fs.String("base-url", "", "")
 	fKey         = fs.String("key", "", "")
 	fOptions     = fs.Bool("options", false, "")
+	fGrant       = fs.String("grant", "", "")
+	fAgents      = fs.String("agents", "", "")
 	errUsage     = errors.New("usage")
 )
 
@@ -692,6 +694,9 @@ func run(args []string) error {
 
 	case "capability", "capabilities":
 		return capabilityCmd(inst, sub, rest)
+
+	case "device", "devices":
+		return deviceCmd(inst, sub, rest)
 
 	case "runner":
 		if sub == "" {

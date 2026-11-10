@@ -518,3 +518,28 @@ func TestProxiedRequestsLoseLoopbackTrust(t *testing.T) {
 		}
 	}
 }
+
+func TestGrantFlags(t *testing.T) {
+	cur := DeviceGrants{Status: true, Review: true, Chat: []string{"atlas"}}
+	for _, c := range []struct {
+		grant, agents string
+		want          string
+		bad           bool
+	}{
+		{"", "", "status review chat:atlas", false},
+		{"status", "", "status", false},
+		{"status,chat", "", "status chat:atlas", false},
+		{"", "*", "status review chat:*", false},
+		{"review", "nova,atlas", "review chat:nova,atlas", false},
+		{"none", "", "none", false},
+		{"admin", "", "", true},
+	} {
+		g, err := parseGrantFlags(c.grant, c.agents, cur)
+		if (err != nil) != c.bad || (!c.bad && grantsText(g) != c.want) {
+			t.Errorf("%q %q: %s %v", c.grant, c.agents, grantsText(g), err)
+		}
+	}
+	if _, err := parseGrantFlags("chat", "", DeviceGrants{}); err == nil {
+		t.Error("chat without agents")
+	}
+}
