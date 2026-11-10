@@ -200,16 +200,16 @@ under `local.agents.<id>`; `secrets push` sends it only for an agent on ECS that
 instance names for it, docs/remote-core.md). A local core is a host process (it drives the local
 compose projects itself), so agent containers reach it at `host.docker.internal:<instance port>`
 (`extra_hosts: host-gateway` covers plain Docker Engine); a core elsewhere is reached at its
-`core.url`, and only a local core serves the ChatGPT gateway. Moving an
+`core.url`. The ChatGPT gateway serves the agents built to use it (local runs) on whichever core
+holds the sign-in; an ECS build never routes to it. Moving an
 agent between local and ECS therefore hands over memory, skills and history and never a
-credential. The sign-in is OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage, OpenAI's
-program for open-source, locally hosted apps (whether an instance's use qualifies is its owner's
-call, see docs/core.md open decision 5): the core registers its own OAuth client
-for this user, workspace and host (it shares nothing with the Codex CLI) and calls the public
-Responses API. Its terms want tokens stored locally and under the user's control, which
-`.swarm/core/auth/` (0600, gitignored) is. A paid or remotely hosted app would need OpenAI's
-interest form, so hosted agents stay on API keys. One plan's limits (including the weekly per-app
-cap the owner sets in ChatGPT) cover every local agent.
+credential. The sign-in is OpenAI's **Sign in with ChatGPT** with ChatGPT plan usage: the core
+registers its own OAuth client for this user, workspace and host (it shares nothing with the Codex
+CLI) and calls the public Responses API. The tokens stay in `.swarm/core/auth/` (0600, gitignored)
+on the machine the core runs on. The engine does not judge whether a use complies with OpenAI's
+terms: every sign-in shows a notice linking OpenAI's terms and documentation (docs/core.md §1), and
+checking them is the operator's responsibility. One plan's limits (including the weekly per-app cap
+the owner sets in ChatGPT) cover every agent on the gateway.
 
 ## Secrets
 
@@ -488,8 +488,8 @@ Planned shape (not built yet):
 (`127.0.0.1:18600`, reached from agent containers as `host.docker.internal:18600`) that monitors
 every agent, shows live status and current work in a web UI, carries agent-to-agent messages,
 tracks attribution and locks in the shared `workdir/`, drives the nap/dream learning cycle and
-checks agents for non-compliance. Locally it is also the single holder of the ChatGPT-subscription
-login and serves model calls to the other agents. A `core` Hermes agent in `units/group` sits on
+checks agents for non-compliance. It is also the single holder of the ChatGPT sign-in and serves
+model calls to the agents on it. A `core` Hermes agent in `units/group` sits on
 top of it later. Plan, phases and open decisions: [docs/core.md](docs/core.md).
 
 ## Open decisions
