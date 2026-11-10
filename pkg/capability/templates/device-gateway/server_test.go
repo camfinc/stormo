@@ -320,10 +320,40 @@ func TestARevokedDeviceLosesItsSessions(t *testing.T) {
 	if st, out := rg.do("GET", "/device/v1/fleet", tok, nil); st != 401 || code(out) != "unauthorized" {
 		t.Errorf("the session is gone: %d %v", st, out)
 	}
-	_, ch := rg.do("POST", "/device/v1/session/challenge", "", map[string]string{"deviceId": "dev_0123456789abcdef"})
-	n := ch["nonce"].(string)
-	if st, out := rg.do("POST", "/device/v1/session", "", map[string]string{"deviceId": "dev_0123456789abcdef", "nonce": n, "signature": sign(t, k, "dev_0123456789abcdef", n)}); st != 401 || code(out) != "device_unknown" {
-		t.Errorf("a revoked device opens no session: %d %v", st, out)
+	if st, out := rg.do("POST", "/device/v1/session/challenge", "", map[string]string{"deviceId": "dev_0123456789abcdef"}); st != 401 || code(out) != "device_unknown" {
+		t.Errorf("a revoked device gets no challenge: %d %v", st, out)
+	}
+	rg.gw.mu.Lock()
+	n := len(rg.gw.nonces)
+	rg.gw.mu.Unlock()
+	if n != 0 {
+		t.Errorf("challenge state kept for a device that is not linked: %d", n)
+	}
+}
+
+func TestBodiesAreOneSmallJSONObject(t *testing.T) {
+	rg := newRig(t)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tok := rg.pairAndSession(k)
+	for _, body := range []string{
+		`{"message":"hi"} {"message":"again"}`,
+		`{"message":"hi"}]`,
+		`{"message":"hi"}` + strings.Repeat(" ", maxBody),
+		`[{"message":"hi"}]`,
+	} {
+		if st, out := rg.do("POST", "/device/v1/agents/support/chat", tok, body); st != 400 || code(out) != "bad_request" {
+			t.Errorf("%.40q: %d %v", body, st, out)
+		}
+	}
+	if st, _ := rg.do("POST", "/device/v1/agents/support/chat", tok, `{"message":"hi"}`+"\n"); st != 200 {
+		t.Errorf("a trailing newline is fine: %d", st)
+	}
+	// A review decision names the version it was shown.
+	if st, _ := rg.do("POST", "/device/v1/review", tok, map[string]string{"agent": "support", "kind": "lesson", "id": "L-1", "decision": "accept"}); st != 400 {
+		t.Errorf("no version: %d", st)
+	}
+	if st, _ := rg.do("POST", "/device/v1/review", tok, map[string]string{"agent": "support", "kind": "lesson", "id": "L-1", "version": "0123456789abcdef", "decision": "accept"}); st != 200 {
+		t.Errorf("with version: %d", st)
 	}
 }
 

@@ -514,8 +514,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
+		minute := time.NewTicker(time.Minute)
 		defer office.Stop()
 		defer prune.Stop()
+		defer minute.Stop()
 		_ = monitor.Prune()
 		for {
 			select {
@@ -526,6 +528,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return
 			case <-office.C:
 				officeTick()
+			case <-minute.C:
+				c.PruneDeviceTurns() // finished replies leave memory on time, traffic or not
 			case <-prune.C:
 				if err := monitor.Prune(); err != nil {
 					log.Printf("core.db prune: %v", err)

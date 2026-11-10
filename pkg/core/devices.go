@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -25,6 +26,7 @@ import (
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/local"
+	"github.com/camfinc/stormo/pkg/loop"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
 
@@ -481,7 +483,23 @@ func (d *DB) ExpireIdleDevices(idle time.Duration, now time.Time) ([]string, err
 
 func (d *DB) touchDevice(id, ip, country string, now time.Time) {
 	_, _ = d.Exec(`UPDATE devices SET last_seen = ?, last_ip = CASE WHEN ? = '' THEN last_ip ELSE ? END, country = CASE WHEN ? = '' THEN country ELSE ? END
-		WHERE id = ? AND (last_seen IS NULL OR last_seen < ?)`, now.UnixMilli(), ip, ip, country, country, id, now.Add(-deviceTouchEvery).UnixMilli())
+		WHERE id = ? AND revoked IS NULL AND (last_seen IS NULL OR last_seen < ?)`, now.UnixMilli(), ip, ip, country, country, id, now.Add(-deviceTouchEvery).UnixMilli())
+}
+
+// LiveDevice is a linked device as an authorization sees it: one idle past idle is unlinked here
+// and then (one statement, before any activity is recorded), so it never revives between sweeps.
+func (d *DB) LiveDevice(id string, idle time.Duration, now time.Time) (Device, bool, error) {
+	if idle > 0 {
+		if _, err := d.Exec(`UPDATE devices SET revoked = ?, revoked_reason = 'idle' WHERE id = ? AND revoked IS NULL AND COALESCE(last_seen, created) < ?`,
+			now.UnixMilli(), id, now.Add(-idle).UnixMilli()); err != nil {
+			return Device{}, false, err
+		}
+	}
+	dv, ok, err := d.Device(id)
+	if err != nil || !ok || dv.Revoked != nil {
+		return Device{}, false, err
+	}
+	return dv, true, nil
 }
 
 // --- the core's handlers ---
@@ -500,10 +518,21 @@ type deviceTurn struct {
 	Reply        string `json:"reply,omitempty"`
 	Error        string `json:"error,omitempty"`
 	device       string
+	agent        string
 	finished     time.Time
 }
 
+const (
+	maxDeviceTurns = 500
+	maxReplyRunes  = 16000
+)
+
 func (c *Core) now() time.Time { return time.Now() }
+
+// idle is how long a device may go unseen before it is unlinked (0: never).
+func (c *Core) idle() time.Duration {
+	return time.Duration(c.inst.CoreDevicesIdleDays) * 24 * time.Hour
+}
 
 // conversationsOf drives an agent's conversations through its engine API (tests replace it).
 func (c *Core) conversationsOf(agent string) (engine.Conversations, error) {
@@ -513,14 +542,22 @@ func (c *Core) conversationsOf(agent string) (engine.Conversations, error) {
 	return local.Conversations(c.inst, agent)
 }
 
+// decodeStrict reads a body of at most max bytes holding exactly one JSON value with known fields.
 func decodeStrict(r *http.Request, max int64, v any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, max))
+	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) > max {
+		return errors.New("body too large")
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	if dec.More() {
-		return errors.New("one JSON object")
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+		return errors.New("one JSON value")
 	}
 	return nil
 }
@@ -754,12 +791,12 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 		writeJSONBody(w, 200, out)
 		return
 	case ingressDevicePath.MatchString(path) && get:
-		dv, ok, err := c.DB.Device(ingressDevicePath.FindStringSubmatch(path)[1])
+		dv, ok, err := c.DB.LiveDevice(ingressDevicePath.FindStringSubmatch(path)[1], c.idle(), now)
 		if err != nil {
 			writeJSONBody(w, 500, errBody("core_internal", "could not read the device"))
 			return
 		}
-		if !ok || dv.Revoked != nil {
+		if !ok {
 			writeJSONBody(w, 401, errBody("device_unknown", "this device is not linked"))
 			return
 		}
@@ -772,12 +809,12 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 		writeJSONBody(w, 401, errBody("device_unknown", "X-Stormo-Device names no device"))
 		return
 	}
-	dv, ok, err := c.DB.Device(id)
+	dv, ok, err := c.DB.LiveDevice(id, c.idle(), now)
 	if err != nil {
 		writeJSONBody(w, 500, errBody("core_internal", "could not read the device"))
 		return
 	}
-	if !ok || dv.Revoked != nil {
+	if !ok {
 		writeJSONBody(w, 401, errBody("device_unknown", "this device is not linked"))
 		return
 	}
@@ -817,10 +854,11 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 			Agent    string `json:"agent"`
 			Kind     string `json:"kind"`
 			ID       string `json:"id"`
+			Version  string `json:"version"`
 			Decision string `json:"decision"`
 		}
-		if err := decodeStrict(r, 4<<10, &req); err != nil || (req.Decision != "accept" && req.Decision != "reject") {
-			writeJSONBody(w, 400, errBody("bad_request", "body is {agent, kind, id, decision: accept | reject}"))
+		if err := decodeStrict(r, 4<<10, &req); err != nil || (req.Decision != "accept" && req.Decision != "reject") || req.Version == "" {
+			writeJSONBody(w, 400, errBody("bad_request", "body is {agent, kind, id, version, decision: accept | reject}"))
 			return
 		}
 		items, err := c.deviceReview(roster)
@@ -837,13 +875,10 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 			writeJSONBody(w, 400, errBody("app_only", "decide this one in the app: "+items[i].Why))
 			return
 		}
-		d := reviewDecision{Agent: req.Agent, Decision: req.Decision}
-		if req.Kind == "lesson" {
-			d.Lessons = []string{req.ID}
-		} else {
-			d.Settings = []string{req.ID}
-		}
-		if err := c.Learner.decide(d); err != nil {
+		if err := c.deviceDecide(req.Agent, req.Kind, req.ID, req.Version, req.Decision); errors.Is(err, errChanged) {
+			writeJSONBody(w, 409, errBody("changed", err.Error()))
+			return
+		} else if err != nil {
 			writeJSONBody(w, 400, errBody("bad_request", err.Error()))
 			return
 		}
@@ -923,7 +958,7 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 		}
 		writeJSONBody(w, 202, map[string]any{"turn": t.ID, "conversation": t.Conversation})
 	case ingressTurnPath.MatchString(path) && get:
-		t, ok := c.deviceTurn(dv.ID, ingressTurnPath.FindStringSubmatch(path)[1])
+		t, ok := c.deviceTurn(dv, ingressTurnPath.FindStringSubmatch(path)[1])
 		if !ok {
 			writeJSONBody(w, 404, errBody("not_found", "no such turn"))
 			return
@@ -998,14 +1033,16 @@ func (c *Core) deviceFleet() map[string]any {
 
 // deviceReviewItem is one open proposal as a device sees it.
 type deviceReviewItem struct {
-	Agent     string    `json:"agent"`
-	AgentName string    `json:"agentName"`
-	Kind      string    `json:"kind"` // lesson | setting | skill | schedules
-	ID        string    `json:"id"`
-	Summary   string    `json:"summary"`
-	AI        *ReviewAI `json:"ai"`
-	AppOnly   bool      `json:"appOnly"`
-	Why       string    `json:"why,omitempty"`
+	Agent     string `json:"agent"`
+	AgentName string `json:"agentName"`
+	Kind      string `json:"kind"` // lesson | setting | skill | schedules
+	ID        string `json:"id"`
+	// Version names exactly what was shown: a decision sent with another is refused (changed).
+	Version string    `json:"version"`
+	Summary string    `json:"summary"`
+	AI      *ReviewAI `json:"ai"`
+	AppOnly bool      `json:"appOnly"`
+	Why     string    `json:"why,omitempty"`
 }
 
 // deviceReview lists the open proposals. A device decides lessons the agent keeps to itself (not
@@ -1023,65 +1060,142 @@ func (c *Core) deviceReview(roster func() []BusAgent) ([]deviceReviewItem, error
 	}
 	items := []deviceReviewItem{}
 	for _, a := range v.Agents {
-		add := func(kind, id, summary string, ai *ReviewAI, why string) {
-			items = append(items, deviceReviewItem{Agent: a.ID, AgentName: a.Name, Kind: kind, ID: id, Summary: clipRunes(summary, deviceSummaryMax),
+		add := func(kind, id, version, summary string, ai *ReviewAI, why string) {
+			items = append(items, deviceReviewItem{Agent: a.ID, AgentName: a.Name, Kind: kind, ID: id, Version: version, Summary: clipRunes(summary, deviceSummaryMax),
 				AI: ai, AppOnly: why != "", Why: why})
 		}
 		for _, l := range a.Lessons {
 			if l.Status != string(learning.Proposed) {
 				continue
 			}
-			why := ""
-			switch {
-			case l.Kind == string(learning.KindUser):
-				why = "it is about a person"
-			case len(l.PII) > 0:
-				why = "the scrubber flagged " + strings.Join(l.PII, ", ")
-			case l.Scope != string(manifest.ScopeAgent):
-				why = "it is shared beyond the agent (" + l.Scope + ")"
-			}
-			add("lesson", l.ID, l.Text, l.AI, why)
+			add("lesson", l.ID, lessonVersion(l.ID, l.Kind, l.Scope, l.Status, l.Text, l.PII), l.Text, l.AI,
+				lessonAppOnly(l.Kind, l.Scope, l.PII))
 		}
 		for _, s := range a.Settings {
-			why, summary := "", s.Key+": "+s.Current+" → "+s.Value
-			switch {
-			case s.Sensitive || s.Opaque:
-				why, summary = "it widens what the agent may do", "Setting "+s.Key
-			case len(s.PII) > 0:
-				why = "the scrubber flagged " + strings.Join(s.PII, ", ")
+			summary := s.Key + ": " + s.Current + " → " + s.Value
+			if s.Sensitive || s.Opaque {
+				summary = "Setting " + s.Key
 			}
-			add("setting", s.Key, summary, s.AI, why)
+			add("setting", s.Key, settingVersion(s.SettingProposal), summary, s.AI, settingAppOnly(s.SettingProposal))
 		}
 		for _, s := range a.Skills {
 			what := "Change to skill "
 			if s.New {
 				what = "New skill "
 			}
-			add("skill", s.Skill, fmt.Sprintf("%s%s (%d files)", what, s.Skill, len(s.Files)), s.AI, "skills are decided in the app")
+			add("skill", s.Skill, "", fmt.Sprintf("%s%s (%d files)", what, s.Skill, len(s.Files)), s.AI, "skills are decided in the app")
 		}
 		if a.Schedules != nil {
-			add("schedules", "schedules", fmt.Sprintf("Schedules: %d jobs, %d scripts", len(a.Schedules.Jobs), len(a.Schedules.Scripts)), a.Schedules.AI,
+			add("schedules", "schedules", "", fmt.Sprintf("Schedules: %d jobs, %d scripts", len(a.Schedules.Jobs), len(a.Schedules.Scripts)), a.Schedules.AI,
 				"schedules and scripts are decided in the app")
 		}
 	}
 	return items, nil
 }
 
+// lessonAppOnly is why a lesson is decided in the app, "" when a device may decide it.
+func lessonAppOnly(kind, scope string, pii []string) string {
+	switch {
+	case kind == string(learning.KindUser):
+		return "it is about a person"
+	case len(pii) > 0:
+		return "the scrubber flagged " + strings.Join(pii, ", ")
+	case scope != string(manifest.ScopeAgent):
+		return "it is shared beyond the agent (" + scope + ")"
+	}
+	return ""
+}
+
+// settingAppOnly is why a setting is decided in the app, "" when a device may decide it.
+func settingAppOnly(p loop.SettingProposal) string {
+	switch {
+	case p.Sensitive || p.Opaque:
+		return "it widens what the agent may do"
+	case len(p.PII) > 0:
+		return "the scrubber flagged " + strings.Join(p.PII, ", ")
+	}
+	return ""
+}
+
+func versionOf(parts ...string) string {
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(h[:8])
+}
+
+func lessonVersion(id, kind, scope, status, text string, pii []string) string {
+	return versionOf("lesson", id, kind, scope, status, text, strings.Join(pii, ","))
+}
+
+func settingVersion(p loop.SettingProposal) string {
+	return versionOf("setting", p.Key, p.Value, p.Current, strconv.FormatBool(p.Sensitive), strconv.FormatBool(p.Opaque), strings.Join(p.PII, ","))
+}
+
+var errChanged = errors.New("the proposal changed since it was shown: reload the review")
+
+// deviceDecide applies a device's decision to exactly the proposal it was shown: the lesson by its
+// exact id, checked again in the same load and save as the write; the setting by its key, checked
+// again just before. A lesson that changed (flagged, shared, rewritten) is refused.
+func (c *Core) deviceDecide(agent, kind, id, version, decision string) error {
+	if kind == "lesson" {
+		status := learning.Accepted
+		if decision == "reject" {
+			status = learning.Rejected
+		}
+		_, err := loop.DecideLesson(c.inst.Root, agent, id, status, func(e *learning.Learning) error {
+			if e.Status != learning.Proposed || lessonAppOnly(string(e.Kind), string(e.Scope), e.PII) != "" ||
+				lessonVersion(e.ID, string(e.Kind), string(e.Scope), string(e.Status), e.Text, e.PII) != version {
+				return errChanged
+			}
+			return nil
+		})
+		if err == nil && decision == "accept" {
+			c.Learner.markUnapplied(agent)
+		}
+		return err
+	}
+	props, err := loop.ListSettingProposals(c.inst.Root, agent)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(props, func(p loop.SettingProposal) bool { return p.Key == id })
+	if i < 0 || settingAppOnly(props[i]) != "" || settingVersion(props[i]) != version {
+		return errChanged
+	}
+	dec := map[string]string{"accept": "accepted", "reject": "rejected"}[decision]
+	if _, err := loop.DecideSetting(c.inst, agent, id, dec, loop.Decider{}); err != nil {
+		return err
+	}
+	c.Learner.markUnapplied(agent)
+	return nil
+}
+
 var errDeviceBusy = errors.New("this device already has a turn running")
 
-// startDeviceTurn runs one chat turn for a device in the background: one at a time per device.
+// startDeviceTurn runs one chat turn for a device in the background: one at a time per device, the
+// slot taken before anything else so two requests at once never both run.
 func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) (deviceTurn, error) {
+	t := &deviceTurn{ID: "trn_" + randomHex(8), State: "running", device: who.Device, agent: agent}
 	c.devices.mu.Lock()
 	c.pruneTurns()
-	for _, t := range c.devices.turns {
-		if t.device == who.Device && t.State == "running" {
+	for _, o := range c.devices.turns {
+		if o.device == who.Device && o.State == "running" {
 			c.devices.mu.Unlock()
 			return deviceTurn{}, errDeviceBusy
 		}
 	}
+	if c.devices.turns == nil {
+		c.devices.turns = map[string]*deviceTurn{}
+	}
+	c.devices.turns[t.ID] = t
 	c.devices.mu.Unlock()
+	release := func() {
+		c.devices.mu.Lock()
+		delete(c.devices.turns, t.ID)
+		c.devices.mu.Unlock()
+	}
 	conv, err := c.conversationsOf(agent)
 	if err != nil {
+		release()
 		return deviceTurn{}, errors.New("the agent's conversations are not reachable now")
 	}
 	if conversation == "" {
@@ -1089,15 +1203,12 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 		conversation, err = conv.New(ctx, "", "")
 		cancel()
 		if err != nil {
+			release()
 			return deviceTurn{}, errors.New("could not start a conversation")
 		}
 	}
-	t := &deviceTurn{ID: "trn_" + randomHex(8), State: "running", Conversation: conversation, device: who.Device}
 	c.devices.mu.Lock()
-	if c.devices.turns == nil {
-		c.devices.turns = map[string]*deviceTurn{}
-	}
-	c.devices.turns[t.ID] = t
+	t.Conversation = conversation
 	view := *t
 	c.devices.mu.Unlock()
 	c.DB.Audit(who.Actor(), "device.chat", agent, "conversation "+conversation)
@@ -1112,7 +1223,7 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 			t.State, t.Error = "failed", clip(err.Error(), 300)
 			return
 		}
-		t.State, t.Reply = "done", reply
+		t.State, t.Reply = "done", clipRunes(reply, maxReplyRunes)
 		if tip != "" {
 			t.Conversation = tip
 		}
@@ -1120,21 +1231,43 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 	return view, nil
 }
 
-// pruneTurns drops turns finished long enough ago; the caller holds c.devices.mu.
+// pruneTurns drops turns finished long enough ago, and past maxDeviceTurns the oldest finished;
+// the caller holds c.devices.mu.
 func (c *Core) pruneTurns() {
 	for id, t := range c.devices.turns {
 		if t.State != "running" && time.Since(t.finished) > deviceTurnKeep {
 			delete(c.devices.turns, id)
 		}
 	}
+	for len(c.devices.turns) > maxDeviceTurns {
+		oldest := ""
+		for id, t := range c.devices.turns {
+			if t.State != "running" && (oldest == "" || t.finished.Before(c.devices.turns[oldest].finished)) {
+				oldest = id
+			}
+		}
+		if oldest == "" {
+			return
+		}
+		delete(c.devices.turns, oldest)
+	}
 }
 
-func (c *Core) deviceTurn(device, id string) (deviceTurn, bool) {
+// PruneDeviceTurns drops finished replies past their time, with no device traffic needed (the core
+// calls it every minute).
+func (c *Core) PruneDeviceTurns() {
+	c.devices.mu.Lock()
+	defer c.devices.mu.Unlock()
+	c.pruneTurns()
+}
+
+// deviceTurn is one of device's turns, while its grants still cover the agent it talks with.
+func (c *Core) deviceTurn(dv Device, id string) (deviceTurn, bool) {
 	c.devices.mu.Lock()
 	defer c.devices.mu.Unlock()
 	c.pruneTurns()
 	t, ok := c.devices.turns[id]
-	if !ok || t.device != device {
+	if !ok || t.device != dv.ID || !dv.Grants.chats(t.agent) {
 		return deviceTurn{}, false
 	}
 	return *t, true

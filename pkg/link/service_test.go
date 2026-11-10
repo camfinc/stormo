@@ -211,3 +211,25 @@ func TestAlwaysOnServiceKeepAndHold(t *testing.T) {
 		t.Fatalf("released: %v, %d boots", err, f.count("run "))
 	}
 }
+
+// A keep waiting on the boot lock while the owner holds the service asleep does not boot it.
+func TestKeepRechecksTheHoldUnderTheBootLock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	f := &fakeDocker{addr: strings.TrimPrefix(srv.URL, "http://")}
+	s := NewServices("acme")
+	s.Docker = f.run
+	sp := ServiceSpec{Name: "devices.gateway", Image: "gw:1", Port: 8080, Health: "/h", Boot: time.Minute}
+	v := s.get(sp.Name)
+	v.boot.Lock() // a sleep in progress
+	done := make(chan error)
+	go func() { done <- s.Keep(context.Background(), sp) }()
+	time.Sleep(50 * time.Millisecond)
+	s.mu.Lock()
+	v.held = true
+	s.mu.Unlock()
+	v.boot.Unlock()
+	if err := <-done; err != nil || f.count("run ") != 0 {
+		t.Fatalf("keep booted a held service: %v, %d boots", err, f.count("run "))
+	}
+}

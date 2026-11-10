@@ -1016,7 +1016,8 @@ func (b *Broker) Wake(name string) (link.ServiceState, error) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.BootMinutes)*time.Minute+time.Minute)
 		defer cancel()
-		if _, err := b.o.Services.Ensure(ctx, b.spec(c)); err != nil {
+		// Keep, not Ensure: a sleep that comes after this wake wins, even before the boot starts.
+		if err := b.o.Services.Keep(ctx, b.spec(c)); err != nil {
 			log.Printf("capabilities: waking %s: %v", name, err)
 		}
 	}()
@@ -1035,9 +1036,7 @@ func (b *Broker) Sleep(name string) (link.ServiceState, error) {
 	if err := b.o.Services.Sleep(name); err != nil {
 		return b.o.Services.State(name), err
 	}
-	if c.Ingress {
-		b.o.Ingress.Drop(name) // its key dies with it; a wake mints another
-	}
+	// An ingress worker's key is refused while it sleeps (Core.caller) and replaced by the next boot.
 	return b.o.Services.State(name), nil
 }
 

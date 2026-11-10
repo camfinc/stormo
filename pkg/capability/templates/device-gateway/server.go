@@ -41,6 +41,7 @@ const (
 	pollInterval   = 5 * time.Second
 	sessionsPerDev = 5
 	maxLimiterKeys = 100_000
+	maxNonces      = 10_000
 )
 
 type config struct {
@@ -168,17 +169,22 @@ func writeErr(w http.ResponseWriter, e *apiError) {
 	writeJSON(w, e.status, map[string]any{"error": map[string]string{"code": e.code, "message": e.msg}})
 }
 
+// decode reads a body of at most max bytes holding exactly one JSON value with known fields.
 func decode(r *http.Request, max int64, v any) *apiError {
-	dec := json.NewDecoder(io.LimitReader(r.Body, max+1))
+	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+	if err != nil {
+		return fail(400, "bad_request", "could not read the body")
+	}
+	if int64(len(b)) > max {
+		return fail(400, "bad_request", "body too large")
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return fail(400, "bad_request", "the body is not the JSON this route takes: "+clip(err.Error(), 120))
 	}
-	if dec.More() {
-		return fail(400, "bad_request", "one JSON object")
-	}
-	if _, err := io.Copy(io.Discard, io.LimitReader(r.Body, 1)); err != nil {
-		return fail(400, "bad_request", "body too large")
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+		return fail(400, "bad_request", "one JSON value")
 	}
 	return nil
 }
@@ -237,8 +243,18 @@ func (g *gateway) allow(key string, perMinute int) *apiError {
 	defer g.mu.Unlock()
 	w := g.windows[key]
 	if w == nil || now.Sub(w.start) >= time.Minute {
-		if len(g.windows) >= maxLimiterKeys {
-			g.windows = map[string]*window{} // a flood of addresses: start over rather than grow
+		if w == nil && len(g.windows) >= maxLimiterKeys {
+			for k, o := range g.windows {
+				if now.Sub(o.start) >= time.Minute {
+					delete(g.windows, k)
+				}
+			}
+			if len(g.windows) >= maxLimiterKeys {
+				// A flood of addresses: refuse newcomers rather than forget the budgets in use.
+				e := fail(429, "rate_limited", "too many requests")
+				e.retry = 60
+				return e
+			}
 		}
 		w = &window{start: now}
 		g.windows[key] = w
@@ -347,6 +363,7 @@ var (
 	turnID       = regexp.MustCompile(`^trn_[0-9a-f]{16}$`)
 	reviewID     = regexp.MustCompile(`^[A-Za-z0-9._:/@-]{1,200}$`)
 	b64url       = regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`)
+	version      = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 	convsPath = regexp.MustCompile(`^/device/v1/agents/([^/]+)/conversations$`)
 	convPath  = regexp.MustCompile(`^/device/v1/agents/([^/]+)/conversations/([^/]+)$`)
@@ -552,9 +569,30 @@ func (g *gateway) challenge(w http.ResponseWriter, r *http.Request) *apiError {
 	if e := g.allow("session:"+req.DeviceID, 10); e != nil {
 		return e
 	}
-	n := random(32)
+	// Only a linked device gets a challenge: no state for made-up ids.
+	status, body, e := g.call(r.Context(), http.MethodGet, "/api/ingress/devices/"+req.DeviceID, nil, "", nil)
+	if e != nil {
+		return e
+	}
+	if status != 200 {
+		g.dropDevice(req.DeviceID)
+		relay(w, status, body)
+		return nil
+	}
+	n, now := random(32), g.now()
 	g.mu.Lock()
-	g.nonces[req.DeviceID] = nonce{value: n, expires: g.now().Add(nonceTTL)} // one at a time: a new one replaces the last
+	if _, has := g.nonces[req.DeviceID]; !has && len(g.nonces) >= maxNonces {
+		for k, o := range g.nonces {
+			if now.After(o.expires) {
+				delete(g.nonces, k)
+			}
+		}
+		if len(g.nonces) >= maxNonces {
+			g.mu.Unlock()
+			return fail(429, "rate_limited", "too many sessions opening at once; retry shortly")
+		}
+	}
+	g.nonces[req.DeviceID] = nonce{value: n, expires: now.Add(nonceTTL)} // one at a time: a new one replaces the last
 	g.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"nonce": n, "expiresIn": int(nonceTTL.Seconds())})
 	return nil
@@ -699,14 +737,15 @@ func (g *gateway) authed(w http.ResponseWriter, r *http.Request) *apiError {
 			Agent    string `json:"agent"`
 			Kind     string `json:"kind"`
 			ID       string `json:"id"`
+			Version  string `json:"version"`
 			Decision string `json:"decision"`
 		}
 		if e := decode(r, maxBody, &req); e != nil {
 			return e
 		}
 		if !agentID.MatchString(req.Agent) || (req.Kind != "lesson" && req.Kind != "setting" && req.Kind != "skill" && req.Kind != "schedules") ||
-			!reviewID.MatchString(req.ID) || (req.Decision != "accept" && req.Decision != "reject") {
-			return fail(400, "bad_request", "body is {agent, kind, id, decision: accept | reject}")
+			!reviewID.MatchString(req.ID) || !version.MatchString(req.Version) || (req.Decision != "accept" && req.Decision != "reject") {
+			return fail(400, "bad_request", "body is {agent, kind, id, version, decision: accept | reject}")
 		}
 		status, body, e = g.call(ctx, http.MethodPost, "/api/ingress/review", req, s.device, r)
 	case convsPath.MatchString(path) && r.Method == http.MethodGet:

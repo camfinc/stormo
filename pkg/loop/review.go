@@ -72,6 +72,30 @@ func Decide(root, agent string, ids []string, c Change) ([]*learning.Learning, e
 	return touched, learning.SaveLedger(root, agent, ledger)
 }
 
+// DecideLesson accepts or rejects the lesson whose id is exactly id, after check passes on it as the
+// ledger holds it now, in the same load and save as the write: a caller that allows only some
+// lessons (a linked device) decides exactly the one it checked, never a look-alike id or a version
+// changed since.
+func DecideLesson(root, agent, id string, status learning.Status, check func(*learning.Learning) error) (*learning.Learning, error) {
+	ledger, err := learning.LoadLedger(root, agent)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range ledger {
+		if e.ID != id {
+			continue
+		}
+		if err := check(e); err != nil {
+			return nil, err
+		}
+		e.Status = status
+		now := IsoMillis(time.Now())
+		e.DecidedAt = &now
+		return e, learning.SaveLedger(root, agent, ledger)
+	}
+	return nil, fmt.Errorf("%s: no learning %s", agent, id)
+}
+
 // SkillProposal is learnings/proposals/skills/<skill>/.proposal.json.
 type SkillProposal struct {
 	Skill   string   `json:"skill"`

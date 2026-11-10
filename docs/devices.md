@@ -95,6 +95,7 @@ client branches on:
 | 401 | `device_unknown` | the device is not linked (revoked, expired, never linked): pair again |
 | 403 | `forbidden` | the device's grants do not cover this |
 | 404 | `not_found` | no such route, agent, conversation, turn or review item |
+| 409 | `changed` | review: the proposal changed since it was shown; reload the review |
 | 409 | `busy` | chat: this device already has a turn running |
 | 429 | `rate_limited` | too many requests; wait `Retry-After` seconds |
 | 503 | `core_unreachable` | the core did not answer; retry later |
@@ -188,7 +189,7 @@ runs now or null; `waiting` approvals it waits on; `pendingReview` its open prop
 `GET /device/v1/review` (grant `review`) →
 
 ```json
-{"items": [{"agent": "support", "agentName": "Ada", "kind": "lesson", "id": "L-7f3a…", "summary": "Answer refund questions with…",
+{"items": [{"agent": "support", "agentName": "Ada", "kind": "lesson", "id": "L-7f3a…", "version": "9c1d0e7a2b3f4a56", "summary": "Answer refund questions with…",
             "ai": {"approve": true, "reason": "…"}, "appOnly": false},
            {"agent": "support", "agentName": "Ada", "kind": "skill", "id": "refunds", "summary": "New skill refunds (3 files)",
             "ai": null, "appOnly": true, "why": "skills are decided in the app"}]}
@@ -197,8 +198,9 @@ runs now or null; `waiting` approvals it waits on; `pendingReview` its open prop
 `kind` is `lesson`, `setting`, `skill` or `schedules`; `id` is the lesson id, the setting key, the
 skill name, or `schedules`. `summary` is at most 200 characters.
 
-`POST /device/v1/review` `{"agent": "support", "kind": "lesson", "id": "L-7f3a…", "decision": "accept"}`
-(`decision`: `accept` | `reject`) → 200 `{"ok": true}`; 400 `app_only`; 404 `not_found`.
+`POST /device/v1/review` `{"agent": "support", "kind": "lesson", "id": "L-7f3a…", "version": "<the item's version>", "decision": "accept"}`
+(`decision`: `accept` | `reject`; `version`: 16 hex digits from the item, naming exactly what was
+shown) → 200 `{"ok": true}`; 400 `app_only`; 404 `not_found`; 409 `changed`.
 
 `GET /device/v1/agents/<agent>/conversations` (grant `chat` covering the agent) →
 `{"conversations": [{"id", "title", "preview", "lastActive", "messages"}]}`, the 20 most recently

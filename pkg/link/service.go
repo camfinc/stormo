@@ -144,6 +144,11 @@ func (s *Services) Ensure(ctx context.Context, sp ServiceSpec) (string, error) {
 	v := s.get(sp.Name)
 	v.boot.Lock()
 	defer v.boot.Unlock()
+	return s.ensureLocked(ctx, sp, v)
+}
+
+// ensureLocked is Ensure with v.boot held.
+func (s *Services) ensureLocked(ctx context.Context, sp ServiceSpec, v *service) (string, error) {
 	hash := specHash(sp)
 	s.mu.Lock()
 	awake, same, busy := v.state == "awake", v.hash == hash, v.running
@@ -365,12 +370,16 @@ func (s *Services) Held(name string) bool {
 }
 
 // Keep boots an always-on service unless it is running with this spec or the owner holds it
-// asleep: the supervisor calls it on a timer, so a worker that died comes back.
+// asleep: the supervisor calls it on a timer, so a worker that died comes back. The hold is read
+// under the boot lock the owner's sleep also takes, so a keep never undoes a sleep.
 func (s *Services) Keep(ctx context.Context, sp ServiceSpec) error {
+	v := s.get(sp.Name)
+	v.boot.Lock()
+	defer v.boot.Unlock()
 	if s.Held(sp.Name) {
 		return nil
 	}
-	_, err := s.Ensure(ctx, sp)
+	_, err := s.ensureLocked(ctx, sp, v)
 	return err
 }
 

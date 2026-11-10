@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -283,13 +284,17 @@ func TestLinkedDevices(t *testing.T) {
 	if st != 200 || byID["lesson/l1"]["appOnly"] != false || byID["lesson/l2"] != nil || byID["skill/quote-check"]["appOnly"] != true {
 		t.Fatalf("review: %d %v", st, rv)
 	}
-	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "skill", "id": "quote-check", "decision": "accept"}); st != 400 || errCode(out) != "app_only" {
+	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "skill", "id": "quote-check", "version": "x", "decision": "accept"}); st != 400 || errCode(out) != "app_only" {
 		t.Errorf("a skill from a device: %d %v", st, out)
 	}
-	if st, _ := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "decision": "promote"}); st != 400 {
+	v1 := byID["lesson/l1"]["version"].(string)
+	if st, _ := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "version": v1, "decision": "promote"}); st != 400 {
 		t.Errorf("promote from a device: %d", st)
 	}
-	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "decision": "accept"}); st != 200 {
+	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "version": "0000000000000000", "decision": "accept"}); st != 409 || errCode(out) != "changed" {
+		t.Errorf("a stale version: %d %v", st, out)
+	}
+	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "version": v1, "decision": "accept"}); st != 200 {
 		t.Errorf("accept a lesson: %d %v", st, out)
 	}
 	if _, rv := as("GET", "/api/ingress/review", nil); strings.Contains(fmt.Sprint(rv), "id:l1 ") {
@@ -338,6 +343,45 @@ func TestLinkedDevices(t *testing.T) {
 	if st, _ := do("GET", "/api/ingress/turns/"+turn, key, nil, "X-Stormo-Device", "dev_ffffffffffffffff"); st != 401 {
 		t.Errorf("another device's turn: %d", st)
 	}
+
+	// Turns: a poll needs the chat grant still; two starts at once run one turn.
+	conv.mu.Lock()
+	conv.hold = make(chan struct{})
+	conv.mu.Unlock()
+	var wg sync.WaitGroup
+	codes := make([]int, 4)
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i], _ = as("POST", "/api/ingress/agents/atlas/chat", map[string]string{"conversation": "c1", "message": fmt.Sprint("m", i)})
+		}()
+	}
+	wg.Wait()
+	accepted := 0
+	for _, s := range codes {
+		if s == 202 {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Errorf("concurrent starts: %v", codes)
+	}
+	var running string
+	c.devices.mu.Lock()
+	for id, tn := range c.devices.turns {
+		if tn.State == "running" {
+			running = id
+		}
+	}
+	c.devices.mu.Unlock()
+	if st, _ := do("PATCH", "/api/devices/"+dev, owner, map[string]any{"grants": map[string]any{"status": true, "review": true, "chat": []string{}}}); st != 200 {
+		t.Fatal("patch")
+	}
+	if st, _ := as("GET", "/api/ingress/turns/"+running, nil); st != 404 {
+		t.Errorf("a turn read after its chat grant was taken away: %d", st)
+	}
+	close(conv.hold)
 
 	// The owner widens the grants, then revokes the device.
 	if st, _ := do("PATCH", "/api/devices/"+dev, owner, map[string]any{"grants": map[string]any{"status": true, "chat": []string{"*"}}}); st != 200 {
@@ -541,5 +585,77 @@ func TestGrantFlags(t *testing.T) {
 	}
 	if _, err := parseGrantFlags("chat", "", DeviceGrants{}); err == nil {
 		t.Error("chat without agents")
+	}
+}
+
+// A device can only decide exactly the lesson it was shown: not a look-alike id, not one flagged since.
+func TestDeviceDecidesExactlyWhatItSaw(t *testing.T) {
+	_, inst := fixture(t)
+	root := inst.Root
+	lesson := func(id, status, pii string) string {
+		return fmt.Sprintf(`{"id":"%s","kind":"memory","scope":"agent","agent":"atlas","unit":"sales","text":"t %s","pii":[%s],"status":"%s"}`, id, id, pii, status)
+	}
+	// l10 comes first and is flagged; a prefix match on "l1" would land on it.
+	write(t, root+"/agents/atlas/learnings/ledger.jsonl", lesson("l10", "proposed", `"phone"`)+"\n"+lesson("l1", "proposed", "")+"\n")
+	c := &Core{inst: inst, Learner: NewLearner(LearnerOptions{Inst: inst, DB: testDB(t)})}
+	v := lessonVersion("l1", "memory", "agent", "proposed", "t l1", []string{})
+	if err := c.deviceDecide("atlas", "lesson", "l1", v, "accept"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(root + "/agents/atlas/learnings/ledger.jsonl")
+	if !strings.Contains(string(b), `"id":"l1"`) || strings.Count(string(b), `"status":"accepted"`) != 1 || !strings.Contains(string(b), `"id":"l10"`) {
+		t.Fatalf("ledger: %s", b)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.Contains(line, `"id":"l10"`) && !strings.Contains(line, `"status":"proposed"`) {
+			t.Errorf("l10 was decided: %s", line)
+		}
+	}
+	// Flagged since it was shown: refused.
+	write(t, root+"/agents/atlas/learnings/ledger.jsonl", lesson("l2", "proposed", `"email"`)+"\n")
+	if err := c.deviceDecide("atlas", "lesson", "l2", lessonVersion("l2", "memory", "agent", "proposed", "t l2", []string{}), "accept"); !errors.Is(err, errChanged) {
+		t.Errorf("flagged after it was shown: %v", err)
+	}
+}
+
+func TestIdleDeviceIsRefusedAtOnceAndTurnsLeaveOnTime(t *testing.T) {
+	db := testDB(t)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	now := time.Unix(1_700_000_000, 0)
+	id, _, _, _ := db.AddPairing(PairingRequest{Name: "Watch", Model: "M", PublicKey: deviceJWK(k)}, now)
+	dv, _ := db.ApprovePairing(id, "", DeviceGrants{Status: true}, now)
+	if _, ok, _ := db.LiveDevice(dv.ID, 30*24*time.Hour, now.Add(29*24*time.Hour)); !ok {
+		t.Fatal("live at 29 days")
+	}
+	if _, ok, _ := db.LiveDevice(dv.ID, 30*24*time.Hour, now.Add(31*24*time.Hour)); ok {
+		t.Fatal("idle 31 days and still live")
+	}
+	db.touchDevice(dv.ID, "203.0.113.1", "", now.Add(32*24*time.Hour))
+	if d, _, _ := db.Device(dv.ID); d.RevokedReason != "idle" || d.LastSeen != nil {
+		t.Errorf("an unlinked device was touched back: %+v", d)
+	}
+
+	c := &Core{}
+	c.devices.turns = map[string]*deviceTurn{
+		"old":  {State: "done", finished: time.Now().Add(-deviceTurnKeep - time.Minute)},
+		"new":  {State: "done", finished: time.Now()},
+		"busy": {State: "running"},
+	}
+	c.PruneDeviceTurns()
+	if _, ok := c.devices.turns["old"]; ok || len(c.devices.turns) != 2 {
+		t.Errorf("turns after prune: %v", c.devices.turns)
+	}
+}
+
+func TestDecodeStrict(t *testing.T) {
+	var v struct {
+		A string `json:"a"`
+	}
+	for body, ok := range map[string]bool{`{"a":"x"}`: true, "{\"a\":\"x\"}\n": true, `{"a":"x"} {"a":"y"}`: false, `{"a":"x"}]`: false,
+		`{"a":"x","b":1}`: false, `{"a":"` + strings.Repeat("x", 100) + `"}`: false} {
+		r := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		if err := decodeStrict(r, 64, &v); (err == nil) != ok {
+			t.Errorf("%.30q: %v", body, err)
+		}
 	}
 }
