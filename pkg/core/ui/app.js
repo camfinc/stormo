@@ -1094,6 +1094,7 @@ function corePanel() {
       ${rows.map(([id, u]) => `<tr><td>${esc(name(id))}</td><td>${u.requests}</td><td>${u.rateLimited}</td><td>${compact(u.inputTokens + u.outputTokens)}</td><td>${ago(u.lastAt)}</td></tr>`).join("")}</table>`
       : '<p class="note">No model calls yet.</p>'}
     ${gw.manageUsageUrl && gw.login === "ok" ? `<a class="usage-link${limited ? " primary" : ""}" href="${esc(gw.manageUsageUrl)}" target="_blank" rel="noopener noreferrer">Manage usage <span aria-hidden="true">↗</span></a>` : ""}
+    ${gw.termsUrl ? `<a class="usage-link" href="${esc(gw.termsUrl)}" target="_blank" rel="noopener noreferrer" title="Whether a use complies is yours to check">Sign in with ChatGPT terms <span aria-hidden="true">↗</span></a>` : ""}
     ${learningHTML()}
     <h3>Commands</h3>
     <div class="cmds">${gw.login !== "ok" ? cmdButton("swarm core login", "sign in") : ""}${cmdButton("swarm core status", "usage")}${cmdButton("swarm core learn", "run a learning cycle")}${cmdButton("swarm core review", "review proposals")}</div>

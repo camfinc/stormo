@@ -17,9 +17,9 @@ import (
 	"time"
 )
 
-// OpenAI-compatible model gateway for local agents, backed by the core's one ChatGPT sign-in
-// ("Sign in with ChatGPT" plan usage, which covers open-source and locally hosted apps). LOCAL
-// ONLY: a paid or remotely hosted app needs OpenAI's interest form; agents on AWS use API keys.
+// OpenAI-compatible model gateway for the agents on the core (model.local), backed by the core's
+// ChatGPT sign-in ("Sign in with ChatGPT" plan usage). It serves wherever the core runs; whether a
+// use complies with OpenAI's terms is the operator's to judge (PlanNotice, docs/core.md §1).
 // Never logged: tokens, prompt or completion bodies. Logged: agent, model, status, timing, tokens.
 
 // ModelInfo is one served model.
@@ -214,6 +214,8 @@ type Status struct {
 	Login            LoginState            `json:"login"`
 	Account          *string               `json:"account"`
 	ManageUsageURL   string                `json:"manageUsageUrl"`
+	TermsURL         string                `json:"termsUrl"` // OpenAI's Sign in with ChatGPT terms
+	DocsURL          string                `json:"docsUrl"`  // and its plan-usage documentation
 	PlanLimitedUntil *string               `json:"planLimitedUntil"`
 	Inflight         int                   `json:"inflight"`
 	Queued           int                   `json:"queued"`
@@ -226,7 +228,7 @@ type Status struct {
 }
 
 func (g *Gateway) Status() Status {
-	s := Status{Login: g.o.Auth.State(), ManageUsageURL: SIWC.ManageUsageURL, Concurrency: g.sem.max}
+	s := Status{Login: g.o.Auth.State(), ManageUsageURL: SIWC.ManageUsageURL, TermsURL: SIWC.TermsURL, DocsURL: SIWC.DocsURL, Concurrency: g.sem.max}
 	if a := g.o.Auth.Account(); a != nil && a.Email != "" {
 		s.Account = &a.Email
 	}

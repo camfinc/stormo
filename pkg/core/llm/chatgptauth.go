@@ -31,9 +31,10 @@ import (
 	"time"
 )
 
-// "Sign in with ChatGPT" with ChatGPT plan usage (OpenAI's open-source / locally hosted program,
-// developers.openai.com/siwc/token-sharing-open-source). The core registers its own OAuth client
-// for this user, workspace and host, so it never shares a token family with the Codex CLI.
+// "Sign in with ChatGPT" with ChatGPT plan usage (developers.openai.com/siwc/token-sharing-open-source).
+// The core registers its own OAuth client for this user, workspace and host, so it never shares a
+// token family with the Codex CLI. The engine does not judge whether a use complies with OpenAI's
+// terms: sign-in shows PlanNotice and links them (SIWC.TermsURL, SIWC.DocsURL).
 //
 //   - Login: browser loopback + PKCE. First sign-in registers with client_id=dynamic_agent_client
 //     and gets an issued `oaiapp_…` client id on the callback, saved before the code exchange so a
@@ -41,13 +42,15 @@ import (
 //   - Refresh tokens rotate (access ~1 h, refresh ~30 d). Only the core server refreshes, one at a
 //     time, under a lock directory shared with `stormo core login`; the rotated token is on disk
 //     (atomic rename) before it is used, and the file is re-read under the lock.
-//   - Terms: tokens are stored locally and under the user's control (0600, gitignored .swarm/),
-//     never copied, snapshotted, shipped to AWS or logged.
+//   - Storage: the tokens stay on the machine the core runs on (0600, gitignored .swarm/), in the
+//     one process that holds them; never copied, snapshotted, sent to a secret store or a
+//     container, or logged.
 
 // SIWC holds the Sign in with ChatGPT constants. The app name comes from the instance.
 var SIWC = struct {
-	Issuer, Resource, Scope, RegistrationClientID, CallbackPath, ManageUsageURL string
-	DefaultLoginPort                                                            int
+	Issuer, Resource, Scope, RegistrationClientID, CallbackPath string
+	ManageUsageURL, TermsURL, DocsURL                           string
+	DefaultLoginPort                                            int
 }{
 	Issuer:               "https://auth.openai.com",
 	Resource:             "https://api.openai.com/v1",
@@ -56,7 +59,13 @@ var SIWC = struct {
 	CallbackPath:         "/auth/callback",
 	DefaultLoginPort:     1455,
 	ManageUsageURL:       "https://chatgpt.com/settings/usage",
+	TermsURL:             "https://openai.com/policies/sign-in-with-chatgpt-terms/",
+	DocsURL:              "https://developers.openai.com/siwc/token-sharing-open-source",
 }
+
+// PlanNotice is what a sign-in shows first (CLI and apps), with SIWC.TermsURL and SIWC.DocsURL.
+const PlanNotice = "Using a ChatGPT plan through Sign in with ChatGPT is governed by OpenAI's terms and documentation. " +
+	"Making sure your use complies is your responsibility: read them before you sign in."
 
 // Refresh this long before the access token expires.
 const refreshSkewSeconds = 120

@@ -237,8 +237,9 @@ struct AddProviderSheet: View {
             .scrollDisabled(true)
             .frame(height: info?.api == true ? 250 : 130)
             if info?.api == false {
-                Text("A second ChatGPT account is its own plan and limit. The core serves it after a restart; then sign in to it. Whether this use qualifies under OpenAI's Sign in with ChatGPT terms is your call (docs/core.md, open decision 5).")
+                Text("A second ChatGPT account is its own plan and limit. The core serves it after a restart; then sign in to it.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                PlanTermsNotice(gateway: model.fleet.fleet?.gateway)
             } else {
                 Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. Agents using this provider declare its name; their form adds it.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

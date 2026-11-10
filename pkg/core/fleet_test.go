@@ -451,7 +451,7 @@ func TestOfficeRoutes(t *testing.T) {
 		if regexp.MustCompile(`(?i)token"|refresh|access_token|SWARM_CORE_KEY`).MatchString(raw) {
 			t.Error("secret-looking field in /api/fleet")
 		}
-		for _, k := range []string{`"polledAt"`, `"localModel"`, `"optionalChannels"`, `"napIntervalSeconds"`, `"pendingLearnings"`, `"pendingSkills"`, `"manageUsageUrl"`, `"planLimitedUntil"`} {
+		for _, k := range []string{`"polledAt"`, `"localModel"`, `"optionalChannels"`, `"napIntervalSeconds"`, `"pendingLearnings"`, `"pendingSkills"`, `"manageUsageUrl"`, `"termsUrl"`, `"docsUrl"`, `"planLimitedUntil"`} {
 			if !strings.Contains(raw, k) {
 				t.Errorf("missing %s", k)
 			}
