@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -288,4 +291,36 @@ func VisibleLearnings(inst *instance.Instance, agent string) ([]*Learning, error
 	}
 	sort.SliceStable(out, func(i, j int) bool { return Rank(out[i], out[j]) })
 	return out, nil
+}
+
+// ErrLedgerBusy is LockLedger giving up: another writer held the agent's learning state too long.
+var ErrLedgerBusy = errors.New("another writer is updating this agent's learnings; try again shortly")
+
+// LockLedger serializes the writers of an agent's learning state (the ledger and its setting
+// proposals: the dream, review decisions) across processes. Hold it from the load to the save; it
+// waits up to wait, then gives ErrLedgerBusy.
+func LockLedger(root, agent string, wait time.Duration) (func(), error) {
+	lockPath := filepath.Join(root, ".swarm", "learning-locks", digest(agent)+".ledger.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("ledger lock: %w", err)
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			f.Close()
+			if errors.Is(err, syscall.EWOULDBLOCK) {
+				return nil, ErrLedgerBusy
+			}
+			return nil, fmt.Errorf("ledger lock: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

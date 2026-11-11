@@ -62,5 +62,6 @@ func docker0() string {
 // (the model gateway, MCP, hook ingest) and /health. The UI, /api/* and avatars stay on loopback.
 // A new route agents call must be added here too, or it works on macOS and 404s on Linux.
 func bridgeRoute(path string) bool {
-	return path == "/health" || path == "/mcp" || path == link.Path || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/ingest/")
+	return path == "/health" || path == "/mcp" || path == link.Path || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/ingest/") ||
+		strings.HasPrefix(path, "/api/ingress/") // the device gateway's container, with its ingress key
 }

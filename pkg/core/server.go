@@ -21,9 +21,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/camfinc/stormo/pkg/core/llm"
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -129,7 +131,11 @@ type CoreOptions struct {
 	// CapabilityJobs and CapabilityNow replace the jobs' folder and the broker's clock (tests).
 	CapabilityJobs string
 	CapabilityNow  func() time.Time
-	Container      func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
+	// CapabilityKeepEvery is how often always-on services are checked (default 15 s; tests).
+	CapabilityKeepEvery time.Duration
+	// Conversations drives an agent's chat for linked devices; nil reaches its engine (tests).
+	Conversations func(agent string) (engine.Conversations, error)
+	Container     func(ctx context.Context, image string, command []string, env map[string]string, input []byte, jobDir string) ([]byte, error)
 	// Lifecycle acts on agents (start/stop/restart through the core); nil fields take pkg/ops.
 	Lifecycle LifecycleOps
 	// OwnerToken authorises owner reads; "" reads (or mints) .swarm/core/owner.token.
@@ -187,11 +193,16 @@ type Core struct {
 	Links   *LinkHub
 	Runners *LinkHub
 	// Broker runs capability jobs for agents.
-	Broker    *Broker
-	keys      *AgentKeys
-	inst      *instance.Instance
-	lifecycle LifecycleOps
-	owner     string
+	Broker *Broker
+	// ingress holds the per-boot keys of ingress capabilities (the device gateway); devices the
+	// in-memory part of linked devices; conversations drives an agent's chat (tests replace it).
+	ingress       *IngressKeys
+	devices       deviceState
+	conversations func(agent string) (engine.Conversations, error)
+	keys          *AgentKeys
+	inst          *instance.Instance
+	lifecycle     LifecycleOps
+	owner         string
 	// loopbackTrust: direct loopback requests may read the open views without a token.
 	loopbackTrust bool
 	ownDB         bool
@@ -232,7 +243,23 @@ func (c *Core) Close() error {
 }
 
 // caller is who a request comes from: the owner (owner token) or an agent (its core key).
-func (c *Core) caller(r *http.Request) Caller { return callerOf(r, c.owner, c.keys, c.DB) }
+func (c *Core) caller(r *http.Request) Caller {
+	who := callerOf(r, c.owner, c.keys, c.DB)
+	if who == (Caller{}) && c.ingress != nil {
+		// An ingress key works only while its worker is awake: asleep or booting (an old key until the
+		// new boot replaces it), it is dead.
+		if m := bearer.FindStringSubmatch(r.Header.Get("Authorization")); m != nil {
+			// The key is looked up again once the worker is seen awake: a key from an earlier boot
+			// is gone by then (each boot replaces it before it is awake), so state and key agree.
+			if name, ok := c.ingress.Capability(m[1]); ok && c.Broker != nil && c.Broker.o.Services.State(name).State == "awake" {
+				if again, ok := c.ingress.Capability(m[1]); ok && again == name {
+					who = Caller{Ingress: name}
+				}
+			}
+		}
+	}
+	return who
+}
 
 func marshalCompact(v any) []byte {
 	var b bytes.Buffer
@@ -434,9 +461,15 @@ func StartCore(o CoreOptions) (*Core, error) {
 	workdir := NewWorkdir(WorkdirOptions{Root: wroot, DB: db, Monitor: monitor, Roster: bo.Roster,
 		Units: func() []string { return manifest.UnitIDs(inst.Root) }})
 	runners := NewLinkHub(db)
+	ingress := NewIngressKeys()
+	var coreURL atomic.Value // set once the core listens; the ingress worker boots only then
 	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
 		Grants: o.CapabilityGrants, Container: o.Container, Services: o.Services, Image: o.CapabilityImage, Workdir: workdir, Notify: bus.Notify,
-		JobsDir: o.CapabilityJobs, Now: o.CapabilityNow,
+		JobsDir: o.CapabilityJobs, Now: o.CapabilityNow, Ingress: ingress, KeepEvery: o.CapabilityKeepEvery,
+		CoreURL: func() string {
+			u, _ := coreURL.Load().(string)
+			return u
+		},
 		Secret: func(name string) (string, bool) {
 			f, err := secrets.Load(secrets.Path(inst.Root))
 			if err != nil {
@@ -460,7 +493,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps, Gateways: gateway})
 	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
-		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{})}
+		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{}), ingress: ingress, conversations: o.Conversations}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
 	if inst.CoreStorage != "" && o.WorkdirRoot == "" {
@@ -486,8 +519,10 @@ func StartCore(o CoreOptions) (*Core, error) {
 	go func() {
 		office := time.NewTicker(time.Second)
 		prune := time.NewTicker(time.Hour)
+		minute := time.NewTicker(time.Minute)
 		defer office.Stop()
 		defer prune.Stop()
+		defer minute.Stop()
 		_ = monitor.Prune()
 		for {
 			select {
@@ -498,6 +533,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 				return
 			case <-office.C:
 				officeTick()
+			case <-minute.C:
+				c.PruneDeviceTurns() // finished replies leave memory on time, traffic or not
 			case <-prune.C:
 				if err := monitor.Prune(); err != nil {
 					log.Printf("core.db prune: %v", err)
@@ -507,6 +544,13 @@ func StartCore(o CoreOptions) (*Core, error) {
 				}
 				if err := broker.Prune(30 * 24 * time.Hour); err != nil {
 					log.Printf("core.db prune: %v", err)
+				}
+				if ids, err := db.ExpireIdleDevices(time.Duration(inst.CoreDevicesIdleDays)*24*time.Hour, time.Now()); err != nil {
+					log.Printf("core.db prune: %v", err)
+				} else {
+					for _, id := range ids {
+						db.Audit("core", "device.revoke", id, "idle")
+					}
 				}
 			}
 		}
@@ -557,6 +601,12 @@ func StartCore(o CoreOptions) (*Core, error) {
 			s := gateway.Status()
 			writeJSONBody(w, 200, map[string]any{"status": "ok", "service": "swarm-core", "login": s.Login, "planLimitedUntil": s.PlanLimitedUntil,
 				"version": version.String(), "api": version.API})
+			return
+		case strings.HasPrefix(path, "/api/ingress/"):
+			c.handleIngress(w, r, who, bo.Roster)
+			return
+		case path == "/api/devices" || strings.HasPrefix(path, "/api/devices/"):
+			c.handleDevices(w, r, who)
 			return
 		case get && path == "/api/core":
 			// Which binary and which instance this core is, for clients deciding whether to attach.
@@ -896,6 +946,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 		return nil, err
 	}
 	c.Addr = ln.Addr().(*net.TCPAddr)
+	coreURL.Store(manifest.CoreAt(c.Addr.Port).URL)
 	bridged := func(w http.ResponseWriter, r *http.Request) {
 		if !bridgeRoute(r.URL.Path) {
 			writeJSONBody(w, 404, errBody("not_found", r.Method+" "+r.URL.Path))

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -28,6 +29,11 @@ type Change struct {
 
 // Decide applies a change to learnings by id (or unique id prefix).
 func Decide(root, agent string, ids []string, c Change) ([]*learning.Learning, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	ledger, err := learning.LoadLedger(root, agent)
 	if err != nil {
 		return nil, err
@@ -71,6 +77,38 @@ func Decide(root, agent string, ids []string, c Change) ([]*learning.Learning, e
 	}
 	return touched, learning.SaveLedger(root, agent, ledger)
 }
+
+// DecideLesson accepts or rejects the lesson whose id is exactly id, after check passes on it as the
+// ledger holds it now, in the same load and save as the write: a caller that allows only some
+// lessons (a linked device) decides exactly the one it checked, never a look-alike id or a version
+// changed since.
+func DecideLesson(root, agent, id string, status learning.Status, check func(*learning.Learning) error) (*learning.Learning, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	ledger, err := learning.LoadLedger(root, agent)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range ledger {
+		if e.ID != id {
+			continue
+		}
+		if err := check(e); err != nil {
+			return nil, err
+		}
+		e.Status = status
+		now := IsoMillis(time.Now())
+		e.DecidedAt = &now
+		return e, learning.SaveLedger(root, agent, ledger)
+	}
+	return nil, fmt.Errorf("%s: %w %s", agent, ErrNoLesson, id)
+}
+
+// ErrNoLesson is DecideLesson finding no lesson with that exact id.
+var ErrNoLesson = errors.New("no learning")
 
 // SkillProposal is learnings/proposals/skills/<skill>/.proposal.json.
 type SkillProposal struct {
@@ -120,6 +158,11 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 
 // DecideSkillBy is DecideSkill recording who decided (the core's review) and why.
 func DecideSkillBy(root, agent, skill, decision string, who Decider) (*SkillProposal, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	props, err := ListSkillProposals(root, agent)
 	if err != nil {
 		return nil, err

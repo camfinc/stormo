@@ -64,7 +64,7 @@ struct CapabilitiesSection: View {
             AddCapabilitySheet(taken: Set(names))
         }
         .sheet(item: $editing, onDismiss: { Task { await load() } }) { t in
-            CapabilityEditorSheet(name: t.id)
+            CapabilityEditorSheet(name: t.id, ingress: view?.capabilities.first { $0.name == t.id }?.isIngress ?? false)
         }
         .sheet(item: $openJob, onDismiss: { Task { await load() } }) { t in
             CapabilityJobSheet(id: t.id)
@@ -136,21 +136,37 @@ struct CapabilitiesSection: View {
     private func row(_ name: String) -> some View {
         let c = view?.capabilities.first { $0.name == name }
         let d = file?.capabilities.first { $0.name == name }
+        // A way in from outside (the device gateway): always on, never granted to an agent.
+        let ingress = (c?.ingress ?? d?.effective.ingress) == true
+        let alwaysOn = (c?.alwaysOn ?? d?.effective.alwaysOn) == true
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(name).fontWeight(.medium)
                     Text(kindLabel(c, d)).font(.caption).foregroundStyle(.secondary)
-                    WorkerBadge(capability: c, declared: d)
+                    WorkerBadge(capability: c, declared: d, ingress: ingress)
+                    if ingress {
+                        CapabilityBadge(text: "Always on · Internet entry", color: .purple)
+                            .help("Devices reach the fleet through it from the internet. No agent can be granted it.")
+                    } else if alwaysOn {
+                        CapabilityBadge(text: "Always on", color: .blue)
+                            .help("Booted with the core and kept running; Sleep holds it down until Wake.")
+                    }
                     if let c, c.running + c.queued > 0 {
                         Text("\(c.running) running · \(c.queued) queued").font(.caption.monospacedDigit())
                     }
                 }
                 let description = c?.description ?? d?.effective.description ?? ""
                 if !description.isEmpty { Text(description).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
-                let agents = d?.agents ?? c?.agents ?? []
-                Text(agents.isEmpty ? "Granted to no agent" : "Granted to " + agents.joined(separator: ", "))
-                    .font(.caption).foregroundStyle(.secondary)
+                if ingress {
+                    if let p = c?.publish ?? d?.effective.publish, !p.isEmpty {
+                        Text("Published at \(p)").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                } else {
+                    let agents = d?.agents ?? c?.agents ?? []
+                    Text(agents.isEmpty ? "Granted to no agent" : "Granted to " + agents.joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if let e = c?.service?.error, !e.isEmpty {
                     Text("Last boot failed: \(e)").font(.caption).foregroundStyle(.red).lineLimit(2)
                 }
@@ -158,9 +174,11 @@ struct CapabilitiesSection: View {
             Spacer()
             if let c, c.isLocalService {
                 let awake = c.worker == "awake" || c.worker == "booting"
-                Button(awake ? "Sleep" : "Wake") { Task { await setAwake(name, !awake) } }
+                Button(ingress ? (awake ? "Take offline" : "Bring online") : (awake ? "Sleep" : "Wake")) { Task { await setAwake(name, !awake) } }
                     .disabled(busy.contains(name) || c.worker == "booting" || (awake && c.running > 0))
-                    .help(awake && c.running > 0 ? "Jobs run in it: it sleeps once idle." : awake ? "Stop the worker now." : "Boot the worker now, ahead of jobs.")
+                    .help(ingress
+                        ? (awake ? "Every linked device goes offline until you bring it online again." : "Start it again; it gets a new key to the core, so an old one is dead.")
+                        : awake && c.running > 0 ? "Jobs run in it: it sleeps once idle." : awake ? "Stop the worker now." : "Boot the worker now, ahead of jobs.")
             }
             Button("Edit…") { editing = EditTarget(id: name) }
                 .disabled(d == nil)
@@ -200,27 +218,34 @@ struct CapabilitiesSection: View {
     }
 }
 
-/// asleep / booting / awake for a service here, "runner" for one elsewhere, and why one cannot run.
+/// asleep / booting / awake for a service here (online / starting / offline for a way in from
+/// outside), "runner" for one elsewhere, and why one cannot run.
 private struct WorkerBadge: View {
     let capability: CapabilityInfo?
     let declared: DeclaredCapability?
+    var ingress = false
 
     var body: some View {
         if let why = capability?.unavailable ?? declared?.effective.unavailable {
-            badge("cannot run", .red).help(why)
+            CapabilityBadge(text: "cannot run", color: .red).help(why)
         } else if capability == nil {
-            badge("not loaded", .orange).help("In stormo.yaml; the core loads it when it restarts.")
+            CapabilityBadge(text: "not loaded", color: .orange).help("In stormo.yaml; the core loads it when it restarts.")
         } else if let w = capability?.worker {
             switch w {
-            case "awake": badge("awake", .green)
-            case "booting": badge("booting", .orange)
-            case "runner": badge("on a runner", .blue)
-            default: badge("asleep", .secondary)
+            case "awake": CapabilityBadge(text: ingress ? "online" : "awake", color: .green)
+            case "booting": CapabilityBadge(text: ingress ? "starting" : "booting", color: .orange)
+            case "runner": CapabilityBadge(text: "on a runner", color: .blue)
+            default: CapabilityBadge(text: ingress ? "offline" : "asleep", color: .secondary)
             }
         }
     }
+}
 
-    private func badge(_ text: String, _ color: Color) -> some View {
+private struct CapabilityBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
         Text(text).font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
             .background(Capsule().fill(color.opacity(0.18)))
     }
@@ -335,6 +360,8 @@ struct CapabilityEditorSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let name: String
+    /// The core runs it as a way in from outside (it may not know yet: stormo.yaml says it too).
+    var ingress = false
     @State private var file: CapabilitiesFile?
     @State private var description = ""
     @State private var concurrency = 1
@@ -356,6 +383,8 @@ struct CapabilityEditorSheet: View {
 
     private var declared: DeclaredCapability? { file?.capabilities.first { $0.name == name } }
     private var isService: Bool { declared?.effective.kind == "service" }
+    /// No agent may be granted a way in from outside: its grants are not offered.
+    private var isIngress: Bool { ingress || declared?.effective.ingress == true }
     private var agents: [String] { (model.fleet.fleet?.agents.map(\.id) ?? []).sorted() }
 
     var body: some View {
@@ -391,16 +420,28 @@ struct CapabilityEditorSheet: View {
                             SectionTitle("Worker settings", note: "Plain values the worker reads from its environment; secrets belong in the instance's secrets, not here.")
                         }
                     }
-                    Section {
-                        if agents.isEmpty { Text("No agents in this instance.").foregroundStyle(.secondary) }
-                        ForEach(agents, id: \.self) { a in
-                            Toggle(isOn: Binding(get: { d.agents.contains(a) }, set: { on in Task { await grant(a, on) } })) {
-                                Text(a)
+                    if isIngress {
+                        Section {
+                            if let p = d.effective.publish, !p.isEmpty {
+                                LabeledContent("Published at") { Text(p).monospaced().textSelection(.enabled) }
                             }
-                            .disabled(grantBusy.contains(a) || d.effective.unavailable != nil)
+                            Text("Always on, and never granted to an agent: linked devices reach the fleet through it (Core › Linked devices). Take it offline from the Capabilities list to cut every device off.")
+                                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        } header: {
+                            SectionTitle("Internet entry", note: "The only part of the fleet a tunnel or proxy should point at.")
                         }
-                    } header: {
-                        SectionTitle("Granted to", note: "Saved at once in each agent's agent.yaml; agents see it on their next call, no restart.")
+                    } else {
+                        Section {
+                            if agents.isEmpty { Text("No agents in this instance.").foregroundStyle(.secondary) }
+                            ForEach(agents, id: \.self) { a in
+                                Toggle(isOn: Binding(get: { d.agents.contains(a) }, set: { on in Task { await grant(a, on) } })) {
+                                    Text(a)
+                                }
+                                .disabled(grantBusy.contains(a) || d.effective.unavailable != nil)
+                            }
+                        } header: {
+                            SectionTitle("Granted to", note: "Saved at once in each agent's agent.yaml; agents see it on their next call, no restart.")
+                        }
                     }
                     if let docs = d.effective.docs, !docs.isEmpty {
                         Section("What agents read (cap_describe)") {

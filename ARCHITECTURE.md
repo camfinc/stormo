@@ -494,6 +494,16 @@ checks agents for non-compliance. It is also the single holder of the ChatGPT si
 model calls to the agents on it. A `core` Hermes agent in `units/group` sits on
 top of it later. Plan, phases and open decisions: [docs/core.md](docs/core.md).
 
+**Linked devices** ([docs/devices.md](docs/devices.md)): a watch or a phone reaches the fleet
+without the core ever being exposed. The only thing reachable from outside is the device gateway,
+an always-on *ingress* capability on a fixed loopback port behind the instance's own tunnel or
+proxy. It holds one credential, a key the core mints at each of its boots that reaches
+`/api/ingress/*` and nothing else. A device pairs by showing a code the owner types in the app or
+the CLI, then opens short sessions by signing a nonce with a key that never leaves its hardware.
+The core keeps the devices and checks every call made on a device's behalf against that device's
+grants (status, review of lessons and settings, chat with named agents). Devices never reach the
+operator API.
+
 ## Open decisions
 
 1. **Who runs the dream**: by hand (`stormo learn`), or by the swarm core on a schedule the

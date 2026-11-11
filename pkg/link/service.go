@@ -49,6 +49,16 @@ type ServiceSpec struct {
 	Cache string
 	Idle  time.Duration
 	Boot  time.Duration
+	// Publish is a fixed host address for its port ("127.0.0.1:18630"; "": a free loopback port).
+	Publish string
+	// ReadOnly: a read-only root filesystem with a small tmpfs /tmp. NoCache: no /cache volume.
+	ReadOnly bool
+	NoCache  bool
+	// ExtraHosts are --add-host entries ("host.docker.internal:host-gateway").
+	ExtraHosts []string
+	// BootEnv adds environment values made at each boot (a key that lives as long as this run of
+	// the container). It is not part of the spec: a new value never counts as a change.
+	BootEnv func() map[string]string `json:"-"`
 }
 
 // ServiceState is how a service is now.
@@ -85,6 +95,8 @@ type service struct {
 	running int
 	err     string
 	idle    time.Duration
+	// held: the owner put it to sleep; Keep leaves it down until Release.
+	held bool
 }
 
 // NewServices makes a manager for scope.
@@ -132,6 +144,11 @@ func (s *Services) Ensure(ctx context.Context, sp ServiceSpec) (string, error) {
 	v := s.get(sp.Name)
 	v.boot.Lock()
 	defer v.boot.Unlock()
+	return s.ensureLocked(ctx, sp, v)
+}
+
+// ensureLocked is Ensure with v.boot held.
+func (s *Services) ensureLocked(ctx context.Context, sp ServiceSpec, v *service) (string, error) {
 	hash := specHash(sp)
 	s.mu.Lock()
 	awake, same, busy := v.state == "awake", v.hash == hash, v.running
@@ -166,24 +183,45 @@ func (s *Services) boot(ctx context.Context, sp ServiceSpec, v *service, hash st
 	name := s.Container(sp.Name)
 	s.set(v, "booting", "", "")
 	_, _ = s.Docker(ctx, nil, "rm", "-f", name)
+	publish := "127.0.0.1::" + strconv.Itoa(sp.Port)
+	if sp.Publish != "" {
+		publish = sp.Publish + ":" + strconv.Itoa(sp.Port)
+	}
 	args := []string{"run", "-d", "--name", name, "--init",
 		"--label", "stormo.scope=" + s.Scope, "--label", "stormo.capability=" + sp.Name,
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", "bridge",
-		"-p", "127.0.0.1::" + strconv.Itoa(sp.Port), "-e", "PORT=" + strconv.Itoa(sp.Port),
-		"-v", cmp.Or(sp.Cache, name+"-cache") + ":/cache"}
+		"-p", publish, "-e", "PORT=" + strconv.Itoa(sp.Port)}
+	if !sp.NoCache {
+		args = append(args, "-v", cmp.Or(sp.Cache, name+"-cache")+":/cache")
+	}
+	if sp.ReadOnly {
+		args = append(args, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m")
+	}
+	for _, h := range sp.ExtraHosts {
+		args = append(args, "--add-host", h)
+	}
 	if uid := os.Getuid(); uid > 0 {
 		// Files it writes to /jobs belong to whoever runs the core; images run as any user.
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, os.Getgid()))
 	}
 	var env []string
-	keys := make([]string, 0, len(sp.Env))
-	for k := range sp.Env {
+	values := map[string]string{}
+	for k, v := range sp.Env {
+		values[k] = v
+	}
+	if sp.BootEnv != nil {
+		for k, v := range sp.BootEnv() {
+			values[k] = v
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "-e", k)
-		env = append(env, k+"="+sp.Env[k])
+		env = append(env, k+"="+values[k])
 	}
 	if sp.MemoryMB > 0 {
 		args = append(args, "--memory", fmt.Sprintf("%dm", sp.MemoryMB))
@@ -297,7 +335,8 @@ func (s *Services) Call(ctx context.Context, sp ServiceSpec, body []byte) ([]byt
 	return out, nil
 }
 
-// Sleep stops a service now; refused while jobs run in it.
+// Sleep stops a service now (the owner's); refused while jobs run in it. It holds an always-on
+// service down: Keep leaves it asleep until Release.
 func (s *Services) Sleep(name string) error {
 	v := s.get(name)
 	s.mu.Lock()
@@ -308,7 +347,40 @@ func (s *Services) Sleep(name string) error {
 	}
 	v.boot.Lock()
 	defer v.boot.Unlock()
+	s.mu.Lock()
+	v.held = true
+	s.mu.Unlock()
 	return s.stop(name, v)
+}
+
+// Release lifts the owner's hold (a wake).
+func (s *Services) Release(name string) {
+	v := s.get(name)
+	s.mu.Lock()
+	v.held = false
+	s.mu.Unlock()
+}
+
+// Held reports whether the owner holds the service asleep.
+func (s *Services) Held(name string) bool {
+	v := s.get(name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return v.held
+}
+
+// Keep boots an always-on service unless it is running with this spec or the owner holds it
+// asleep: the supervisor calls it on a timer, so a worker that died comes back. The hold is read
+// under the boot lock the owner's sleep also takes, so a keep never undoes a sleep.
+func (s *Services) Keep(ctx context.Context, sp ServiceSpec) error {
+	v := s.get(sp.Name)
+	v.boot.Lock()
+	defer v.boot.Unlock()
+	if s.Held(sp.Name) {
+		return nil
+	}
+	_, err := s.ensureLocked(ctx, sp, v)
+	return err
 }
 
 func (s *Services) stop(name string, v *service) error {

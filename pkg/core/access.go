@@ -38,6 +38,10 @@ func agentRoute(path string) bool {
 // needs reports the scope a request needs and whether the caller has it.
 func (c *Core) needs(r *http.Request, who Caller) (Scope, bool) {
 	path := r.URL.Path
+	// The ingress key reaches its own routes and nothing else; nobody else reaches those.
+	if strings.HasPrefix(path, "/api/ingress/") || who.Ingress != "" {
+		return ScopeNone, who.Ingress != "" && strings.HasPrefix(path, "/api/ingress/")
+	}
 	if path == "/health" || agentRoute(path) {
 		return ScopeNone, true
 	}
@@ -51,6 +55,9 @@ func (c *Core) needs(r *http.Request, who Caller) (Scope, bool) {
 	}
 	if strings.HasPrefix(path, "/api/tokens") || path == "/api/audit" {
 		need = ScopeAdmin
+	}
+	if (path == "/api/devices" || strings.HasPrefix(path, "/api/devices/")) && need == ScopeOperate {
+		need = ScopeAdmin // linking, changing and revoking devices
 	}
 	if who.Can(need) {
 		return need, true

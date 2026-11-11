@@ -90,6 +90,11 @@ capabilities:                     # heavy or shared calls the core runs for agen
   #   timeout_minutes: 20           # default 15
   #   cost_usd: 0.4                 # estimated cost of one job, for metering
   # gpu.render: {kind: container, image: "acme/render:1", command: [render], secrets: [RENDER_KEY], placement: gpu}   # placement: local or a runner (container, service)
+  # audio.warm: {template: transcribe, always_on: true}   # any service: booted with the core, kept up, never asleep for idling (read_only: true for a read-only root)
+  # devices.gateway:              # linked devices sign in here (docs/devices.md): an ingress capability, never granted to agents
+  #   template: device-gateway
+  #   publish: "127.0.0.1:18630"  # the fixed loopback address your tunnel or proxy points at (below the agents' ports, 18642 up); needs core.loopback_trust: false
+  #   env: {CLIENT_IP_HEADER: Cf-Connecting-Ip, CLIENT_COUNTRY_HEADER: Cf-Ipcountry}   # the headers your edge sets
 placements:                       # where agents run besides local (compose here) and remote (ECS): docs/remote-core.md §6a
   # vps: {kind: runner}           # a host running `stormo runner vps`; its agents reach the core at core.urls.vps
 core:
@@ -99,7 +104,8 @@ core:
   # url: https://core.example:18600   # where agents and clients reach this core (default: a local core at host.docker.internal)
   # urls: {remote: "https://core.internal:18600", vps: "http://10.0.0.5:18600"}   # per placement (remote = ECS; aws also accepted), wins over url
   # storage: s3://acme-shared/workdir   # mirror the shared space to S3 too (pulled at start, pushed every 5 min); default: workdir/ alone (a disk or an EFS mount)
-  loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host)
+  loopback_trust: true            # direct loopback requests read the fleet's open views without a token (default true; off for a core behind a proxy or on a shared host; must be false with an ingress capability)
+  # devices: {idle_days: 30}      # linked devices unseen this long are unlinked (default 30; 0 never). docs/devices.md
   web_ui: false                   # serve the office and review pages in a browser (default false: the macOS app is the face)
   llm_concurrency: 3              # model calls the core's gateway runs at once for the whole fleet, per ChatGPT connection (1 to 64; default 3); the env SWARM_CORE_LLM_CONCURRENCY overrides it. Engine-neutral: every agent on the gateway shares it (a needletail agent's own chat lanes are limits.chat_turns)
   learning:                       # the swarm core's learning cycle (docs/core.md §6); off without `at`

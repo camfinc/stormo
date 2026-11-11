@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Stormo</string>
+    <string name="tile_label">Stormo fleet</string>
+    <string name="tile_description">Agents running, approvals waiting and proposals to review</string>
+</resources>

@@ -17,7 +17,9 @@ on `examples/minimal` only.
   hashes, `learnings/evidence-v1.json` (`learning.EvidenceStore` version 1; the dream's merge refuses
   what it cannot read, readers read it as none), the engines' learning exports the dream reads
   (`engine.OutcomeEvidence`: an EvidenceStore v1; `engine.LearningProposals`: reflection proposals v1),
-  the review verdict hashes in core.db (a proposal shown with evidence: `evidence-review-v1`), `.swarm/ports.json`, the core's auth files (`.swarm/core/auth/chatgpt.json` is the default
+  the review verdict hashes in core.db (a proposal shown with evidence: `evidence-review-v1`), the
+  linked devices in core.db (`devices`, `device_pairings`: public keys as JWK, grants as JSON, codes
+  only hashed), `.swarm/ports.json`, the core's auth files (`.swarm/core/auth/chatgpt.json` is the default
   ChatGPT connection's, `auth/<name>/` another's, `registration.json` shared), stormo.yaml `connections:`, the secrets files (`secrets.local.yaml` and each
   agent's `data/secrets.yaml`, read as its `agents.<id>` layer), agent.yaml's `format` (format 0 still
   loads; `stormo migrate agent` moves it to 1) and the `stormo export` zip (`stormo-agent/1`). Change

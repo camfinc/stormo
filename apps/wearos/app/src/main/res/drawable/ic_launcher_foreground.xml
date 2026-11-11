@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A bolt inside the adaptive icon's safe zone (the middle 66 of 108 dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M60,28 L38,58 L52,58 L46,82 L70,48 L56,48 L64,28 Z" />
+</vector>

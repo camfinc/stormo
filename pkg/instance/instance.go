@@ -159,6 +159,9 @@ type Instance struct {
 	// Requests that reach the core's loopback listener directly may read the fleet's open views
 	// without a token (stormo.yaml core.loopback_trust, default true). Everything else needs one.
 	CoreLoopbackTrust bool `json:"coreLoopbackTrust"`
+	// Linked devices unseen this many days are unlinked (stormo.yaml core.devices.idle_days, default
+	// 30; 0 never). docs/devices.md.
+	CoreDevicesIdleDays int `json:"coreDevicesIdleDays"`
 	// A second address the core listens on, beyond loopback (stormo.yaml core.listen), with TLS
 	// unless core.tls is off (only on a private address). docs/remote-core.md §3.
 	CoreListen string  `json:"coreListen,omitempty"`
@@ -220,14 +223,17 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
-		WebUI         bool              `yaml:"web_ui"`
-		Port          int               `yaml:"port"`
-		LoopbackTrust *bool             `yaml:"loopback_trust"`
-		Listen        string            `yaml:"listen"`
-		TLS           yaml.Node         `yaml:"tls"`
-		URL           string            `yaml:"url"`
-		URLs          map[string]string `yaml:"urls"`
-		Storage       string            `yaml:"storage"`
+		WebUI         bool  `yaml:"web_ui"`
+		Port          int   `yaml:"port"`
+		LoopbackTrust *bool `yaml:"loopback_trust"`
+		Devices       struct {
+			IdleDays *int `yaml:"idle_days"`
+		} `yaml:"devices"`
+		Listen  string            `yaml:"listen"`
+		TLS     yaml.Node         `yaml:"tls"`
+		URL     string            `yaml:"url"`
+		URLs    map[string]string `yaml:"urls"`
+		Storage string            `yaml:"storage"`
 		// LLMConcurrency is how many model calls the core's gateway runs at once (each
 		// ChatGPT connection's own, across the fleet); 0: the gateway's 3.
 		LLMConcurrency *int `yaml:"llm_concurrency"`
@@ -334,6 +340,20 @@ func Parse(root string, body []byte) (*Instance, error) {
 	capabilities, err := parseCapabilities(raw.Capabilities, placements)
 	if err != nil {
 		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
+	}
+	for _, c := range capabilities {
+		// An ingress worker is a container on this host: it reaches the core's loopback port, where
+		// loopback trust would let it read the open views without its key.
+		if c.Ingress && (raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust) {
+			return nil, &Error{fmt.Sprintf("%s: capabilities.%s is a way in from outside: set core.loopback_trust: false (its container reaches the core's loopback port)", path, c.Name)}
+		}
+	}
+	idleDays := 30
+	if d := raw.Core.Devices.IdleDays; d != nil {
+		if *d < 0 || *d > 3650 {
+			return nil, &Error{fmt.Sprintf("%s: core.devices.idle_days is 0 (never) to 3650", path)}
+		}
+		idleDays = *d
 	}
 	coreTLS, err := parseCoreTLS(&raw.Core.TLS, raw.Core.Listen)
 	if err != nil {
@@ -446,23 +466,24 @@ func Parse(root string, body []byte) (*Instance, error) {
 			KnowledgeSkill: or(raw.Names.KnowledgeSkill, slug+"-knowledge"),
 			SharedSkill:    or(raw.Names.SharedSkill, slug+"-shared-docs"),
 		},
-		ScrubTokenPrefixes: prefixes,
-		ScrubRules:         rules,
-		BridgeActions:      raw.Bridge.Actions,
-		Clocks:             raw.Office.Clocks,
-		OfficeUnits:        orUnits(raw.Office.Units),
-		CoreLearning:       learning,
-		CoreWebUI:          raw.Core.WebUI,
-		CorePortSetting:    raw.Core.Port,
-		CoreLoopbackTrust:  raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
-		CoreListen:         raw.Core.Listen,
-		CoreTLS:            coreTLS,
-		CoreURL:            strings.TrimRight(raw.Core.URL, "/"),
-		CoreURLs:           trimURLs(raw.Core.URLs),
-		Placements:         placements,
-		Capabilities:       capabilities,
-		CoreStorage:        strings.TrimRight(raw.Core.Storage, "/"),
-		CoreLLMConcurrency: llmConcurrency,
+		ScrubTokenPrefixes:  prefixes,
+		ScrubRules:          rules,
+		BridgeActions:       raw.Bridge.Actions,
+		Clocks:              raw.Office.Clocks,
+		OfficeUnits:         orUnits(raw.Office.Units),
+		CoreLearning:        learning,
+		CoreWebUI:           raw.Core.WebUI,
+		CorePortSetting:     raw.Core.Port,
+		CoreLoopbackTrust:   raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
+		CoreDevicesIdleDays: idleDays,
+		CoreListen:          raw.Core.Listen,
+		CoreTLS:             coreTLS,
+		CoreURL:             strings.TrimRight(raw.Core.URL, "/"),
+		CoreURLs:            trimURLs(raw.Core.URLs),
+		Placements:          placements,
+		Capabilities:        capabilities,
+		CoreStorage:         strings.TrimRight(raw.Core.Storage, "/"),
+		CoreLLMConcurrency:  llmConcurrency,
 		Aws: AwsTarget{
 			Account:          account,
 			Region:           or(aws.Region, Unset),

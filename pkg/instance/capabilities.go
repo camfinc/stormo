@@ -2,8 +2,10 @@ package instance
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/capability"
@@ -42,6 +44,18 @@ type Capability struct {
 	ShmMB       int               `json:"shmMB,omitempty"`
 	CPUs        float64           `json:"cpus,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	// AlwaysOn (service): booted with the core and kept running; the owner's sleep holds it down
+	// until a wake.
+	AlwaysOn bool `json:"alwaysOn,omitempty"`
+	// Ingress (from a template only): a way in from outside, not a worker for agents. No agent may be
+	// granted it, the broker queues no job for it, and each boot gets a fresh key of its own to the
+	// core (docs/devices.md). Always on, read-only, on this host, published at Publish.
+	Ingress bool `json:"ingress,omitempty"`
+	// Publish (ingress): the fixed loopback address its port is published on ("127.0.0.1:18630"),
+	// for the tunnel or proxy in front of it.
+	Publish string `json:"publish,omitempty"`
+	// ReadOnly (service): a read-only root filesystem with a small tmpfs /tmp.
+	ReadOnly bool `json:"readOnly,omitempty"`
 	// What agents read to explore it (cap_describe): usage, a JSON schema of the input, examples.
 	Docs        string           `json:"docs,omitempty"`
 	InputSchema map[string]any   `json:"inputSchema,omitempty"`
@@ -72,6 +86,10 @@ type rawCapability struct {
 	ShmMB          int               `yaml:"shm_mb"`
 	CPUs           float64           `yaml:"cpus"`
 	Env            map[string]string `yaml:"env"`
+	AlwaysOn       *bool             `yaml:"always_on"`
+	Ingress        *bool             `yaml:"ingress"`
+	Publish        string            `yaml:"publish"`
+	ReadOnly       *bool             `yaml:"read_only"`
 	Docs           string            `yaml:"docs"`
 	InputSchema    map[string]any    `yaml:"input_schema"`
 	Examples       []map[string]any  `yaml:"examples"`
@@ -105,6 +123,10 @@ func parseCapabilities(raw map[string]rawCapability, placements []Placement) ([]
 		if !CapabilityName.MatchString(n) {
 			return nil, fmt.Errorf("%s: a name is lowercase words joined by dots", where)
 		}
+		if r.Ingress != nil {
+			return nil, fmt.Errorf("%s: ingress comes from a template (device-gateway), never from %s", where, File)
+		}
+		ingress, custom := false, r.Image != "" || len(r.Command) > 0
 		if r.Template != "" {
 			t, ok := capability.Lookup(r.Template)
 			if !ok {
@@ -112,12 +134,14 @@ func parseCapabilities(raw map[string]rawCapability, placements []Placement) ([]
 					Concurrency: 1, TimeoutMinutes: 15, Unavailable: fmt.Sprintf("this engine ships no template %q (%s)", r.Template, strings.Join(capability.Names(), ", "))})
 				continue
 			}
+			ingress = t.Ingress
 			r = fromTemplate(r, t)
 		}
 		c := Capability{Name: n, Description: r.Description, Kind: r.Kind, Template: r.Template, URL: r.URL, Headers: r.Headers, Image: r.Image, Command: r.Command,
 			Secrets: r.Secrets, Placement: r.Placement, Concurrency: r.Concurrency, TimeoutMinutes: r.TimeoutMinutes, CostUSD: r.CostUSD,
 			Port: r.Port, Health: r.Health, IdleMinutes: r.IdleMinutes, BootMinutes: r.BootMinutes, MemoryMB: r.MemoryMB, ShmMB: r.ShmMB, CPUs: r.CPUs,
-			Env: r.Env, Docs: r.Docs, InputSchema: r.InputSchema, Examples: r.Examples, Files: r.Files}
+			Env: r.Env, Docs: r.Docs, InputSchema: r.InputSchema, Examples: r.Examples, Files: r.Files,
+			AlwaysOn: r.AlwaysOn != nil && *r.AlwaysOn, Ingress: ingress, Publish: r.Publish, ReadOnly: r.ReadOnly != nil && *r.ReadOnly}
 		switch c.Kind {
 		case "http":
 			if !strings.HasPrefix(c.URL, "https://") && !strings.HasPrefix(c.URL, "http://") {
@@ -157,8 +181,31 @@ func parseCapabilities(raw map[string]rawCapability, placements []Placement) ([]
 				c.MemoryMB < 0 || c.ShmMB < 0 || c.CPUs < 0 {
 				return nil, fmt.Errorf("%s: port 1-65535, health a path, idle_minutes up to 1440, boot_minutes up to 120, memory_mb, shm_mb and cpus not negative", where)
 			}
-		} else if c.Port != 0 || c.Health != "" || c.IdleMinutes != 0 || c.BootMinutes != 0 || c.MemoryMB != 0 || c.ShmMB != 0 || c.CPUs != 0 || len(c.Env) > 0 {
-			return nil, fmt.Errorf("%s: port, health, idle_minutes, boot_minutes, memory_mb, shm_mb, cpus and env are for kind service", where)
+		} else if c.Port != 0 || c.Health != "" || c.IdleMinutes != 0 || c.BootMinutes != 0 || c.MemoryMB != 0 || c.ShmMB != 0 || c.CPUs != 0 || len(c.Env) > 0 ||
+			c.AlwaysOn || c.ReadOnly {
+			return nil, fmt.Errorf("%s: port, health, idle_minutes, boot_minutes, memory_mb, shm_mb, cpus, env, always_on and read_only are for kind service", where)
+		}
+		if c.Publish != "" && !c.Ingress {
+			return nil, fmt.Errorf("%s: publish is for an ingress capability (template device-gateway); the core reaches other workers itself", where)
+		}
+		if c.Ingress {
+			// A way in from outside holds one credential, its own: nothing from the instance widens it.
+			switch {
+			case r.AlwaysOn != nil && !*r.AlwaysOn, r.ReadOnly != nil && !*r.ReadOnly:
+				return nil, fmt.Errorf("%s: an ingress capability is always on and read-only", where)
+			case custom:
+				return nil, fmt.Errorf("%s: an ingress capability runs its template's image and command, not another", where)
+			case c.Kind != "service" || c.Placement != "local":
+				return nil, fmt.Errorf("%s: an ingress capability is a service on this host (kind service, placement local)", where)
+			case len(c.Secrets) > 0:
+				return nil, fmt.Errorf("%s: an ingress capability takes no secrets: the core hands it its own key", where)
+			case c.Files != "" && c.Files != "none":
+				return nil, fmt.Errorf("%s: an ingress capability takes no files", where)
+			}
+			if err := checkPublish(c.Publish); err != nil {
+				return nil, fmt.Errorf("%s: %v", where, err)
+			}
+			c.AlwaysOn, c.ReadOnly = true, true
 		}
 		switch c.Files {
 		case "":
@@ -233,6 +280,12 @@ func fromTemplate(r rawCapability, t capability.Template) rawCapability {
 	if r.Health == "" {
 		r.Health = t.Health
 	}
+	if r.AlwaysOn == nil && t.AlwaysOn {
+		r.AlwaysOn = &t.AlwaysOn
+	}
+	if r.ReadOnly == nil && t.ReadOnly {
+		r.ReadOnly = &t.ReadOnly
+	}
 	env := map[string]string{}
 	for k, v := range t.Env {
 		env[k] = v
@@ -244,6 +297,23 @@ func fromTemplate(r rawCapability, t capability.Template) rawCapability {
 		r.Env = env
 	}
 	return r
+}
+
+// checkPublish: an ingress capability's publish is a loopback address and an unprivileged port, so
+// only the tunnel or proxy on this host reaches it.
+func checkPublish(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("an ingress capability needs publish: \"127.0.0.1:<port>\" (what your tunnel or proxy points at)")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("publish %q is host:port (\"127.0.0.1:18630\")", addr)
+	}
+	p, err := strconv.Atoi(port)
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() || err != nil || p < 1024 || p > 65535 {
+		return fmt.Errorf("publish %q must be a loopback address and a port from 1024 to 65535: only a tunnel or proxy on this host may reach it", addr)
+	}
+	return nil
 }
 
 // TemplateImage names the bundled template a capability's image is built from, when it is that template's.

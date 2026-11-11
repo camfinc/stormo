@@ -135,3 +135,47 @@ func TestUnknownTemplateIsUnavailableNotFatal(t *testing.T) {
 		t.Errorf("a.b: %+v", c)
 	}
 }
+
+func TestIngressCapabilityRules(t *testing.T) {
+	core := "core:\n  loopback_trust: false\n  devices: {idle_days: 7}\n"
+	gw := func(extra string) string {
+		return core + "capabilities:\n  devices.gateway: {template: device-gateway, publish: \"127.0.0.1:18650\"" + extra + "}\n"
+	}
+	i, err := load(t, gw(", env: {CLIENT_IP_HEADER: Cf-Connecting-Ip}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := i.CapabilityNamed("devices.gateway")
+	if !c.Ingress || !c.AlwaysOn || !c.ReadOnly || c.Publish != "127.0.0.1:18650" || c.Health != "/device/v1/health" || c.Kind != "service" ||
+		c.Placement != "local" || c.Files != "none" || c.Env["CLIENT_IP_HEADER"] != "Cf-Connecting-Ip" || c.Env["TOKEN_MINUTES"] != "60" || i.CoreDevicesIdleDays != 7 {
+		t.Errorf("gateway: %+v idle=%d", c, i.CoreDevicesIdleDays)
+	}
+	if i, _ := load(t, ""); i.CoreDevicesIdleDays != 30 {
+		t.Errorf("idle_days default: %d", i.CoreDevicesIdleDays)
+	}
+	for _, bad := range []struct{ yaml, want string }{
+		{"capabilities:\n  devices.gateway: {template: device-gateway, publish: \"127.0.0.1:18650\"}\n", "loopback_trust: false"},
+		{gw(", always_on: false"), "always on and read-only"},
+		{gw(", read_only: false"), "always on and read-only"},
+		{gw(", image: \"evil:1\""), "its template's image"},
+		{gw(", secrets: [API_KEY]"), "no secrets"},
+		{gw(", files: in"), "no files"},
+		{gw(", kind: container"), "for kind service"},
+		{core + "capabilities:\n  devices.gateway: {template: device-gateway}\n", "needs publish"},
+		{core + "capabilities:\n  devices.gateway: {template: device-gateway, publish: \"0.0.0.0:18650\"}\n", "loopback address"},
+		{core + "capabilities:\n  devices.gateway: {template: device-gateway, publish: \"127.0.0.1:80\"}\n", "1024 to 65535"},
+		{core + "capabilities:\n  x.y: {kind: service, image: \"a:1\", ingress: true}\n", "comes from a template"},
+		{core + "capabilities:\n  x.y: {kind: service, image: \"a:1\", publish: \"127.0.0.1:18650\"}\n", "publish is for an ingress"},
+		{core + "capabilities:\n  x.y: {kind: http, url: \"https://a.example\", always_on: true}\n", "for kind service"},
+		{"core:\n  devices: {idle_days: -1}\n", "idle_days"},
+	} {
+		if _, err := load(t, bad.yaml); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("%q: %v, want %q", bad.yaml, err, bad.want)
+		}
+	}
+	// Any service may be kept always on; only an ingress one is published.
+	i, err = load(t, "capabilities:\n  audio.transcribe: {template: transcribe, always_on: true}\n")
+	if c, _ := i.CapabilityNamed("audio.transcribe"); err != nil || !c.AlwaysOn || c.Ingress || c.ReadOnly {
+		t.Errorf("always-on transcribe: %+v %v", c, err)
+	}
+}

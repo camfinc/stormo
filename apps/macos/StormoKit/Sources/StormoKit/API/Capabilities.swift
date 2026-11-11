@@ -39,10 +39,21 @@ public struct CapabilityInfo: Codable, Sendable, Equatable, Identifiable {
     /// asleep | booting | awake (a service on the core's host), runner, or nil (a worker per job).
     public var worker: String?
     public var service: CapabilityWorker?
+    /// Booted with the core and kept running; the owner's sleep holds it down until a wake.
+    public var alwaysOn: Bool?
+    /// A way in from outside (the device gateway, docs/devices.md), never a worker for agents: no
+    /// agent may be granted it.
+    public var ingress: Bool?
+    /// Where an ingress capability is published for the tunnel or proxy in front of it ("127.0.0.1:18650").
+    public var publish: String?
+    /// The worker's root filesystem is read-only.
+    public var readOnly: Bool?
     public var id: String { name }
 
     /// The worker can be woken or put to sleep from here: a service on the core's host.
     public var isLocalService: Bool { kind == "service" && (placement ?? "local") == "local" && unavailable == nil }
+    public var isIngress: Bool { ingress ?? false }
+    public var isAlwaysOn: Bool { alwaysOn ?? false }
 }
 
 /// What an agent's jobs of a capability cost this month.
@@ -184,6 +195,10 @@ extension CapabilityInfo {
         public var env: [String: String]?
         public var docs: String?
         public var unavailable: String?
+        public var alwaysOn: Bool?
+        public var ingress: Bool?
+        public var publish: String?
+        public var readOnly: Bool?
     }
 
     /// What to patch env: with to make it `new`. A merge patch merges maps, so a name taken out is
@@ -204,6 +219,7 @@ extension CapabilityInfo {
             || concurrency != s.concurrency || (timeoutMinutes ?? s.timeoutMinutes) != s.timeoutMinutes
             || (idleMinutes ?? 0) != (s.idleMinutes ?? 0) || (memoryMB ?? 0) != (s.memoryMB ?? 0) || (shmMB ?? 0) != (s.shmMB ?? 0)
             || costUSD != s.costUSD || (env ?? [:]) != (s.env ?? [:]) || (files ?? "none") != (s.files ?? "none")
+            || (publish ?? "") != (s.publish ?? "")
     }
 }
 

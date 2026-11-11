@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nothing leaves the watch: the link is bound to a key that cannot move anyway. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="stormo.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="stormo.xml" />
+    </device-transfer>
+</data-extraction-rules>

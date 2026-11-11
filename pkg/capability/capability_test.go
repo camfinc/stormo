@@ -9,13 +9,21 @@ import (
 
 func TestBundledTemplates(t *testing.T) {
 	names := Names()
-	if strings.Join(names, ",") != "browser,hyperframes,image,media,transcribe,video" {
+	if strings.Join(names, ",") != "browser,device-gateway,hyperframes,image,media,transcribe,video" {
 		t.Fatalf("templates: %v", names)
 	}
-	tag := regexp.MustCompile(`^stormo-cap-[a-z]+:[0-9a-f]{12}$`)
+	tag := regexp.MustCompile(`^stormo-cap-[a-z-]+:[0-9a-f]{12}$`)
 	for _, tp := range Templates() {
-		if tp.Description == "" || tp.Docs == "" || tp.InputSchema["type"] != "object" || len(tp.Examples) == 0 || tp.Port == 0 || tp.Health == "" {
+		if tp.Description == "" || tp.Docs == "" || tp.Port == 0 || tp.Health == "" {
 			t.Errorf("%s: incomplete %+v", tp.Name, tp)
+		}
+		// A worker for agents says what it takes; a way in from outside takes no jobs, and is always
+		// on and read-only.
+		if !tp.Ingress && (tp.InputSchema["type"] != "object" || len(tp.Examples) == 0) {
+			t.Errorf("%s: no input schema or examples", tp.Name)
+		}
+		if tp.Ingress && (!tp.AlwaysOn || !tp.ReadOnly || tp.Files != "none" || tp.InputSchema != nil) {
+			t.Errorf("%s: an ingress template is always on, read-only and takes no files or input: %+v", tp.Name, tp)
 		}
 		switch tp.Files {
 		case "none", "in", "out", "both":

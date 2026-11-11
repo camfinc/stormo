@@ -190,6 +190,8 @@ var (
 	fBaseURL     = fs.String("base-url", "", "")
 	fKey         = fs.String("key", "", "")
 	fOptions     = fs.Bool("options", false, "")
+	fGrant       = fs.String("grant", "", "")
+	fAgents      = fs.String("agents", "", "")
 	errUsage     = errors.New("usage")
 )
 
@@ -693,6 +695,9 @@ func run(args []string) error {
 	case "capability", "capabilities":
 		return capabilityCmd(inst, sub, rest)
 
+	case "device", "devices":
+		return deviceCmd(inst, sub, rest)
+
 	case "runner":
 		if sub == "" {
 			return errUsage
@@ -854,8 +859,12 @@ func check(inst *instance.Instance, ids []string) ([]checked, error) {
 			return nil, err
 		}
 		for _, cp := range a.Capabilities {
-			if _, ok := inst.CapabilityNamed(cp); !ok {
+			c, ok := inst.CapabilityNamed(cp)
+			if !ok {
 				return nil, fmt.Errorf("agents/%s: capability %q is not declared in stormo.yaml capabilities:", id, cp)
+			}
+			if c.Ingress {
+				return nil, fmt.Errorf("agents/%s: capability %q is a way in for linked devices: no agent may be granted it", id, cp)
 			}
 		}
 		r, err := build.Agent(inst, id, build.Options{Out: filepath.Join(inst.Root, ".swarm", "check", id)})

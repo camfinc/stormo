@@ -23,6 +23,8 @@ final class AppModel {
     let files: FilesStore
     /// Each agent's Slack people and channels, for the editor's pickers (in memory only).
     let slack: SlackDirectoryStore
+    /// The Linked Devices page: devices, pending pairings and linking (in memory only: rows carry IPs).
+    let devices: DevicesStore
     /// The Chat section's conversations (in memory only: they hold client data).
     let chat = ChatStore()
 
@@ -65,6 +67,7 @@ final class AppModel {
         review = ReviewStore(client: client, instanceRoot: nil)
         files = FilesStore(client: client, instanceRoot: nil)
         slack = SlackDirectoryStore(client: client)
+        devices = DevicesStore(client: client)
     }
 
     // MARK: Startup
@@ -119,6 +122,7 @@ final class AppModel {
         files.clear()
         slack.client = client
         slack.clear()
+        devices.client = client
         fleet.clear()
         avatars = [:]
     }

@@ -22,6 +22,20 @@ boots again on the next one. Its `/cache` volume (models, downloads) outlives th
 the first boot ever downloads. The owner can wake one ahead of a batch or put one to sleep:
 `stormo capability wake|sleep <name>` (the core's `POST /api/capabilities/<name>/wake|sleep`).
 
+A service can instead be **always on** (`always_on: true`): booted when the core starts, kept
+running (booted again within seconds if it dies) and never put to sleep for idling. The owner's
+`stormo capability sleep` holds it down until a `wake` (or a core restart). `read_only: true` runs it
+on a read-only root filesystem with a small tmpfs `/tmp`.
+
+An **ingress** capability is a way in from outside, not a worker for agents: today the
+`device-gateway` template, through which linked devices sign in (docs/devices.md). Only a template
+makes one. It is always on and read-only, runs on this host, is published on the fixed loopback
+address the instance gives it (`publish: "127.0.0.1:<port>"`, what a tunnel or proxy points at),
+takes no secrets, files or jobs, and can't be granted to an agent (`stormo check` and `config
+apply` refuse it; `cap_list` never shows it). At each boot the core hands it a key of its own
+(`STORMO_INGRESS_KEY`, with `STORMO_CORE_URL`) that reaches `/api/ingress/*` and nothing else, and
+dies while it sleeps. An instance with one must set `core.loopback_trust: false`.
+
 `container` and `service` run on this host (`placement: local`, the default) or on a runner
 placement (`stormo runner <placement>` on a host with the hardware, docs/remote-core.md), which
 keeps its own services and fills secrets from its own secrets file.
@@ -46,6 +60,7 @@ capabilities:
 | `hyperframes` | renders a HyperFrames project (HTML + CSS + GSAP) to MP4/WebM/MOV/GIF; lint, validate, inspect, compositions | the project folder in, the video out | HyperFrames 0.8.97 on Playwright's image (headless shell, software GL) + ffmpeg; telemetry and update checks off; publish, auth, upgrade and preview never run |
 | `image` | one picture per job from a prompt (and reference images) on OpenRouter's Image API: backgrounds, scenes, illustrations, transparent stickers; `model` picks any image model there (default GPT Image 2.5 Flare) | references in, the image out | a stdlib Go adapter; the key is the capability's `secrets: [OPENROUTER_API_KEY]`, never the agent's |
 | `media` | ffmpeg on one file: `probe`, `qa` (loudness and stills), `stills`, `loudness`, `master` (two-pass loudnorm, video copied), `cover_candidates` (the strongest moments as a labelled contact sheet: scene cuts and samples scored for sharpness, contrast and exposure, black and look-alike frames left out) and `cover` (a moment fitted to story/portrait/square/landscape, cropped or over a blurred copy) | the file in, stills, sheets, covers and masters out | ffmpeg (Debian bookworm) behind a stdlib Go adapter |
+| `device-gateway` | **ingress, not for agents**: the way in for linked devices (pairing, hardware-key sessions, the device API), docs/devices.md | none | a stdlib Go server on an empty image; always on, read-only, published at `publish` |
 | `video` | renders a Remotion project to MP4/WebM/ProRes/GIF; optional loudness master, stills and contact sheet | the project folder in, the video and stills out | Remotion 4.0.535 with Chrome Headless Shell and ffmpeg. Remotion needs a company licence for companies of more than 3 people (remotion.dev/license) |
 
 `stormo capability templates` lists them; `stormo capability build <template>` builds one's image

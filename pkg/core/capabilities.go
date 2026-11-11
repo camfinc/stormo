@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,6 +66,12 @@ type BrokerOptions struct {
 	// Unit is an agent's unit when the fleet does not know it yet (its manifest's).
 	Unit func(agent string) string
 	Now  func() time.Time
+	// Ingress mints the per-boot keys of ingress capabilities; CoreURL is where their containers
+	// reach the core (docs/devices.md).
+	Ingress *IngressKeys
+	CoreURL func() string
+	// KeepEvery is how often always-on services are checked and booted again (default 15 s).
+	KeepEvery time.Duration
 }
 
 // Broker runs capability jobs.
@@ -104,6 +111,12 @@ func NewBroker(o BrokerOptions) *Broker {
 	}
 	if o.Scrub == nil {
 		o.Scrub = func(s string) string { return s }
+	}
+	if o.Ingress == nil {
+		o.Ingress = NewIngressKeys()
+	}
+	if o.KeepEvery == 0 {
+		o.KeepEvery = 15 * time.Second
 	}
 	if o.Unit == nil {
 		o.Unit = func(id string) string {
@@ -153,11 +166,11 @@ type JobView struct {
 
 const maxJobInput = 256 << 10
 
-// Granted is what an agent may use, as declared.
+// Granted is what an agent may use, as declared. An ingress capability is never one.
 func (b *Broker) Granted(agent string) []instance.Capability {
 	out := []instance.Capability{}
 	for _, name := range b.o.Grants(agent) {
-		if c, ok := b.o.Inst.CapabilityNamed(name); ok {
+		if c, ok := b.o.Inst.CapabilityNamed(name); ok && !c.Ingress {
 			out = append(out, c)
 		}
 	}
@@ -171,6 +184,9 @@ func (b *Broker) granted(agent, capability string) (instance.Capability, error) 
 	}
 	if c.Unavailable != "" {
 		return c, toolErr("%s cannot run here: %s", capability, c.Unavailable)
+	}
+	if c.Ingress {
+		return c, toolErr("%s is a way in for linked devices, not a capability for agents", capability)
 	}
 	if !slices.Contains(b.o.Grants(agent), capability) {
 		return c, toolErr("%s is not granted to you (agent.yaml capabilities:)", capability)
@@ -499,6 +515,7 @@ func (b *Broker) Run(stop <-chan struct{}) {
 		if c.Kind == "service" && c.Placement == "local" {
 			b.o.Services.Clean() // containers a stopped core left behind
 			go b.o.Services.Run(stop, 30*time.Second)
+			go b.keep(stop)
 			break
 		}
 	}
@@ -669,11 +686,68 @@ func (b *Broker) spec(c instance.Capability) link.ServiceSpec {
 		}
 	}
 	sp := link.ServiceSpec{Name: c.Name, Image: c.Image, Command: c.Command, Port: c.Port, Health: c.Health, Env: env, MemoryMB: c.MemoryMB, ShmMB: c.ShmMB,
-		CPUs: c.CPUs, Idle: time.Duration(c.IdleMinutes) * time.Minute, Boot: time.Duration(c.BootMinutes) * time.Minute}
+		CPUs: c.CPUs, Idle: time.Duration(c.IdleMinutes) * time.Minute, Boot: time.Duration(c.BootMinutes) * time.Minute,
+		Publish: c.Publish, ReadOnly: c.ReadOnly}
+	if c.AlwaysOn {
+		sp.Idle = 0 // never put to sleep for idling
+	}
 	if c.Files != "none" {
 		sp.JobsDir = filepath.Join(b.o.JobsDir, jobDirName(c.Name))
 	}
+	if c.Ingress {
+		// Its one credential: a key minted at each boot, with where the core is. Nothing to cache.
+		sp.NoCache = true
+		if runtime.GOOS == "linux" {
+			sp.ExtraHosts = []string{"host.docker.internal:host-gateway"} // Docker Engine maps it to the bridge listener
+		}
+		name, keys, url := c.Name, b.o.Ingress, b.o.CoreURL
+		sp.BootEnv = func() map[string]string {
+			env := map[string]string{"STORMO_INGRESS_KEY": keys.Mint(name)}
+			if url != nil {
+				env["STORMO_CORE_URL"] = url()
+			}
+			return env
+		}
+	}
 	return sp
+}
+
+// keep boots the always-on services on this host that are down (unless the owner holds them
+// asleep) every KeepEvery until stop. A failure is logged when it changes.
+func (b *Broker) keep(stop <-chan struct{}) {
+	last := map[string]string{}
+	t := time.NewTimer(2 * time.Second) // the first look once the core listens
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			t.Reset(b.o.KeepEvery)
+		}
+		for _, c := range b.o.Inst.Capabilities {
+			if !c.AlwaysOn || c.Kind != "service" || c.Placement != "local" || c.Unavailable != "" {
+				continue
+			}
+			if c.Ingress && (b.o.CoreURL == nil || b.o.CoreURL() == "") {
+				continue // not listening yet: its worker would not know where the core is
+			}
+			msg := ""
+			if err := b.image(c); err != nil {
+				msg = err.Error()
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.BootMinutes)*time.Minute+time.Minute)
+				if err := b.o.Services.Keep(ctx, b.spec(c)); err != nil {
+					msg = err.Error()
+				}
+				cancel()
+			}
+			if msg != last[c.Name] && msg != "" {
+				log.Printf("capabilities: keeping %s up: %s", c.Name, msg)
+			}
+			last[c.Name] = msg
+		}
+	}
 }
 
 func jobDirName(capability string) string { return strings.ReplaceAll(capability, ".", "-") }
@@ -934,6 +1008,7 @@ func (b *Broker) Wake(name string) (link.ServiceState, error) {
 	if c.Unavailable != "" {
 		return link.ServiceState{}, fmt.Errorf("%s cannot run here: %s", name, c.Unavailable)
 	}
+	b.o.Services.Release(name) // a wake lifts the owner's hold on an always-on service
 	go func() {
 		if err := b.image(c); err != nil {
 			log.Printf("capabilities: %v", err)
@@ -941,7 +1016,8 @@ func (b *Broker) Wake(name string) (link.ServiceState, error) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.BootMinutes)*time.Minute+time.Minute)
 		defer cancel()
-		if _, err := b.o.Services.Ensure(ctx, b.spec(c)); err != nil {
+		// Keep, not Ensure: a sleep that comes after this wake wins, even before the boot starts.
+		if err := b.o.Services.Keep(ctx, b.spec(c)); err != nil {
 			log.Printf("capabilities: waking %s: %v", name, err)
 		}
 	}()
@@ -960,6 +1036,7 @@ func (b *Broker) Sleep(name string) (link.ServiceState, error) {
 	if err := b.o.Services.Sleep(name); err != nil {
 		return b.o.Services.State(name), err
 	}
+	// An ingress worker's key is refused while it sleeps (Core.caller) and replaced by the next boot.
 	return b.o.Services.State(name), nil
 }
 

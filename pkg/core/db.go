@@ -203,6 +203,43 @@ var migrations = []string{
 	`ALTER TABLE cap_jobs ADD COLUMN uploads TEXT NOT NULL DEFAULT '[]';
 	ALTER TABLE cap_jobs ADD COLUMN pending INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE cap_jobs ADD COLUMN wait_until INTEGER NOT NULL DEFAULT 0;`,
+	// 12: linked devices (docs/devices.md): each device's public key and grants, and the pairings
+	// waiting for the owner to type their code (only the code's hash is kept).
+	`CREATE TABLE devices (
+		id             TEXT PRIMARY KEY,
+		name           TEXT NOT NULL,
+		model          TEXT NOT NULL,
+		os             TEXT NOT NULL,
+		app_version    TEXT NOT NULL,
+		public_key     TEXT NOT NULL,
+		fingerprint    TEXT NOT NULL,
+		attestation    TEXT NOT NULL DEFAULT '[]',
+		grants         TEXT NOT NULL,
+		created        INTEGER NOT NULL,
+		last_seen      INTEGER,
+		last_ip        TEXT NOT NULL DEFAULT '',
+		country        TEXT NOT NULL DEFAULT '',
+		revoked        INTEGER,
+		revoked_reason TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE device_pairings (
+		id          TEXT PRIMARY KEY,
+		code_hash   TEXT NOT NULL,
+		name        TEXT NOT NULL,
+		model       TEXT NOT NULL,
+		os          TEXT NOT NULL,
+		app_version TEXT NOT NULL,
+		public_key  TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		attestation TEXT NOT NULL DEFAULT '[]',
+		ip          TEXT NOT NULL DEFAULT '',
+		country     TEXT NOT NULL DEFAULT '',
+		created     INTEGER NOT NULL,
+		expires     INTEGER NOT NULL,
+		state       TEXT NOT NULL,
+		device_id   TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX device_pairings_code ON device_pairings(code_hash, state);`,
 }
 
 // DB is core.db.
