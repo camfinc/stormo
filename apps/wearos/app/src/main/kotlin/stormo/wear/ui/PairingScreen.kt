@@ -87,6 +87,7 @@ class PairingViewModel(private val gateway: Gateway) : ViewModel() {
 fun PairingScreen(gateway: Gateway, onLinked: () -> Unit, onSettings: () -> Unit) {
     val vm = viewModel { PairingViewModel(gateway) }
     val ui by vm.ui.collectAsStateWithLifecycle()
+    val unlinkedBecause by gateway.unlinkedBecause.collectAsStateWithLifecycle()
 
     LaunchedEffect(ui) { if (ui == PairingUi.Linked) onLinked() }
 
@@ -98,6 +99,7 @@ fun PairingScreen(gateway: Gateway, onLinked: () -> Unit, onSettings: () -> Unit
     }
 
     ListScreen(edgeButton = retry) { list ->
+        unlinkedBecause?.let { why -> item { Note(why, itemModifier(list), error = true) } }
         when (val state = ui) {
             PairingUi.Preparing -> item { Busy("Making this watch's key…", itemModifier(list)) }
             is PairingUi.Code -> {

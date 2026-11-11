@@ -58,7 +58,7 @@ class FakeTime(var now: Long = 1_000_000L) {
 }
 
 fun client(transport: Transport, time: FakeTime = FakeTime()) =
-    GatewayClient(BASE, transport, io = Dispatchers.Unconfined, sleep = time.sleep)
+    GatewayClient(BASE, transport, io = Dispatchers.Unconfined, sleep = time.sleep, clock = time.clock)
 
 /** A software P-256 key behind the same interface as the Keystore one. */
 class SoftwareKey(val pair: KeyPair = generate()) : DeviceKey {

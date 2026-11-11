@@ -85,6 +85,11 @@ class ReviewViewModel(private val gateway: Gateway) : ViewModel() {
                 notice = "Already decided elsewhere.",
             )
             DecideResult.Changed -> s.copy(deciding = false, notice = "This changed; reload.")
+            is DecideResult.TryAgain -> s.copy(
+                deciding = false,
+                notice = result.seconds?.takeIf { it > 0 }?.let { "The review is busy. Try again in $it s." }
+                    ?: "The review is busy. Try again shortly.",
+            )
             is DecideResult.AppOnly -> s.copy(
                 items = items.map { if (it.sameAs(item)) it.copy(appOnly = true, why = result.why ?: it.why) else it },
                 deciding = false,

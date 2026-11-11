@@ -33,7 +33,8 @@ import java.util.concurrent.Executor
 /**
  * The fleet at a glance: agents running, approvals waiting, proposals to review. It shows counts
  * only (never names or messages), refreshes them when they are older than [STALE_MILLIS] and the
- * watch can open a session, and opens the app when tapped.
+ * watch is unlocked (a locked watch sends nothing: the tile shows the last counts), and opens the
+ * app when tapped.
  */
 class FleetTileService : TileService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -44,7 +45,7 @@ class FleetTileService : TileService() {
                 val gateway = (application as StormoApp).gateway
                 val cached = gateway.store.summary()
                 val stale = cached == null || System.currentTimeMillis() - cached.second > STALE_MILLIS
-                if (gateway.link.value is LinkState.Linked && stale) {
+                if (gateway.link.value is LinkState.Linked && stale && !gateway.isLocked()) {
                     try {
                         withTimeoutOrNull(REFRESH_TIMEOUT_MILLIS) { gateway.fleet(notifyTile = false) }
                     } catch (e: CancellationException) {

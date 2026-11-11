@@ -92,6 +92,18 @@ button with `review`, and chat only with the agents `chat` covers. Grants are ch
   sign only, SHA-256), not exportable, usable only while the watch is unlocked, in StrongBox when the
   watch has one (else the TEE), with a hardware attestation chain sent at pairing when the watch
   gives one. The gateway gets only the public key, as a JWK.
+- **Only a hardware key backs a link.** After making the key the app reads the Keystore's own record
+  of it (`KeyInfo`: the security level on API 31+, `isInsideSecureHardware` before); a key that is
+  not in StrongBox or the TEE is deleted and pairing stops ("This watch has no hardware key store;
+  it can't be linked").
+- **A locked watch sends nothing.** Every authenticated request first checks that the watch is
+  unlocked (`KeyguardManager.isDeviceLocked`); while it is locked the in-memory token is dropped and
+  no request is made. The tile shows its last counts without refreshing, and a reply being followed
+  pauses until the watch is unlocked.
+- **A key that can never sign again unlinks the watch**: permanently invalidated (for example after
+  the screen lock was removed), unrecoverable, or missing. The pairing screen says why, and asks for
+  a screen lock when the watch has none. A signature refused because the watch is locked asks to
+  unlock it instead.
 - **The session token is kept in memory only**, never on disk; a new one is made by signing a fresh
   challenge (`stormo-device-session`, the device id and the nonce) whenever it is needed. The pairing
   device code also stays in memory.
@@ -99,12 +111,17 @@ button with `review`, and chat only with the agents `chat` covers. Grants are ch
   if the gateway reports a different one, the pairing stops with a warning and no code is shown.
 - **HTTPS only** in release builds (network security config, system CAs only), no redirects
   followed, no caching, 10 s connect and 30 s read timeouts.
+- **Rate limits hold every request.** A 429's `Retry-After` sets one "not before" time for all
+  routes: a call within 30 s of it waits, a later one is answered "try again in N s" without reaching
+  the gateway, and a reply being followed waits and resumes. A contended review (429) says "try again
+  shortly"; `busy` is chat's alone (a reply already running).
 - Nothing is logged: no tokens, codes or messages.
 - On disk: the gateway address, the device id and name, and the tile's counts. Excluded from
   backups and device transfer.
 - *Unlink this watch* deletes the key and everything stored. It cannot revoke the link on the core
   (a device can't); revoke it on the Mac too: `stormo device revoke <device>`. When the core answers
-  `device_unknown` (revoked, expired), the watch deletes its key and returns to pairing.
+  `device_unknown` (revoked, expired), including to a session challenge, the watch deletes its key
+  and returns to pairing, saying why.
 
 ## Identity
 

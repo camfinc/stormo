@@ -227,7 +227,7 @@ class DeviceSessionTest {
             }
         }
         var unlinked = 0
-        val session = DeviceSession(client(transport, time), deviceId, key, time.clock, Dispatchers.Unconfined, onDeviceUnknown = { unlinked++ })
+        val session = DeviceSession(client(transport, time), deviceId, key, time.clock, Dispatchers.Unconfined, onLinkLost = { unlinked++ })
         var ran = false
         assertEquals(ErrorCode.DEVICE_UNKNOWN, expect<GatewayException> { session.call { ran = true } }.code)
         assertEquals(listOf("POST /session/challenge"), transport.paths())
@@ -242,14 +242,14 @@ class DeviceSessionTest {
         val transport = FakeTransport(challenge("n1"), token("std_a"), err(401, "device_unknown"))
         val c = client(transport, time)
         var unlinked = 0
-        val session = DeviceSession(c, deviceId, SoftwareKey(), time.clock, Dispatchers.Unconfined, onDeviceUnknown = { unlinked++ })
+        val session = DeviceSession(c, deviceId, SoftwareKey(), time.clock, Dispatchers.Unconfined, onLinkLost = { unlinked++ })
         expect<GatewayException> { session.call { t -> c.fleet(t) } }
         assertEquals(1, unlinked)
 
         // Other failures leave the link alone.
         val other = FakeTransport(challenge("n1"), token("std_a"), err(403, "forbidden"))
         val c2 = client(other, time)
-        val s2 = DeviceSession(c2, deviceId, SoftwareKey(), time.clock, Dispatchers.Unconfined, onDeviceUnknown = { unlinked++ })
+        val s2 = DeviceSession(c2, deviceId, SoftwareKey(), time.clock, Dispatchers.Unconfined, onLinkLost = { unlinked++ })
         expect<GatewayException> { s2.call { t -> c2.fleet(t) } }
         assertEquals(1, unlinked)
     }

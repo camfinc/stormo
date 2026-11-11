@@ -1,5 +1,6 @@
 package stormo.wear.data
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.os.Build
 import androidx.wear.tiles.TileService
@@ -25,6 +26,7 @@ import stormo.wear.core.ErrorText
 import stormo.wear.core.Fleet
 import stormo.wear.core.FleetSummary
 import stormo.wear.core.GatewayClient
+import stormo.wear.core.KeyLostException
 import stormo.wear.core.KeyUnavailableException
 import stormo.wear.core.Linked
 import stormo.wear.core.Me
@@ -57,11 +59,13 @@ data class ActiveTurn(
 
 /**
  * The app's single gateway connection: the stored link, the in-memory session, and every call the
- * screens and the tile make. A `device_unknown` answer anywhere unlinks the watch locally.
+ * screens and the tile make. Nothing authenticated is sent while the watch is locked. A
+ * `device_unknown` answer anywhere, or a key that can never sign again, unlinks the watch locally.
  */
 class Gateway(private val context: Context) {
     val store = LocalStore(context)
-    private val keys: DeviceKeys = KeystoreDeviceKeys()
+    private val keyguard: KeyguardManager? = context.getSystemService(KeyguardManager::class.java)
+    private val keys: DeviceKeys = KeystoreDeviceKeys(isLocked = ::isLocked, isDeviceSecure = ::isDeviceSecure)
     private val transport = UrlConnectionTransport()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -85,6 +89,10 @@ class Gateway(private val context: Context) {
     private val turnState = MutableStateFlow<ActiveTurn?>(null)
     val activeTurn: StateFlow<ActiveTurn?> = turnState.asStateFlow()
 
+    /** Why the watch was unlinked without being asked to (revoked, key lost), until it pairs again. */
+    private val unlinkedState = MutableStateFlow<String?>(null)
+    val unlinkedBecause: StateFlow<String?> = unlinkedState.asStateFlow()
+
     /** Agent names from the last fleet read, for titles. */
     private val agentNames = HashMap<String, String>()
 
@@ -94,6 +102,11 @@ class Gateway(private val context: Context) {
     val gatewayUrl: String? get() = store.gatewayUrl
 
     fun agentName(id: String): String = agentNames[id] ?: id
+
+    /** The watch is locked now: the key can't sign and nothing authenticated is sent. */
+    fun isLocked(): Boolean = keyguard?.isDeviceLocked == true
+
+    private fun isDeviceSecure(): Boolean = keyguard?.isDeviceSecure == true
 
     fun client(url: String): GatewayClient {
         cachedClient?.takeIf { it.baseUrl == url.trimEnd('/') }?.let { return it }
@@ -114,6 +127,7 @@ class Gateway(private val context: Context) {
     fun completePairing(linked: Linked) {
         store.saveLink(linked)
         cachedSession = null
+        unlinkedState.value = null
         linkState.value = readLink()
     }
 
@@ -121,13 +135,18 @@ class Gateway(private val context: Context) {
     fun unlink() {
         deleteKeyQuietly()
         store.clear(everything = true)
+        unlinkedState.value = null
         reset()
     }
 
-    /** The core no longer knows this watch (revoked, expired): drop the link, keep the address. */
-    private fun forgetLink() {
+    /**
+     * The link is gone (the core no longer knows this watch, or its key can never sign again): drop
+     * it, keep the address, and say why on the pairing screen.
+     */
+    private fun forgetLink(reason: StormoException) {
         deleteKeyQuietly()
         store.clear(everything = false)
+        unlinkedState.value = ErrorText.of(reason)
         reset()
     }
 
@@ -198,13 +217,20 @@ class Gateway(private val context: Context) {
     private fun session(): DeviceSession {
         cachedSession?.let { return it }
         val linked = store.linked ?: throw NotLinkedException("this watch isn't linked")
-        val key = keys.load()
+        val key = try {
+            keys.load()
+        } catch (e: KeyLostException) {
+            forgetLink(e)
+            throw e
+        }
         if (key == null) {
             // The key is gone (the watch was reset): the link can never sign again.
-            forgetLink()
-            throw KeyUnavailableException("this watch's key is gone")
+            val lost = KeyLostException(screenLockMissing = !isDeviceSecure())
+            forgetLink(lost)
+            throw lost
         }
-        return DeviceSession(client(), linked.deviceId, key, onDeviceUnknown = ::forgetLink).also { cachedSession = it }
+        return DeviceSession(client(), linked.deviceId, key, isLocked = ::isLocked, onLinkLost = ::forgetLink)
+            .also { cachedSession = it }
     }
 
     private fun deleteKeyQuietly() {

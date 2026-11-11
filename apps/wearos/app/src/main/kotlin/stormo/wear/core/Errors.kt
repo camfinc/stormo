@@ -93,7 +93,15 @@ object ApiErrors {
 object ErrorText {
     fun of(error: Throwable): String = when (error) {
         is NetworkException -> "Can't reach the gateway. Check the watch's connection."
-        is KeyUnavailableException -> "The watch's key can't sign right now. Unlock the watch and try again."
+        is DeviceLockedException -> "Unlock the watch to reach the fleet."
+        is KeyLostException ->
+            if (error.screenLockMissing) {
+                "This watch's key can't be used any more, so it was unlinked. Set a screen lock, then pair again."
+            } else {
+                "This watch's key can't be used any more, so it was unlinked. Pair it again."
+            }
+        is NoHardwareKeyStoreException -> "This watch has no hardware key store; it can't be linked."
+        is KeyUnavailableException -> "The watch's key couldn't sign. Try again."
         is ProtocolException -> "The gateway sent an unexpected answer."
         is NotLinkedException -> "Pair this watch first."
         is FingerprintMismatchException -> "The gateway reported a key this watch didn't make."
@@ -108,7 +116,7 @@ object ErrorText {
             ErrorCode.BUSY -> "A reply is already running on this watch. Wait for it to finish."
             ErrorCode.BAD_SIGNATURE ->
                 "This watch's key doesn't match its link. Unlink it in Settings and pair again."
-            ErrorCode.DEVICE_UNKNOWN -> "This watch is no longer linked. Pair it again."
+            ErrorCode.DEVICE_UNKNOWN -> "This watch was unlinked on the Mac (revoked, or unused too long). Pair it again."
             ErrorCode.UNAUTHORIZED, ErrorCode.EXPIRED_NONCE -> "The session ended. Try again."
             ErrorCode.APP_ONLY -> "This is decided in the app."
             ErrorCode.EXPIRED_TOKEN -> "The code expired."

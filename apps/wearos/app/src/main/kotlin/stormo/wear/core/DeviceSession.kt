@@ -9,9 +9,15 @@ import kotlin.coroutines.CoroutineContext
 /**
  * A linked device's session: challenge → sign → token. The token lives in this object only (never
  * on disk) and is renewed shortly before it expires. A call answered `unauthorized` (the token
- * expired, or the gateway restarted) opens a new session and is retried once. `device_unknown`,
- * whether the challenge, the session or the call itself answers it, runs [onDeviceUnknown] (the
- * app unlinks locally) and reaches the caller; so does `bad_signature`.
+ * expired, or the gateway restarted) opens a new session and is retried once.
+ *
+ * A locked watch does nothing: every call first checks [isLocked]; while locked the token is dropped
+ * and [DeviceLockedException] is thrown without a request, so a copied-in-memory token is never used
+ * by a watch nobody has unlocked.
+ *
+ * The link is lost when the gateway answers `device_unknown` (to the challenge, the session or the
+ * call) or the key can never sign again ([KeyLostException]): [onLinkLost] runs (the app unlinks
+ * locally) and the error reaches the caller. `bad_signature` reaches the caller as is.
  */
 class DeviceSession(
     private val client: GatewayClient,
@@ -19,7 +25,8 @@ class DeviceSession(
     private val key: DeviceKey,
     private val clock: () -> Long = System::currentTimeMillis,
     private val signing: CoroutineContext = Dispatchers.IO,
-    private val onDeviceUnknown: () -> Unit = {},
+    private val isLocked: () -> Boolean = { false },
+    private val onLinkLost: (StormoException) -> Unit = {},
 ) {
     private val mutex = Mutex()
     private var token: String? = null
@@ -28,7 +35,10 @@ class DeviceSession(
     suspend fun <T> call(block: suspend (token: String) -> T): T = try {
         callRetrying(block)
     } catch (e: GatewayException) {
-        if (e.code == ErrorCode.DEVICE_UNKNOWN) onDeviceUnknown()
+        if (e.code == ErrorCode.DEVICE_UNKNOWN) onLinkLost(e)
+        throw e
+    } catch (e: KeyLostException) {
+        onLinkLost(e)
         throw e
     }
 
@@ -40,6 +50,13 @@ class DeviceSession(
             if (e.code != ErrorCode.UNAUTHORIZED) throw e
             forget(first)
             block(token())
+        }
+    }
+
+    private suspend fun requireUnlocked() {
+        if (isLocked()) {
+            clear()
+            throw DeviceLockedException()
         }
     }
 
@@ -56,10 +73,16 @@ class DeviceSession(
         }
     }
 
-    private suspend fun token(): String = mutex.withLock {
+    /** The current token, or a new session's; never while the watch is locked. */
+    private suspend fun token(): String {
+        requireUnlocked()
+        return mutex.withLock { tokenLocked() }
+    }
+
+    private suspend fun tokenLocked(): String {
         val current = token
         if (current != null && clock() < expiresAt) return current
-        open()
+        return open()
     }
 
     private suspend fun open(): String {

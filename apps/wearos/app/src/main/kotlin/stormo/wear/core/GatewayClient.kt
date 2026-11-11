@@ -11,8 +11,11 @@ import kotlin.coroutines.CoroutineContext
 
 /**
  * The device API (`/device/v1/…`), one method per route, typed in and out. Errors are thrown as
- * [GatewayException] (a contract code), [NetworkException] or [ProtocolException]. A 429 is retried
- * once after its `Retry-After` when that is short; a longer one is thrown for the caller to show.
+ * [GatewayException] (a contract code), [NetworkException] or [ProtocolException].
+ *
+ * Rate limits are shared: any 429 sets one "not before" time for every route. A call made before it
+ * waits it out when that is at most [MAX_AUTO_RETRY_SECONDS], else it gets `rate_limited` (with the
+ * seconds left) without reaching the gateway. A 429 answer itself is retried once, after its wait.
  * Nothing here logs: bodies carry codes, tokens and messages.
  */
 class GatewayClient(
@@ -20,8 +23,18 @@ class GatewayClient(
     private val transport: Transport,
     private val io: CoroutineContext = Dispatchers.IO,
     private val sleep: suspend (Long) -> Unit = { delay(it) },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val baseUrl: String = baseUrl.trimEnd('/')
+
+    /** No request before this time (millis), from the last 429's `Retry-After`. */
+    @Volatile private var notBefore = 0L
+
+    /** Seconds until the gateway may be called again; 0 when it may be now. */
+    fun rateLimitedFor(): Long {
+        val left = notBefore - clock()
+        return if (left <= 0) 0 else (left + 999) / 1000
+    }
 
     suspend fun health(): Boolean = call("GET", "/health").optString("status") == "ok"
 
@@ -101,6 +114,7 @@ class GatewayClient(
         val request = HttpRequest(method, "$baseUrl$PREFIX$path", headers, body?.toString())
         var retried = false
         while (true) {
+            awaitRateLimit()
             val response = try {
                 withContext(io) { transport.execute(request) }
             } catch (e: IOException) {
@@ -108,14 +122,26 @@ class GatewayClient(
             }
             if (response.status in 200..299) return Parse.obj(response.body.ifEmpty { "{}" })
             val error = ApiErrors.parse(response.status, response.body, response.header("Retry-After"))
-            val wait = error.retryAfterSeconds
-            if (error.code == ErrorCode.RATE_LIMITED && retryRateLimit && !retried && wait != null && wait <= MAX_AUTO_RETRY_SECONDS) {
-                retried = true
-                sleep(wait.coerceAtLeast(1) * 1000)
-                continue
+            if (error.code == ErrorCode.RATE_LIMITED) {
+                val wait = error.retryAfterSeconds ?: DEFAULT_RETRY_AFTER_SECONDS
+                notBefore = maxOf(notBefore, clock() + wait * 1000)
+                if (retryRateLimit && !retried && wait <= MAX_AUTO_RETRY_SECONDS) {
+                    retried = true
+                    continue
+                }
             }
             throw error
         }
+    }
+
+    /** Waits out a short shared rate limit; a long one is answered `rate_limited` without a request. */
+    private suspend fun awaitRateLimit() {
+        val left = notBefore - clock()
+        if (left <= 0) return
+        if (left > MAX_AUTO_RETRY_SECONDS * 1000) {
+            throw GatewayException(429, ErrorCode.RATE_LIMITED, ErrorCode.RATE_LIMITED.wire, null, (left + 999) / 1000)
+        }
+        sleep(left)
     }
 
     private fun segment(s: String): String = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
@@ -124,5 +150,8 @@ class GatewayClient(
         const val PREFIX = "/device/v1"
         const val MAX_MESSAGE = 4000
         const val MAX_AUTO_RETRY_SECONDS = 30L
+
+        /** The wait after a 429 that carries no `Retry-After`. */
+        const val DEFAULT_RETRY_AFTER_SECONDS = 5L
     }
 }

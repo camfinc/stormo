@@ -20,6 +20,9 @@ sealed interface DecideResult {
 
     /** The proposal changed since it was shown: nothing was decided; reload the list. */
     data object Changed : DecideResult
+
+    /** The review is busy (rate limited): nothing was decided; try again after [seconds]. */
+    data class TryAgain(val seconds: Long?) : DecideResult
 }
 
 object Review {
@@ -31,7 +34,8 @@ object Review {
 
     /**
      * Sends a decision, refusing locally (no request at all) for an app-only item. The gateway's
-     * `app_only`, `not_found` and `changed` are results, not failures.
+     * `app_only`, `not_found`, `changed` and `rate_limited` (the core answers a contended review
+     * with it) are results, not failures. `busy` belongs to chat and is not one of them.
      */
     suspend fun decide(item: ReviewItem, decision: Decision, post: suspend (ReviewItem, Decision) -> Unit): DecideResult {
         if (!decidableOnWatch(item)) return DecideResult.AppOnly(item.why)
@@ -43,6 +47,7 @@ object Review {
                 ErrorCode.APP_ONLY -> DecideResult.AppOnly(item.why ?: e.serverMessage)
                 ErrorCode.NOT_FOUND -> DecideResult.Gone
                 ErrorCode.CHANGED -> DecideResult.Changed
+                ErrorCode.RATE_LIMITED -> DecideResult.TryAgain(e.retryAfterSeconds)
                 else -> throw e
             }
         }
@@ -71,15 +76,16 @@ object Chat {
     }
 
     /**
-     * Polls a turn every [POLL_MILLIS] until it is done or failed. Short outages are ridden out;
-     * anything else (the turn is gone, the session ended for good) is thrown.
+     * Polls a turn every [POLL_MILLIS] until it is done or failed. Short outages are ridden out; a
+     * locked watch pauses the polling and a rate limit is waited out (neither counts toward giving
+     * up); anything else (the turn is gone, the link is lost) is thrown.
      */
     suspend fun await(
         fetch: suspend () -> TurnStatus,
         sleep: suspend (Long) -> Unit,
         clock: () -> Long = System::currentTimeMillis,
     ): TurnStatus {
-        val giveUp = clock() + GIVE_UP_MILLIS
+        var giveUp = clock() + GIVE_UP_MILLIS
         var failures = 0
         while (true) {
             sleep(POLL_MILLIS)
@@ -87,6 +93,18 @@ object Chat {
                 val status = fetch()
                 failures = 0
                 if (status.state != TurnState.RUNNING) return status
+            } catch (e: DeviceLockedException) {
+                // Nothing is sent while locked; the turn keeps running and is read after unlock.
+                giveUp += POLL_MILLIS
+                continue
+            } catch (e: GatewayException) {
+                if (e.code == ErrorCode.RATE_LIMITED) {
+                    val wait = (e.retryAfterSeconds ?: GatewayClient.DEFAULT_RETRY_AFTER_SECONDS) * 1000
+                    sleep(wait)
+                    giveUp += wait + POLL_MILLIS
+                    continue
+                }
+                if (!e.isTransient() || ++failures >= MAX_TRANSIENT_FAILURES) throw e
             } catch (e: StormoException) {
                 if (!e.isTransient() || ++failures >= MAX_TRANSIENT_FAILURES) throw e
             }
