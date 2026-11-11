@@ -40,12 +40,12 @@ func ABI() (int, error) {
 // abstract unix sockets and signals to the domain (no signal to a process outside it). Landlock
 // and no_new_privs are per thread: the caller locks its goroutine to the thread and execs from it.
 func Restrict(rules []Rule, abi int, noNet bool) error {
-	attr := unix.LandlockRulesetAttr{Access_fs: Handled(abi)}
+	attr := unix.LandlockRulesetAttr{Handled_access_fs: Handled(abi)}
 	if noNet {
 		if abi < TaintedABI {
 			return fmt.Errorf("landlock ABI %d cannot deny the network (ABI %d)", abi, TaintedABI)
 		}
-		attr.Access_net = unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP
+		attr.Handled_access_net = unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP
 		if abi >= 6 {
 			attr.Scoped = unix.LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | unix.LANDLOCK_SCOPE_SIGNAL
 		}
