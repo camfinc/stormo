@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the tile looks like, for the tile picker: a title and three lines of counts. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="192dp"
+    android:height="192dp"
+    android:viewportWidth="192"
+    android:viewportHeight="192">
+    <path android:fillColor="#FF000000" android:pathData="M96,0a96,96 0,1 1,0 192a96,96 0,1 1,0 -192z" />
+    <path android:fillColor="#FF8AB4F8" android:pathData="M76,52h40v8h-40z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M48,76h96v14h-96z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M64,102h64v9h-64z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M60,120h72v9h-72z" />
+    <path android:fillColor="#FFB0BEC5" android:pathData="M76,140h40v6h-40z" />
+</vector>

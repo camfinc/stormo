@@ -1,0 +1,12 @@
+# Gradle and Android build output, per-user IDE and SDK state. Never commit.
+build/
+.gradle/
+.kotlin/
+.android/
+local.properties
+.idea/
+*.iml
+*.log
+captures/
+.externalNativeBuild/
+.cxx/
