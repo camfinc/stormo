@@ -97,7 +97,7 @@ client branches on:
 | 404 | `not_found` | no such route, agent, conversation, turn or review item |
 | 409 | `changed` | review: the proposal changed since it was shown; reload the review |
 | 409 | `busy` | chat: this device already has a turn running |
-| 429 | `rate_limited` | too many requests; wait `Retry-After` seconds |
+| 429 | `rate_limited` | too many requests, or the agent's learnings are being updated (review); wait `Retry-After` seconds |
 | 503 | `core_unreachable` | the core did not answer; retry later |
 
 ### Pairing (RFC 8628, device authorization grant)

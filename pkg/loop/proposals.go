@@ -353,6 +353,11 @@ func ReadSchedulesProposal(root, agent string) ([]manifest.Schedule, *SchedulesP
 // it (the runtime jobs and scripts in it are dropped on the agent's next start), and records the
 // decision.
 func DecideSchedules(inst *instance.Instance, agentID, decision string, who Decider) (*SchedulesProposal, error) {
+	unlock, err := learning.LockLedger(inst.Root, agentID, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	root := inst.Root
 	list, meta, err := ReadSchedulesProposal(root, agentID)
 	if err != nil {

@@ -339,6 +339,15 @@ func (g *gateway) call(ctx context.Context, method, path string, body any, devic
 	if err != nil {
 		return 0, nil, fail(503, "core_unreachable", "the core's answer was cut")
 	}
+	if res.StatusCode == 429 {
+		// The core asks for a pause (the agent's learnings are being updated): pass on how long.
+		e := fail(429, "rate_limited", "the core is busy; retry shortly")
+		e.retry = 5
+		if n, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil && n > 0 && n <= 600 {
+			e.retry = n
+		}
+		return 0, nil, e
+	}
 	if res.StatusCode == 401 && !bytes.Contains(out, []byte(`"device_unknown"`)) {
 		// The core refused our own key: asleep and woken again, or restarted.
 		return 0, nil, fail(503, "core_unreachable", "the gateway's key is no longer valid; it restarts with a new one")

@@ -462,3 +462,31 @@ func TestOnlyAConfirmedUnlinkDropsSessions(t *testing.T) {
 		t.Errorf("the session survived a passing error: %d", st)
 	}
 }
+
+// The core's request for a pause reaches the device with its Retry-After.
+func TestCoreRetryAfterIsPassedOn(t *testing.T) {
+	rg := newRig(t)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tok := rg.pairAndSession(k)
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ingress/review" {
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error":{"code":"rate_limited"}}`))
+			return
+		}
+		rg.core.ServeHTTP(w, r)
+	}))
+	defer busy.Close()
+	rg.gw.cfg.CoreURL = busy.URL
+	req, _ := http.NewRequest("GET", rg.srv.URL+"/device/v1/review", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 429 || res.Header.Get("Retry-After") != "7" {
+		t.Errorf("busy core: %d Retry-After %q", res.StatusCode, res.Header.Get("Retry-After"))
+	}
+}

@@ -249,8 +249,12 @@ func (c *Core) caller(r *http.Request) Caller {
 		// An ingress key works only while its worker is awake: asleep or booting (an old key until the
 		// new boot replaces it), it is dead.
 		if m := bearer.FindStringSubmatch(r.Header.Get("Authorization")); m != nil {
+			// The key is looked up again once the worker is seen awake: a key from an earlier boot
+			// is gone by then (each boot replaces it before it is awake), so state and key agree.
 			if name, ok := c.ingress.Capability(m[1]); ok && c.Broker != nil && c.Broker.o.Services.State(name).State == "awake" {
-				who = Caller{Ingress: name}
+				if again, ok := c.ingress.Capability(m[1]); ok && again == name {
+					who = Caller{Ingress: name}
+				}
 			}
 		}
 	}

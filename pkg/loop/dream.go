@@ -205,16 +205,16 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	}
 	L := eng.Layout()
 	scrubber := learning.NewScrubber(inst)
-	wm, err := LoadWatermark(root, agentID)
-	if err != nil {
-		return nil, err
-	}
-	// The ledger and the setting proposals stay this dream's from the load to the save.
+	// The ledger, the setting proposals and the watermark stay this dream's from the load to the save.
 	unlock, err := learning.LockLedger(root, agentID, 2*time.Minute)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	wm, err := LoadWatermark(root, agentID)
+	if err != nil {
+		return nil, err
+	}
 	ledger, err := learning.LoadLedger(root, agentID)
 	if err != nil {
 		return nil, err

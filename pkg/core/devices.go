@@ -873,6 +873,10 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 		}
 		i := slices.IndexFunc(items, func(it deviceReviewItem) bool { return it.Agent == req.Agent && it.Kind == req.Kind && it.ID == req.ID })
 		if i < 0 {
+			if c.decidedElsewhere(req.Agent, req.Kind, req.ID) {
+				writeJSONBody(w, 409, errBody("changed", errChanged.Error()))
+				return
+			}
 			writeJSONBody(w, 404, errBody("not_found", "no open proposal "+req.Kind+" "+req.ID))
 			return
 		}
@@ -888,7 +892,8 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 			writeJSONBody(w, 409, errBody("changed", err.Error()))
 			return
 		} else if errors.Is(err, learning.ErrLedgerBusy) {
-			writeJSONBody(w, 409, errBody("busy", err.Error()))
+			w.Header().Set("Retry-After", "5")
+			writeJSONBody(w, 429, errBody("rate_limited", err.Error()))
 			return
 		} else if err != nil {
 			writeJSONBody(w, 400, errBody("bad_request", err.Error()))
@@ -1150,6 +1155,19 @@ func settingVersion(p loop.SettingProposal) string {
 
 var errChanged = errors.New("the proposal changed since it was shown: reload the review")
 
+// decidedElsewhere: a lesson that is no longer open but exists (decided since it was shown) reads
+// as changed, not unknown. Other kinds leave no trace once decided.
+func (c *Core) decidedElsewhere(agent, kind, id string) bool {
+	if kind != "lesson" || !slices.Contains(manifest.AgentIDs(c.inst.Root), agent) {
+		return false
+	}
+	ledger, err := learning.LoadLedger(c.inst.Root, agent)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(ledger, func(e *learning.Learning) bool { return e.ID == id && e.Status != learning.Proposed })
+}
+
 // deviceDecide applies a device's decision to exactly the proposal it was shown: the lesson by its
 // exact id, checked again in the same load and save as the write; the setting by its key, checked
 // again just before. A lesson that changed (flagged, shared, rewritten) is refused.
@@ -1241,6 +1259,7 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 		c.devices.mu.Lock()
 		defer c.devices.mu.Unlock()
 		t.finished = time.Now()
+		defer c.pruneTurns() // the bound holds as turns finish, failed or done
 		if err != nil {
 			t.State, t.Error = "failed", clip(err.Error(), 300)
 			return
@@ -1249,7 +1268,6 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 		if tip != "" {
 			t.Conversation = tip
 		}
-		c.pruneTurns() // the bound holds as turns finish, not only at the next start
 	}()
 	return view, nil
 }
@@ -1262,14 +1280,18 @@ func (c *Core) pruneTurns() {
 			delete(c.devices.turns, id)
 		}
 	}
-	for len(c.devices.turns) > maxDeviceTurns {
-		oldest := ""
+	for {
+		finished, oldest := 0, ""
 		for id, t := range c.devices.turns {
-			if t.State != "running" && (oldest == "" || t.finished.Before(c.devices.turns[oldest].finished)) {
+			if t.State == "running" {
+				continue
+			}
+			finished++
+			if oldest == "" || t.finished.Before(c.devices.turns[oldest].finished) {
 				oldest = id
 			}
 		}
-		if oldest == "" {
+		if finished <= maxDeviceTurns {
 			return
 		}
 		delete(c.devices.turns, oldest)

@@ -691,3 +691,27 @@ func TestLedgerLockSerializesWriters(t *testing.T) {
 		u()
 	}
 }
+
+// The bound counts finished turns: running ones never push out a reply that just finished.
+func TestTurnBoundCountsFinishedOnly(t *testing.T) {
+	c := &Core{}
+	c.devices.turns = map[string]*deviceTurn{"fresh": {State: "done", finished: time.Now()}}
+	for i := 0; i < maxDeviceTurns+1; i++ {
+		c.devices.turns[fmt.Sprint("r", i)] = &deviceTurn{State: "running"}
+	}
+	c.PruneDeviceTurns()
+	if _, ok := c.devices.turns["fresh"]; !ok {
+		t.Error("a fresh reply was evicted by running turns")
+	}
+}
+
+func TestLessonDecidedElsewhereIsChanged(t *testing.T) {
+	_, inst := fixture(t)
+	c := &Core{inst: inst}
+	if !c.decidedElsewhere("atlas", "lesson", "l2") { // accepted in the fixture
+		t.Error("an accepted lesson reads as decided elsewhere")
+	}
+	if c.decidedElsewhere("atlas", "lesson", "nope") || c.decidedElsewhere("atlas", "setting", "l2") {
+		t.Error("an unknown id or another kind")
+	}
+}

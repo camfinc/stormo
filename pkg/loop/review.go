@@ -158,6 +158,11 @@ func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 
 // DecideSkillBy is DecideSkill recording who decided (the core's review) and why.
 func DecideSkillBy(root, agent, skill, decision string, who Decider) (*SkillProposal, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	props, err := ListSkillProposals(root, agent)
 	if err != nil {
 		return nil, err
