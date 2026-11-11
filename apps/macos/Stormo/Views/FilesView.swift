@@ -20,12 +20,13 @@ struct FilesView: View {
             } else {
                 HSplitView {
                     LayerList()
-                        .frame(minWidth: 170, idealWidth: 200, maxWidth: 260)
+                        .frame(minWidth: 170, idealWidth: 200, maxWidth: 260, maxHeight: .infinity)
                     DirectoryList()
-                        .frame(minWidth: 260, idealWidth: 320)
+                        .frame(minWidth: 260, idealWidth: 320, maxHeight: .infinity)
                     FilePreview()
-                        .frame(minWidth: 300, maxWidth: .infinity)
+                        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle("Files")
