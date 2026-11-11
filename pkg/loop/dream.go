@@ -209,6 +209,12 @@ func Dream(inst *instance.Instance, agentID string, s Store) (*DreamReport, erro
 	if err != nil {
 		return nil, err
 	}
+	// The ledger and the setting proposals stay this dream's from the load to the save.
+	unlock, err := learning.LockLedger(root, agentID, 2*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	ledger, err := learning.LoadLedger(root, agentID)
 	if err != nil {
 		return nil, err

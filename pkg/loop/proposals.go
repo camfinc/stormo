@@ -177,7 +177,19 @@ type Decider struct {
 // DecideSetting accepts (writes it to the repo through the engine's SettingEdit) or rejects a
 // setting proposal, and records the decision.
 func DecideSetting(inst *instance.Instance, agentID, key, decision string, who Decider) (*SettingProposal, error) {
+	return DecideSettingIf(inst, agentID, key, decision, who, nil)
+}
+
+// DecideSettingIf is DecideSetting once check passes on the proposal as it reads now, with the
+// agent's learning state locked from that read to the write (a linked device decides exactly the
+// value it was shown).
+func DecideSettingIf(inst *instance.Instance, agentID, key, decision string, who Decider, check func(SettingProposal) error) (*SettingProposal, error) {
 	root := inst.Root
+	unlock, err := learning.LockLedger(root, agentID, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	props, err := ListSettingProposals(root, agentID)
 	if err != nil {
 		return nil, err
@@ -187,6 +199,11 @@ func DecideSetting(inst *instance.Instance, agentID, key, decision string, who D
 		return nil, fmt.Errorf("%s: no setting proposal %s", agentID, key)
 	}
 	prop := props[i]
+	if check != nil {
+		if err := check(prop); err != nil {
+			return nil, err
+		}
+	}
 	if decision == "accepted" {
 		if len(prop.PII) > 0 {
 			return nil, fmt.Errorf("%s: %s was redacted (%v); set it by hand in the agent's files, then reject the proposal", agentID, key, prop.PII)

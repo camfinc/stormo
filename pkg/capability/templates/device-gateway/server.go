@@ -575,7 +575,9 @@ func (g *gateway) challenge(w http.ResponseWriter, r *http.Request) *apiError {
 		return e
 	}
 	if status != 200 {
-		g.dropDevice(req.DeviceID)
+		if status == 401 {
+			g.dropDevice(req.DeviceID) // unlinked: confirmed by the core, not a passing error
+		}
 		relay(w, status, body)
 		return nil
 	}
@@ -589,7 +591,9 @@ func (g *gateway) challenge(w http.ResponseWriter, r *http.Request) *apiError {
 		}
 		if len(g.nonces) >= maxNonces {
 			g.mu.Unlock()
-			return fail(429, "rate_limited", "too many sessions opening at once; retry shortly")
+			e := fail(429, "rate_limited", "too many sessions opening at once; retry shortly")
+			e.retry = 5
+			return e
 		}
 	}
 	g.nonces[req.DeviceID] = nonce{value: n, expires: now.Add(nonceTTL)} // one at a time: a new one replaces the last
@@ -634,7 +638,9 @@ func (g *gateway) session(w http.ResponseWriter, r *http.Request) *apiError {
 		return e
 	}
 	if status != 200 {
-		g.dropDevice(req.DeviceID)
+		if status == 401 {
+			g.dropDevice(req.DeviceID)
+		}
 		relay(w, status, body)
 		return nil
 	}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/link"
 )
 
@@ -284,8 +285,12 @@ func TestLinkedDevices(t *testing.T) {
 	if st != 200 || byID["lesson/l1"]["appOnly"] != false || byID["lesson/l2"] != nil || byID["skill/quote-check"]["appOnly"] != true {
 		t.Fatalf("review: %d %v", st, rv)
 	}
-	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "skill", "id": "quote-check", "version": "x", "decision": "accept"}); st != 400 || errCode(out) != "app_only" {
+	skillV := byID["skill/quote-check"]["version"].(string)
+	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "skill", "id": "quote-check", "version": skillV, "decision": "accept"}); st != 400 || errCode(out) != "app_only" {
 		t.Errorf("a skill from a device: %d %v", st, out)
+	}
+	if st, out := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "skill", "id": "quote-check", "version": "x", "decision": "accept"}); st != 400 || errCode(out) != "bad_request" {
+		t.Errorf("a malformed version: %d %v", st, out)
 	}
 	v1 := byID["lesson/l1"]["version"].(string)
 	if st, _ := as("POST", "/api/ingress/review", map[string]string{"agent": "atlas", "kind": "lesson", "id": "l1", "version": v1, "decision": "promote"}); st != 400 {
@@ -378,8 +383,8 @@ func TestLinkedDevices(t *testing.T) {
 	if st, _ := do("PATCH", "/api/devices/"+dev, owner, map[string]any{"grants": map[string]any{"status": true, "review": true, "chat": []string{}}}); st != 200 {
 		t.Fatal("patch")
 	}
-	if st, _ := as("GET", "/api/ingress/turns/"+running, nil); st != 404 {
-		t.Errorf("a turn read after its chat grant was taken away: %d", st)
+	if st, out := as("GET", "/api/ingress/turns/"+running, nil); st != 403 || errCode(out) != "forbidden" || strings.Contains(fmt.Sprint(out), "reply") {
+		t.Errorf("a turn read after its chat grant was taken away: %d %v", st, out)
 	}
 	close(conv.hold)
 
@@ -630,6 +635,9 @@ func TestIdleDeviceIsRefusedAtOnceAndTurnsLeaveOnTime(t *testing.T) {
 	if _, ok, _ := db.LiveDevice(dv.ID, 30*24*time.Hour, now.Add(31*24*time.Hour)); ok {
 		t.Fatal("idle 31 days and still live")
 	}
+	if log, _ := db.AuditLog(10); len(log) == 0 || log[0].Action != "device.revoke" || log[0].Detail != "idle" {
+		t.Errorf("an idle unlink at authorization is audited: %+v", log)
+	}
 	db.touchDevice(dv.ID, "203.0.113.1", "", now.Add(32*24*time.Hour))
 	if d, _, _ := db.Device(dv.ID); d.RevokedReason != "idle" || d.LastSeen != nil {
 		t.Errorf("an unlinked device was touched back: %+v", d)
@@ -657,5 +665,29 @@ func TestDecodeStrict(t *testing.T) {
 		if err := decodeStrict(r, 64, &v); (err == nil) != ok {
 			t.Errorf("%.30q: %v", body, err)
 		}
+	}
+}
+
+// Two writers of an agent's learnings never interleave: the second waits for the first.
+func TestLedgerLockSerializesWriters(t *testing.T) {
+	root := t.TempDir()
+	unlock, err := learning.LockLedger(root, "atlas", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := learning.LockLedger(root, "atlas", 100*time.Millisecond); !errors.Is(err, learning.ErrLedgerBusy) {
+		t.Errorf("a second writer while held: %v", err)
+	}
+	if u, err := learning.LockLedger(root, "nova", 100*time.Millisecond); err != nil {
+		t.Errorf("another agent's learnings are not held: %v", err)
+	} else {
+		u()
+	}
+	unlock()
+	u, err := learning.LockLedger(root, "atlas", 100*time.Millisecond)
+	if err != nil {
+		t.Errorf("after release: %v", err)
+	} else {
+		u()
 	}
 }

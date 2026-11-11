@@ -2,6 +2,7 @@ package loop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -28,6 +29,11 @@ type Change struct {
 
 // Decide applies a change to learnings by id (or unique id prefix).
 func Decide(root, agent string, ids []string, c Change) ([]*learning.Learning, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	ledger, err := learning.LoadLedger(root, agent)
 	if err != nil {
 		return nil, err
@@ -77,6 +83,11 @@ func Decide(root, agent string, ids []string, c Change) ([]*learning.Learning, e
 // lessons (a linked device) decides exactly the one it checked, never a look-alike id or a version
 // changed since.
 func DecideLesson(root, agent, id string, status learning.Status, check func(*learning.Learning) error) (*learning.Learning, error) {
+	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	ledger, err := learning.LoadLedger(root, agent)
 	if err != nil {
 		return nil, err
@@ -93,8 +104,11 @@ func DecideLesson(root, agent, id string, status learning.Status, check func(*le
 		e.DecidedAt = &now
 		return e, learning.SaveLedger(root, agent, ledger)
 	}
-	return nil, fmt.Errorf("%s: no learning %s", agent, id)
+	return nil, fmt.Errorf("%s: %w %s", agent, ErrNoLesson, id)
 }
+
+// ErrNoLesson is DecideLesson finding no lesson with that exact id.
+var ErrNoLesson = errors.New("no learning")
 
 // SkillProposal is learnings/proposals/skills/<skill>/.proposal.json.
 type SkillProposal struct {

@@ -439,3 +439,26 @@ func TestConfigNeedsTheCoresKey(t *testing.T) {
 		t.Errorf("config: %+v %v", c, err)
 	}
 }
+
+// A passing core error during a challenge leaves the device's sessions alone; only an unlinked device loses them.
+func TestOnlyAConfirmedUnlinkDropsSessions(t *testing.T) {
+	rg := newRig(t)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tok := rg.pairAndSession(k)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/ingress/devices/") {
+			w.WriteHeader(500)
+			w.Write([]byte(`{"error":{"code":"core_internal"}}`))
+			return
+		}
+		rg.core.ServeHTTP(w, r)
+	}))
+	defer broken.Close()
+	rg.gw.cfg.CoreURL = broken.URL
+	if st, _ := rg.do("POST", "/device/v1/session/challenge", "", map[string]string{"deviceId": "dev_0123456789abcdef"}); st != 500 {
+		t.Errorf("challenge during a core error: %d", st)
+	}
+	if st, _ := rg.do("GET", "/device/v1/me", tok, nil); st != 200 {
+		t.Errorf("the session survived a passing error: %d", st)
+	}
+}

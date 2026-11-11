@@ -196,7 +196,9 @@ runs now or null; `waiting` approvals it waits on; `pendingReview` its open prop
 ```
 
 `kind` is `lesson`, `setting`, `skill` or `schedules`; `id` is the lesson id, the setting key, the
-skill name, or `schedules`. `summary` is at most 200 characters.
+skill name, or `schedules`; `version` (every item has one) names exactly what was shown. `summary`
+is at most 200 characters. A decision sent with a version that no longer matches answers 409
+`changed`, whatever changed (flagged, rewritten, decided elsewhere); reload and look again.
 
 `POST /device/v1/review` `{"agent": "support", "kind": "lesson", "id": "L-7f3a…", "version": "<the item's version>", "decision": "accept"}`
 (`decision`: `accept` | `reject`; `version`: 16 hex digits from the item, naming exactly what was
@@ -216,8 +218,10 @@ characters.
 device at a time (409 `busy`).
 
 `GET /device/v1/turns/<turn>` → `{"turn", "state": "running" | "done" | "failed", "conversation",
-"reply" (done), "error" (failed)}`. Poll every 2–5 s. A finished turn is kept 15 minutes; a turn runs
-at most 10 minutes. A device sees only its own turns.
+"reply" (done, at most 16,000 characters), "error" (failed)}`. Poll every 2–5 s. A turn runs at most
+10 minutes; a finished one is dropped within a minute after 15 minutes, or sooner when more than 500
+finished turns are held. A device sees only its own turns, and only while its grants still cover
+that agent (403 `forbidden` otherwise).
 
 ## The core, toward the gateway (`/api/ingress/*`)
 

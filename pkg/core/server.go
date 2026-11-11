@@ -246,9 +246,10 @@ func (c *Core) Close() error {
 func (c *Core) caller(r *http.Request) Caller {
 	who := callerOf(r, c.owner, c.keys, c.DB)
 	if who == (Caller{}) && c.ingress != nil {
-		// An ingress key works only while its worker is up: asleep, its key is dead.
+		// An ingress key works only while its worker is awake: asleep or booting (an old key until the
+		// new boot replaces it), it is dead.
 		if m := bearer.FindStringSubmatch(r.Header.Get("Authorization")); m != nil {
-			if name, ok := c.ingress.Capability(m[1]); ok && c.Broker != nil && c.Broker.o.Services.State(name).State != "asleep" {
+			if name, ok := c.ingress.Capability(m[1]); ok && c.Broker != nil && c.Broker.o.Services.State(name).State == "awake" {
 				who = Caller{Ingress: name}
 			}
 		}

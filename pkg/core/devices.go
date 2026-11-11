@@ -490,9 +490,13 @@ func (d *DB) touchDevice(id, ip, country string, now time.Time) {
 // and then (one statement, before any activity is recorded), so it never revives between sweeps.
 func (d *DB) LiveDevice(id string, idle time.Duration, now time.Time) (Device, bool, error) {
 	if idle > 0 {
-		if _, err := d.Exec(`UPDATE devices SET revoked = ?, revoked_reason = 'idle' WHERE id = ? AND revoked IS NULL AND COALESCE(last_seen, created) < ?`,
-			now.UnixMilli(), id, now.Add(-idle).UnixMilli()); err != nil {
+		res, err := d.Exec(`UPDATE devices SET revoked = ?, revoked_reason = 'idle' WHERE id = ? AND revoked IS NULL AND COALESCE(last_seen, created) < ?`,
+			now.UnixMilli(), id, now.Add(-idle).UnixMilli())
+		if err != nil {
 			return Device{}, false, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			d.Audit("core", "device.revoke", id, "idle")
 		}
 	}
 	dv, ok, err := d.Device(id)
@@ -757,6 +761,7 @@ var (
 	ingressTurnPath    = regexp.MustCompile(`^/api/ingress/turns/(trn_[0-9a-f]{16})$`)
 	deviceIDShape      = regexp.MustCompile(`^dev_[0-9a-f]{16}$`)
 	conversationShape  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	reviewVersionShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
 // handleIngress serves the device gateway's /api/ingress/*; needs() already required its key.
@@ -857,7 +862,7 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 			Version  string `json:"version"`
 			Decision string `json:"decision"`
 		}
-		if err := decodeStrict(r, 4<<10, &req); err != nil || (req.Decision != "accept" && req.Decision != "reject") || req.Version == "" {
+		if err := decodeStrict(r, 4<<10, &req); err != nil || (req.Decision != "accept" && req.Decision != "reject") || !reviewVersionShape.MatchString(req.Version) {
 			writeJSONBody(w, 400, errBody("bad_request", "body is {agent, kind, id, version, decision: accept | reject}"))
 			return
 		}
@@ -871,12 +876,19 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 			writeJSONBody(w, 404, errBody("not_found", "no open proposal "+req.Kind+" "+req.ID))
 			return
 		}
+		if items[i].Version != req.Version {
+			writeJSONBody(w, 409, errBody("changed", errChanged.Error()))
+			return
+		}
 		if items[i].AppOnly {
 			writeJSONBody(w, 400, errBody("app_only", "decide this one in the app: "+items[i].Why))
 			return
 		}
 		if err := c.deviceDecide(req.Agent, req.Kind, req.ID, req.Version, req.Decision); errors.Is(err, errChanged) {
 			writeJSONBody(w, 409, errBody("changed", err.Error()))
+			return
+		} else if errors.Is(err, learning.ErrLedgerBusy) {
+			writeJSONBody(w, 409, errBody("busy", err.Error()))
 			return
 		} else if err != nil {
 			writeJSONBody(w, 400, errBody("bad_request", err.Error()))
@@ -958,9 +970,13 @@ func (c *Core) handleIngress(w http.ResponseWriter, r *http.Request, who Caller,
 		}
 		writeJSONBody(w, 202, map[string]any{"turn": t.ID, "conversation": t.Conversation})
 	case ingressTurnPath.MatchString(path) && get:
-		t, ok := c.deviceTurn(dv, ingressTurnPath.FindStringSubmatch(path)[1])
+		t, ok, allowed := c.deviceTurn(dv, ingressTurnPath.FindStringSubmatch(path)[1])
 		if !ok {
 			writeJSONBody(w, 404, errBody("not_found", "no such turn"))
+			return
+		}
+		if !allowed {
+			forbid("chat with " + t.agent)
 			return
 		}
 		writeJSONBody(w, 200, t)
@@ -1083,10 +1099,12 @@ func (c *Core) deviceReview(roster func() []BusAgent) ([]deviceReviewItem, error
 			if s.New {
 				what = "New skill "
 			}
-			add("skill", s.Skill, "", fmt.Sprintf("%s%s (%d files)", what, s.Skill, len(s.Files)), s.AI, "skills are decided in the app")
+			add("skill", s.Skill, versionOf("skill", a.ID, s.Skill, s.Nap), fmt.Sprintf("%s%s (%d files)", what, s.Skill, len(s.Files)), s.AI,
+				"skills are decided in the app")
 		}
 		if a.Schedules != nil {
-			add("schedules", "schedules", "", fmt.Sprintf("Schedules: %d jobs, %d scripts", len(a.Schedules.Jobs), len(a.Schedules.Scripts)), a.Schedules.AI,
+			add("schedules", "schedules", versionOf("schedules", a.ID, a.Schedules.Nap),
+				fmt.Sprintf("Schedules: %d jobs, %d scripts", len(a.Schedules.Jobs), len(a.Schedules.Scripts)), a.Schedules.AI,
 				"schedules and scripts are decided in the app")
 		}
 	}
@@ -1148,21 +1166,25 @@ func (c *Core) deviceDecide(agent, kind, id, version, decision string) error {
 			}
 			return nil
 		})
+		if errors.Is(err, loop.ErrNoLesson) {
+			return errChanged // decided or gone since it was shown
+		}
 		if err == nil && decision == "accept" {
 			c.Learner.markUnapplied(agent)
 		}
 		return err
 	}
-	props, err := loop.ListSettingProposals(c.inst.Root, agent)
-	if err != nil {
-		return err
-	}
-	i := slices.IndexFunc(props, func(p loop.SettingProposal) bool { return p.Key == id })
-	if i < 0 || settingAppOnly(props[i]) != "" || settingVersion(props[i]) != version {
-		return errChanged
-	}
 	dec := map[string]string{"accept": "accepted", "reject": "rejected"}[decision]
-	if _, err := loop.DecideSetting(c.inst, agent, id, dec, loop.Decider{}); err != nil {
+	_, err := loop.DecideSettingIf(c.inst, agent, id, dec, loop.Decider{}, func(p loop.SettingProposal) error {
+		if settingAppOnly(p) != "" || settingVersion(p) != version {
+			return errChanged
+		}
+		return nil
+	})
+	if err != nil {
+		if !errors.Is(err, errChanged) && !errors.Is(err, learning.ErrLedgerBusy) && strings.Contains(err.Error(), "no setting proposal") {
+			return errChanged
+		}
 		return err
 	}
 	c.Learner.markUnapplied(agent)
@@ -1227,6 +1249,7 @@ func (c *Core) startDeviceTurn(who Caller, agent, conversation, message string) 
 		if tip != "" {
 			t.Conversation = tip
 		}
+		c.pruneTurns() // the bound holds as turns finish, not only at the next start
 	}()
 	return view, nil
 }
@@ -1261,14 +1284,18 @@ func (c *Core) PruneDeviceTurns() {
 	c.pruneTurns()
 }
 
-// deviceTurn is one of device's turns, while its grants still cover the agent it talks with.
-func (c *Core) deviceTurn(dv Device, id string) (deviceTurn, bool) {
+// deviceTurn is one of device's turns (found), and whether its grants still cover the agent it
+// talks with (allowed: only then is the turn's content given).
+func (c *Core) deviceTurn(dv Device, id string) (t deviceTurn, found, allowed bool) {
 	c.devices.mu.Lock()
 	defer c.devices.mu.Unlock()
 	c.pruneTurns()
-	t, ok := c.devices.turns[id]
-	if !ok || t.device != dv.ID || !dv.Grants.chats(t.agent) {
-		return deviceTurn{}, false
+	tn, ok := c.devices.turns[id]
+	if !ok || tn.device != dv.ID {
+		return deviceTurn{}, false, false
 	}
-	return *t, true
+	if !dv.Grants.chats(tn.agent) {
+		return deviceTurn{agent: tn.agent}, true, false
+	}
+	return *tn, true, true
 }
