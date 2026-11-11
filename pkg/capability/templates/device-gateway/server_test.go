@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func newRig(t *testing.T) *rig {
 	cs := httptest.NewServer(core)
 	t.Cleanup(cs.Close)
 	g := newGateway(config{CoreURL: cs.URL, Key: "sti_000000000000_" + strings.Repeat("a", 48), IPHeader: "Cf-Connecting-Ip", CountryHeader: "Cf-Ipcountry",
-		TokenTTL: time.Hour, MaxPending: 20, PerIP: 3})
+		TokenTTL: time.Hour})
 	rg := &rig{t: t, core: core, gw: g, now: time.Unix(1_700_000_000, 0)}
 	g.now = func() time.Time { return rg.now }
 	rg.srv = httptest.NewServer(g)
@@ -189,9 +190,15 @@ func (rg *rig) pairAndSession(k *ecdsa.PrivateKey) string {
 	if st != 200 || out["deviceId"] != "dev_0123456789abcdef" {
 		t.Fatalf("poll approved: %d %v", st, out)
 	}
+	// The answer was lost on the way: polling again gives the same id, without asking the core again.
 	rg.now = rg.now.Add(5 * time.Second)
+	if st, out := rg.do("POST", "/device/v1/pair/poll", "", map[string]string{"deviceCode": dc}); st != 200 || out["deviceId"] != "dev_0123456789abcdef" {
+		t.Fatalf("a retried poll after approval: %d %v", st, out)
+	}
+	// Until the pairing expires.
+	rg.now = rg.now.Add(11 * time.Minute)
 	if st, out := rg.do("POST", "/device/v1/pair/poll", "", map[string]string{"deviceCode": dc}); st != 400 || code(out) != "expired_token" {
-		t.Fatalf("a used device code: %d %v", st, out)
+		t.Fatalf("an approved code after it expired: %d %v", st, out)
 	}
 	st, ch := rg.do("POST", "/device/v1/session/challenge", "", map[string]string{"deviceId": "dev_0123456789abcdef"})
 	if st != 200 || ch["expiresIn"] != 60.0 {
@@ -383,11 +390,13 @@ func TestPairingPollAndCaps(t *testing.T) {
 	if st, _ := rg.do("POST", "/device/v1/pair", "", bad); st != 400 || len(rg.core.calls) != before {
 		t.Errorf("bad key: %d, %d calls", st, len(rg.core.calls)-before)
 	}
-	// Per address, the oldest pending pairing is evicted past the cap.
+	// The gateway's memory of codes is bounded, oldest first; which pairings stay pending is the core's.
+	maxPairingsHeld = 3
+	t.Cleanup(func() { maxPairingsHeld = 1000 })
 	codes := []string{}
 	for i := 0; i < 4; i++ {
 		rg.now = rg.now.Add(time.Second)
-		_, p := rg.do("POST", "/device/v1/pair", "", pairBody(k))
+		_, p := rg.do("POST", "/device/v1/pair", "", pairBody(k), "Cf-Connecting-Ip", fmt.Sprintf("198.51.100.%d", i))
 		codes = append(codes, p["deviceCode"].(string))
 	}
 	rg.gw.mu.Lock()
@@ -395,7 +404,15 @@ func TestPairingPollAndCaps(t *testing.T) {
 	_, first := rg.gw.pairings[hash(codes[0])]
 	rg.gw.mu.Unlock()
 	if n != 3 || first {
-		t.Errorf("per-address cap: %d pending, oldest kept %v", n, first)
+		t.Errorf("memory bound: %d held, oldest kept %v", n, first)
+	}
+	// A code the core dropped (evicted by its own caps) reads as expired.
+	rg.core.mu.Lock()
+	rg.core.state = "expired"
+	rg.core.mu.Unlock()
+	rg.now = rg.now.Add(10 * time.Second)
+	if st, out := rg.do("POST", "/device/v1/pair/poll", "", map[string]string{"deviceCode": codes[3]}); st != 400 || code(out) != "expired_token" {
+		t.Errorf("a pairing the core dropped: %d %v", st, out)
 	}
 }
 

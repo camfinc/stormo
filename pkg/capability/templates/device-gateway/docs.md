@@ -7,6 +7,7 @@ the fleet while the core stays on loopback. Everything about it is in docs/devic
 - It holds one credential: a key the core mints at each boot, which reaches the core's
   `/api/ingress/*` and nothing else. Its state (pending pairings, sessions) lives in memory.
 - Settings (`env:`): `CLIENT_IP_HEADER` and `CLIENT_COUNTRY_HEADER` (the headers your edge sets, e.g.
-  `Cf-Connecting-Ip` and `Cf-Ipcountry`; empty: the peer address), `TOKEN_MINUTES` (session length,
-  default 60), `MAX_PENDING` and `MAX_PENDING_PER_IP` (pending pairings kept; the oldest is evicted).
+  `Cf-Connecting-Ip` and `Cf-Ipcountry`; empty: the peer address) and `TOKEN_MINUTES` (session
+  length, default 60). Which pairings stay pending is the core's to decide (20 at most, 3 per
+  address, the oldest evicted).
 - `stormo capability sleep <name>` takes every device offline until `stormo capability wake <name>`.

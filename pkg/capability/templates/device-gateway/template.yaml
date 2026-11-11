@@ -11,6 +11,4 @@ env:
   CLIENT_IP_HEADER: ""
   CLIENT_COUNTRY_HEADER: ""
   TOKEN_MINUTES: "60"
-  MAX_PENDING: "20"
-  MAX_PENDING_PER_IP: "3"
 notes: "Needs core.loopback_trust: false and publish: \"127.0.0.1:<port>\"; point a tunnel or reverse proxy at that address and serve nothing else on its hostname (docs/devices.md)."

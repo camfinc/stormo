@@ -44,16 +44,20 @@ const (
 	maxNonces      = 10_000
 )
 
+// maxPairingsHeld bounds the gateway's memory of device codes. It is not the pairing policy: the
+// core alone decides which pairings stay pending (its caps, oldest evicted), and a code whose
+// pairing the core dropped reads as expired at the next poll.
+var maxPairingsHeld = 1000
+
 type config struct {
 	CoreURL, Key            string
 	IPHeader, CountryHeader string
 	TokenTTL                time.Duration
-	MaxPending, PerIP       int
 }
 
 func configFromEnv() (config, error) {
 	c := config{CoreURL: strings.TrimRight(os.Getenv("STORMO_CORE_URL"), "/"), Key: os.Getenv("STORMO_INGRESS_KEY"),
-		IPHeader: os.Getenv("CLIENT_IP_HEADER"), CountryHeader: os.Getenv("CLIENT_COUNTRY_HEADER"), TokenTTL: time.Hour, MaxPending: 20, PerIP: 3}
+		IPHeader: os.Getenv("CLIENT_IP_HEADER"), CountryHeader: os.Getenv("CLIENT_COUNTRY_HEADER"), TokenTTL: time.Hour}
 	if c.CoreURL == "" || !strings.HasPrefix(c.Key, "sti_") {
 		return c, errors.New("STORMO_CORE_URL and STORMO_INGRESS_KEY come from the core: run this as a capability (template device-gateway)")
 	}
@@ -73,22 +77,19 @@ func configFromEnv() (config, error) {
 		return c, err
 	}
 	c.TokenTTL = time.Duration(m) * time.Minute
-	if c.MaxPending, err = num("MAX_PENDING", 20, 1, 1000); err != nil {
-		return c, err
-	}
-	if c.PerIP, err = num("MAX_PENDING_PER_IP", 3, 1, 100); err != nil {
-		return c, err
-	}
 	return c, nil
 }
 
 type pairing struct {
-	core     string // the core's pairing id
-	ip       string
-	created  time.Time
-	expires  time.Time
-	interval time.Duration
-	lastPoll time.Time
+	core string // the core's pairing id
+	// approved is the answer once the owner linked it, kept until the pairing expires: a poll whose
+	// response was lost gets the same device id again.
+	approvedID, approvedName string
+	ip                       string
+	created                  time.Time
+	expires                  time.Time
+	interval                 time.Duration
+	lastPoll                 time.Time
 }
 
 type nonce struct {
@@ -464,7 +465,7 @@ func (g *gateway) pair(w http.ResponseWriter, r *http.Request, ip string) *apiEr
 	code := random(32)
 	now := g.now()
 	g.mu.Lock()
-	g.evict(ip)
+	g.evict()
 	g.pairings[hash(code)] = &pairing{core: p.Pairing, ip: ip, created: now, expires: now.Add(time.Duration(p.ExpiresIn) * time.Second), interval: pollInterval}
 	g.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"deviceCode": code, "userCode": p.UserCode, "fingerprint": p.Fingerprint, "expiresIn": p.ExpiresIn,
@@ -472,36 +473,17 @@ func (g *gateway) pair(w http.ResponseWriter, r *http.Request, ip string) *apiEr
 	return nil
 }
 
-// evict keeps the pending pairings under the caps, oldest first (per address, then all); the caller
-// holds g.mu.
-func (g *gateway) evict(ip string) {
-	oldest := func(match func(*pairing) bool) (string, int) {
-		key, n := "", 0
+// evict keeps the device codes held under maxPairingsHeld, oldest first; the caller holds g.mu.
+func (g *gateway) evict() {
+	for len(g.pairings) >= maxPairingsHeld {
+		key := ""
 		var at time.Time
 		for k, p := range g.pairings {
-			if !match(p) {
-				continue
-			}
-			n++
 			if key == "" || p.created.Before(at) {
 				key, at = k, p.created
 			}
 		}
-		return key, n
-	}
-	for {
-		k, n := oldest(func(p *pairing) bool { return p.ip == ip })
-		if n < g.cfg.PerIP {
-			break
-		}
-		delete(g.pairings, k)
-	}
-	for {
-		k, n := oldest(func(*pairing) bool { return true })
-		if n < g.cfg.MaxPending {
-			break
-		}
-		delete(g.pairings, k)
+		delete(g.pairings, key)
 	}
 }
 
@@ -530,8 +512,12 @@ func (g *gateway) poll(w http.ResponseWriter, r *http.Request, ip string) *apiEr
 		return fail(400, "slow_down", "poll less often")
 	}
 	p.lastPoll = now
-	id := p.core
+	id, approvedID, approvedName := p.core, p.approvedID, p.approvedName
 	g.mu.Unlock()
+	if approvedID != "" {
+		writeJSON(w, 200, map[string]string{"deviceId": approvedID, "name": approvedName})
+		return nil
+	}
 	status, body, e := g.call(r.Context(), http.MethodGet, "/api/ingress/pairings/"+url.PathEscape(id), nil, "", nil)
 	if e != nil {
 		return e
@@ -548,8 +534,12 @@ func (g *gateway) poll(w http.ResponseWriter, r *http.Request, ip string) *apiEr
 	case "pending":
 		return fail(400, "authorization_pending", "not approved yet")
 	case "approved":
+		// Kept until the pairing expires (the core answers approved once): a retry after a lost
+		// response gets the same id, and only the holder of the device code can ask.
 		g.mu.Lock()
-		delete(g.pairings, k)
+		if p := g.pairings[k]; p != nil {
+			p.approvedID, p.approvedName = st.DeviceID, st.Name
+		}
 		g.mu.Unlock()
 		writeJSON(w, 200, map[string]string{"deviceId": st.DeviceID, "name": st.Name})
 		return nil

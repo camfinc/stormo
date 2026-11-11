@@ -271,7 +271,8 @@ func (d *DB) AddPairing(req PairingRequest, now time.Time) (id, code, fingerprin
 }
 
 // PairingState is what the gateway polls: pending | approved | denied | expired | consumed (and
-// gone: a pairing evicted or never made). Reading approved consumes it, so a device code works once.
+// gone: a pairing evicted or never made). Reading approved consumes it here; the gateway keeps that
+// answer for its device code until the pairing expires, so a lost response is safe to retry.
 func (d *DB) PairingState(id string, now time.Time) (state, deviceID, name string, err error) {
 	var expires int64
 	err = d.QueryRow(`SELECT state, expires, device_id FROM device_pairings WHERE id = ?`, id).Scan(&state, &expires, &deviceID)

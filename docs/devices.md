@@ -133,8 +133,12 @@ certificates, each up to 8 KB, leaf first) and recorded, not verified yet.
 `POST /device/v1/pair/poll` `{"deviceCode": "…"}` every `interval` seconds →
 
 - 400 `authorization_pending`, `slow_down`, `expired_token`, `access_denied`;
-- 200 `{"deviceId": "dev_<16 hex>", "name": "Watch"}` once approved (the name the owner gave). The
-  device code is then used up.
+- 200 `{"deviceId": "dev_<16 hex>", "name": "Watch"}` once approved (the name the owner gave). Polling
+  again with the same device code gives the same answer until it expires, so a response lost on the
+  way is safe to retry.
+
+Which pairings stay pending is the core's decision alone: at most 20, 3 per address, the oldest
+evicted first. A code whose pairing the core dropped reads as `expired_token` at the next poll.
 
 ### Sessions
 
