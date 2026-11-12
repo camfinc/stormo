@@ -36,6 +36,15 @@ public struct NewAgentSpec: Codable, Sendable, Equatable {
         public var homeChannel: String?
         public var allowBots: String?
     }
+    /// The agent's voice: no id lets it pick one itself.
+    public struct Voice: Codable, Sendable, Equatable {
+        /// A voice connection; nil: elevenlabs.
+        public var provider: String?
+        public var id: String?
+        public var name: String?
+        public var model: String?
+        public var language: String?
+    }
     public var id: String
     public var name: String
     public var role: String?
@@ -48,6 +57,8 @@ public struct NewAgentSpec: Codable, Sendable, Equatable {
     public var model: NewAgentOptions.Model
     public var channels: [Channel]
     public var soul: String
+    /// nil: no voice.
+    public var voice: Voice?
 }
 
 /// What `new agent` made.
@@ -145,6 +156,26 @@ public struct NewAgentDraft: Equatable, Sendable {
 
     public var channels: [String: ChannelDraft] = [:]
 
+    /// How a new agent gets its voice.
+    public enum VoiceChoice: String, CaseIterable, Identifiable, Sendable {
+        /// It picks one itself, once it runs (spec `voice` without an id).
+        case pick
+        /// One chosen in the wizard.
+        case choose
+        case none
+        public var id: Self { self }
+    }
+
+    /// Seeded to pick when the instance has a voice connection, else none.
+    public var voiceChoice = VoiceChoice.none
+    public var voiceProvider = ""
+    public var voiceID = ""
+    public var voiceName = ""
+    /// Empty: the runtime's default speech model.
+    public var voiceModel = ""
+    /// Empty: detected when it listens.
+    public var voiceLanguage = ""
+
     public init() {}
 
     /// Starts from the instance's defaults.
@@ -160,6 +191,10 @@ public struct NewAgentDraft: Equatable, Sendable {
         engineKind = d.engine.kind ?? options.options.engines.first ?? ""
         engineVersion = d.engine.version ?? ""
         imageTag = d.engine.imageTag ?? ""
+        if let v = options.options.voiceConnections?.first {
+            voiceChoice = .pick
+            voiceProvider = v.name
+        }
     }
 
     public var id: String {
@@ -220,6 +255,19 @@ public struct NewAgentDraft: Equatable, Sendable {
         return nil
     }
 
+    public var voiceProblem: String? {
+        guard voiceChoice != .none else { return nil }
+        if voiceChoice == .choose && voiceID.isEmpty {
+            let n = name.trimmingCharacters(in: .whitespaces)
+            return "Choose a voice, or let \(n.isEmpty ? "the agent" : n) pick its own."
+        }
+        let lang = voiceLanguage.trimmingCharacters(in: .whitespaces)
+        if !lang.isEmpty && (lang.count < 2 || lang.count > 3 || !lang.allSatisfy { $0.isASCII && $0.isLowercase }) {
+            return "The language is a code like es or en."
+        }
+        return nil
+    }
+
     // MARK: Spec
 
     public var spec: NewAgentSpec {
@@ -247,7 +295,22 @@ public struct NewAgentDraft: Equatable, Sendable {
                          localName: useLocal ? trimmed(localModel) : nil,
                          localConnection: useLocal ? trimmed(localConnection) : nil),
             channels: chans,
-            soul: soul)
+            soul: soul,
+            voice: voiceSpec)
+    }
+
+    private var voiceSpec: NewAgentSpec.Voice? {
+        func trimmed(_ s: String) -> String? {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
+        switch voiceChoice {
+        case .none: return nil
+        case .pick: return .init(provider: trimmed(voiceProvider), language: trimmed(voiceLanguage))
+        case .choose:
+            return .init(provider: trimmed(voiceProvider), id: trimmed(voiceID), name: trimmed(voiceName),
+                         model: trimmed(voiceModel), language: trimmed(voiceLanguage))
+        }
     }
 
     /// Secret names the agent will need, before creating it (channels and the model's connection).
@@ -257,6 +320,7 @@ public struct NewAgentDraft: Equatable, Sendable {
             out.formUnion(options.channels.first { $0.kind == kind }?.secrets ?? [])
         }
         if let key = options.connections?.first(where: { $0.name == provider })?.key { out.insert(key) }
+        if voiceChoice != .none, let key = options.voiceConnections?.first(where: { $0.name == voiceProvider })?.key { out.insert(key) }
         return out.sorted()
     }
 }

@@ -136,11 +136,39 @@ public struct Transcript: Codable, Sendable, Equatable {
     }
 }
 
-/// `chat`.
+/// `chat` (and `voice pick`).
 public struct ChatReply: Codable, Sendable, Equatable {
     public var agent: String
     public var session: String
+    /// The answer; with a voice note sent without text, the note's transcript.
     public var reply: String
+    /// The agent answered with a voice note (absent otherwise, and from an older stormo).
+    public var audio: ChatAudio?
+}
+
+/// A voice note an agent answered with: an MP3 under the instance's .swarm/voice/.
+public struct ChatAudio: Codable, Sendable, Equatable {
+    public var path: String
+    public var mime: String?
+    /// The reply was sent with its text too; false: the note alone (the reply is its transcript).
+    public var withText: Bool
+
+    public init(path: String, mime: String? = "audio/mpeg", withText: Bool = true) {
+        self.path = path
+        self.mime = mime
+        self.withText = withText
+    }
+
+    enum CodingKeys: String, CodingKey { case path, mime, withText }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        mime = try c.decodeIfPresent(String.self, forKey: .mime)
+        withText = try c.decodeIfPresent(Bool.self, forKey: .withText) ?? true
+    }
+
+    public var url: URL { URL(filePath: path) }
 }
 
 /// `conversations clear`.
