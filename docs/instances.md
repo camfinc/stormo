@@ -190,7 +190,8 @@ instance: inside a sidecar it is the agent's engine home.
   An agent's `model.provider` names an API connection serving models (and declares its key under
   `secrets:`); `model.local.connection` names the ChatGPT sign-in the core serves it with (default
   `chatgpt`); `voice.provider` names a voice connection (its key declared too), and
-  `core.learning.review_connection` one serving models. `stormo connections add|remove` edits the list.
+  `core.learning.review_connection` one serving models. `stormo connections add|remove` edits the list;
+  `stormo connections voices|check` list a voice connection's voices and what its key may do.
 - **Voice** (agent.yaml `voice:`, optional, engine-neutral): `{provider (elevenlabs), id, name, model,
   settings {stability, similarity}, speak (auto|never), listen (true), language, max_seconds (120; 10 to 300)}`.
   Without it the agent has no voice. needletail renders `listen` as its speech-to-text (`stt:`, which

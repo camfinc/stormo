@@ -28,6 +28,7 @@ import (
 	"github.com/camfinc/stormo/pkg/config"
 	"github.com/camfinc/stormo/pkg/core/llm"
 	"github.com/camfinc/stormo/pkg/deploy"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engines"
 	"github.com/camfinc/stormo/pkg/inspect"
@@ -88,9 +89,12 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config units                           the units: members, knowledge files
   look show <agent>                     the agent's look: office character, desk, portrait description
   look set <agent> [--if-hash h]         replace it with the JSON look on stdin (creates personas/<agent>)
-  connections [list|kinds]               ways to reach models (stormo.yaml connections:) and who uses them
+  connections [list|kinds]               ways to reach models and voice (stormo.yaml connections:) and who uses them
   connections models <name> [--agent id] the models a connection offers (its key: the agent's, else shared)
-  connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom [--base-url u] [--key NAME]
+  connections voices <name> [--agent id] [--library] [--search q] [--language es] [--gender g] [--age a] [--accent x] [--limit n]
+                                         a voice connection's voices (the account's, or the Voice Library's)
+  connections check <name> [--agent id]  what a voice connection's key may do (free: nothing is spoken)
+  connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom|elevenlabs [--base-url u] [--key NAME]
   connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
   delete agent <agent> [--with-persona] [--yes]
@@ -192,6 +196,13 @@ var (
 	fOptions     = fs.Bool("options", false, "")
 	fGrant       = fs.String("grant", "", "")
 	fAgents      = fs.String("agents", "", "")
+	fLibrary     = fs.Bool("library", false, "")
+	fSearch      = fs.String("search", "", "")
+	fLanguage    = fs.String("language", "", "")
+	fGender      = fs.String("gender", "", "")
+	fAge         = fs.String("age", "", "")
+	fAccent      = fs.String("accent", "", "")
+	fLimit       = fs.Int("limit", 0, "")
 	errUsage     = errors.New("usage")
 )
 
@@ -388,6 +399,24 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
+			if c, ok := inst.Connection(name); ok && c.Voice() {
+				client, err := voiceClient(inst, name, *fAgent)
+				if err != nil {
+					return withCode("unavailable", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+				defer cancel()
+				list, err := client.Models(ctx)
+				if err != nil {
+					return withCode("unavailable", fmt.Errorf("%s: %w", name, err))
+				}
+				result(list, func(w io.Writer) {
+					for _, m := range list {
+						fmt.Fprintln(w, m.ID)
+					}
+				})
+				return nil
+			}
 			list, err := connectionModels(inst, name, *fAgent)
 			if err != nil {
 				return withCode("unavailable", err)
@@ -395,6 +424,50 @@ func run(args []string) error {
 			result(list, func(w io.Writer) {
 				for _, m := range list {
 					fmt.Fprintln(w, m.ID)
+				}
+			})
+			return nil
+		case "voices":
+			name, err := need(strings.Join(rest, " "), "connection name")
+			if err != nil {
+				return err
+			}
+			q := elevenlabs.Query{Search: *fSearch, Language: *fLanguage, Gender: *fGender, Age: *fAge, Accent: *fAccent, Limit: *fLimit}
+			list, err := connectionVoices(inst, name, *fAgent, *fLibrary, q)
+			if err != nil {
+				return withCode("unavailable", err)
+			}
+			result(list, func(w io.Writer) {
+				for _, v := range list {
+					fmt.Fprintf(w, "%-22s %-24s %s\n", v.ID, v.Name, strings.Join(nonEmpty(v.Gender, v.Age, v.Accent, v.Language, v.UseCase), ", "))
+				}
+			})
+			return nil
+		case "check":
+			name, err := need(strings.Join(rest, " "), "connection name")
+			if err != nil {
+				return err
+			}
+			client, err := voiceClient(inst, name, *fAgent)
+			if err != nil {
+				return withCode("unavailable", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			r, err := client.Check(ctx)
+			if err != nil {
+				return withCode("unavailable", fmt.Errorf("%s: %w", name, err))
+			}
+			result(r, func(w io.Writer) {
+				for _, p := range r.Permissions {
+					mark := "yes"
+					if !p.Allowed {
+						mark = "NO "
+					}
+					fmt.Fprintf(w, "%s %-15s %s\n", mark, p.Name, p.For)
+				}
+				if c := r.Characters; c != nil {
+					fmt.Fprintf(w, "characters this period: %d of %d\n", c.Used, c.Limit)
 				}
 			})
 			return nil
@@ -1731,9 +1804,21 @@ func connectionModels(inst *instance.Instance, name, agent string) ([]models.Mod
 		}
 		return out, nil
 	}
-	f, err := secrets.Load(secrets.Path(inst.Root))
+	key, err := connectionKey(inst, c, agent)
 	if err != nil {
 		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return models.List(ctx, c, key)
+}
+
+// connectionKey is the value of c's key: the agent's when agent is given and it has one, else the
+// shared one ("" when unset).
+func connectionKey(inst *instance.Instance, c instance.Connection, agent string) (string, error) {
+	f, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return "", err
 	}
 	key := ""
 	if f.Shared != nil {
@@ -1746,7 +1831,72 @@ func connectionModels(inst *instance.Instance, name, agent string) ([]models.Mod
 			}
 		}
 	}
+	return key, nil
+}
+
+// voiceClient is the ElevenLabs client of the voice connection named name, with its key (the
+// agent's when given, else the shared one). The key stays on this side: the app never holds it.
+func voiceClient(inst *instance.Instance, name, agent string) (*elevenlabs.Client, error) {
+	c, ok := inst.Connection(name)
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("no connection named %s", name)
+	case !c.Voice():
+		return nil, fmt.Errorf("%s serves models, not voice", name)
+	}
+	key, err := connectionKey(inst, c, agent)
+	if err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return nil, fmt.Errorf("%s has no value yet: set it to use %s", c.Key, name)
+	}
+	return &elevenlabs.Client{BaseURL: c.BaseURL, Key: key, Timeout: 25 * time.Second}, nil
+}
+
+// voiceRow is one voice a connection offers, with the instance's agents that speak with it.
+type voiceRow struct {
+	elevenlabs.Voice
+	UsedBy []string `json:"usedBy"`
+}
+
+// connectionVoices lists a voice connection's voices: the account's, or the Voice Library's with
+// library, narrowed by q; each says which agents already use it (agent.yaml voice.id).
+func connectionVoices(inst *instance.Instance, name, agent string, library bool, q elevenlabs.Query) ([]voiceRow, error) {
+	client, err := voiceClient(inst, name, agent)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	return models.List(ctx, c, key)
+	list := []elevenlabs.Voice{}
+	if library {
+		list, err = client.Library(ctx, q)
+	} else {
+		list, err = client.Voices(ctx, q)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	users := map[string][]string{}
+	for _, id := range manifest.AgentIDs(inst.Root) {
+		if a, err := manifest.Load(inst.Root, id, inst.Names.Secret); err == nil && a.Voice != nil && a.Voice.ID != "" && a.Voice.Provider == name {
+			users[a.Voice.ID] = append(users[a.Voice.ID], a.ID)
+		}
+	}
+	rows := []voiceRow{}
+	for _, v := range list {
+		rows = append(rows, voiceRow{Voice: v, UsedBy: orNone(users[v.ID])})
+	}
+	return rows, nil
+}
+
+func nonEmpty(v ...string) []string {
+	out := []string{}
+	for _, s := range v {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
