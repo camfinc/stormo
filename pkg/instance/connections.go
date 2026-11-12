@@ -15,7 +15,8 @@ import (
 // secret whose NAME the connection gives (values stay in the secrets files), or a ChatGPT sign-in
 // the core holds (local runs only). Most serve models, which agents pick by name (agent.yaml
 // model.provider, and model.local.connection for the core route); a voice one serves speech
-// (agent.yaml voice.provider).
+// (agent.yaml voice.provider); a tools one is an API the agents' skills and scripts call with its
+// key, which an agent uses by declaring that key.
 
 // Connection kinds.
 const (
@@ -25,12 +26,15 @@ const (
 	KindAnthropic  = "anthropic"
 	KindCustom     = "custom" // any OpenAI-compatible API: base_url and key required
 	KindElevenLabs = "elevenlabs"
+	KindApify      = "apify"
+	KindComfy      = "comfy"
 )
 
 // What a connection serves.
 const (
 	ServesModels = "models"
 	ServesVoice  = "voice" // speech: text to speech, speech to text, voices
+	ServesTools  = "tools" // an API skills and scripts call with the key (web data, image and video generation)
 )
 
 // ConnectionKind is what a kind brings by default.
@@ -41,7 +45,7 @@ type ConnectionKind struct {
 	Key     string `json:"key,omitempty"`
 	// API: reached with a key (any target); else a sign-in the core holds (local runs only).
 	API bool `json:"api"`
-	// Serves is what the kind is for: models or voice.
+	// Serves is what the kind is for: models, voice or tools.
 	Serves string `json:"serves"`
 }
 
@@ -53,12 +57,18 @@ var ConnectionKinds = []ConnectionKind{
 	{KindAnthropic, "Anthropic API", "https://api.anthropic.com/v1/", "ANTHROPIC_API_KEY", true, ServesModels},
 	{KindCustom, "Other OpenAI-compatible API", "", "", true, ServesModels},
 	{KindElevenLabs, "ElevenLabs (voice)", ElevenLabsURL, ElevenLabsKey, true, ServesVoice},
+	{KindApify, "Apify (web scraping and data)", ApifyURL, ApifyKey, true, ServesTools},
+	{KindComfy, "Comfy Cloud (image and video generation)", ComfyURL, ComfyKey, true, ServesTools},
 }
 
-// ElevenLabs' API and the env var its key goes in by default.
+// The tools and voice APIs and the env vars their keys go in by default.
 const (
 	ElevenLabsURL = "https://api.elevenlabs.io"
 	ElevenLabsKey = "ELEVENLABS_API_KEY"
+	ApifyURL      = "https://api.apify.com/v2"
+	ApifyKey      = "APIFY_API_TOKEN"
+	ComfyURL      = "https://cloud.comfy.org"
+	ComfyKey      = "COMFY_API_KEY"
 )
 
 // KindOf is the kind named k.
@@ -78,7 +88,7 @@ type Connection struct {
 	BaseURL string `json:"baseUrl,omitempty"`
 	// Key is the API key's env var NAME (API kinds).
 	Key string `json:"key,omitempty"`
-	// Serves is its kind's: models or voice.
+	// Serves is its kind's: models, voice or tools.
 	Serves string `json:"serves"`
 	// Implicit: not written in stormo.yaml (one of those every instance has).
 	Implicit bool `json:"implicit,omitempty"`
@@ -87,22 +97,28 @@ type Connection struct {
 // API reports whether c is reached with a key (else it is a core sign-in).
 func (c Connection) API() bool { k, _ := KindOf(c.Kind); return k.API }
 
-// Models reports whether c serves models (every kind but a voice one).
+// Models reports whether c serves models (every kind but a voice or tools one).
 func (c Connection) Models() bool { k, _ := KindOf(c.Kind); return k.Serves == ServesModels }
 
 // Voice reports whether c serves speech.
 func (c Connection) Voice() bool { k, _ := KindOf(c.Kind); return k.Serves == ServesVoice }
+
+// Tools reports whether c is an API the agents' skills and scripts call with its key.
+func (c Connection) Tools() bool { k, _ := KindOf(c.Kind); return k.Serves == ServesTools }
 
 // DefaultChatGPT is the connection the core's original sign-in is (.swarm/core/auth/chatgpt.json).
 const DefaultChatGPT = "chatgpt"
 
 // implicit are the connections every instance has unless stormo.yaml defines one by that name:
 // what agents used before connections existed (model.provider: openrouter, the core's sign-in),
-// and ElevenLabs for voice (agent.yaml voice.provider: elevenlabs), keyed by one shared secret.
+// ElevenLabs for voice (agent.yaml voice.provider: elevenlabs), and the tools APIs Apify and Comfy
+// Cloud; each API keyed by one shared secret.
 var implicit = []Connection{
 	{Name: KindOpenRouter, Kind: KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY", Serves: ServesModels, Implicit: true},
 	{Name: DefaultChatGPT, Kind: KindChatGPT, Serves: ServesModels, Implicit: true},
 	{Name: KindElevenLabs, Kind: KindElevenLabs, BaseURL: ElevenLabsURL, Key: ElevenLabsKey, Serves: ServesVoice, Implicit: true},
+	{Name: KindApify, Kind: KindApify, BaseURL: ApifyURL, Key: ApifyKey, Serves: ServesTools, Implicit: true},
+	{Name: KindComfy, Kind: KindComfy, BaseURL: ComfyURL, Key: ComfyKey, Serves: ServesTools, Implicit: true},
 }
 
 var (
@@ -240,7 +256,7 @@ func editConnections(root string, edit func(list *yaml.Node) error) error {
 	if list == nil {
 		list = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 		k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "connections",
-			HeadComment: "# Ways to reach models and voice; agents pick one by name (model.provider,\n# model.local.connection, voice.provider). Key values live in the secrets, never here."}
+			HeadComment: "# Ways to reach models, voice and tools APIs; agents pick one by name (model.provider,\n# model.local.connection, voice.provider) or, for a tools API, by declaring its key. Key values\n# live in the secrets, never here."}
 		m.Content = append(m.Content, k, list)
 	}
 	if list.Kind != yaml.SequenceNode {

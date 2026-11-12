@@ -248,6 +248,21 @@ func TestShowOffersTheFormsChoices(t *testing.T) {
 	if !slices.ContainsFunc(o.Actions, func(a ActionOption) bool { return a.Name == "sales.crm.deals.list" && a.Unit == "sales" }) {
 		t.Errorf("actions = %+v", o.Actions)
 	}
+	// A tools API is no model provider; its key is offered as a secret to declare, even one no
+	// agent declares yet.
+	named := func(cs []ConnectionOption) []string {
+		out := []string{}
+		for _, c := range cs {
+			out = append(out, c.Name)
+		}
+		return out
+	}
+	if names := named(o.Connections); slices.Contains(names, "apify") || slices.Contains(names, "comfy") || !slices.Contains(names, "openrouter") {
+		t.Errorf("model connections = %v", names)
+	}
+	if !slices.Equal(named(o.VoiceConnections), []string{"elevenlabs"}) || !slices.Contains(o.Secrets, "COMFY_API_KEY") {
+		t.Errorf("voice connections %v, secrets %v", named(o.VoiceConnections), o.Secrets)
+	}
 	if soul, _ := Show(acme(t), "agents/atlas/SOUL.md"); soul.Doc != nil || soul.Options != nil {
 		t.Error("SOUL.md has no form")
 	}

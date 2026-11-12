@@ -32,15 +32,25 @@ func TestConnections(t *testing.T) {
 	if c, ok := inst.Connection(KindElevenLabs); !ok || !c.API() || !c.Voice() || c.Models() || c.Key != ElevenLabsKey || c.BaseURL != ElevenLabsURL || !c.Implicit {
 		t.Errorf("elevenlabs = %+v", c)
 	}
-	if or, _ := inst.Connection("openrouter"); !or.Models() || or.Voice() || or.Serves != ServesModels {
+	if or, _ := inst.Connection("openrouter"); !or.Models() || or.Voice() || or.Tools() || or.Serves != ServesModels {
 		t.Errorf("openrouter serves %q", or.Serves)
+	}
+	// Apify and Comfy Cloud, tools APIs the agents' skills and scripts call: set once, used by
+	// declaring the key.
+	for name, want := range map[string]Connection{
+		KindApify: {Name: KindApify, Kind: KindApify, BaseURL: ApifyURL, Key: ApifyKey, Serves: ServesTools, Implicit: true},
+		KindComfy: {Name: KindComfy, Kind: KindComfy, BaseURL: ComfyURL, Key: ComfyKey, Serves: ServesTools, Implicit: true},
+	} {
+		if c, ok := inst.Connection(name); !ok || c != want || !c.API() || !c.Tools() || c.Models() || c.Voice() {
+			t.Errorf("%s = %+v", name, c)
+		}
 	}
 	// Adding one keeps them (an agent saying provider: openrouter keeps working); a kind's defaults fill in.
 	inst, err = load(t, "connections:\n  - {name: work-gpt, kind: chatgpt}\n  - {name: openai, kind: openai}\n  - {name: local-llm, kind: custom, base_url: http://localhost:11434/v1, key: OLLAMA_API_KEY}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inst.Connections) != 6 {
+	if len(inst.Connections) != 8 {
 		t.Errorf("connections = %+v", inst.Connections)
 	}
 	if c, _ := inst.Connection("openai"); c.BaseURL != "https://api.openai.com/v1" || c.Key != "OPENAI_API_KEY" || c.Implicit {
@@ -51,7 +61,7 @@ func TestConnections(t *testing.T) {
 	}
 	// Redefining an implicit one by name replaces it.
 	inst, _ = load(t, "connections:\n  - {name: openrouter, kind: openrouter, key: OR_TEAM_KEY}\n")
-	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 3 {
+	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 5 {
 		t.Errorf("redefined = %+v", inst.Connections)
 	}
 	// A second ElevenLabs account under its own name and key; the review never goes through voice.
@@ -61,6 +71,14 @@ func TestConnections(t *testing.T) {
 	}
 	if _, err := load(t, "core:\n  learning:\n    review_connection: elevenlabs\n    review_model: m\n"); err == nil || !strings.Contains(err.Error(), "serves voice") {
 		t.Errorf("review through a voice connection: %v", err)
+	}
+	if _, err := load(t, "core:\n  learning:\n    review_connection: apify\n    review_model: m\n"); err == nil || !strings.Contains(err.Error(), "serves tools") {
+		t.Errorf("review through a tools connection: %v", err)
+	}
+	// A second Apify account under its own name and key.
+	inst, err = load(t, "connections:\n  - {name: client-apify, kind: apify, key: CLIENT_APIFY_TOKEN}\n")
+	if c, _ := inst.Connection("client-apify"); err != nil || !c.Tools() || c.BaseURL != ApifyURL || c.Key != "CLIENT_APIFY_TOKEN" {
+		t.Errorf("client-apify = %+v %v", c, err)
 	}
 	for body, want := range map[string]string{
 		"connections:\n  - {name: x, kind: gemini}\n":                              "kind must be one of",

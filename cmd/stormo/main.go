@@ -89,7 +89,7 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   config units                           the units: members, knowledge files
   look show <agent>                     the agent's look: office character, desk, portrait description
   look set <agent> [--if-hash h]         replace it with the JSON look on stdin (creates personas/<agent>)
-  connections [list|kinds]               ways to reach models and voice (stormo.yaml connections:) and who uses them
+  connections [list|kinds]               ways to reach models, voice and tools APIs (stormo.yaml connections:) and who uses them
   connections models <name> [--agent id] the models a connection offers (its key: the agent's, else shared)
   connections voices <name> [--agent id] [--library] [--search q] [--language es] [--gender g] [--age a] [--accent x] [--limit n]
                                          a voice connection's voices (the account's, or the Voice Library's)
@@ -1771,6 +1771,10 @@ func connectionRows(inst *instance.Instance) ([]connectionRow, error) {
 			for _, s := range a.Schedules {
 				uses = uses || s.Provider == c.Name
 			}
+			if c.Tools() {
+				// an agent uses a tools API by declaring its key (its skills and scripts call it)
+				uses = slices.Contains(a.Secrets, c.Key) || slices.ContainsFunc(a.OptionalSecrets, func(o manifest.OptionalSecret) bool { return o.Name == c.Key })
+			}
 			if uses {
 				r.UsedBy = append(r.UsedBy, a.ID)
 			}
@@ -1793,6 +1797,9 @@ func connectionModels(inst *instance.Instance, name, agent string) ([]models.Mod
 	c, ok := inst.Connection(name)
 	if !ok {
 		return nil, fmt.Errorf("no connection named %s", name)
+	}
+	if !c.Models() {
+		return nil, fmt.Errorf("%s serves %s, not models", name, c.Serves)
 	}
 	if !c.API() {
 		client := &http.Client{Timeout: 20 * time.Second}
@@ -1880,7 +1887,7 @@ func voiceClient(inst *instance.Instance, name, agent string) (*elevenlabs.Clien
 	case !ok:
 		return nil, fmt.Errorf("no connection named %s", name)
 	case !c.Voice():
-		return nil, fmt.Errorf("%s serves models, not voice", name)
+		return nil, fmt.Errorf("%s serves %s, not voice", name, c.Serves)
 	}
 	key, err := connectionKey(inst, c, agent)
 	if err != nil {

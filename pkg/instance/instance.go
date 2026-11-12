@@ -443,7 +443,7 @@ func Parse(root string, body []byte) (*Instance, error) {
 	if c, ok := findConnection(connections, learning.ReviewConnection); !ok {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.review_connection %q is not a connection of this instance", path, learning.ReviewConnection)}
 	} else if !c.Models() {
-		return nil, &Error{fmt.Sprintf("%s: core.learning.review_connection %q serves voice, not models", path, c.Name)}
+		return nil, &Error{fmt.Sprintf("%s: core.learning.review_connection %q serves %s, not models", path, c.Name, c.Serves)}
 	} else if c.API() && learning.ReviewModel == "" && review == ReviewAuto {
 		return nil, &Error{fmt.Sprintf("%s: core.learning.review_model is required with the API connection %s", path, c.Name)}
 	}

@@ -26,7 +26,7 @@ type Options struct {
 	Engines   []string        `json:"engines"`   // engine.kind
 	Channels  []ChannelOption `json:"channels"`  // channels[].kind and the secrets each needs declared
 	AllowBots []string        `json:"allowBots"` // channels[].allow_bots (slack)
-	Secrets   []string        `json:"secrets"`   // secret names declared anywhere in the instance (names only)
+	Secrets   []string        `json:"secrets"`   // secret names declared anywhere in the instance, and connections' keys (names only)
 	Scripts   []string        `json:"scripts"`   // the agent's scripts/, for schedules' script and monitor
 	Reasoning []string        `json:"reasoning"` // limits.reasoning levels the agent's engine accepts
 	// Connections the agent may use: API ones for model.provider, ChatGPT ones for model.local.
@@ -73,12 +73,18 @@ func options(inst *instance.Instance, agent string) *Options {
 	for _, c := range inst.Capabilities {
 		o.Capabilities = append(o.Capabilities, CapabilityOption{c.Name, c.Description, c.Unavailable})
 	}
+	names := map[string]bool{}
 	for _, c := range inst.Connections {
 		k, _ := instance.KindOf(c.Kind)
-		if c.Voice() {
+		switch {
+		case c.Voice():
 			o.VoiceConnections = append(o.VoiceConnections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
-		} else {
+		case c.Models():
 			o.Connections = append(o.Connections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
+		}
+		// a tools API is used by declaring its key: the form suggests it like any declared name
+		if c.Key != "" {
+			names[c.Key] = true
 		}
 	}
 	if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil {
@@ -120,7 +126,6 @@ func options(inst *instance.Instance, agent string) *Options {
 			o.Personas = append(o.Personas, "personas/"+e.Name())
 		}
 	}
-	names := map[string]bool{}
 	for kind, needs := range manifest.ChannelSecrets {
 		o.Channels = append(o.Channels, ChannelOption{kind, needs})
 		for _, n := range needs {

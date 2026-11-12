@@ -49,6 +49,19 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(VoiceStore.sorted(v, for: nil).map(\.id) == ["AcmeVoice2", "AcmeVoice1", "AcmeVoice3"])
     }
 
+    /// What a connection serves sorts it into the Providers page's sections; an older stormo says
+    /// nothing, and its connections all serve models.
+    @Test func connectionServes() throws {
+        let rows = try decode([ConnectionRow].self, """
+            [{"name":"openrouter","kind":"openrouter","label":"OpenRouter","api":true,"keySet":true,"agentKeys":[],"usedBy":["atlas"]},
+             {"name":"elevenlabs","kind":"elevenlabs","label":"ElevenLabs (voice)","api":true,"serves":"voice","keySet":false,"agentKeys":[],"usedBy":[]},
+             {"name":"apify","kind":"apify","label":"Apify (web scraping and data)","api":true,"serves":"tools","key":"APIFY_API_TOKEN","implicit":true,"keySet":true,"agentKeys":[],"usedBy":["atlas"]}]
+            """)
+        #expect(rows.map(\.servesModels) == [true, false, false])
+        #expect(rows.map(\.servesVoice) == [false, true, false])
+        #expect(rows.map(\.servesTools) == [false, false, true])
+    }
+
     @Test func speechModels() throws {
         let m = try decode([ConnectionModel].self, modelsJSON)
         #expect(m[1].languages == ["en", "es"] && m[1].maxChars == 10000 && m[1].contextLength == nil)
@@ -248,6 +261,10 @@ private func voiceStormo(_ s: Scratch) throws -> (cli: StormoCLI, log: URL) {
         let rows = try await cli.run(["connections"], as: [ConnectionRow].self)
         #expect(rows.filter(\.servesVoice).map(\.name) == ["elevenlabs"])
         #expect(rows.first { $0.name == "openrouter" }?.servesVoice == false)
+        // The tools APIs every instance has, used by the agents that declare their key.
+        #expect(rows.filter(\.servesTools).map(\.name) == ["apify", "comfy"])
+        #expect(rows.first { $0.name == "apify" }?.usedBy == ["atlas"])
+        #expect(rows.filter(\.servesModels).allSatisfy { !$0.servesTools && !$0.servesVoice })
 
         let store = VoiceStore()
         await store.show("atlas", with: cli)
@@ -258,6 +275,7 @@ private func voiceStormo(_ s: Scratch) throws -> (cli: StormoCLI, log: URL) {
         let conn = try #require(editor.file?.options?.voiceConnections?.first)
         #expect(conn.name == "elevenlabs" && conn.key == "ELEVENLABS_API_KEY")
         #expect(editor.file?.options?.connections?.contains { $0.name == "elevenlabs" } == false)
+        #expect(editor.file?.options?.connections?.contains { $0.name == "apify" || $0.name == "comfy" } == false)
         VoiceDoc.give(&editor.doc!, provider: conn.name, key: conn.key)
         editor.doc?.set(["voice", "language"], .string("es"))
         #expect(await editor.save(with: cli))

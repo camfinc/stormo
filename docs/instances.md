@@ -183,14 +183,18 @@ instance: inside a sidecar it is the agent's engine home.
   the instance's parent). A persona is one agent's look (its office character `sprite:`, its `desk:`
   and the `## Avatar lock` a portrait is baked from), so each agent normally has its own:
   `stormo new agent` with a `look` writes `personas/<id>`, and `stormo look show|set` edits it.
-- **Connections** (`connections:`): named ways to reach models and voice, `{name, kind: chatgpt|openrouter|openai|anthropic|custom|elevenlabs, base_url?, key?}`;
+- **Connections** (`connections:`): named ways to reach models, voice and tools APIs, `{name, kind: chatgpt|openrouter|openai|anthropic|custom|elevenlabs|apify|comfy, base_url?, key?}`;
   `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`, set once
-  for every agent that declares it). Every kind serves models except `elevenlabs`, which serves voice. Every
-  instance has `openrouter`, `chatgpt` and `elevenlabs` (key `ELEVENLABS_API_KEY`) unless it redefines them.
+  for every agent that declares it). Every kind serves models except `elevenlabs`, which serves voice, and
+  `apify` (web scraping and data, `https://api.apify.com/v2`) and `comfy` (Comfy Cloud image and video
+  generation, `https://cloud.comfy.org`), which serve tools: APIs the agents' skills and scripts call with the
+  key. Every instance has `openrouter`, `chatgpt`, `elevenlabs` (key `ELEVENLABS_API_KEY`), `apify` (key
+  `APIFY_API_TOKEN`) and `comfy` (key `COMFY_API_KEY`) unless it redefines them.
   An agent's `model.provider` names an API connection serving models (and declares its key under
   `secrets:`); `model.local.connection` names the ChatGPT sign-in the core serves it with (default
   `chatgpt`); `voice.provider` names a voice connection (its key declared too), and
-  `core.learning.review_connection` one serving models. `stormo connections add|remove` edits the list;
+  `core.learning.review_connection` one serving models. An agent uses a tools API by declaring its key under
+  `secrets:` or `optional_secrets:`; nothing else names it. `stormo connections add|remove` edits the list;
   `stormo connections voices|check` list a voice connection's voices and what its key may do.
 - **Voice** (agent.yaml `voice:`, optional, engine-neutral): `{provider (elevenlabs), id, name, model,
   settings {stability, similarity}, speak (auto|never), listen (true), language, max_seconds (120; 10 to 300)}`.

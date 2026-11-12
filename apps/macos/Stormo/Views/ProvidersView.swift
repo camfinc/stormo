@@ -3,8 +3,9 @@ import StormoKit
 import SwiftUI
 
 /// The instance's connections (stormo.yaml connections:): API providers with their keys, voice
-/// providers, and ChatGPT accounts signed in on the core. Agents pick one in their form (Model ›
-/// Provider, the core's account for local runs, and their Voice page). Everything goes through
+/// providers, tools APIs (Apify, Comfy Cloud), and ChatGPT accounts signed in on the core. Agents
+/// pick one in their form (Model › Provider, the core's account for local runs, and their Voice
+/// page), or for a tools API declare its key under Secrets. Everything goes through
 /// `stormo connections`, `secrets set` and `core login|logout --connection`.
 struct ProvidersView: View {
     @Environment(AppModel.self) private var model
@@ -25,7 +26,7 @@ struct ProvidersView: View {
                 Section { Label(failure, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
             }
             Section {
-                ForEach(rows.filter { $0.api && !$0.servesVoice }) { apiRow($0) }
+                ForEach(rows.filter { $0.api && $0.servesModels }) { apiRow($0) }
             } header: {
                 SectionTitle("API providers", note: "Reached with a key, on this Mac and in the cloud. Each agent picks one in its form.")
             }
@@ -35,6 +36,14 @@ struct ProvidersView: View {
                     ForEach(voice) { voiceRow($0) }
                 } header: {
                     SectionTitle("Voice", note: "Speech for agents with a voice: the voice notes they answer with and the ones people send them. Each agent chooses its voice on its Voice page.")
+                }
+            }
+            let tools = rows.filter(\.servesTools)
+            if !tools.isEmpty {
+                Section {
+                    ForEach(tools) { apiRow($0, icon: "wrench.and.screwdriver") }
+                } header: {
+                    SectionTitle("Tools", note: "APIs the agents' skills and scripts call with the key: web data, image and video generation. Set the key once here; an agent uses it by declaring the key under Secrets in its form.")
                 }
             }
             Section {
@@ -80,10 +89,10 @@ struct ProvidersView: View {
 
     // MARK: Rows
 
-    private func apiRow(_ r: ConnectionRow) -> some View {
+    private func apiRow(_ r: ConnectionRow, icon: String = "key.horizontal") -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Image(systemName: "key.horizontal").foregroundStyle(.secondary)
+                Image(systemName: icon).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(r.name).fontWeight(.medium)
                     Text([r.label, r.baseUrl].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
@@ -344,6 +353,9 @@ struct AddProviderSheet: View {
                 Text("A second ChatGPT account is its own plan and limit. The core serves it after a restart; then sign in to it.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 PlanTermsNotice(gateway: model.fleet.fleet?.gateway)
+            } else if info?.serves == "tools" {
+                Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. An agent's skills and scripts get it once the agent declares its secret name under Secrets.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. Agents using this provider declare its name; their form adds it.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

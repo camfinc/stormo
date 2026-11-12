@@ -207,7 +207,7 @@ public struct ConnectionKindInfo: Codable, Sendable, Equatable, Identifiable {
     public var baseUrl: String?
     public var key: String?
     public var api: Bool
-    /// models | voice (absent from an older stormo: models).
+    /// models | voice | tools (absent from an older stormo: models).
     public var serves: String?
     public var id: String { kind }
 }
@@ -220,7 +220,7 @@ public struct ConnectionRow: Codable, Sendable, Equatable, Identifiable {
     public var api: Bool
     public var baseUrl: String?
     public var key: String?
-    /// models | voice (absent from an older stormo: models).
+    /// models | voice | tools (absent from an older stormo: models).
     public var serves: String?
     /// Not written in stormo.yaml: one every instance has.
     public var implicit: Bool?
@@ -229,7 +229,10 @@ public struct ConnectionRow: Codable, Sendable, Equatable, Identifiable {
     public var agentKeys: [String]
     public var usedBy: [String]
     public var id: String { name }
+    public var servesModels: Bool { serves == nil || serves == "models" }
     public var servesVoice: Bool { serves == "voice" }
+    /// An API the agents' skills and scripts call with its key; an agent uses it by declaring the key.
+    public var servesTools: Bool { serves == "tools" }
 }
 
 /// One agent `stormo migrate agent` went through.
