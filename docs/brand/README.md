@@ -11,6 +11,7 @@ nothing depends on a font.
 | `mark-bare.svg` | the mark alone, on any background |
 | `favicon.svg` | a nine-dot cut of the mark that stays legible at 16 px (the office's browser tab) |
 | `wordmark-light.svg` · `wordmark-dark.svg` | the name alone |
+| `flow-light.svg` · `flow-dark.svg` | the README's "How it fits together" diagram, for GitHub's light and dark pages, each on that page's colour so it still reads when the system's scheme and the GitHub theme disagree |
 | `social-preview.png` (`.svg` source) | GitHub's social preview, 1280×640 |
 | `dmg-background.svg` | the installer window (640×400); rendered to `apps/macos/dmg/background.png` and `background@2x.png` with `rsvg-convert -w 640` / `-w 1280` |
 | `apps/macos/Stormo/AppIcon.icon` | the macOS app icon: an Icon Composer document, the tile as its fill and each dot an opaque glass layer |

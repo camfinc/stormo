@@ -1,6 +1,7 @@
 // Command brandgen writes Stormo's logo files (docs/brand/*.svg) from one spiral: dots evenly
 // spaced along an Archimedean curve, growing and cooling from teal to indigo, plus the monoline
-// wordmark, and the macOS app icon. Edit the parameters here and regenerate every file together:
+// wordmark, the macOS app icon and the README's diagram in the same colours. Edit the parameters
+// here and regenerate every file together:
 //
 //	go run ./tools/brandgen [-out docs/brand] [-icon apps/macos/Stormo/AppIcon.icon]
 //
@@ -182,6 +183,7 @@ func main() {
 		s := 0.82 * 64 / 46
 		files["logo-"+theme+".svg"] = fmt.Sprintf(`%s viewBox="0 0 %.1f 64"><title>Stormo</title>%s<g transform="translate(82 %.2f) scale(%.4f)">%s</g></svg>`,
 			head, 64+18+width*s, centred(mark, 64, 4), 32-23*s, s, wm)
+		files["flow-"+theme+".svg"] = flow(flowThemes[theme])
 	}
 	wm, _ := wordmark(inkDark)
 	files["social-preview.svg"] = fmt.Sprintf(`%s viewBox="0 0 1280 640" width="1280" height="640"><rect width="1280" height="640" fill="%s"/>`+
@@ -215,6 +217,99 @@ func dmgBackground(mark []dot) string {
 		`<path d="M390 182 l10 8 -10 8" fill="none" stroke="%[4]s" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`+
 		`<text x="320" y="330" text-anchor="middle" fill="#8b98a8" font-family="Helvetica Neue, Arial, sans-serif" font-size="14">Drag Stormo to Applications to install</text></svg>`,
 		head, tileBG, centred(mark, 360, 0), indigo, inkDark, arrow.String())
+}
+
+// flowTheme is the README diagram's colours for GitHub's light or dark page: out is the way to a
+// running agent, back is what it learned coming home. bg is GitHub's page colour, so the diagram's
+// own background disappears there yet keeps it legible when the browser picks the other file (the
+// system's scheme and the GitHub theme disagree).
+type flowTheme struct{ bg, ink, muted, out, back string }
+
+var flowThemes = map[string]flowTheme{
+	"light": {"#ffffff", inkLight, "#5b6672", mix(teal, inkLight, 0.3), mix(indigo, inkLight, 0.2)},
+	"dark":  {"#0d1117", inkDark, "#8b98a8", teal, indigo},
+}
+
+// flow is the README's "How it fits together": the instance is built into a baseline, a task
+// rehydrates from it and its latest nap, naps come back through the dream and a person's review
+// into the ledger, and accepted lessons ship with the next build. Three lanes, as the README's
+// words have them; the arrows cool from teal (out) to indigo (back) like the spiral.
+func flow(t flowTheme) string {
+	var b strings.Builder
+	f := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
+	const (
+		r1, r3 = 128.0, 296.0 // the centre lines of the top and bottom rows, cards 60 tall
+		top    = r1 + 30      // the top row's bottom edge
+		bottom = r3 - 30      // the bottom row's top edge
+		lanes  = r3 + 60      // the lanes' height; the legend sits below
+	)
+	card := func(x, cy, w float64, title, sub, edge string) {
+		f(`<rect x="%g" y="%g" width="%g" height="60" rx="10" class="card"%s/>`, x, cy-30, w, edge)
+		f(`<text x="%g" y="%g" text-anchor="middle" class="t">%s</text>`, x+w/2, cy-4, title)
+		f(`<text x="%g" y="%g" text-anchor="middle" class="s">%s</text>`, x+w/2, cy+15, sub)
+	}
+	arrow := func(color, marker, d string, a ...any) {
+		f(`<path d="%s" fill="none" stroke="%s" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#%s)"/>`, fmt.Sprintf(d, a...), color, marker)
+	}
+	// A size of its own, so the README's <img> fills the column (max-width: 100%) in every browser.
+	f(`%[1]s viewBox="0 0 940 %[2]g" width="940" height="%[2]g" role="img"><title>How Stormo fits together</title>`, head, lanes+42)
+	f(`<defs><style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:%[1]s}`+
+		`.t{font-size:15px;font-weight:600}.s{font-size:12px;fill:%[2]s}.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}`+
+		`.h{font-size:12px;font-weight:600;letter-spacing:1.4px}.card{fill:%[1]s;fill-opacity:.05;stroke:%[1]s;stroke-opacity:.22}</style>`,
+		t.ink, t.muted)
+	for _, m := range []struct{ id, color string }{{"out", t.out}, {"back", t.back}} {
+		f(`<marker id="%s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="%s" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>`, m.id, m.color)
+	}
+	f(`<linearGradient id="cool" gradientUnits="userSpaceOnUse" x1="0" y1="%g" x2="0" y2="%g"><stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/></linearGradient></defs>`, top, r3, t.out, t.back)
+	f(`<rect width="940" height="%g" rx="14" fill="%s"/>`, lanes+42, t.bg)
+
+	for _, l := range []struct {
+		x, w       float64
+		title, sub string
+	}{{0, 244, "INSTANCE", "plain files in git"}, {260, 304, "STORMO", "one Go binary"}, {580, 360, "WHERE AGENTS RUN", "local compose or ECS task"}} {
+		f(`<rect x="%g" y="0" width="%g" height="%g" rx="14" fill="%s" fill-opacity=".03"/>`, l.x, l.w, lanes, t.ink)
+		f(`<text x="%g" y="34" text-anchor="middle" class="h">%s</text><text x="%g" y="52" text-anchor="middle" class="s">%s</text>`, l.x+l.w/2, l.title, l.x+l.w/2, l.sub)
+	}
+
+	// Out: the instance's files, built into a baseline, booted with the latest nap.
+	f(`<rect x="18" y="%g" width="208" height="84" rx="10" class="card"/>`, r1-42)
+	for i, name := range []string{"stormo.yaml", "units/", "agents/"} {
+		f(`<text x="42" y="%g" class="m">%s</text>`, r1-16+float64(i)*20, name)
+	}
+	card(274, r1, 118, "build", "for its engine", "")
+	card(430, r1, 118, "baseline", "the starting home", "")
+	card(598, r1, 148, "rehydrate", "baseline + latest nap", "")
+	card(784, r1, 138, "agent", "Hermes or needletail", "")
+	for _, x := range [][2]float64{{226, 272}, {392, 428}, {548, 596}, {746, 782}} {
+		arrow(t.out, "out", "M%g %g H%g", x[0], r1, x[1])
+	}
+
+	// The sidecar's naps, cooling from out to back.
+	pill := (top + r3) / 2
+	f(`<path d="M853 %g V%g" fill="none" stroke="url(#cool)" stroke-width="2" stroke-linecap="round"/>`, top, pill-16)
+	f(`<rect x="823" y="%g" width="60" height="28" rx="14" class="card" style="stroke:url(#cool);stroke-opacity:1"/>`, pill-14)
+	f(`<text x="853" y="%g" text-anchor="middle" class="t" style="font-size:14px">nap</text>`, pill+5)
+	arrow(t.back, "back", "M853 %g V%g H748", pill+14, r3)
+	card(598, r3, 148, "naps", "dir or S3", "")
+	arrow(t.back, "back", "M672 %g V%g", bottom, top+2)
+	f(`<text x="684" y="%g" class="s">latest nap</text>`, (top+bottom)/2+4)
+
+	// Back: the dream proposes, a person reviews, accepted lessons ship with the next build.
+	card(430, r3, 118, "dream", "PII scrubbed", "")
+	card(274, r3, 118, "review", "a person decides", fmt.Sprintf(` style="stroke:%s;stroke-opacity:1"`, t.back))
+	f(`<rect x="18" y="%g" width="208" height="60" rx="10" class="card"/>`, bottom)
+	f(`<text x="122" y="%g" text-anchor="middle" class="m">learnings/ledger.jsonl</text><text x="122" y="%g" text-anchor="middle" class="s">proposed lessons</text>`, r3-4, r3+15)
+	for _, x := range [][2]float64{{596, 550}, {430, 394}, {274, 228}} {
+		arrow(t.back, "back", "M%g %g H%g", x[0], r3, x[1])
+	}
+	arrow(t.back, "back", "M60 %g V%g", bottom, r1+44)
+	f(`<text x="74" y="%g" class="s">accepted lessons</text><text x="74" y="%g" class="s">ship with the next build</text>`, (r1+42+bottom)/2-4, (r1+42+bottom)/2+12)
+
+	// Legend.
+	f(`<path d="M300 %[1]g H330" stroke="%[2]s" stroke-width="2" stroke-linecap="round" marker-end="url(#out)"/><text x="340" y="%[3]g" class="s">out: build and run</text>`, lanes+24, t.out, lanes+28)
+	f(`<path d="M500 %[1]g H530" stroke="%[2]s" stroke-width="2" stroke-linecap="round" marker-end="url(#back)"/><text x="540" y="%[3]g" class="s">back: learn and review</text>`, lanes+24, t.back, lanes+28)
+	b.WriteString(`</svg>`)
+	return b.String()
 }
 
 func write(dir string, files map[string]string) {

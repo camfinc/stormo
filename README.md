@@ -108,13 +108,10 @@ a skill named `stormo` that Stormo did not write is left alone unless you pass `
 
 ## How it fits together
 
-```
- instance (git)                    stormo                          where agents run
- ──────────────                    ──────                          ────────────────
- stormo.yaml, units/, agents/ ──▶ build ─▶ baseline ───────────▶ local compose │ ECS task
-                                                                  rehydrate ─▶ agent ◀─ nap
- learnings/ledger.jsonl  ◀── review ◀── dream ◀── naps (dir or S3) ◀────────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/flow-dark.svg">
+  <img src="docs/brand/flow-light.svg" alt="The instance's files (stormo.yaml, units/, agents/) are built into a baseline. Where agents run, a local compose project or an ECS task, rehydrate starts the agent from that baseline plus its latest nap. The agent's naps go to a store (a directory or S3); the dream reads them and proposes lessons with personal data scrubbed, a person reviews them into learnings/ledger.jsonl, and accepted lessons ship with the next build.">
+</picture>
 
 - **Build** compiles an agent for its engine: personality, skills, schedules, config, and the
   lessons a reviewer accepted.
@@ -168,8 +165,8 @@ docker/              the sidecar image and the per-agent ECS layer
 examples/minimal/    a complete example instance: the template and the test fixture
 examples/office-demo the office with simulated activity (the screenshot above)
 apps/macos/          the macOS app (SwiftUI) and StormoKit; scripts/dmg.sh builds the installer
-docs/                instances, the core and the office; docs/brand: the logo
-tools/brandgen/      generates the logo files
+docs/                instances, the core and the office; docs/brand: the logo and the diagram above
+tools/brandgen/      generates docs/brand
 scripts/             release builds of the CLI
 .github/workflows/   CI and releases
 ```
