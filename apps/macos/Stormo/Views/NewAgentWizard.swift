@@ -7,7 +7,7 @@ import SwiftUI
 /// (`secrets set <id> NAME`, value on stdin) and offers to start it or open its full editor.
 struct NewAgentWizard: View {
     enum Step: Int, CaseIterable, Identifiable {
-        case basics, team, brain, channels, personality, look, review, keys
+        case basics, team, brain, channels, personality, look, voice, review, keys
         var id: Self { self }
         var title: String {
             switch self {
@@ -17,6 +17,7 @@ struct NewAgentWizard: View {
             case .channels: "Where it talks"
             case .personality: "Personality"
             case .look: "Look"
+            case .voice: "Voice"
             case .review: "Review"
             case .keys: "Connect"
             }
@@ -29,6 +30,7 @@ struct NewAgentWizard: View {
             case .channels: "bubble.left.and.bubble.right"
             case .personality: "theatermasks"
             case .look: "paintpalette"
+            case .voice: "waveform"
             case .review: "checklist"
             case .keys: "key"
             }
@@ -162,6 +164,7 @@ struct NewAgentWizard: View {
         case .look:
             return draft.persona.isEmpty && options.options.personas.contains("personas/\(draft.id)")
                 ? "personas/\(draft.id) already exists. Share it under Advanced, or choose another ID." : nil
+        case .voice: return draft.voiceProblem
         default: return nil
         }
     }
@@ -176,6 +179,7 @@ struct NewAgentWizard: View {
         case .channels: ChannelsPage(draft: $draft, options: o.options, advanced: advanced)
         case .personality: PersonalityPage(draft: $draft)
         case .look: LookPage(draft: $draft, personas: o.options.personas, office: OfficeLook(instance: model.fleet.look), advanced: advanced)
+        case .voice: VoicePage(draft: $draft, options: o.options, advanced: advanced)
         case .review: ReviewPage(draft: draft, options: o, advanced: advanced) { step = $0 }
         case .keys:
             if let created { KeysPage(result: created) }
@@ -617,6 +621,123 @@ private struct LookPage: View {
     private func title(_ p: String) -> String { p.replacingOccurrences(of: "personas/", with: "").capitalized }
 }
 
+/// An optional voice: the agent picks its own once it runs (the default where the instance has a
+/// voice connection), one is chosen now with the shared voice chooser, or none.
+private struct VoicePage: View {
+    @Environment(AppModel.self) private var model
+    @Binding var draft: NewAgentDraft
+    let options: AgentOptions
+    let advanced: Bool
+    @State private var choosing = false
+    /// The voice chosen in this visit, for its labels and sample.
+    @State private var chosen: ProviderVoice?
+    @State private var catalog = VoiceStore()
+
+    private var name: String { draft.name.trimmingCharacters(in: .whitespaces).isEmpty ? "it" : draft.name.trimmingCharacters(in: .whitespaces) }
+    private var connections: [AgentOptions.Connection] { options.voiceConnections ?? [] }
+    private var connection: AgentOptions.Connection? { connections.first { $0.name == draft.voiceProvider } ?? connections.first }
+
+    var body: some View {
+        PageHeader(title: "Should \(name) have a voice?",
+                   subtitle: "With a voice it can answer with a voice note when it decides to, and understands the voice notes people send. Optional; change it any time in its editor.")
+        if connections.isEmpty {
+            Text("This instance has no voice connection (Providers), so \(name) starts without a voice.").foregroundStyle(.secondary)
+        } else {
+            VStack(spacing: 10) {
+                ChoiceCard(symbol: "sparkles", title: "Let \(name) pick its voice",
+                           detail: "Once it runs, it listens to voices and picks one that fits who it is. Its pick is in use at once and waits for your review.",
+                           selected: draft.voiceChoice == .pick) { draft.voiceChoice = .pick }
+                ChoiceCard(symbol: "waveform", title: "Choose a voice now",
+                           detail: "From your voices or the Voice Library, with samples to play.",
+                           selected: draft.voiceChoice == .choose) {
+                    draft.voiceChoice = .choose
+                    if draft.voiceID.isEmpty { choosing = true }
+                }
+                ChoiceCard(symbol: "waveform.slash", title: "No voice", detail: "It answers in text only.",
+                           selected: draft.voiceChoice == .none) { draft.voiceChoice = .none }
+            }
+            .sheet(isPresented: $choosing) {
+                VoiceChooser(connection: connection?.name ?? "elevenlabs", agentID: nil, language: draft.voiceLanguage,
+                             current: draft.voiceID.isEmpty ? nil : draft.voiceID) { v in
+                    chosen = v
+                    draft.voiceID = v.id
+                    draft.voiceName = v.name
+                }
+                .environment(model)
+            }
+            if draft.voiceChoice == .choose { choice.padding(.top, 14) }
+            if draft.voiceChoice != .none {
+                VStack(alignment: .leading, spacing: 12) {
+                    Field(label: "Language", note: "The language people’s voice notes are in; it also narrows the voices to choose from. Detected when empty.") {
+                        Picker("Language", selection: $draft.voiceLanguage) {
+                            Text("Detected").tag("")
+                            Divider()
+                            ForEach(languages, id: \.self) { Text("\(ProviderVoice.languageName($0)) (\($0))").tag($0) }
+                        }
+                        .labelsHidden().frame(maxWidth: 260, alignment: .leading)
+                    }
+                    if let key = connection?.key {
+                        Text("Speaks through \(connection?.label ?? draft.voiceProvider): it needs \(key), which you can add at the end if it isn’t set.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 14)
+                Advanced(on: advanced) {
+                    if connections.count > 1 {
+                        Field(label: "Voice provider") {
+                            Picker("Voice provider", selection: $draft.voiceProvider) {
+                                ForEach(connections) { Text("\($0.name) (\($0.label))").tag($0.name) }
+                            }
+                            .labelsHidden().frame(maxWidth: 260, alignment: .leading)
+                        }
+                    }
+                    if draft.voiceChoice == .choose {
+                        Field(label: "Speech model", note: "Empty: the default (\(VoiceDoc.defaultModel)).") {
+                            Picker("Speech model", selection: $draft.voiceModel) {
+                                Text("Default").tag("")
+                                ForEach(catalog.models ?? []) { Text($0.name ?? $0.id).tag($0.id) }
+                                if !draft.voiceModel.isEmpty, !(catalog.models ?? []).contains(where: { $0.id == draft.voiceModel }) {
+                                    Text(draft.voiceModel).tag(draft.voiceModel)
+                                }
+                            }
+                            .labelsHidden().frame(maxWidth: 260, alignment: .leading)
+                        }
+                        .task(id: draft.voiceProvider) {
+                            guard let cli = model.cli, !draft.voiceProvider.isEmpty else { return }
+                            await catalog.loadModels(draft.voiceProvider, with: cli)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var choice: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if draft.voiceID.isEmpty {
+                Text("No voice chosen yet.").foregroundStyle(.secondary)
+            } else {
+                PlayButton(url: chosen?.id == draft.voiceID ? chosen?.previewURL : nil, label: "Play the voice's sample")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(draft.voiceName.isEmpty ? draft.voiceID : draft.voiceName).fontWeight(.medium)
+                    if let labels = chosen?.labels, chosen?.id == draft.voiceID, !labels.isEmpty {
+                        Text(labels.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Spacer()
+            Button(draft.voiceID.isEmpty ? "Choose…" : "Change…") { choosing = true }
+        }
+        .padding(.leading, 54)
+    }
+
+    private var languages: [String] {
+        var all = VoiceChooser.languages
+        if !draft.voiceLanguage.isEmpty, !all.contains(draft.voiceLanguage) { all.append(draft.voiceLanguage) }
+        return all.sorted { ProviderVoice.languageName($0) < ProviderVoice.languageName($1) }
+    }
+}
+
 private struct ReviewPage: View {
     let draft: NewAgentDraft
     let options: NewAgentOptions
@@ -628,6 +749,14 @@ private struct ReviewPage: View {
     }
     private var channels: String {
         draft.channels.isEmpty ? "None yet" : draft.channels.keys.sorted().map(\.capitalized).joined(separator: ", ")
+    }
+    private var voice: String {
+        let lang = draft.voiceLanguage.isEmpty ? "" : " · \(ProviderVoice.languageName(draft.voiceLanguage))"
+        switch draft.voiceChoice {
+        case .none: return "None"
+        case .pick: return "Picks its own once it runs" + lang
+        case .choose: return (draft.voiceName.isEmpty ? draft.voiceID : draft.voiceName) + lang
+        }
     }
 
     var body: some View {
@@ -641,6 +770,7 @@ private struct ReviewPage: View {
             row("Channels", channels, .channels)
             row("Tone", draft.tone.title, .personality)
             row("Look", draft.persona.isEmpty ? "Its own (personas/\(draft.id))" : "Shares " + draft.persona, .look)
+            row("Voice", voice, .voice)
         }
         .background(.background, in: .rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
@@ -672,7 +802,7 @@ private struct ReviewPage: View {
                 Button("Change") { go(step) }.buttonStyle(.link).controlSize(.small)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            if label != "Tone" { Divider().padding(.leading, 14) }
+            if label != "Voice" { Divider().padding(.leading, 14) }
         }
     }
 }
@@ -743,6 +873,7 @@ private struct KeysPage: View {
         case "SLACK_APP_TOKEN": "From your Slack app › Basic Information › App-Level Tokens (starts with xapp-)."
         case "TELEGRAM_BOT_TOKEN": "From @BotFather in Telegram."
         case "OPENROUTER_API_KEY": "From openrouter.ai › Keys. Shared agents usually already have one under Providers."
+        case "ELEVENLABS_API_KEY": "From ElevenLabs › Developers › API keys. Set once for every agent under Providers › Voice."
         default: nil
         }
     }

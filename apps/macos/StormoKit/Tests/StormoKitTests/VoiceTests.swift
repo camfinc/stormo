@@ -279,4 +279,42 @@ private func voiceStormo(_ s: Scratch) throws -> (cli: StormoCLI, log: URL) {
         await store.check("elevenlabs", with: cli)
         #expect(store.problem?.code == "unavailable" && store.problem?.message.contains("ELEVENLABS_API_KEY") == true)
     }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: RealBinary.binary.path)))
+    @MainActor func aNewAgentWithAVoice() async throws {
+        let s = try Scratch()
+        let root = s.url.appending(path: "acme")
+        try FileManager.default.copyItem(at: RealBinary.engine.appending(path: "examples/minimal"), to: root)
+        let env = ShellEnvironment.compose(shell: nil, process: ProcessInfo.processInfo.environment)
+        let cli = StormoCLI(executable: RealBinary.binary, environment: env, instance: root)
+        let options = try await cli.run(["new", "agent", "--options"], as: NewAgentOptions.self)
+
+        var picks = NewAgentDraft(options: options)
+        picks.name = "Vox"
+        picks.voiceLanguage = "es"
+        #expect(picks.voiceChoice == .pick)
+        let made = try await cli.run(["new", "agent"], as: NewAgentResult.self, stdin: try JSONEncoder().encode(picks.spec))
+        #expect(made.secrets.contains("ELEVENLABS_API_KEY") && made.missing?.contains("ELEVENLABS_API_KEY") == true)
+        let store = VoiceStore()
+        await store.show("vox", with: cli)
+        #expect(store.shown?.voice?.id == nil && store.shown?.voice?.speak == "auto" && store.shown?.voice?.language == "es")
+
+        var chosen = NewAgentDraft(options: options)
+        chosen.name = "Echo"
+        chosen.voiceChoice = .choose
+        chosen.voiceID = "AcmeVoice1"
+        chosen.voiceName = "Ada"
+        chosen.voiceModel = "eleven_v4"
+        _ = try await cli.run(["new", "agent"], as: NewAgentResult.self, stdin: try JSONEncoder().encode(chosen.spec))
+        await store.show("echo", with: cli)
+        #expect(store.shown?.voice?.id == "AcmeVoice1" && store.shown?.voice?.name == "Ada" && store.shown?.voice?.model == "eleven_v4")
+
+        var silent = NewAgentDraft(options: options)
+        silent.name = "Mute"
+        silent.voiceChoice = .none
+        let quiet = try await cli.run(["new", "agent"], as: NewAgentResult.self, stdin: try JSONEncoder().encode(silent.spec))
+        #expect(!quiet.secrets.contains("ELEVENLABS_API_KEY"))
+        await store.show("mute", with: cli)
+        #expect(store.shown?.voice == nil)
+    }
 }
