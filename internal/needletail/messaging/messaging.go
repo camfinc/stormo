@@ -191,6 +191,14 @@ type Request struct {
 	// Files are posted with the message (send_message files): read when the send was asked for,
 	// under the agent's read rules, and posted from exactly those bytes.
 	Files []File
+	// Voice sends the message as a voice note in the agent's voice (send_message voice).
+	Voice *Voice
+}
+
+// Voice is a message spoken: Say when what is spoken differs from Text, WithText to post Text too.
+type Voice struct {
+	Say      string
+	WithText bool
 }
 
 // File is a file a message carries.

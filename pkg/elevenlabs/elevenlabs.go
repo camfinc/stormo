@@ -98,6 +98,7 @@ func (e *APIError) Error() string {
 
 var (
 	statusRe     = regexp.MustCompile(`^[a-z_]{1,64}$`)
+	voiceIDRe    = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
 	permissionRe = regexp.MustCompile(`permission ([a-z_]{1,64})\b`)
 )
 
@@ -122,15 +123,21 @@ func apiError(code int, body []byte) *APIError {
 
 // do makes one request and gives the answer's body on success (2xx), else an *APIError.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, contentType string, body io.Reader) ([]byte, error) {
+	raw, _, err := c.doHeader(ctx, method, path, query, contentType, body)
+	return raw, err
+}
+
+// doHeader is do with the answer's headers.
+func (c *Client) doHeader(ctx context.Context, method, path string, query url.Values, contentType string, body io.Reader) ([]byte, http.Header, error) {
 	if c.Key == "" {
-		return nil, errors.New("no ElevenLabs key")
+		return nil, nil, errors.New("no ElevenLabs key")
 	}
 	base := c.BaseURL
 	if base == "" {
 		base = DefaultURL
 	}
 	if err := CheckURL(base); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	timeout := c.Timeout
 	if timeout <= 0 {
@@ -144,7 +151,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return nil, errors.New("the ElevenLabs request could not be made")
+		return nil, nil, errors.New("the ElevenLabs request could not be made")
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -159,20 +166,20 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	res, err := hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, errors.New("ElevenLabs timed out")
+			return nil, nil, errors.New("ElevenLabs timed out")
 		}
 		// the transport's error names the URL (never the key): keep only that it failed
-		return nil, errors.New("ElevenLabs could not be reached")
+		return nil, nil, errors.New("ElevenLabs could not be reached")
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, maxResponse))
 	if err != nil {
-		return nil, errors.New("the ElevenLabs answer could not be read")
+		return nil, nil, errors.New("the ElevenLabs answer could not be read")
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return nil, apiError(res.StatusCode, raw)
+		return nil, nil, apiError(res.StatusCode, raw)
 	}
-	return raw, nil
+	return raw, res.Header, nil
 }
 
 // Transcription is what to transcribe: the audio, how it is named and typed to the provider, and

@@ -335,6 +335,9 @@ type Config struct {
 	// Absent or not enabled: none are (the note is kept as a file). An image older than it
 	// refuses a needletail.yaml that has it.
 	STT *STTConfig `json:"stt,omitempty" yaml:"stt,omitempty"`
+	// TTS is agent.yaml's voice: the agent may answer with voice notes. Absent: it never speaks.
+	// An image older than it refuses a needletail.yaml that has it.
+	TTS *TTSConfig `json:"tts,omitempty" yaml:"tts,omitempty"`
 	// Web is engine/needletail/config.yaml's web: the search provider web_search asks. Absent:
 	// no web_search (web_extract needs no key). An image older than it refuses a needletail.yaml
 	// that has it.
@@ -399,6 +402,37 @@ func (v *Vision) UnmarshalYAML(n *yaml.Node) error {
 		return fmt.Errorf("vision %q is auto, on or off", n.Value)
 	}
 	return nil
+}
+
+// TTSConfig is how the agent speaks (agent.yaml voice:, docs/needletail.md §4.9): the provider's
+// voice (empty: none chosen, the agent may pick one), its model and settings, the longest note,
+// the env holding the provider's key, and what picking a voice of its own goes by.
+type TTSConfig struct {
+	// Provider is elevenlabs (the only one; "" is it).
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	// KeyEnv is the env var of the provider's key ("": ELEVENLABS_API_KEY).
+	KeyEnv     string   `json:"key_env,omitempty" yaml:"key_env,omitempty"`
+	Voice      string   `json:"voice,omitempty" yaml:"voice,omitempty"`
+	VoiceName  string   `json:"voice_name,omitempty" yaml:"voice_name,omitempty"`
+	Model      string   `json:"model,omitempty" yaml:"model,omitempty"`
+	Stability  *float64 `json:"stability,omitempty" yaml:"stability,omitempty"`
+	Similarity *float64 `json:"similarity,omitempty" yaml:"similarity,omitempty"`
+	// MaxSeconds is the longest one note may be (0: 120).
+	MaxSeconds int `json:"max_seconds,omitempty" yaml:"max_seconds,omitempty"`
+	// Language is the agent's (voice.language), what its voice search looks for first.
+	Language string `json:"language,omitempty" yaml:"language,omitempty"`
+	// Persona is the persona's own words on the agent's voice (persona.md's "Voice:" line).
+	Persona string `json:"persona,omitempty" yaml:"persona,omitempty"`
+	// Taken are the voices the instance's other agents speak with (id: agent), to avoid.
+	Taken map[string]string `json:"taken,omitempty" yaml:"taken,omitempty"`
+}
+
+// TTSKeyEnv is the env var of t's key.
+func (t *TTSConfig) TTSKeyEnv() string {
+	if t == nil || t.KeyEnv == "" {
+		return "ELEVENLABS_API_KEY"
+	}
+	return t.KeyEnv
 }
 
 // STTConfig is the speech-to-text of voice notes.

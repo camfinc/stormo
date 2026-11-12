@@ -22,7 +22,9 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 	"github.com/gorilla/websocket"
 )
 
@@ -133,7 +135,11 @@ type Options struct {
 	// model is shown images (nil: yes).
 	Files *attach.Store
 	STT   Transcriber
-	Sees  func() bool
+	// Speaker speaks in the agent's voice and Voice holds the turns that asked to answer with a
+	// voice note (the voice tool); both nil: the agent has no voice.
+	Speaker *voice.Speaker
+	Voice   *voice.Replies
+	Sees    func() bool
 	// Forward sends a message to another agent of the swarm over the core's bus (msg_send), for a
 	// handler's route (nil: not on a core, such a route is refused).
 	Forward func(ctx context.Context, to, subject, body string) error
@@ -1352,6 +1358,33 @@ func (g *Gateway) say(ctx context.Context, kind, session, channel, thread, text 
 	return g.post(ctx, channel, thread, text)
 }
 
+// sayVoice posts a turn's reply as a voice note (the agent asked, voice reply): after the
+// before_send handlers, an MP3 in the agent's voice with the text as its comment when it goes too.
+// Anything that keeps the audio from being made or posted posts the text instead (logged).
+func (g *Gateway) sayVoice(ctx context.Context, kind, session, channel, thread, text string, q voice.Request) (string, error) {
+	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: kind, Session: session, Text: text},
+		messaging.Target{Platform: "slack", Channel: channel, Thread: thread})
+	if err != nil {
+		return "", err
+	}
+	spoken, withText, err := g.o.Speaker.Prepare(g.o.Redact(text), q)
+	if err == nil {
+		var audio *elevenlabs.Audio
+		if audio, err = g.o.Speaker.Speak(ctx, spoken, elevenlabs.FormatMP3); err == nil {
+			comment := ""
+			if withText {
+				comment = text
+			}
+			var ts string
+			if ts, err = g.postFiles(ctx, channel, thread, comment, false, []messaging.File{{Name: audio.Name, Data: audio.Data}}); err == nil {
+				return ts, nil
+			}
+		}
+	}
+	g.logf("slack: %s: the voice note was not sent, the text goes instead: %v", session, err)
+	return g.post(ctx, channel, thread, text)
+}
+
 // input is a turn's input for the messages that waited for it: each prepared (who sent it, names
 // for mentions, the handlers' notes), merged, after the thread's earlier messages (lines) when the
 // conversation has no session yet and the first message is a reply in a thread.
@@ -1426,6 +1459,7 @@ func (g *Gateway) turn(session string, jobs []job, lines []messaging.ContextLine
 	g.mu.Lock()
 	noReply := state.noReply
 	g.mu.Unlock()
+	vq, voiced := g.o.Voice.Take(root) // taken whatever the turn did: never left for the next
 	if err != nil && errors.Is(err, context.Canceled) && ctx.Err() == nil {
 		// a person's /stop (api.Server.Cancel): no error note, the command answered them
 		g.logf("slack: %s: the turn was stopped", session)
@@ -1468,7 +1502,13 @@ func (g *Gateway) turn(session string, jobs []job, lines []messaging.ContextLine
 				return
 			}
 		}
-		if _, err := g.say(ctx, messaging.KindReply, session, j.channel, j.thread, text); errors.Is(err, messaging.ErrBlocked) {
+		say := g.say
+		if voiced && g.o.Speaker != nil {
+			say = func(ctx context.Context, kind, session, channel, thread, text string) (string, error) {
+				return g.sayVoice(ctx, kind, session, channel, thread, text, vq)
+			}
+		}
+		if _, err := say(ctx, messaging.KindReply, session, j.channel, j.thread, text); errors.Is(err, messaging.ErrBlocked) {
 			finish(false) // the agent's own handler kept the reply back (logged): ❌, not silence
 			return
 		} else if err != nil {

@@ -2,6 +2,7 @@ package elevenlabs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -212,5 +213,39 @@ func TestCheck(t *testing.T) {
 	}
 	if _, err := (&Client{BaseURL: srv.URL, Key: "sk_wrong"}).Check(context.Background()); err == nil || !strings.Contains(err.Error(), "not valid") {
 		t.Errorf("bad key: %v", err)
+	}
+}
+
+// Speak sends the text, model and settings to the voice's endpoint in the format asked, and gives
+// the audio with what it cost; it refuses no text, too much text or a bad voice id before asking.
+func TestSpeak(t *testing.T) {
+	var got struct {
+		path, format string
+		body         map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.path, got.format = r.URL.Path, r.URL.Query().Get("output_format")
+		_ = json.NewDecoder(r.Body).Decode(&got.body)
+		w.Header().Set("character-cost", "7")
+		_, _ = w.Write([]byte("OggS audio"))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Key: fakeKey}
+	half := 0.5
+	a, err := c.Speak(context.Background(), Speech{Text: " Hola ", Voice: "AcmeVoice1", Stability: &half, Format: FormatOpus})
+	if err != nil || string(a.Data) != "OggS audio" || a.MIME != "audio/ogg" || a.Name != "voice-note.ogg" || a.Chars != 7 {
+		t.Fatalf("audio = %+v %v", a, err)
+	}
+	vs, _ := got.body["voice_settings"].(map[string]any)
+	if got.path != "/v1/text-to-speech/AcmeVoice1" || got.format != FormatOpus || got.body["text"] != "Hola" || got.body["model_id"] != DefaultSpeechModel || vs["stability"] != 0.5 {
+		t.Errorf("request = %+v", got)
+	}
+	if a, _ := c.Speak(context.Background(), Speech{Text: "x", Voice: "AcmeVoice1"}); a == nil || a.MIME != "audio/mpeg" || got.format != FormatMP3 {
+		t.Errorf("default format: %+v %s", a, got.format)
+	}
+	for _, bad := range []Speech{{Voice: "AcmeVoice1"}, {Text: strings.Repeat("a", MaxSpeechText+1), Voice: "AcmeVoice1"}, {Text: "x", Voice: "../models"}} {
+		if _, err := c.Speak(context.Background(), bad); err == nil {
+			t.Errorf("%+v spoken", bad)
+		}
 	}
 }

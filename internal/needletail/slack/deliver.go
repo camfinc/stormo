@@ -16,6 +16,8 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/voice"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 )
 
 // Deliver posts a scheduled run's output (sched.Deliverer): to the home channel (a target with
@@ -259,6 +261,9 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
 		return messaging.Sent{}, gate
 	}
+	if _, ok := messaging.AsApproval(gate); ok && r.Voice != nil {
+		return messaging.Sent{}, fmt.Errorf("%w: a voice message is not offered for approval: send it as text", messaging.ErrRefused)
+	}
 	if need, ok := messaging.AsApproval(gate); ok {
 		// what a person approves is the message as the handlers left it: bound, and posted so
 		bound := map[string]any{"target": r.Target, "message": text}
@@ -288,6 +293,23 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 		}
 	case channel == "":
 		channel = g.o.HomeChannel
+	}
+	if r.Voice != nil {
+		if g.o.Speaker == nil {
+			return messaging.Sent{}, fmt.Errorf("%w: you have no voice", messaging.ErrRefused)
+		}
+		spoken, withText, err := g.o.Speaker.Prepare(g.o.Redact(text), voice.Request{Say: r.Voice.Say, WithText: r.Voice.WithText})
+		if err != nil {
+			return messaging.Sent{}, err
+		}
+		audio, err := g.o.Speaker.Speak(ctx, spoken, elevenlabs.FormatMP3)
+		if err != nil {
+			return messaging.Sent{}, err
+		}
+		if !withText {
+			text = ""
+		}
+		r.Files = append([]messaging.File{{Name: audio.Name, Data: audio.Data}}, r.Files...)
 	}
 	if len(r.Files) > 0 {
 		ts, err := g.postFiles(ctx, channel, thread, text, broadcast, r.Files)
@@ -345,6 +367,9 @@ func (g *Gateway) SendTool() tools.Tool {
 				Message     string   `json:"message"`
 				Broadcast   bool     `json:"broadcast"`
 				Files       []string `json:"files"`
+				Voice       bool     `json:"voice"`
+				WithText    bool     `json:"with_text"`
+				Say         string   `json:"say"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return nil, fmt.Errorf("bad arguments: %v", err)
@@ -383,7 +408,11 @@ func (g *Gateway) SendTool() tools.Tool {
 			if err != nil {
 				return nil, err
 			}
-			sent, err := g.Send(ctx, messaging.Request{Target: a.Target, Text: a.Message, Broadcast: a.Broadcast, Files: files})
+			req := messaging.Request{Target: a.Target, Text: a.Message, Broadcast: a.Broadcast, Files: files}
+			if a.Voice {
+				req.Voice = &messaging.Voice{Say: a.Say, WithText: a.WithText}
+			}
+			sent, err := g.Send(ctx, req)
 			if err != nil {
 				return nil, err
 			}
@@ -470,7 +499,10 @@ const sendSchema = `{"type":"object","properties":{
 "channel_type":{"type":"string","enum":["public_channel","private_channel"],"description":"channels: leave it out for public channels and the private channels you are a member of; public_channel or private_channel for one kind only."},
 "message":{"type":"string","description":"The message (Markdown)."},
 "files":{"type":"array","items":{"type":"string"},"description":"Files to post with the message (images, videos, PDFs…): paths in your home or shared space, up to 4. The message may be empty then. Slack only."},
-"broadcast":{"type":"boolean","description":"Ping @channel, @here, @everyone or a user group the message names. Refused unless the agent is granted broadcasts; leave it out otherwise."}
+"broadcast":{"type":"boolean","description":"Ping @channel, @here, @everyone or a user group the message names. Refused unless the agent is granted broadcasts; leave it out otherwise."},
+"voice":{"type":"boolean","description":"Send the message as a voice note in your voice (when you have one). Slack and Telegram."},
+"with_text":{"type":"boolean","description":"voice: post the message's text with the audio."},
+"say":{"type":"string","description":"voice: what to speak, when it should differ from the message."}
 }}`
 
 func (g *Gateway) known() []string {

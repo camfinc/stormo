@@ -124,6 +124,20 @@ func TestSTTKeyOwned(t *testing.T) {
 	}
 }
 
+// When the agent speaks, its voice provider's key is the runtime's (the default name or the one
+// tts.key_env gives), even with speech-to-text off.
+func TestTTSKeyOwned(t *testing.T) {
+	environ := []string{"ELEVENLABS_API_KEY=el-key-0123456789abcdef", "STUDIO_KEY=studio-key-0123456789", "PATH=/bin"}
+	on := Load(&wire.Config{TTS: &wire.TTSConfig{}}, environ)
+	if on.Get("ELEVENLABS_API_KEY") == "" || len(on.Clean(environ)) != 2 {
+		t.Errorf("tts on: env %v", on.Clean(environ))
+	}
+	other := Load(&wire.Config{TTS: &wire.TTSConfig{KeyEnv: "STUDIO_KEY"}}, environ)
+	if other.Get("STUDIO_KEY") == "" || len(other.Clean(environ)) != 2 {
+		t.Errorf("tts key_env: env %v", other.Clean(environ))
+	}
+}
+
 // With a web search provider, its key is the runtime's (read, redacted, out of the terminal's
 // env); without one, it is left alone.
 func TestSearchKeyOwned(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/manifest"
@@ -43,6 +44,9 @@ func New(inst *instance.Instance) *Needletail {
 		SkillsDir:  "skills",
 		StateRoot:  sd,
 		RuntimeUID: shared.PosixUID, RuntimeGID: shared.PosixUID,
+		// The settings the agent changes at runtime (settings.go): the runtime writes the file,
+		// Compile never does, so it comes back from the nap at boot and the dream reads it.
+		Config: voice.SettingsFile,
 		// The runtime writes only to the home and /shared, and its commands' TMPDIR is in the
 		// home: the container needs no writable root and no tmpfs (docs/needletail.md §7).
 		ReadOnlyRoot: true,
@@ -63,6 +67,9 @@ func New(inst *instance.Instance) *Needletail {
 			// never restored from a nap, so a changed agent.yaml or grant reaches the agent on its
 			// next start, and nothing the agent writes into it survives one.
 			{Class: engine.Learning, Glob: "needletail.yaml"},
+			// the settings the agent changed at runtime (its own voice): proposed for review, and
+			// restored at boot so the agent keeps them until an owner decides
+			{Class: engine.Learning, Glob: voice.SettingsFile},
 			// raw: conversation history and the Luau audit log (PII)
 			{Class: engine.Raw, Glob: "sessions/**"},
 			// the memory archive (every record, hot or not: client data): restored verbatim and

@@ -195,7 +195,9 @@ instance: inside a sidecar it is the agent's engine home.
 - **Voice** (agent.yaml `voice:`, optional, engine-neutral): `{provider (elevenlabs), id, name, model,
   settings {stability, similarity}, speak (auto|never), listen (true), language, max_seconds (120; 10 to 300)}`.
   Without it the agent has no voice. needletail renders `listen` as its speech-to-text (`stt:`, which
-  `voice:` replaces); speaking comes with a runtime that reads it. Hermes ignores it.
+  `voice:` replaces) and `speak: auto` as its `tts:`: the agent answers with a voice note when it
+  decides to, and with no `id` picks a voice of its own, proposed for review (docs/needletail.md
+  §4.9). Hermes ignores it.
 - **Engines.** Agents pick `engine.kind`; what only that engine reads lives in `agents/<id>/engine/<kind>/`
   (format 0: `agents/<id>/<engine>/`). agent.yaml itself is engine-neutral (format 1,
   docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there. Two engines, one

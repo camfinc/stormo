@@ -167,6 +167,24 @@ func TestLoadFilesAndSTT(t *testing.T) {
 	}
 }
 
+// tts: read when set (the agent speaks), refused with another provider, a bad key name or a note
+// out of bounds.
+func TestLoadTTS(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: 1\nmodel: {primary: {base_url: http://x, model: m}}\n"
+	_ = os.WriteFile(filepath.Join(dir, File), []byte(base+"tts: {voice: AcmeVoice1, model: eleven_v4, max_seconds: 90, persona: warm, taken: {Other1: nova}}\n"), 0o644)
+	c, err := Load(dir, env(nil))
+	if err != nil || c.TTS == nil || c.TTS.Voice != "AcmeVoice1" || c.TTS.MaxSeconds != 90 || c.TTS.Taken["Other1"] != "nova" || c.TTS.TTSKeyEnv() != "ELEVENLABS_API_KEY" {
+		t.Fatalf("tts: %+v %v", c, err)
+	}
+	for _, bad := range []string{"tts: {provider: other}\n", "tts: {key_env: lower}\n", "tts: {max_seconds: 5}\n", "tts: {max_seconds: 900}\n", "tts: {tone: warm}\n"} {
+		_ = os.WriteFile(filepath.Join(dir, File), []byte(base+bad), 0o644)
+		if _, err := Load(dir, env(nil)); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 // limits.chat_turns: how many chat turns may run at once (ChatTurns: the runtime's 2 when unset,
 // 1 to 16).
 func TestLoadChatTurns(t *testing.T) {

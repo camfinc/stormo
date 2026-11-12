@@ -7,8 +7,10 @@ package telegramtest
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +35,16 @@ type Sent struct {
 	Edit      bool
 }
 
+// Voice is one sendVoice: where it went and the audio it carried.
+type Voice struct {
+	Chat    int64
+	Thread  int
+	ReplyTo int
+	Audio   []byte
+	MIME    string
+	ID      int
+}
+
 // Call is one Bot API call: its method and parameters.
 type Call struct {
 	Method string
@@ -55,6 +67,7 @@ type Server struct {
 	nextID    int64
 	confirmed int64
 	sent      []Sent
+	voices    []Voice
 	calls     []Call
 	nextMsg   int
 	files     map[string]File
@@ -82,7 +95,25 @@ func New(t *testing.T) *Server {
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	method := strings.TrimPrefix(r.URL.Path, "/bot"+Token+"/")
 	params := map[string]any{}
-	_ = json.NewDecoder(r.Body).Decode(&params)
+	var voice *Voice
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(32 << 20); err == nil {
+			for k, v := range r.MultipartForm.Value {
+				if len(v) > 0 {
+					params[k] = v[0]
+				}
+			}
+			if fh := r.MultipartForm.File["voice"]; len(fh) > 0 {
+				if f, err := fh[0].Open(); err == nil {
+					b, _ := io.ReadAll(f)
+					f.Close()
+					voice = &Voice{Audio: b, MIME: fh[0].Header.Get("Content-Type")}
+				}
+			}
+		}
+	} else {
+		_ = json.NewDecoder(r.Body).Decode(&params)
+	}
 	s.mu.Lock()
 	s.calls = append(s.calls, Call{Method: method, Params: params})
 	s.mu.Unlock()
@@ -157,6 +188,27 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.sent = append(s.sent, m)
 		s.mu.Unlock()
 		ok(map[string]any{"message_id": m.ID, "chat": map[string]any{"id": m.Chat}, "date": time.Now().Unix(), "text": text})
+	case "sendVoice":
+		if voice == nil {
+			fail(400, "Bad Request: there is no voice in the request")
+			return
+		}
+		atoi := func(k string) int { n, _ := strconv.Atoi(fmt.Sprint(params[k])); return n }
+		chat, _ := strconv.ParseInt(fmt.Sprint(params["chat_id"]), 10, 64)
+		voice.Chat, voice.Thread = chat, atoi("message_thread_id")
+		if rp, _ := params["reply_parameters"].(string); rp != "" {
+			var p struct {
+				MessageID int `json:"message_id"`
+			}
+			_ = json.Unmarshal([]byte(rp), &p)
+			voice.ReplyTo = p.MessageID
+		}
+		s.mu.Lock()
+		s.nextMsg++
+		voice.ID = s.nextMsg
+		s.voices = append(s.voices, *voice)
+		s.mu.Unlock()
+		ok(map[string]any{"message_id": voice.ID, "chat": map[string]any{"id": chat}, "date": time.Now().Unix()})
 	case "sendChatAction", "setMyCommands":
 		ok(true)
 	case "getFile":
@@ -264,6 +316,13 @@ func (s *Server) WaitSent(n int, timeout time.Duration) []Sent {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Voices are the voice notes sent so far.
+func (s *Server) Voices() []Voice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Voice{}, s.voices...)
 }
 
 // Calls are the calls of a method so far ("" for all).

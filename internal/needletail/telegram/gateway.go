@@ -20,7 +20,9 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/slack"
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 )
 
 // Source is the source of a Telegram conversation's sessions (the hooks' platform).
@@ -92,7 +94,11 @@ type Options struct {
 	// Sees is whether the model is shown images (nil: yes).
 	Files *attach.Store
 	STT   slack.Transcriber
-	Sees  func() bool
+	// Speaker speaks in the agent's voice and Voice holds the turns that asked to answer with a
+	// voice note (the voice tool); both nil: the agent has no voice.
+	Speaker *voice.Speaker
+	Voice   *voice.Replies
+	Sees    func() bool
 	// PollTimeout is getUpdates' long-poll wait in seconds (default 25).
 	PollTimeout int
 }
@@ -924,6 +930,12 @@ func (g *Gateway) turn(session string, jobs []job, images []llm.Image) {
 			_ = sleep(typing, 4*time.Second)
 		}
 	}()
+	root := session
+	if g.o.Root != nil {
+		if r, ok := g.o.Root(session); ok {
+			root = r
+		}
+	}
 	res, err := func() (*loop.Result, error) {
 		defer slot.Release()
 		defer stopTyping()
@@ -931,14 +943,9 @@ func (g *Gateway) turn(session string, jobs []job, images []llm.Image) {
 		if opts.Untrusted {
 			opts.Taint = g.taintOf(j, in)
 		}
-		root := session
-		if g.o.Root != nil {
-			if r, ok := g.o.Root(session); ok {
-				root = r
-			}
-		}
 		return slot.Turn(messaging.WithSession(messaging.WithInput(ctx, in), root), strings.Join(texts, "\n\n"), opts)
 	}()
+	vq, voiced := g.o.Voice.Take(root) // taken whatever the turn did: never left for the next
 	switch {
 	case err != nil && errors.Is(err, context.Canceled) && ctx.Err() == nil:
 		g.logf("telegram: %s: the turn was stopped", session)
@@ -963,9 +970,51 @@ func (g *Gateway) turn(session string, jobs []job, images []llm.Image) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	if voiced && g.o.Speaker != nil {
+		if _, err := g.sayVoice(ctx, session, chat, j.topic, reply, text, vq); err != nil {
+			g.logf("telegram: %s: reply not posted: %v", session, err)
+		}
+		return
+	}
 	if _, err := g.say(ctx, messaging.KindReply, session, chat, j.topic, reply, text); err != nil {
 		g.logf("telegram: %s: reply not posted: %v", session, err)
 	}
+}
+
+// sayVoice posts a turn's reply as a voice note (the agent asked, voice reply): after the
+// before_send handlers, an Ogg Opus note in the agent's voice, then the text when it goes too.
+// Anything that keeps the note from being made or sent posts the text instead (logged).
+func (g *Gateway) sayVoice(ctx context.Context, session string, chat int64, topic, replyTo int, text string, q voice.Request) (int, error) {
+	text, err := g.beforeSend(ctx, messaging.Outgoing{Kind: messaging.KindReply, Session: session, Text: text}, g.target(chat, topic), false)
+	if err != nil {
+		return 0, err
+	}
+	id, withText, err := g.sendVoice(ctx, chat, topic, replyTo, text, q)
+	if err != nil {
+		g.logf("telegram: %s: the voice note was not sent, the text goes instead: %v", session, err)
+		return g.post(ctx, chat, topic, replyTo, text)
+	}
+	if withText {
+		if _, err := g.post(ctx, chat, topic, 0, text); err != nil {
+			return id, err
+		}
+	}
+	return id, nil
+}
+
+// sendVoice speaks text (already through the handlers) and sends it as a voice note; it says
+// whether the text should go too.
+func (g *Gateway) sendVoice(ctx context.Context, chat int64, topic, replyTo int, text string, q voice.Request) (int, bool, error) {
+	spoken, withText, err := g.o.Speaker.Prepare(g.o.Redact(text), q)
+	if err != nil {
+		return 0, false, err
+	}
+	audio, err := g.o.Speaker.Speak(ctx, spoken, elevenlabs.FormatOpus)
+	if err != nil {
+		return 0, false, err
+	}
+	id, err := g.o.Bot.SendVoice(ctx, Voice{Chat: chat, Thread: topic, ReplyTo: replyTo, Audio: audio.Data})
+	return id, withText, err
 }
 
 // silentEdge: a reply whose first or last line is the silence token.

@@ -142,6 +142,79 @@ func voiceListen(a *manifest.Agent, inst *instance.Instance, ac *agentConfig) er
 	return nil
 }
 
+// voiceSpeak renders agent.yaml voice: as the runtime's tts: when the agent may speak (speak:
+// auto): its voice, model and settings, the provider's key name, and for picking a voice of its
+// own the persona's words on its voice and the voices the instance's other agents speak with.
+// The runtime speaks through the provider's own URL only.
+func voiceSpeak(a *manifest.Agent, inst *instance.Instance) (*wire.TTSConfig, error) {
+	v := a.Voice
+	if v == nil || v.Speak != manifest.SpeakAuto {
+		return nil, nil
+	}
+	c, ok := inst.Connection(v.Provider)
+	if !ok || !c.Voice() {
+		return nil, fmt.Errorf("agent.yaml: voice.provider %q is not a voice connection of this instance", v.Provider)
+	}
+	if c.Kind != instance.KindElevenLabs || strings.TrimRight(c.BaseURL, "/") != instance.ElevenLabsURL {
+		return nil, fmt.Errorf("agent.yaml: voice: this runtime speaks through %s only; voice.provider %q is %s", instance.ElevenLabsURL, v.Provider, c.BaseURL)
+	}
+	t := &wire.TTSConfig{Provider: sttProvider, Voice: v.ID, VoiceName: v.Name, Model: v.Model, MaxSeconds: v.MaxSeconds, Language: v.Language,
+		Persona: personaVoice(a, inst)}
+	if c.Key != sttKeyEnv {
+		t.KeyEnv = c.Key
+	}
+	if s := v.Settings; s != nil {
+		t.Stability, t.Similarity = s.Stability, s.Similarity
+	}
+	for _, id := range manifest.AgentIDs(inst.Root) {
+		if id == a.ID {
+			continue
+		}
+		if o, err := manifest.Load(inst.Root, id, inst.Names.Secret); err == nil && o.Voice != nil && o.Voice.ID != "" && o.Voice.Provider == v.Provider {
+			if t.Taken == nil {
+				t.Taken = map[string]string{}
+			}
+			t.Taken[o.Voice.ID] = o.ID
+		}
+	}
+	return t, nil
+}
+
+// maxPersonaVoice bounds the persona's words on the agent's voice.
+const maxPersonaVoice = 400
+
+// personaVoice is the "Voice:" item of the agent's persona.md (a persona in this instance), with
+// the lines it wraps onto: what the persona says the agent sounds like. "" when there is none.
+func personaVoice(a *manifest.Agent, inst *instance.Instance) string {
+	if a.Persona == nil || !manifest.PersonaInInstance(*a.Persona, inst.Names.Resource) {
+		return ""
+	}
+	md, err := os.ReadFile(filepath.Join(inst.Root, filepath.FromSlash(a.Persona.Path), "persona.md"))
+	if err != nil {
+		return ""
+	}
+	out := []string{}
+	for _, line := range strings.Split(string(md), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(out) == 0 {
+			if rest, ok := strings.CutPrefix(strings.TrimLeft(trimmed, "-* "), "Voice:"); ok && trimmed != "" && (trimmed[0] == '-' || trimmed[0] == '*') {
+				out = append(out, strings.TrimSpace(rest))
+			}
+			continue
+		}
+		// the item goes on while its lines are indented and are not another item or a heading
+		if trimmed == "" || !strings.HasPrefix(line, " ") || strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		out = append(out, trimmed)
+	}
+	text := strings.Join(out, " ")
+	if r := []rune(text); len(r) > maxPersonaVoice {
+		text = string(r[:maxPersonaVoice]) + "…"
+	}
+	return text
+}
+
 // checkSTTKey: speech-to-text needs its key among the agent's secrets (agent.yaml secrets or
 // optional_secrets), or the runtime would have none.
 func checkSTTKey(a *manifest.Agent, ac *agentConfig) error {
@@ -492,6 +565,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
 	if rendered.Model.Providers, err = scheduleProviders(a, ctx.Instance); err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
+	if rendered.TTS, err = voiceSpeak(a, ctx.Instance); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	rendered.Skills.Generated = generatedSkills(ctx.Knowledge)

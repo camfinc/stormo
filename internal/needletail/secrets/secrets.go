@@ -48,7 +48,7 @@ type Secrets struct {
 // Owned are the env names the runtime reads for cfg: its API key, the core key, the Slack tokens,
 // the Telegram bot token,
 // each model endpoint's key, each http_secrets env (Luau never sees those) and, when voice notes
-// are transcribed, the speech-to-text key (then out of the terminal's env).
+// are transcribed or the agent speaks, the speech provider's key (then out of the terminal's env).
 func Owned(cfg *wire.Config) []string {
 	names := []string{APIKey, CoreKey, SlackBot, SlackApp, TelegramBot, LearningKey}
 	add := func(n string) {
@@ -71,6 +71,9 @@ func Owned(cfg *wire.Config) []string {
 	}
 	if cfg.STT != nil && cfg.STT.Enabled {
 		add(STTKey)
+	}
+	if cfg.TTS != nil {
+		add(cfg.TTS.TTSKeyEnv())
 	}
 	if cfg.Web != nil && cfg.Web.Search != nil {
 		add(wire.SearchKeyEnv(cfg.Web.Search.Provider))

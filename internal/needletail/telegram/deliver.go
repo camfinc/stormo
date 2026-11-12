@@ -14,6 +14,7 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/sched"
 	"github.com/camfinc/stormo/internal/needletail/slack"
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/voice"
 )
 
 // The messaging policy on Telegram (docs/needletail.md §4.14): what the agent sends on its own
@@ -240,6 +241,9 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if _, ok := messaging.AsApproval(gate); !ok && gate != nil {
 		return messaging.Sent{}, gate
 	}
+	if _, ok := messaging.AsApproval(gate); ok && r.Voice != nil {
+		return messaging.Sent{}, fmt.Errorf("%w: a voice message is not offered for approval: send it as text", messaging.ErrRefused)
+	}
 	if need, ok := messaging.AsApproval(gate); ok {
 		// what a person approves is the message as the handlers left it: bound, and posted so
 		need.Payload, _ = json.Marshal(map[string]any{"target": r.Target, "message": text})
@@ -253,8 +257,21 @@ func (g *Gateway) Send(ctx context.Context, r messaging.Request) (messaging.Sent
 	if err != nil {
 		return messaging.Sent{}, err
 	}
-	id, err := g.post(ctx, chat, topic, 0, text)
-	if err != nil {
+	var id int
+	if r.Voice != nil {
+		if g.o.Speaker == nil {
+			return messaging.Sent{}, fmt.Errorf("%w: you have no voice", messaging.ErrRefused)
+		}
+		var withText bool
+		if id, withText, err = g.sendVoice(ctx, chat, topic, 0, text, voice.Request{Say: r.Voice.Say, WithText: r.Voice.WithText}); err != nil {
+			return messaging.Sent{}, err
+		}
+		if withText {
+			if _, err := g.post(ctx, chat, topic, 0, text); err != nil {
+				return messaging.Sent{}, err
+			}
+		}
+	} else if id, err = g.post(ctx, chat, topic, 0, text); err != nil {
 		return messaging.Sent{}, err
 	}
 	return messaging.Sent{Platform: Source, Channel: strconv.FormatInt(chat, 10), TS: strconv.Itoa(id), Home: t.Channel == "" || t.Channel == g.o.HomeChat}, nil
@@ -296,9 +313,12 @@ func (g *Gateway) SendTool() tools.Tool {
 			"only to post somewhere else. Telegram has no broadcast.",
 		Run: func(ctx context.Context, env *tools.Env, raw json.RawMessage) (any, error) {
 			var a struct {
-				Action  string `json:"action"`
-				Target  string `json:"target"`
-				Message string `json:"message"`
+				Action   string `json:"action"`
+				Target   string `json:"target"`
+				Message  string `json:"message"`
+				Voice    bool   `json:"voice"`
+				WithText bool   `json:"with_text"`
+				Say      string `json:"say"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return nil, fmt.Errorf("bad arguments: %v", err)
@@ -316,7 +336,11 @@ func (g *Gateway) SendTool() tools.Tool {
 					ctx = messaging.WithUntrusted(ctx, why)
 				}
 			}
-			sent, err := g.Send(ctx, messaging.Request{Target: a.Target, Text: a.Message})
+			req := messaging.Request{Target: a.Target, Text: a.Message}
+			if a.Voice {
+				req.Voice = &messaging.Voice{Say: a.Say, WithText: a.WithText}
+			}
+			sent, err := g.Send(ctx, req)
 			if err != nil {
 				return nil, err
 			}
@@ -327,7 +351,10 @@ func (g *Gateway) SendTool() tools.Tool {
 const sendSchema = `{"type":"object","properties":{
 "action":{"type":"string","enum":["send","list"],"description":"send (default) or list known targets."},
 "target":{"type":"string","description":"'telegram' (home chat) or 'telegram:<chat id>'."},
-"message":{"type":"string","description":"The message (Markdown)."}
+"message":{"type":"string","description":"The message (Markdown)."},
+"voice":{"type":"boolean","description":"Send the message as a voice note in your voice (when you have one)."},
+"with_text":{"type":"boolean","description":"voice: send the message's text too."},
+"say":{"type":"string","description":"voice: what to speak, when it should differ from the message."}
 }}`
 
 var _ messaging.Messenger = (*Gateway)(nil)

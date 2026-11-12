@@ -70,6 +70,9 @@ type Config struct {
 	Location *time.Location
 }
 
+// envNameRe is an env var name (tts.key_env).
+var envNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
 // Load reads home's needletail.yaml and the env (getenv is os.Getenv outside tests). Unknown keys
 // are refused: the file is a versioned contract.
 func Load(home string, getenv func(string) string) (*Config, error) {
@@ -127,6 +130,16 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	}
 	if s := c.STT; s != nil && s.Provider != "" && s.Provider != "elevenlabs" {
 		return nil, fmt.Errorf("%s: stt.provider %q is not one this runtime has (elevenlabs)", File, s.Provider)
+	}
+	if t := c.TTS; t != nil {
+		switch {
+		case t.Provider != "" && t.Provider != "elevenlabs":
+			return nil, fmt.Errorf("%s: tts.provider %q is not one this runtime has (elevenlabs)", File, t.Provider)
+		case t.KeyEnv != "" && !envNameRe.MatchString(t.KeyEnv):
+			return nil, fmt.Errorf("%s: tts.key_env %q is not an env var name", File, t.KeyEnv)
+		case t.MaxSeconds != 0 && (t.MaxSeconds < 10 || t.MaxSeconds > 300):
+			return nil, fmt.Errorf("%s: tts.max_seconds %d must be 10 to 300", File, t.MaxSeconds)
+		}
 	}
 	if w := c.Web; w != nil && w.Search != nil {
 		if wire.SearchKeyEnv(w.Search.Provider) == "" {

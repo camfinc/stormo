@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -524,6 +525,86 @@ func TestVoiceListenRender(t *testing.T) {
 	a.Voice.Provider = "studio"
 	if err := voiceListen(a, inst, &agentConfig{}); err == nil || !strings.Contains(err.Error(), "listens through") {
 		t.Errorf("another key name: %v", err)
+	}
+}
+
+// voice: with speak auto renders tts: (voice, model, settings, longest note, the persona's own
+// words and the voices other agents use); speak never renders none; the key name is rendered only
+// when it is not the default.
+func TestVoiceSpeakRender(t *testing.T) {
+	ex, a := atlas(t)
+	cp := *ex // the persona is written to a scratch root, never to the example instance
+	inst := &cp
+	inst.Root = t.TempDir()
+	if err := os.MkdirAll(filepath.Join(inst.Root, "personas", "atlas"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(inst.Root, "personas", "atlas", "persona.md"), []byte("# Atlas\n\n## Identity\n\n- Role: sales.\n- Voice: warm and direct;\n  speaks Spanish.\n- Name: Atlas.\n"), 0o644)
+	a.Persona = &manifest.Persona{Path: "personas/atlas"}
+	half := 0.5
+	a.Voice = &manifest.Voice{Provider: "elevenlabs", ID: "AcmeVoice1", Name: "Ada", Model: "eleven_v4", Speak: manifest.SpeakAuto, Listen: true, Language: "es",
+		MaxSeconds: 90, Settings: &manifest.VoiceSettings{Stability: &half}}
+	tts, err := voiceSpeak(a, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tts == nil || tts.Voice != "AcmeVoice1" || tts.VoiceName != "Ada" || tts.Model != "eleven_v4" || tts.MaxSeconds != 90 || tts.Language != "es" ||
+		*tts.Stability != 0.5 || tts.Similarity != nil || tts.KeyEnv != "" || tts.Persona != "warm and direct; speaks Spanish." {
+		t.Errorf("tts = %+v", tts)
+	}
+	a.Voice.Speak = manifest.SpeakNever
+	if tts, err := voiceSpeak(a, inst); tts != nil || err != nil {
+		t.Errorf("speak never = %+v %v", tts, err)
+	}
+	a.Voice.Speak = manifest.SpeakAuto
+	inst.Connections = append(inst.Connections, instance.Connection{Name: "eu", Kind: instance.KindElevenLabs, BaseURL: "https://api.eu.example", Key: "EU_KEY", Serves: instance.ServesVoice},
+		instance.Connection{Name: "second", Kind: instance.KindElevenLabs, BaseURL: instance.ElevenLabsURL, Key: "SECOND_KEY", Serves: instance.ServesVoice})
+	a.Voice.Provider = "eu"
+	if _, err := voiceSpeak(a, inst); err == nil || !strings.Contains(err.Error(), "speaks through") {
+		t.Errorf("another URL: %v", err)
+	}
+	a.Voice.Provider = "second"
+	if tts, err := voiceSpeak(a, inst); err != nil || tts.KeyEnv != "SECOND_KEY" {
+		t.Errorf("another key = %+v %v", tts, err)
+	}
+}
+
+// The settings a needletail agent changes at runtime are its own voice: read from the settings
+// file (opaque), as the repo sets them, and written back to agent.yaml voice:.
+func TestVoiceSettings(t *testing.T) {
+	inst, a := atlas(t)
+	n := New(inst)
+	if n.Layout().Config != voice.SettingsFile {
+		t.Fatalf("layout: config %q", n.Layout().Config)
+	}
+	if r := engine.Classify(voice.SettingsFile, n.Layout().Rules); r == nil || r.Class != engine.Learning {
+		t.Errorf("%s: %+v (the dream reads Learning only)", voice.SettingsFile, r)
+	}
+	if r := engine.Classify(voice.StateFile, n.Layout().Rules); r == nil || r.Class != engine.State {
+		t.Errorf("%s: %+v (a boot restores State)", voice.StateFile, r)
+	}
+	body, _ := voice.MarshalSettings(&voice.Pick{Voice: "Lib1", Name: "Cleo"})
+	got, err := n.Settings(body)
+	if err != nil || len(got) != 2 || got[0].Key != "voice.id" || got[0].Value != "Lib1" || !got[0].Opaque || got[1].Value != "Cleo" || !got[1].Opaque {
+		t.Errorf("settings = %+v %v", got, err)
+	}
+	if got, _ := n.Settings([]byte(`{"version":1}`)); len(got) != 0 {
+		t.Errorf("no pick = %+v", got)
+	}
+	a.Voice = &manifest.Voice{Provider: "elevenlabs", ID: "Set1"}
+	if repo, _ := n.RepoSettings(a, ""); len(repo) != 1 || repo[0].Value != "Set1" {
+		t.Errorf("repo = %+v", repo)
+	}
+	edit, err := n.SettingEdit(a, engine.Setting{Key: "voice.id", Value: "Lib1"})
+	if err != nil || edit.File != "agent.yaml" || strings.Join(edit.Path, ".") != "voice.id" || edit.Value != "Lib1" {
+		t.Errorf("edit = %+v %v", edit, err)
+	}
+	if _, err := n.SettingEdit(a, engine.Setting{Key: "model"}); err == nil {
+		t.Error("an unknown setting written back")
+	}
+	a.Voice = nil
+	if _, err := n.SettingEdit(a, engine.Setting{Key: "voice.id", Value: "x"}); err == nil {
+		t.Error("a voice written to an agent with no voice:")
 	}
 }
 

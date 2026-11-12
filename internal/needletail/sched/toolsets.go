@@ -34,8 +34,12 @@ var toolsets = map[string][]string{
 
 // neverInCron are tools a scheduled run is never offered, as in Hermes: scheduling (a job that
 // makes jobs loops), messaging (the run's reply is what gets delivered; no_reply has no
-// conversation to stay out of) and follow-ups (no conversation to come back to).
-var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool, FollowUpTool}
+// conversation to stay out of), follow-ups (no conversation to come back to) and voice.
+var neverInCron = []string{CronJobTool, messaging.SendTool, messaging.NoReplyTool, FollowUpTool, voiceTool}
+
+// voiceTool is the voice tool (voice.ToolName): a scheduled run's reply is delivered as text, and
+// picking a voice needs a conversation.
+const voiceTool = "voice"
 
 // onlyByName are tools a scheduled run gets only when its list names them: memory_manage
 // changes the memory archive, and a job's fixed prompt has no new knowledge to file unless its

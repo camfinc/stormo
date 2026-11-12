@@ -231,6 +231,8 @@ func startTelegram(rt *runtime, srv *api.Server) *telegram.Gateway {
 		Log:          func(s string) { rt.logger.Println(s) },
 		Files:        rt.files,
 		STT:          startSTT(rt),
+		Speaker:      rt.speaker,
+		Voice:        rt.voiceReplies,
 		Sees:         func() bool { return rt.agent.LLM.Sees(0) },
 	}
 	if rt.luau != nil {

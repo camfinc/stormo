@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -110,6 +112,11 @@ func (b *Bot) call(ctx context.Context, method string, params any, out any, time
 	if err != nil {
 		return err
 	}
+	return b.post(ctx, method, "application/json", body, out, timeout)
+}
+
+// post POSTs body (of contentType) to method and decodes the result into out, as call does.
+func (b *Bot) post(ctx context.Context, method, contentType string, body []byte, out any, timeout time.Duration) error {
 	maxWait := b.MaxRetryAfter
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
@@ -119,7 +126,7 @@ func (b *Bot) call(ctx context.Context, method string, params any, out any, time
 		if err != nil {
 			return fmt.Errorf("telegram %s: bad request", method)
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		res, err := b.client(timeout).Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -299,6 +306,42 @@ func (b *Bot) SendMessage(ctx context.Context, s Send) (int, error) {
 	}
 	var m Message
 	err := b.call(ctx, "sendMessage", p, &m, 30*time.Second)
+	return m.MessageID, err
+}
+
+// Voice is a voice note to send: Ogg Opus audio, in a chat (and topic), replying to a message.
+type Voice struct {
+	Chat    int64
+	Thread  int
+	ReplyTo int
+	Audio   []byte
+}
+
+// SendVoice posts a voice note (sendVoice, multipart) and returns its message id.
+func (b *Bot) SendVoice(ctx context.Context, v Voice) (int, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	_ = w.WriteField("chat_id", strconv.FormatInt(v.Chat, 10))
+	if v.Thread != 0 {
+		_ = w.WriteField("message_thread_id", strconv.Itoa(v.Thread))
+	}
+	if v.ReplyTo != 0 {
+		rp, _ := json.Marshal(map[string]any{"message_id": v.ReplyTo, "allow_sending_without_reply": true})
+		_ = w.WriteField("reply_parameters", string(rp))
+	}
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="voice"; filename="voice-note.ogg"`)
+	h.Set("Content-Type", "audio/ogg")
+	part, err := w.CreatePart(h)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = part.Write(v.Audio)
+	if err := w.Close(); err != nil {
+		return 0, err
+	}
+	var m Message
+	err = b.post(ctx, "sendVoice", w.FormDataContentType(), body.Bytes(), &m, 2*time.Minute)
 	return m.MessageID, err
 }
 

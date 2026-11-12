@@ -51,6 +51,9 @@ type guide struct {
 	Broadcast bool
 	// Recall: related archive records are put in front of a user's message (memory.recall).
 	Recall bool
+	// Voice: the agent may answer with voice notes (tts:); VoiceSeconds is the longest.
+	Voice        bool
+	VoiceSeconds int
 }
 
 // render is the guide section: where things are and which call changes what, how to write Luau
@@ -157,6 +160,15 @@ func (g guide) render() string {
 		}
 		b.WriteString("Files sent to you: images are shown, voice notes transcribed, text included; view_file looks again " +
 			"(kept in `files/`). A scheduled run's final reply is its delivery: do not send it yourself.\n\n")
+	}
+	if g.Voice {
+		fmt.Fprintf(&post, "## Voice\nYou can answer with a voice note in your own voice: call voice (action reply) before your final reply. "+
+			"Do it when the person asks for audio, or when they sent a voice note ([voice note transcript]) and your answer is "+
+			"conversational; not every voice note needs one. Answer in text when it is mostly things to read or copy (lists, steps, "+
+			"links, numbers, code) or when they asked for text. Add with_text when the reply has names, numbers, dates, links or "+
+			"steps. A note is at most %d seconds; give a shorter spoken version in say when the reply is longer. send_message "+
+			"takes voice: true for a message you send on your own. Without a voice yet, pick one that fits you (voice search, "+
+			"then choose).\n\n", g.VoiceSeconds)
 	}
 	head := fitText(b.String(), MaxGuide-post.Len(), guideCut)
 	return head + fitReference(ref.String(), MaxGuide-len(head)-post.Len()) + post.String()

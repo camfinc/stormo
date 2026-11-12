@@ -46,8 +46,10 @@ import (
 	"github.com/camfinc/stormo/internal/needletail/stt"
 	"github.com/camfinc/stormo/internal/needletail/telegram"
 	"github.com/camfinc/stormo/internal/needletail/tools"
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/internal/needletail/web"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 )
 
 // Version is set at build time (-ldflags -X).
@@ -133,6 +135,10 @@ type runtime struct {
 	risky *approvals.Commands
 	// files are people's uploads (files/<conversation>/; view_file, the Slack gateway's)
 	files *attach.Store
+	// speaker speaks in the agent's voice and voiceReplies are the turns that asked to answer
+	// with a voice note (tts:, §4.9); nil: the agent has no voice
+	speaker      *voice.Speaker
+	voiceReplies *voice.Replies
 	// core is the core's MCP client once serve connects (nil: not on a core)
 	core atomic.Pointer[mcp.Client]
 }
@@ -296,10 +302,15 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	if s := startSearch(cfg, sec, os.Getenv, logf); s != nil {
 		agent.Tools.Add(web.SearchTool(s, slack.Neutralise))
 	}
+	// the agent's voice (§4.9): voice notes it may answer with, and picking a voice of its own
+	speaker, replies := startVoice(cfg, sec, os.Getenv, logf), &voice.Replies{Root: store.Root}
+	if speaker != nil {
+		agent.Tools.Add(voice.Tool(speaker, replies, voice.Picking{Language: cfg.TTS.Language, Persona: cfg.TTS.Persona, Taken: cfg.TTS.Taken, Neutralise: slack.Neutralise}))
+	}
 	rt := &runtime{cfg: cfg, sec: sec, red: red, store: store, agent: agent, sched: s, followUps: fu, luau: lr, logger: logger, dmUsers: dmUser, operators: ops,
-		jail: js.state, files: files,
+		jail: js.state, files: files, speaker: speaker, voiceReplies: replies,
 		guide: guide{Home: cfg.Home, Shared: cfg.SharedRoots(), Split: split.Exec != nil, Jailed: js.launcher != nil, TmpDir: env.TmpDir, Luau: lr != nil, Grants: cfg.Luau.Grants, LuauTimeout: cfg.Limits.LuauTimeout,
-			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto}}
+			ScriptTimeout: cfg.Limits.ScriptTimeout, Recall: recall.Auto, Voice: speaker != nil, VoiceSeconds: voiceSeconds(speaker)}}
 	rt.setGuide()
 	// what a gate holds for a person goes to the approvals (serve's; refused without them), and a
 	// risky command needs one in any conversation (docs/needletail.md §7)
@@ -470,6 +481,41 @@ func startSearch(cfg *config.Config, sec *secrets.Secrets, getenv func(string) s
 		return nil
 	}
 	return &web.Searcher{Provider: p, Key: key, BaseURL: base, MaxResults: cfg.Web.Search.MaxResults}
+}
+
+// voiceSeconds is the longest note the speaker makes (0 without one).
+func voiceSeconds(sp *voice.Speaker) int {
+	if sp == nil {
+		return 0
+	}
+	return sp.Limit()
+}
+
+// VoiceURLEnv overrides the voice provider's URL for tests only: it must be a loopback address.
+const VoiceURLEnv = "NEEDLETAIL_VOICE_API_URL"
+
+// startVoice is the agent's voice (needletail.yaml tts, §4.9): nil when it has none, its key is
+// missing, or the test override is not a loopback address.
+func startVoice(cfg *config.Config, sec *secrets.Secrets, getenv func(string) string, logf func(string)) *voice.Speaker {
+	t := cfg.TTS
+	if t == nil {
+		return nil
+	}
+	key := sec.Get(t.TTSKeyEnv())
+	if key == "" {
+		logf(fmt.Sprintf("voice: the agent does not speak: %s is missing", t.TTSKeyEnv()))
+		return nil
+	}
+	base := getenv(VoiceURLEnv)
+	if err := elevenlabs.CheckURL(base); err != nil {
+		logf(fmt.Sprintf("voice: the agent does not speak: %v", err))
+		return nil
+	}
+	sp := &voice.Speaker{Client: &elevenlabs.Client{BaseURL: base, Key: key}, Voice: t.Voice, VoiceName: t.VoiceName, Model: t.Model,
+		Stability: t.Stability, Similarity: t.Similarity, MaxSeconds: t.MaxSeconds, Home: cfg.Home,
+		Logf: func(format string, a ...any) { logf(fmt.Sprintf(format, a...)) }}
+	sp.Load()
+	return sp
 }
 
 // coreURLs are the core's and its relay's addresses (SWARM_CORE_URL, the MCP and ingest URLs):
@@ -681,6 +727,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		RelayBots:    slackRelayBots(rt.cfg.Slack),
 		Files:        rt.files,
 		STT:          startSTT(rt),
+		Speaker:      rt.speaker,
+		Voice:        rt.voiceReplies,
 		Sees:         func() bool { return rt.agent.LLM.Sees(0) },
 		Forward:      coreForward(rt.core.Load),
 		Approve: func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error) {
