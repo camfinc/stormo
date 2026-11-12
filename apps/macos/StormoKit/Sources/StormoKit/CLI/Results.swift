@@ -278,6 +278,14 @@ public struct ConnectionModel: Codable, Sendable, Equatable, Identifiable {
     /// A speech model's languages (ISO codes) and the most characters one request may speak.
     public var languages: [String]?
     public var maxChars: Int?
+
+    public init(id: String, name: String? = nil, contextLength: Int? = nil, languages: [String]? = nil, maxChars: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.contextLength = contextLength
+        self.languages = languages
+        self.maxChars = maxChars
+    }
 }
 
 /// One row of `stormo secrets status <agent> --json`: where a value comes from, never the value.

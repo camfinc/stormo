@@ -2,20 +2,21 @@ import AppKit
 import StormoKit
 import SwiftUI
 
-/// An agent's editor in the Agents section: its settings as a form, its behaviour (SOUL.md) and its
-/// agent.yaml as text. Everything goes through `stormo config` (docs/api.md): the form saves the
+/// An agent's editor in the Agents section: its settings as a form, its behaviour (SOUL.md), its
+/// look, its voice and its agent.yaml as text. Everything goes through `stormo config` (docs/api.md): the form saves the
 /// fields it changed as a merge patch, so the file keeps its comments; the engine validates every
 /// save and refuses one made over a file that changed on disk. After a save the agent is checked,
 /// and a running agent picks the change up on restart.
 struct AgentEditor: View {
     enum Page: String, CaseIterable, Identifiable {
-        case settings, behaviour, look, yaml
+        case settings, behaviour, look, voice, yaml
         var id: Self { self }
         var title: String {
             switch self {
             case .settings: "Settings"
             case .behaviour: "Behaviour"
             case .look: "Look"
+            case .voice: "Voice"
             case .yaml: "agent.yaml"
             }
         }
@@ -59,7 +60,7 @@ struct AgentEditor: View {
                 }
             } else if page == .yaml && definition.isFormDirty {
                 NoticeBanner(text: "The settings have unsaved changes. Save or revert them to edit the file as text.")
-            } else if page == .settings && definition.isTextDirty {
+            } else if (page == .settings || page == .voice) && definition.isTextDirty {
                 NoticeBanner(text: "agent.yaml has unsaved text changes. Save or revert them to use the form.")
             }
             content
@@ -71,7 +72,8 @@ struct AgentEditor: View {
             }
         }
         .navigationTitle(name)
-        .navigationSubtitle(page == .behaviour ? "agents/\(agentID)/SOUL.md" : page == .look ? "its look (persona.md)" : "agents/\(agentID)/agent.yaml")
+        .navigationSubtitle(page == .behaviour ? "agents/\(agentID)/SOUL.md" : page == .look ? "its look (persona.md)"
+                            : page == .voice ? "its voice (agent.yaml voice:)" : "agents/\(agentID)/agent.yaml")
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("Page", selection: $page) {
@@ -128,15 +130,10 @@ struct AgentEditor: View {
         case .settings:
             if let options = definition.file?.options, definition.doc != nil {
                 AgentForm(editor: definition, options: options, agent: agent, agentID: agentID,
-                          migrate: { confirmMigrate = true }, editLook: { page = .look })
+                          migrate: { confirmMigrate = true }, editLook: { page = .look }, editVoice: { page = .voice })
                     .disabled(definition.isTextDirty || definition.busy || definition.isStale)
-            } else if definition.file != nil {
-                ContentUnavailableView("agent.yaml does not parse", systemImage: "exclamationmark.triangle",
-                                       description: Text("Fix it in the agent.yaml tab; the form comes back once it parses."))
-            } else if definition.problem == nil {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Spacer()
+                formUnavailable
             }
         case .behaviour:
             TextPane(editor: soul, wraps: true, editable: !soul.isStale)
@@ -145,14 +142,35 @@ struct AgentEditor: View {
                 // Its agent.yaml now points at the new persona.
                 if !definition.isDirty { Task { await load() } }
             }
+        case .voice:
+            if let options = definition.file?.options, definition.doc != nil {
+                VoicePane(editor: definition, options: options, agentID: agentID, name: name, running: agent?.state == "running")
+                    .disabled(definition.isTextDirty || definition.busy || definition.isStale)
+            } else {
+                formUnavailable
+            }
         case .yaml:
             TextPane(editor: definition, wraps: false, editable: !definition.isFormDirty && !definition.isStale)
         }
     }
 
+    /// The Settings and Voice pages while agent.yaml is not a form.
+    @ViewBuilder private var formUnavailable: some View {
+        if definition.file != nil {
+            ContentUnavailableView("agent.yaml does not parse", systemImage: "exclamationmark.triangle",
+                                   description: Text("Fix it in the agent.yaml tab; the form comes back once it parses."))
+        } else if definition.problem == nil {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Spacer()
+        }
+    }
+
     private func dirty(_ p: Page) -> Bool {
+        // Settings and Voice share agent.yaml's form: each marks its own part of the changes.
         switch p {
-        case .settings: definition.isFormDirty
+        case .settings: definition.patch?.object?.keys.contains { $0 != "voice" } ?? false
+        case .voice: definition.patch?[["voice"]] != nil
         case .behaviour: soul.isDirty
         case .look: lookDirty
         case .yaml: definition.isTextDirty
@@ -221,6 +239,7 @@ private struct AgentForm: View {
     let agentID: String
     let migrate: () -> Void
     let editLook: () -> Void
+    let editVoice: () -> Void
     /// The linked WhatsApp account's groups, loaded by its setup while connected.
     @State private var whatsAppGroups: [WhatsAppGroup] = []
 
@@ -295,6 +314,14 @@ private struct AgentForm: View {
                 HStack {
                     Text(get(["persona", "path"])?.string ?? "Not defined yet").foregroundStyle(.secondary)
                     Button("Edit Look…", action: editLook)
+                }
+            }
+            if options.voiceConnections != nil {
+                LabeledContent("Voice") {
+                    HStack {
+                        Text(VoiceDoc.summary(editor.doc)).foregroundStyle(.secondary)
+                        Button(get(["voice"]) == nil ? "Give a Voice…" : "Edit Voice…", action: editVoice)
+                    }
                 }
             }
         }

@@ -2,10 +2,10 @@ import AppKit
 import StormoKit
 import SwiftUI
 
-/// The instance's connections (stormo.yaml connections:): API providers with their keys, and
-/// ChatGPT accounts signed in on the core. Agents pick one in their form (Model › Provider, and the
-/// core's account for local runs). Everything goes through `stormo connections`, `secrets set` and
-/// `core login|logout --connection`.
+/// The instance's connections (stormo.yaml connections:): API providers with their keys, voice
+/// providers, and ChatGPT accounts signed in on the core. Agents pick one in their form (Model ›
+/// Provider, the core's account for local runs, and their Voice page). Everything goes through
+/// `stormo connections`, `secrets set` and `core login|logout --connection`.
 struct ProvidersView: View {
     @Environment(AppModel.self) private var model
     @State private var rows: [ConnectionRow] = []
@@ -16,6 +16,8 @@ struct ProvidersView: View {
     @State private var confirmSignOut: ConnectionRow?
     @State private var confirmRemove: ConnectionRow?
     @State private var failure: String?
+    /// Check Key results, per voice connection (in memory only).
+    @State private var keyChecks: [String: VoiceStore] = [:]
 
     var body: some View {
         Form {
@@ -23,9 +25,17 @@ struct ProvidersView: View {
                 Section { Label(failure, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).textSelection(.enabled) }
             }
             Section {
-                ForEach(rows.filter(\.api)) { apiRow($0) }
+                ForEach(rows.filter { $0.api && !$0.servesVoice }) { apiRow($0) }
             } header: {
                 SectionTitle("API providers", note: "Reached with a key, on this Mac and in the cloud. Each agent picks one in its form.")
+            }
+            let voice = rows.filter(\.servesVoice)
+            if !voice.isEmpty {
+                Section {
+                    ForEach(voice) { voiceRow($0) }
+                } header: {
+                    SectionTitle("Voice", note: "Speech for agents with a voice: the voice notes they answer with and the ones people send them. Each agent chooses its voice on its Voice page.")
+                }
             }
             Section {
                 ForEach(rows.filter { !$0.api }) { chatGPTRow($0) }
@@ -46,6 +56,8 @@ struct ProvidersView: View {
             #if DEBUG
             // STORMO_ADD_PROVIDER opens the Add Provider sheet (with STORMO_SNAPSHOT, a visual check).
             if ProcessInfo.processInfo.environment["STORMO_ADD_PROVIDER"] != nil, model.cli != nil { adding = true }
+            // STORMO_CHECK_KEY checks the first voice connection's key (with STORMO_SNAPSHOT, a visual check).
+            if ProcessInfo.processInfo.environment["STORMO_CHECK_KEY"] != nil, let r = rows.first(where: \.servesVoice) { await checkKey(r) }
             #endif
         }
         .task(id: model.core.state.isRunning) { await loadGateway() }
@@ -77,17 +89,50 @@ struct ProvidersView: View {
                     Text([r.label, r.baseUrl].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if r.keySet {
-                    Label("Key set", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
-                } else if !r.agentKeys.isEmpty {
-                    Label("Key set for \(r.agentKeys.joined(separator: ", "))", systemImage: "checkmark.circle").foregroundStyle(.secondary).font(.callout)
-                } else {
-                    Label("No key", systemImage: "exclamationmark.circle").foregroundStyle(.orange).font(.callout)
-                }
+                keyStatus(r)
                 Button("Set Key…") { settingKey = r }
                 removeButton(r)
             }
             usedBy(r)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder private func keyStatus(_ r: ConnectionRow) -> some View {
+        if r.keySet {
+            Label("Key set", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
+        } else if !r.agentKeys.isEmpty {
+            Label("Key set for \(r.agentKeys.joined(separator: ", "))", systemImage: "checkmark.circle").foregroundStyle(.secondary).font(.callout)
+        } else {
+            Label("No key", systemImage: "exclamationmark.circle").foregroundStyle(.orange).font(.callout)
+        }
+    }
+
+    /// A voice connection: its key like an API's, and Check Key, which asks the provider what the
+    /// key may do without spending anything.
+    private func voiceRow(_ r: ConnectionRow) -> some View {
+        let check = keyChecks[r.name]
+        let hasKey = r.keySet || !r.agentKeys.isEmpty
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Image(systemName: "waveform").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(r.name).fontWeight(.medium)
+                    Text([r.label, r.baseUrl].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                keyStatus(r)
+                Button("Check Key") { Task { await checkKey(r) } }
+                    .disabled(model.cli == nil || !hasKey || check?.action == .checking)
+                    .help(hasKey ? "Ask \(r.label) what this key may do, and the characters used this period. Nothing is spoken or spent."
+                                 : "Set the key first")
+                Button("Set Key…") { settingKey = r }
+                removeButton(r)
+            }
+            usedBy(r)
+            if let check {
+                KeyCheckResult(store: check, shared: r.keySet).padding(.leading, 26).padding(.top, 2)
+            }
         }
         .padding(.vertical, 2)
     }
@@ -162,6 +207,14 @@ struct ProvidersView: View {
         }
     }
 
+    /// The shared key, else the first agent's own.
+    private func checkKey(_ r: ConnectionRow) async {
+        guard let cli = model.cli else { return }
+        let store = keyChecks[r.name] ?? VoiceStore()
+        keyChecks[r.name] = store
+        await store.check(r.name, agent: r.keySet ? nil : r.agentKeys.first, with: cli)
+    }
+
     private func loadGateway() async {
         gateway = model.core.state.isRunning ? try? await model.fleet.client.gateway() : nil
     }
@@ -183,6 +236,57 @@ struct ProvidersView: View {
         } catch {
             failure = error.localizedDescription
         }
+    }
+}
+
+/// What a voice connection's key may do: each permission Stormo uses, allowed or missing, and the
+/// characters used this period when the key may read the account.
+private struct KeyCheckResult: View {
+    let store: VoiceStore
+    /// The shared key was checked (else an agent's own).
+    let shared: Bool
+
+    var body: some View {
+        if store.action == .checking {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking the key…").foregroundStyle(.secondary)
+            }
+            .font(.callout)
+        } else if let p = store.problem {
+            Label(p.message, systemImage: "xmark.octagon.fill").foregroundStyle(.red).font(.callout).textSelection(.enabled)
+        } else if let c = store.keyCheck {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(c.permissions) { p in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: p.allowed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(p.allowed ? Color.green : Color.orange)
+                        Text(title(p.name)).frame(width: 130, alignment: .leading)
+                        Text(p.allowed ? p.purpose : "Missing: needed for \(p.purpose)")
+                            .foregroundStyle(p.allowed ? Color.secondary : Color.orange)
+                    }
+                }
+                if let ch = c.characters {
+                    HStack(spacing: 8) {
+                        ProgressView(value: Double(min(ch.used, max(ch.limit, 1))), total: Double(max(ch.limit, 1)))
+                            .frame(width: 130)
+                            .tint(ch.limit > 0 && Double(ch.used) / Double(ch.limit) > 0.9 ? .orange : .accentColor)
+                        Text("\(ch.used.formatted()) of \(ch.limit.formatted()) characters used this period")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                }
+                if !shared {
+                    Text("Checked with an agent's own key: no shared one is set.").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+            .font(.callout)
+        }
+    }
+
+    private func title(_ name: String) -> String {
+        let words = name.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 }
 
