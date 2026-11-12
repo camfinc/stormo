@@ -5,7 +5,7 @@ import SwiftUI
 /// The instance's connections (stormo.yaml connections:): API providers with their keys, voice
 /// providers, tools APIs (Apify, Comfy Cloud), and ChatGPT accounts signed in on the core. Agents
 /// pick one in their form (Model › Provider, the core's account for local runs, and their Voice
-/// page), or for a tools API declare its key under Secrets. Everything goes through
+/// page), or for a tools API declare its key under Secrets or Optional secrets. Everything goes through
 /// `stormo connections`, `secrets set` and `core login|logout --connection`.
 struct ProvidersView: View {
     @Environment(AppModel.self) private var model
@@ -43,7 +43,7 @@ struct ProvidersView: View {
                 Section {
                     ForEach(tools) { apiRow($0, icon: "wrench.and.screwdriver") }
                 } header: {
-                    SectionTitle("Tools", note: "APIs the agents' skills and scripts call with the key: web data, image and video generation. Set the key once here; an agent uses it by declaring the key under Secrets in its form.")
+                    SectionTitle("Tools", note: "APIs the agents' skills and scripts call with the key: web data, image and video generation. Set the key once here; an agent uses it by declaring the key under Secrets or Optional secrets in its form.")
                 }
             }
             Section {
@@ -354,7 +354,7 @@ struct AddProviderSheet: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 PlanTermsNotice(gateway: model.fleet.fleet?.gateway)
             } else if info?.serves == "tools" {
-                Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. An agent's skills and scripts get it once the agent declares its secret name under Secrets.")
+                Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. An agent's skills and scripts get it once the agent declares its secret name under Secrets or Optional secrets.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("The key is stored for every agent (shared) in the instance's secrets, never in stormo.yaml. Agents using this provider declare its name; their form adds it.")
