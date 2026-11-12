@@ -94,6 +94,9 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   connections voices <name> [--agent id] [--library] [--search q] [--language es] [--gender g] [--age a] [--accent x] [--limit n]
                                          a voice connection's voices (the account's, or the Voice Library's)
   connections check <name> [--agent id]  what a voice connection's key may do (free: nothing is spoken)
+  voice show <agent>                     the agent's voice (agent.yaml voice:) and one it picked, waiting for review
+  voice try <agent> [--text t]           a short sample in its voice, saved under .swarm/voice/ (costs characters)
+  voice pick <agent>                     ask the running agent to pick its own voice (local)
   connections add <name> --kind chatgpt|openrouter|openai|anthropic|custom|elevenlabs [--base-url u] [--key NAME]
   connections remove <name>              refused while an agent uses it
   export <agent> [--data] [-o file.zip]  the agent as one zip; --data adds its naps and SECRET VALUES
@@ -391,6 +394,9 @@ func run(args []string) error {
 
 	case "look":
 		return lookCmd(inst, sub, rest)
+
+	case "voice":
+		return voiceCmd(inst, sub, rest)
 
 	case "connections":
 		switch sub {

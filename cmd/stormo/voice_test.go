@@ -11,6 +11,7 @@ import (
 
 	"github.com/camfinc/stormo/pkg/elevenlabs"
 	"github.com/camfinc/stormo/pkg/instance"
+	"github.com/camfinc/stormo/pkg/manifest"
 )
 
 // voiceInstance is examples/minimal with a voice connection to base keyed by TEST_VOICE_KEY (its
@@ -87,5 +88,42 @@ func TestConnectionVoices(t *testing.T) {
 	}
 	if _, err := voiceClient(voiceInstance(t, srv.URL, ""), "test-voice", ""); err == nil || !strings.Contains(err.Error(), "TEST_VOICE_KEY has no value") {
 		t.Errorf("no key: %v", err)
+	}
+}
+
+// voice show is agent.yaml's voice and whether its key has a value; voice try speaks a sample in
+// it (the agent introducing itself unless a text is given) and saves it under .swarm/voice/.
+func TestVoiceShowAndTry(t *testing.T) {
+	var asked string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path + "?" + r.URL.RawQuery
+		w.Header().Set("character-cost", "30")
+		_, _ = w.Write([]byte("ID3 sample"))
+	}))
+	defer srv.Close()
+	inst := voiceInstance(t, srv.URL, "k-test")
+	a, err := manifest.Load(inst.Root, "atlas", inst.Names.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	show, err := voiceShow(inst, a)
+	if err != nil || show.Voice == nil || show.Voice.ID != "Val1" || !show.KeySet || show.Proposed != nil {
+		t.Fatalf("show = %+v %v", show, err)
+	}
+	r, err := voiceTry(inst, a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(r.Path)
+	if string(b) != "ID3 sample" || r.Chars != 30 || !strings.HasPrefix(r.Path, filepath.Join(inst.Root, ".swarm", "voice")) ||
+		!strings.Contains(r.Text, "Atlas") || !strings.HasPrefix(asked, "/v1/text-to-speech/Val1?") {
+		t.Errorf("try = %+v (asked %s)", r, asked)
+	}
+	if _, err := voiceTry(inst, a, strings.Repeat("x", 301)); err == nil {
+		t.Error("an overlong sample spoken")
+	}
+	a.Voice.ID = ""
+	if _, err := voiceTry(inst, a, ""); err == nil || !strings.Contains(err.Error(), "no voice chosen") {
+		t.Errorf("no voice: %v", err)
 	}
 }
