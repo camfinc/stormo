@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -86,9 +87,43 @@ const (
 )
 
 type Reply func(context.Context, string, string) (string, error)
+
+// Turn is what a message brings the agent: the turn's input and, for a voice note, its audio.
+type Turn struct {
+	Text  string
+	Audio *Audio
+}
+
+// Audio is a voice note someone sent: its bytes and MIME type; Marked when its sender may not
+// instruct the agent.
+type Audio struct {
+	Data   []byte
+	MIME   string
+	Marked bool
+}
+
+// Answer is the agent's reply: its text and, when it answered with a voice note, the note (Ogg
+// Opus) and whether the text goes with it.
+type Answer struct {
+	Text     string
+	Voice    []byte
+	WithText bool
+}
+
+// Exchange is Reply with voice notes both ways: the person's to transcribe, the agent's to post.
+type Exchange func(ctx context.Context, session string, t Turn) (Answer, error)
+
+// Bounds of a voice note taken in.
+const (
+	maxVoiceSeconds = 15 * 60
+	maxVoiceBytes   = 20 << 20
+)
+
 type Connector struct {
 	send      func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
 	upload    func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
+	download  func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	exchange  Exchange
 	connected func() bool
 	me        func() Me
 	names     map[types.JID]string // group names, cached
@@ -148,6 +183,7 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 		return resp.ID, err
 	}
 	c.upload = c.client.Upload
+	c.download = c.client.Download
 	c.connected = func() bool { return c.Paired() && c.client.IsConnected() }
 	c.me = func() Me { return Me{PN: c.client.Store.GetJID(), LID: c.client.Store.GetLID()} }
 	c.client.AddEventHandler(func(event any) {
@@ -187,6 +223,11 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	}()
 	return c, nil
 }
+
+// UseExchange answers messages through f instead of the Reply Open was given: voice notes are taken
+// in (downloaded, for the agent to transcribe) and the agent may answer with one.
+func (c *Connector) UseExchange(f Exchange) { c.mu.Lock(); c.exchange = f; c.mu.Unlock() }
+
 func (c *Connector) set(s Status)   { c.mu.Lock(); c.status = s; c.mu.Unlock() }
 func (c *Connector) Status() Status { c.mu.Lock(); defer c.mu.Unlock(); return c.status }
 func (c *Connector) Paired() bool   { return c.client.Store.ID != nil }
@@ -263,11 +304,13 @@ type Inbound struct {
 	Verified bool   // the sender is in allowed_users (or anyone may message)
 	Reaction string // a reaction to one of the agent's messages: its emoji
 	Quoted   string // the start of the agent's message reacted or replied to
+	Voice    bool   // a voice note (its audio is fetched for the agent to transcribe)
 }
 
-// Accepted is deliberately limited: a fresh direct text from a permitted phone number; in an
-// allowed group, a text that mentions the agent or replies to one of its messages; or a reaction to
-// one of its messages in either. sent finds one of the agent's own messages (the start of its text).
+// Accepted is deliberately limited: a fresh direct text or voice note from a permitted phone
+// number; in an allowed group, a text that mentions the agent or replies to one of its messages, or
+// a voice note that replies to one; or a reaction to one of its messages in either. A voice note
+// over 15 minutes or 20 MB is not taken. sent finds one of the agent's own messages (the start of its text).
 func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (string, bool)) (Inbound, bool) {
 	chat := e.Info.Chat
 	// The broadcast server also carries status updates, which IsBroadcastList does not count.
@@ -304,6 +347,21 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 	text := e.Message.GetConversation()
 	if text == "" {
 		text = e.Message.GetExtendedTextMessage().GetText()
+	}
+	if audio := e.Message.GetAudioMessage(); audio != nil && strings.TrimSpace(text) == "" {
+		if audio.GetSeconds() > maxVoiceSeconds || audio.GetFileLength() > maxVoiceBytes {
+			return Inbound{}, false
+		}
+		if in.Group { // a voice note cannot mention the agent: in a group, only a reply to it
+			id := audio.GetContextInfo().GetStanzaID()
+			quoted, ours := sent(id)
+			if id == "" || !ours {
+				return Inbound{}, false
+			}
+			in.Quoted = quoted
+		}
+		in.Voice = true
+		return in, true
 	}
 	if strings.TrimSpace(text) == "" || len(text) > 32000 {
 		return Inbound{}, false
@@ -377,7 +435,11 @@ func Input(in Inbound, group string) string {
 		}
 	}
 	text := in.Text
-	if text == "" {
+	switch {
+	case in.Voice:
+		how = strings.Replace(how, ", mentioning you", "", 1)
+		text = "(a voice note: its transcript is below)"
+	case text == "":
 		text = "(no text: they only mentioned you)"
 	}
 	return fmt.Sprintf("[%s — message from %s%s%s]\n%s", where, who, how, trust, text)
@@ -470,10 +532,29 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if in.Group {
 		group = c.groupName(turn, e.Info.Chat)
 	}
-	reply, err := c.reply(turn, fmt.Sprintf("whatsapp-%x", hash[:16]), Input(in, group))
+	session, input := fmt.Sprintf("whatsapp-%x", hash[:16]), Input(in, group)
+	c.mu.Lock()
+	exchange := c.exchange
+	c.mu.Unlock()
+	var ans Answer
+	if exchange != nil {
+		t := Turn{Text: input}
+		if in.Voice {
+			audio := e.Message.GetAudioMessage()
+			if data, derr := c.download(turn, audio); derr != nil || len(data) > maxVoiceBytes {
+				t.Text += "\n[The voice note could not be fetched.]"
+			} else {
+				t.Audio = &Audio{Data: data, MIME: audio.GetMimetype(), Marked: !in.Verified}
+			}
+		}
+		ans, err = exchange(turn, session, t)
+	} else {
+		ans.Text, err = c.reply(turn, session, input)
+	}
+	reply := ans.Text
 	done := ""
 	if err != nil {
-		reply, done = "The agent could not complete this request. Please check its status in Stormo before retrying.", failed
+		reply, done, ans = "The agent could not complete this request. Please check its status in Stormo before retrying.", failed, Answer{}
 	} else {
 		reply = withoutSilence(reply)
 	}
@@ -484,6 +565,16 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	var quote *waE2E.ContextInfo
 	if in.Group && message {
 		quote = &waE2E.ContextInfo{StanzaID: proto.String(e.Info.ID), Participant: proto.String(e.Info.Sender.ToNonAD().String()), QuotedMessage: e.Message}
+	}
+	if len(ans.Voice) > 0 {
+		// the agent answered with a voice note: it goes first, its text after it when asked; a
+		// note that cannot be sent leaves the text to go alone
+		if _, verr := c.postVoice(turn, e.Info.Chat, ans.Voice, reply, quote); verr == nil {
+			quote = nil
+			if !ans.WithText {
+				reply = ""
+			}
+		}
 	}
 	if _, err := c.post(turn, e.Info.Chat, reply, quote); err != nil {
 		c.set(Status{State: "delivery_error", Error: "A reply could not be delivered. Check the agent conversation before retrying."})
@@ -548,6 +639,43 @@ func (c *Connector) SendImage(ctx context.Context, chat types.JID, data []byte, 
 		return append(ids, more...), err
 	}
 	return ids, nil
+}
+
+// postVoice sends an Ogg Opus voice note (a push-to-talk audio message), quoting quote when given,
+// and records it as the agent's with the start of its text.
+func (c *Connector) postVoice(ctx context.Context, chat types.JID, data []byte, text string, quote *waE2E.ContextInfo) (types.MessageID, error) {
+	up, err := c.upload(ctx, data, whatsmeow.MediaAudio)
+	if err != nil {
+		return "", fmt.Errorf("whatsapp: upload: %w", err)
+	}
+	a := &waE2E.AudioMessage{Mimetype: proto.String("audio/ogg; codecs=opus"), URL: proto.String(up.URL), DirectPath: proto.String(up.DirectPath),
+		MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256, FileSHA256: up.FileSHA256, FileLength: proto.Uint64(up.FileLength), PTT: proto.Bool(true)}
+	if s := oggSeconds(data); s > 0 {
+		a.Seconds = proto.Uint32(s)
+	}
+	if quote != nil {
+		a.ContextInfo = quote
+	}
+	id, err := c.send(ctx, chat, &waE2E.Message{AudioMessage: a})
+	if err != nil {
+		return "", err
+	}
+	_, _ = c.db.ExecContext(ctx, `INSERT OR REPLACE INTO stormo_sent(id,chat,excerpt,at) VALUES (?,?,?,?)`, id, chat.ToNonAD().String(), clean("[voice note] "+text, 200), time.Now().Unix())
+	return id, nil
+}
+
+// oggSeconds is how long an Ogg Opus stream lasts: its last page's granule position, at Opus'
+// 48 kHz (0 when it cannot tell).
+func oggSeconds(data []byte) uint32 {
+	i := bytes.LastIndex(data, []byte("OggS"))
+	if i < 0 || i+14 > len(data) {
+		return 0
+	}
+	g := binary.LittleEndian.Uint64(data[i+6 : i+14])
+	if g == 0 || g == ^uint64(0) {
+		return 0
+	}
+	return uint32((g + 47999) / 48000)
 }
 
 // post sends text in parts of at most 3500 runes, the first quoting quote when given, and records

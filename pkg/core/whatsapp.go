@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/local"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/whatsapp"
@@ -68,6 +69,35 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 		return reply, err
 	})
 	if err == nil {
+		// Through the runtime's Exchanger when it has one: a person's voice note goes to the agent
+		// to transcribe, and its voice reply comes back as a voice note (Ogg Opus).
+		conn.UseExchange(func(ctx context.Context, session string, t whatsapp.Turn) (whatsapp.Answer, error) {
+			if !c.whatsappPolicy(id).Enabled {
+				return whatsapp.Answer{}, fmt.Errorf("channel disabled")
+			}
+			conversations, err := local.Conversations(c.inst, id)
+			if err != nil {
+				return whatsapp.Answer{}, err
+			}
+			ex, ok := conversations.(engine.Exchanger)
+			if !ok {
+				reply, _, err := conversations.Send(ctx, session, t.Text)
+				return whatsapp.Answer{Text: reply}, err
+			}
+			in := engine.Input{Text: t.Text, AudioFormat: "opus"}
+			if a := t.Audio; a != nil {
+				in.Files = []engine.File{{Name: "voice-note.ogg", MIME: a.MIME, Data: a.Data, Marked: a.Marked}}
+			}
+			r, err := ex.Exchange(ctx, session, in)
+			if err != nil {
+				return whatsapp.Answer{}, err
+			}
+			ans := whatsapp.Answer{Text: r.Text}
+			if a := r.Audio; a != nil && strings.HasPrefix(a.MIME, "audio/ogg") {
+				ans.Voice, ans.WithText = a.Data, a.WithText
+			}
+			return ans, nil
+		})
 		c.whatsapp.clients[id] = conn
 	}
 	return conn, err
