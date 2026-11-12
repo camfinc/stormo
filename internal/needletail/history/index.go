@@ -70,8 +70,8 @@ type Index struct {
 // head is what is known of every session file from its header.
 type head struct {
 	parent, source, created, title string
-	untrusted                      bool // the header's mark (wire.Session.Untrusted)
-	mtime                          time.Time
+	untrusted                      bool        // the header's mark (wire.Session.Untrusted)
+	file                           os.FileInfo // the file it was read from (unchanged)
 }
 
 // posting is one document's frequency of a term in its people's (user) and the agent's
@@ -92,7 +92,8 @@ type doc struct {
 	carriedRows int
 	mtime       time.Time // the file's, when last read
 	size        int64
-	length      float64 // terms indexed
+	file        os.FileInfo // the file last read (unchanged)
+	length      float64     // terms indexed
 	npost       int
 	lastAt      string
 	visible     int // rows a transcript shows (not system)
@@ -146,12 +147,12 @@ func (x *Index) refresh() {
 		if err != nil {
 			continue
 		}
-		if h := x.heads[id]; h == nil || !h.mtime.Equal(info.ModTime()) {
+		if h := x.heads[id]; h == nil || !unchanged(h.file, info) {
 			s, ok := readHeader(filepath.Join(x.Dir, e.Name()), id)
 			if !ok {
 				continue // no whole header yet
 			}
-			x.heads[id] = &head{parent: s.Parent, source: s.Source, created: s.Created, title: s.Title, untrusted: s.Untrusted, mtime: info.ModTime()}
+			x.heads[id] = &head{parent: s.Parent, source: s.Source, created: s.Created, title: s.Title, untrusted: s.Untrusted, file: info}
 		}
 		seen[id] = true
 		files = append(files, file{id, info})
@@ -175,7 +176,7 @@ func (x *Index) refresh() {
 			if d.dead {
 				delete(x.byID, f.id) // evicted: read again only if written since
 				known = false
-			} else if d.size == f.info.Size() && d.mtime.Equal(f.info.ModTime()) {
+			} else if unchanged(d.file, f.info) {
 				continue
 			}
 		}
@@ -189,6 +190,14 @@ func (x *Index) refresh() {
 	if x.garbage > 0 && (x.npost+x.garbage > x.max() || x.garbage > x.npost/4) {
 		x.collect()
 	}
+}
+
+// unchanged reports whether a session file is still the one read: the same file (a header
+// rewrite, a mark above all, renames a new one into place), size and mtime. The mtime alone is not
+// enough: Linux takes file times from a coarse clock, so a rewrite within its tick of the last read
+// keeps it, and a mark would go unseen.
+func unchanged(read, now os.FileInfo) bool {
+	return read != nil && os.SameFile(read, now) && read.Size() == now.Size() && read.ModTime().Equal(now.ModTime())
 }
 
 // readHeader is a session file's header.
@@ -238,7 +247,7 @@ func (x *Index) read(id string, info os.FileInfo) {
 		x.docs = append(x.docs, d)
 		x.live++
 	}
-	d.Session, d.size, d.mtime = h, info.Size(), info.ModTime()
+	d.Session, d.size, d.mtime, d.file = h, info.Size(), info.ModTime(), info
 	if d.body > 0 {
 		if _, err := f.Seek(headerLen+d.body, 0); err != nil {
 			return

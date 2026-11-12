@@ -1,6 +1,8 @@
 package history
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,5 +54,37 @@ func TestUntrustedConversationsAreMarked(t *testing.T) {
 		if want := h.SessionID != "api-1"; h.Untrusted != want {
 			t.Errorf("browse %+v", h)
 		}
+	}
+}
+
+// A mark rewrites the header within the filesystem clock's tick of the last read more often than
+// not on Linux (its file times come from a coarse clock), so the file keeps its mtime. The index
+// must still see the mark: a browse, a scroll and a search all say untrusted.
+func TestAMarkKeepingTheMtimeIsSeen(t *testing.T) {
+	f := newFixture(t)
+	f.conv("source", "slack", "user", "rutabaga plans")
+	all := func(string, string) bool { return true }
+	path := filepath.Join(f.dir, "source.jsonl")
+	read, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.ix.Browse(Browse{Visible: all}); err != nil || len(res.Results) != 1 || res.Results[0].Untrusted {
+		t.Fatalf("before the mark: %+v %v", res, err)
+	}
+	if err := f.store.MarkUntrusted("source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, read.ModTime(), read.ModTime()); err != nil { // as a coarse clock leaves it
+		t.Fatal(err)
+	}
+	if res, err := f.ix.Browse(Browse{Visible: all}); err != nil || len(res.Results) != 1 || !res.Results[0].Untrusted {
+		t.Errorf("browse after the mark: %+v %v", res, err)
+	}
+	if res, err := f.ix.Scroll(Scroll{SessionID: "source", Visible: all}); err != nil || !res.Untrusted {
+		t.Errorf("scroll after the mark: %+v %v", res, err)
+	}
+	if res, err := f.ix.Search(Query{Text: "rutabaga", Visible: all}); err != nil || len(res.Results) != 1 || !res.Results[0].Untrusted {
+		t.Errorf("search after the mark: %+v %v", res, err)
 	}
 }
