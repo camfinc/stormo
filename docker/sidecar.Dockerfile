@@ -7,10 +7,13 @@
 #
 #   docker buildx build -f docker/sidecar.Dockerfile --platform linux/amd64,linux/arm64 \
 #     --build-arg VERSION=<version> -t stormo-sidecar:<version> .
+#
+# Go's module and build caches are BuildKit cache mounts, shared by every build on the machine and
+# kept out of the layers: a new engine revision compiles only what changed, and the build cache
+# grows by its binary, not by a copy of both caches.
 FROM --platform=$BUILDPLATFORM golang:1.26.2-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
 COPY embed.go ./
 COPY docs/instances.md ./docs/
 COPY examples/minimal ./examples/minimal
@@ -20,10 +23,12 @@ COPY pkg ./pkg
 ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X github.com/camfinc/stormo/pkg/version.Version=${VERSION}" -o /out/stormo ./cmd/stormo
 
 FROM alpine:3.22
+LABEL stormo.image=sidecar
 COPY --from=build /out/stormo /usr/local/bin/stormo
 WORKDIR /app
 ENTRYPOINT ["stormo"]

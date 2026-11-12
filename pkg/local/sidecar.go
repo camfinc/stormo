@@ -13,8 +13,11 @@ import (
 // Published is where release sidecar images live.
 const Published = "ghcr.io/camfinc/stormo-sidecar"
 
+// SidecarRepository names the sidecar images built or pulled here, one tag per engine version.
+const SidecarRepository = "stormo-sidecar"
+
 // SidecarImage is the local tag of this engine's sidecar image.
-func SidecarImage() string { return "stormo-sidecar:" + version.String() }
+func SidecarImage() string { return SidecarRepository + ":" + version.String() }
 
 func imageExists(tag string) bool {
 	return exec.Command("docker", "image", "inspect", tag).Run() == nil

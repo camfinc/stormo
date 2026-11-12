@@ -137,8 +137,11 @@ func Image(name string) string {
 		h.Write(b)
 		return nil
 	})
-	return "stormo-cap-" + name + ":" + hex.EncodeToString(h.Sum(nil))[:12]
+	return ImagePrefix + name + ":" + hex.EncodeToString(h.Sum(nil))[:12]
 }
+
+// ImagePrefix starts the repository of every template's image (Image).
+const ImagePrefix = "stormo-cap-"
 
 // ImageExists reports whether docker has the tag.
 func ImageExists(tag string) bool {
@@ -153,7 +156,7 @@ func Build(name string, out func(string)) (string, error) {
 		return "", err
 	}
 	tag := Image(name)
-	dir, err := os.MkdirTemp("", "stormo-cap-"+name+"-")
+	dir, err := os.MkdirTemp("", ImagePrefix+name+"-")
 	if err != nil {
 		return "", err
 	}

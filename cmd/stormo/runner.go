@@ -72,6 +72,9 @@ func runRunner(inst *instance.Instance, placement string) error {
 			default:
 				return link.OrderResult{}, fmt.Errorf("unknown order %q", action)
 			}
+			if err == nil && (action == "start" || action == "restart") {
+				ops.PruneImages(d)
+			}
 			st, serr := ops.AgentStatus(place.Local, d, []string{agent})
 			state := ""
 			if serr == nil && len(st) == 1 {

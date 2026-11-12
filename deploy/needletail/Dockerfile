@@ -25,11 +25,16 @@ ARG TARGETARCH
 # Only the binary's own modules are fetched, including the shared learning contracts'
 # doublestar dependency, checked against go.sum. The Luau module
 # (internal/needletail/luau/wasm/luau.wasm) is committed and embedded: no C toolchain is needed.
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+# Go's module and build caches are BuildKit cache mounts, shared by every build on the machine and
+# kept out of the layers: a new commit compiles only what changed, and the build cache grows by
+# its binary, not by a copy of both caches.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags "-s -w -X github.com/camfinc/stormo/internal/needletail/cli.Version=${VERSION}" \
     -o /out/needletail ./cmd/needletail
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+LABEL stormo.image=engine
 RUN apk add --no-cache bash python3 git ca-certificates curl jq tzdata \
     && mkdir -p /opt/data \
     && chown 10000:10000 /opt/data

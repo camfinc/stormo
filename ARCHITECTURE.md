@@ -181,7 +181,10 @@ order, sidecars on the engine's `stormo-sidecar:<version>` image with the instan
 baseline mounted read-only (so `stormo restart` after a manifest or skill edit needs no image
 build; `stormo start` builds the sidecar image itself when this engine version has none), naps in each agent's `agents/<id>/data/store` (format 0: `.swarm/store/<id>`, moved on start), shared space in
 `workdir/<layer>` (gitignored; tracked by the core, docs/core.md §4), API on `127.0.0.1:18642+`. Environment comes from `secrets.local.yaml` with its
-`local:` overlay. `start` refuses to run on a production bot/app token.
+`local:` overlay. `start` refuses to run on a production bot/app token. A local `start` or
+`restart` ends by removing the images Stormo made that nothing needs any more (`stormo images
+prune`, `local.PruneImages`): one sidecar per engine version, engine image per pin and capability
+image per template revision would otherwise pile up.
 
 ### Local subscription model (`model.local`)
 

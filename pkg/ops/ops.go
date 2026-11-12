@@ -642,6 +642,55 @@ func MigrateAgentData(inst *instance.Instance, id string) (changes []string, mov
 	return changes, moved, nil
 }
 
+// PruneImages removes the images Stormo made that nothing here needs any more
+// (local.PruneImages). A local start or restart runs it once its agents are up: it never fails
+// them, it says what it did.
+func PruneImages(d *Deps) {
+	rep, err := local.PruneImages(d.Inst, false)
+	if err != nil {
+		d.Log("images: none removed: " + err.Error())
+		return
+	}
+	for _, f := range rep.Failed {
+		d.Log("images: " + f)
+	}
+	if len(rep.Removed) > 0 {
+		d.Log("images: " + ImagesSummary(rep))
+	}
+}
+
+// ImagesSummary is a prune's line: what went (by kind), what it freed, how many of Stormo's
+// images stayed.
+func ImagesSummary(rep local.PruneReport) string {
+	verb := "removed"
+	if rep.DryRun {
+		verb = "would remove"
+	}
+	counts, kinds := map[string]int{}, []string{}
+	for _, im := range rep.Removed {
+		k := im.Kind
+		if k == "" {
+			k = "unnamed"
+		}
+		if counts[k] == 0 {
+			kinds = append(kinds, k)
+		}
+		counts[k]++
+	}
+	s := fmt.Sprintf("%s %d old Stormo images", verb, len(rep.Removed))
+	if len(kinds) > 0 {
+		parts := make([]string, len(kinds))
+		for i, k := range kinds {
+			parts[i] = fmt.Sprintf("%s %d", k, counts[k])
+		}
+		s += " (" + strings.Join(parts, ", ") + ")"
+	}
+	if rep.Freed > 0 {
+		s += ", freed " + humanBytes(rep.Freed)
+	}
+	return s + fmt.Sprintf("; kept %d", rep.Kept)
+}
+
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<30:

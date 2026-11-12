@@ -271,6 +271,15 @@ every start from a checkout with uncommitted changes); a release pulls
 `ghcr.io/camfinc/stormo-sidecar:<version>`. Locally the instance's files are mounted into it;
 for ECS, `docker/instance.Dockerfile` adds them as one layer per agent.
 
+Each engine version, engine pin and capability template revision is a new image, so a local
+`stormo start` or `restart` ends by removing the ones nothing needs any more
+(`stormo images prune [--dry-run]` does only that). It keeps what any container uses, running or
+stopped, what any agent of the instance pins, this engine's sidecar and each capability's current
+image, and the two newest of each kind. Another instance on the same machine can lose an older
+image it pins but is not running: its next start pulls it again, or for an unpublished commit it
+is built again as above. The engine's Dockerfiles keep Go's caches in BuildKit cache mounts, so a
+new engine version adds little more than its binary to Docker's build cache.
+
 ## Starting a new instance
 
 ```sh

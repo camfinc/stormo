@@ -113,6 +113,8 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   deploy render <agent> [--sidecar-tag t] write dist/<agent>/{taskdef,task-policy}.json, print aws commands
   deploy render-shared                   print the one-time EFS setup for the shared document space
   shared [--dir workdir]                 create the local shared space (workdir/<layer>, moved from .swarm/shared)
+  images prune [--dry-run]               remove the Docker images Stormo made that nothing needs (local start
+                                         and restart do it too): in use, pinned, current and the 2 newest stay
 
   slack manifest <agent> [--dev]         generate the agent's Slack app manifest (+ setup steps)
 
@@ -165,6 +167,7 @@ var (
 	fNapInterval = fs.Int("nap-interval", 0, "")
 	fAllowProd   = fs.Bool("allow-prod-token", false, "")
 	fRebuild     = fs.Bool("rebuild-sidecar", false, "")
+	fDryRun      = fs.Bool("dry-run", false, "")
 	fSession     = fs.String("session", "swarm-local", "")
 	fAll         = fs.Bool("all", false, "")
 	fFollow      = fs.BoolP("follow", "f", false, "")
@@ -713,6 +716,9 @@ func run(args []string) error {
 				return err
 			}
 		}
+		if w == place.Local {
+			ops.PruneImages(deps)
+		}
 		result(lifecycleResult{"start", string(w), ids}, nil)
 		return nil
 
@@ -736,6 +742,9 @@ func run(args []string) error {
 			if err := ops.Restart(where, id, deps); err != nil {
 				return err
 			}
+		}
+		if where == place.Local {
+			ops.PruneImages(deps)
 		}
 		result(lifecycleResult{"restart", string(where), ids}, nil)
 		return nil
@@ -770,6 +779,29 @@ func run(args []string) error {
 
 	case "core":
 		return runCore(inst, sub, rest)
+
+	case "images":
+		if sub != "prune" {
+			return errUsage
+		}
+		rep, err := local.PruneImages(inst, *fDryRun)
+		if err != nil {
+			return err
+		}
+		result(rep, func(w io.Writer) {
+			fmt.Fprintln(w, ops.ImagesSummary(rep))
+			for _, im := range rep.Removed {
+				names := strings.Join(im.Tags, " ")
+				if names == "" {
+					names = im.ID
+				}
+				fmt.Fprintf(w, "  %s  (%s)\n", names, im.Created.Format("2006-01-02"))
+			}
+			for _, f := range rep.Failed {
+				fmt.Fprintln(w, "  refused: "+f)
+			}
+		})
+		return nil
 
 	case "capability", "capabilities":
 		return capabilityCmd(inst, sub, rest)

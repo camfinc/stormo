@@ -27,11 +27,13 @@ if present: an instance's own rules win over this skill.
 - `stormo secrets check`: reports which secret names have values, never the values
 - `stormo deploy render <agent>`: writes `dist/` and prints aws commands; it never calls AWS
 - `stormo bench <agent>` (mock runner), `stormo version`, `stormo core status`
+- `stormo images prune --dry-run`: the Docker images Stormo made that a prune would remove
 
 ## Ask the user first
 
 - Local lifecycle: `stormo start|stop|restart [agent…]`, `stormo core up|down`. Agents may be live in
-  Slack; a restart recycles their home from the latest nap.
+  Slack; a restart recycles their home from the latest nap. A local start or restart also removes
+  the Docker images Stormo made that nothing needs (`stormo images prune` alone).
 - Review decisions are the user's: `stormo learn accept|reject|pin|promote|edit`,
   `learn skill-accept|skill-reject`. Show the proposals; let the user decide.
 - `stormo learn` and `stormo dream` rewrite the ledger and proposals in the working tree.
