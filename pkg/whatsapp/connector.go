@@ -379,6 +379,13 @@ func withoutSilence(reply string) string {
 }
 
 func (c *Connector) accept(ctx context.Context, e *events.Message) (Inbound, bool) {
+	// A LID-addressed sender's phone number, when the message left it out: from the mappings the
+	// account has seen, so an allowed person is not read as a stranger.
+	if e.Info.Sender.Server == types.HiddenUserServer && e.Info.SenderAlt.IsEmpty() && c.client.Store.LIDs != nil {
+		if pn, err := c.client.Store.LIDs.GetPNForLID(ctx, e.Info.Sender.ToNonAD()); err == nil && pn.Server == types.DefaultUserServer {
+			e.Info.SenderAlt = pn
+		}
+	}
 	return Accepted(e, c.policy(), c.me(), func(id types.MessageID) (string, bool) {
 		var excerpt string
 		return excerpt, c.db.QueryRowContext(ctx, `SELECT excerpt FROM stormo_sent WHERE id = ?`, id).Scan(&excerpt) == nil

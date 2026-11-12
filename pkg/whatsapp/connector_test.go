@@ -291,3 +291,30 @@ func TestFailedTurnIsMarked(t *testing.T) {
 		t.Fatalf("sends=%v", got)
 	}
 }
+
+func TestLIDSenderFromMappings(t *testing.T) {
+	calls := 0
+	c := open(t, Policy{Enabled: true, Users: []string{"393331234567"}, Groups: []string{group.String()}}, func(_ context.Context, _, text string) (string, error) {
+		calls++
+		if strings.Contains(text, "not one of your allowed people") {
+			t.Fatalf("owner read as a stranger: %q", text)
+		}
+		return "ok", nil
+	})
+	var got sends
+	got.record(c)
+	lid := types.NewJID("555", types.HiddenUserServer)
+	c.client.Store.LIDs = c.store.LIDMap // as pairing sets it
+	if err := c.client.Store.LIDs.PutLIDMapping(context.Background(), lid, owner); err != nil {
+		t.Fatal(err)
+	}
+	e := inGroup("@777 book it", &waE2E.ContextInfo{MentionedJID: []string{"777@lid"}})
+	e.Info.Sender = lid
+	c.handle(context.Background(), e)
+	d := direct("hello")
+	d.Info.Sender, d.Info.Chat = lid, lid
+	c.handle(context.Background(), d)
+	if calls != 2 {
+		t.Fatalf("calls=%d sends=%v", calls, got)
+	}
+}
