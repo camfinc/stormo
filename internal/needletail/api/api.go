@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -23,9 +24,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/camfinc/stormo/internal/needletail/attach"
+	"github.com/camfinc/stormo/internal/needletail/llm"
 	"github.com/camfinc/stormo/internal/needletail/loop"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
+	"github.com/camfinc/stormo/internal/needletail/voice"
 	"github.com/camfinc/stormo/internal/needletail/wire"
+	"github.com/camfinc/stormo/pkg/elevenlabs"
 )
 
 // Turns runs one turn (loop.Agent).
@@ -113,6 +118,12 @@ type Server struct {
 	platform    func() map[string]wire.Platform
 	jail        string
 	trust       func(conversation string) error
+	files       *attach.Store
+	stt         Transcriber
+	sees        func() bool
+	neutralise  func(string) string
+	speaker     *voice.Speaker
+	voice       *voice.Replies
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -132,6 +143,17 @@ type Server struct {
 
 // Options configure a Server.
 type Options struct {
+	// Files keeps the files a chat request carries (nil: none are taken); STT transcribes voice
+	// notes among them (nil: off); Sees: the model is shown images; Neutralise makes quoted text
+	// inert.
+	Files      *attach.Store
+	STT        Transcriber
+	Sees       func() bool
+	Neutralise func(string) string
+	// Speaker speaks in the agent's voice and Voice holds the turns that asked to answer with a
+	// voice note (§4.9); nil: the agent has no voice.
+	Speaker *voice.Speaker
+	Voice   *voice.Replies
 	// LearningKey is a separate owner-only credential, never the agent/core API key.
 	LearningKey string
 	// Key is API_SERVER_KEY; shorter than MinKey refuses every authenticated route.
@@ -171,7 +193,8 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}, stops: map[string]context.CancelFunc{}}
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}, stops: map[string]context.CancelFunc{},
+		files: o.Files, stt: o.STT, sees: o.Sees, neutralise: o.Neutralise, speaker: o.Speaker, voice: o.Voice}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -648,8 +671,19 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body is not a chat request")
 		return
 	}
-	if strings.TrimSpace(req.Message) == "" {
+	if strings.TrimSpace(req.Message) == "" && len(req.Files) == 0 {
 		writeError(w, http.StatusBadRequest, "message is empty")
+		return
+	}
+	switch {
+	case len(req.Files) > wire.MaxChatFiles:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d files per message", wire.MaxChatFiles))
+		return
+	case len(req.Files) > 0 && s.files == nil:
+		writeError(w, http.StatusBadRequest, "this agent keeps no files")
+		return
+	case req.AudioFormat != "" && req.AudioFormat != "mp3" && req.AudioFormat != "opus":
+		writeError(w, http.StatusBadRequest, "audio_format is mp3 or opus")
 		return
 	}
 	if Reserved(s.store, id) {
@@ -666,17 +700,120 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, busyStatus(err), err.Error())
 		return
 	}
+	message, opts := req.Message, loop.Options{}
+	if len(req.Files) > 0 {
+		block, images := s.takeFiles(id, root, req.Files)
+		message, opts.Images = strings.TrimSpace(message+"\n\n"+block), images
+	}
 	res, err := func() (*loop.Result, error) {
 		defer s.release(root, false)
-		return s.run(s.base, id, req.Message, loop.Options{})
+		return s.run(s.base, id, message, opts)
 	}()
+	q, voiced := s.voice.Take(root) // taken whatever the turn did: never left for the next
 	if err != nil {
 		writeError(w, http.StatusBadGateway, s.redact("turn failed: "+err.Error()))
 		return
 	}
 	var out wire.ChatResponse
 	out.SessionID, out.Message.Content = res.Session, res.Text
+	if voiced && s.speaker != nil && strings.TrimSpace(res.Text) != "" && res.Text != loop.NoAnswer {
+		out.Message.Audio = s.speak(res.Text, req.AudioFormat, q)
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// speak is a turn's reply as a voice note in format (mp3 or opus); nil, logged, when it cannot be
+// made: the reply then goes as text alone.
+func (s *Server) speak(text, format string, q voice.Request) *wire.ChatAudio {
+	spoken, withText, err := s.speaker.Prepare(s.redact(text), q)
+	if err == nil {
+		f := elevenlabs.FormatMP3
+		if format == "opus" {
+			f = elevenlabs.FormatOpus
+		}
+		ctx, cancel := context.WithTimeout(s.base, 2*time.Minute)
+		defer cancel()
+		var a *elevenlabs.Audio
+		if a, err = s.speaker.Speak(ctx, spoken, f); err == nil {
+			return &wire.ChatAudio{MIME: a.MIME, Name: a.Name, Data: a.Data, WithText: withText}
+		}
+	}
+	s.logf("api: the voice note was not made, the text goes alone: %v", err)
+	return nil
+}
+
+// Transcriber is speech-to-text (stt.Client).
+type Transcriber interface {
+	Transcribe(ctx context.Context, name, mime string, audio []byte) (string, error)
+}
+
+// takeFiles keeps a chat request's files in conversation root's store, as a chat gateway's: the
+// block the turn's input carries for them and the images it shows.
+func (s *Server) takeFiles(session, root string, files []wire.ChatFile) (string, []llm.Image) {
+	neutralise := s.neutralise
+	if neutralise == nil {
+		neutralise = func(t string) string { return t }
+	}
+	in := &attach.Intake{Store: s.files, Sees: s.sees == nil || s.sees(), MaxImages: loop.MaxTurnImages, Neutralise: neutralise,
+		Logf: func(format string, a ...any) { s.logf(format, a...) }, Platform: "api"}
+	if s.stt != nil {
+		in.STT = s.stt
+	}
+	turn := attach.NewTurn()
+	marked := false
+	var lines, bodies []string
+	for i, f := range files {
+		marked = marked || f.Marked
+		name := neutralise(attach.OneLine(orName(f.Name, fmt.Sprintf("file %d", i+1)), 120))
+		kind := chatFileKind(strings.ToLower(f.MIME), f.Name)
+		switch {
+		case kind == "":
+			lines = append(lines, fmt.Sprintf("- %s: attached file not taken (not a kind the agent reads)", name))
+			continue
+		case int64(len(f.Data)) > attach.MaxBytesOf(kind):
+			lines = append(lines, fmt.Sprintf("- %s: attached file not taken (over the %d MB limit)", name, attach.MaxBytesOf(kind)>>20))
+			continue
+		}
+		sum := sha256.Sum256(f.Data)
+		line, body := in.Take(s.base, session, root, name, attach.Fetched{ID: "api-" + hex.EncodeToString(sum[:8]), Name: orName(f.Name, "file"),
+			MIME: strings.ToLower(f.MIME), Kind: kind, Body: f.Data, Marked: f.Marked}, turn)
+		lines = append(lines, line)
+		if body != "" {
+			bodies = append(bodies, body)
+		}
+	}
+	return attach.Block(marked, lines, bodies), turn.Images
+}
+
+func orName(name, def string) string {
+	if strings.TrimSpace(name) == "" {
+		return def
+	}
+	return name
+}
+
+// chatFileKind is what a chat request's file is to the intake, by its MIME type and name ("": not
+// one it reads).
+func chatFileKind(mime, name string) string {
+	ext := strings.ToLower(name)
+	if i := strings.LastIndex(ext, "."); i >= 0 {
+		ext = ext[i+1:]
+	} else {
+		ext = ""
+	}
+	switch {
+	case attach.ShowableImage(mime):
+		return attach.KindImage
+	case mime == "application/pdf" || ext == "pdf":
+		return attach.KindPDF
+	case mime == "text/plain" || mime == "text/csv" || mime == "text/markdown" || mime == "application/json" || slices.Contains([]string{"txt", "csv", "json", "md", "markdown"}, ext):
+		return attach.KindText
+	case strings.HasPrefix(mime, "audio/") || slices.Contains([]string{"ogg", "opus", "mp3", "m4a", "wav"}, ext):
+		return attach.KindAudio
+	case strings.HasPrefix(mime, "video/"):
+		return attach.KindVideo
+	}
+	return ""
 }
 
 func (s *Server) remove(w http.ResponseWriter, r *http.Request) {

@@ -111,6 +111,41 @@ type Conversations interface {
 	Delete(ctx context.Context, id string) (int, error)
 }
 
+// Exchanger is a Conversations whose turns carry files in and a voice note out (needletail's
+// API): a person's voice note to transcribe, the agent's spoken reply to post as one.
+type Exchanger interface {
+	Exchange(ctx context.Context, id string, in Input) (*Reply, error)
+}
+
+// Input is a turn's input: its text, the files it carries, and how a voice reply comes back
+// (AudioFormat mp3, the default, or opus: a voice note's Ogg Opus).
+type Input struct {
+	Text        string
+	Files       []File
+	AudioFormat string
+}
+
+// File is a file an input carries; Marked when its sender may not instruct the agent.
+type File struct {
+	Name, MIME string
+	Data       []byte
+	Marked     bool
+}
+
+// Reply is a turn's answer: its text, the session that holds the conversation now, and the voice
+// note the agent answered with (nil: none). WithText: the text goes with the note.
+type Reply struct {
+	Text, Tip string
+	Audio     *Audio
+}
+
+// Audio is a reply spoken.
+type Audio struct {
+	MIME, Name string
+	Data       []byte
+	WithText   bool
+}
+
 // Conversation is one session as the engine lists it.
 type Conversation struct {
 	ID         string `json:"id"`

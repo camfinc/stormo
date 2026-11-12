@@ -106,7 +106,7 @@ func voiceCmd(inst *instance.Instance, sub string, rest []string) error {
 		if err != nil {
 			return chatErr(err)
 		}
-		result(chatResult{id, tip, reply}, func(w io.Writer) { fmt.Fprintln(w, reply) })
+		result(chatResult{id, tip, reply, nil}, func(w io.Writer) { fmt.Fprintln(w, reply) })
 		return nil
 	}
 	return errUsage

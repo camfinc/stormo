@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/camfinc/stormo/pkg/engine"
@@ -19,6 +22,46 @@ type chatResult struct {
 	Agent   string `json:"agent"`
 	Session string `json:"session"`
 	Reply   string `json:"reply"`
+	// Audio is the reply as a voice note, saved for playing (nil: the agent answered in text).
+	Audio *chatAudio `json:"audio,omitempty"`
+}
+
+// chatAudio is a voice reply saved under .swarm/voice/; WithText: its text goes with it.
+type chatAudio struct {
+	Path     string `json:"path"`
+	MIME     string `json:"mime"`
+	WithText bool   `json:"withText"`
+}
+
+// sendChat runs one turn: through the engine's Exchanger when it has one, so a voice reply comes
+// back as an MP3 saved under .swarm/voice/.
+func sendChat(ctx context.Context, inst *instance.Instance, agent string, conv engine.Conversations, session, msg string) (*chatResult, error) {
+	ex, ok := conv.(engine.Exchanger)
+	if !ok {
+		reply, tip, err := conv.Send(ctx, session, msg)
+		if err != nil {
+			return nil, err
+		}
+		return &chatResult{agent, tip, reply, nil}, nil
+	}
+	r, err := ex.Exchange(ctx, session, engine.Input{Text: msg, AudioFormat: "mp3"})
+	if err != nil {
+		return nil, err
+	}
+	out := &chatResult{agent, r.Tip, r.Text, nil}
+	if a := r.Audio; a != nil {
+		sum := sha256.Sum256(a.Data)
+		dir := filepath.Join(inst.Root, ".swarm", "voice")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+		path := filepath.Join(dir, fmt.Sprintf("%s-%s.mp3", agent, hex.EncodeToString(sum[:8])))
+		if err := os.WriteFile(path, a.Data, 0o600); err != nil {
+			return nil, err
+		}
+		out.Audio = &chatAudio{Path: path, MIME: a.MIME, WithText: a.WithText}
+	}
+	return out, nil
 }
 
 type conversationsResult struct {
@@ -71,11 +114,16 @@ func chatCmd(inst *instance.Instance, sub string, rest []string) error {
 	if err != nil {
 		return err
 	}
-	reply, tip, err := conv.Send(context.Background(), *fSession, msg)
+	r, err := sendChat(context.Background(), inst, id, conv, *fSession, msg)
 	if err != nil {
 		return chatErr(err)
 	}
-	result(chatResult{id, tip, reply}, func(w io.Writer) { fmt.Fprintln(w, reply) })
+	result(r, func(w io.Writer) {
+		fmt.Fprintln(w, r.Reply)
+		if r.Audio != nil {
+			fmt.Fprintln(w, "(voice note: "+r.Audio.Path+")")
+		}
+	})
 	return nil
 }
 

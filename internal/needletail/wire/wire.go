@@ -217,6 +217,25 @@ type Transcript struct {
 // ChatRequest is POST /v1/sessions/{id}/chat.
 type ChatRequest struct {
 	Message string `json:"message"`
+	// AudioFormat is how a voice reply comes back (message.audio): mp3 (the default) or opus (a
+	// voice note's Ogg Opus, for a client that posts it as one).
+	AudioFormat string `json:"audio_format,omitempty"`
+	// Files are files the person sent with the message (at most MaxChatFiles), taken in as a chat
+	// gateway's: kept in the conversation's files, images shown, voice notes transcribed, text
+	// included. The message may be empty then.
+	Files []ChatFile `json:"files,omitempty"`
+}
+
+// MaxChatFiles is the most files one chat request carries.
+const MaxChatFiles = 5
+
+// ChatFile is one file a chat request carries: its name, MIME type and bytes (base64 in JSON);
+// Marked when its sender may not instruct the agent (its content is information, not orders).
+type ChatFile struct {
+	Name   string `json:"name"`
+	MIME   string `json:"mime,omitempty"`
+	Data   []byte `json:"data"`
+	Marked bool   `json:"marked,omitempty"`
 }
 
 // ChatResponse is the chat reply; SessionID is the tip that holds the conversation now.
@@ -224,7 +243,18 @@ type ChatResponse struct {
 	SessionID string `json:"session_id"`
 	Message   struct {
 		Content string `json:"content"`
+		// Audio is the reply as a voice note, when the agent answered with one (§4.9).
+		Audio *ChatAudio `json:"audio,omitempty"`
 	} `json:"message"`
+}
+
+// ChatAudio is a reply spoken: its bytes (base64 in JSON), MIME type and file name, and whether
+// its text goes with it (else the text is the note's transcript, for the record).
+type ChatAudio struct {
+	MIME     string `json:"mime"`
+	Name     string `json:"name"`
+	Data     []byte `json:"data"`
+	WithText bool   `json:"with_text"`
 }
 
 // Deleted is DELETE /v1/sessions/{id}: the sessions of the lineage removed.

@@ -150,25 +150,44 @@ func (c conversations) New(ctx context.Context, id, title string) (string, error
 // Send posts one turn; the runtime routes it to the conversation's tip. A conversation that does
 // not exist yet is created first.
 func (c conversations) Send(ctx context.Context, id, message string) (string, string, error) {
-	var out wire.ChatResponse
-	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/chat", wire.ChatRequest{Message: message}, &out)
-	if err == engine.ErrNotFound {
-		if _, err := c.New(ctx, id, ""); err != nil {
-			return "", "", err
-		}
-		_, err = c.do(ctx, http.MethodPost, sessionPath(id)+"/chat", wire.ChatRequest{Message: message}, &out)
-		if err != nil {
-			return "", "", err
-		}
-	} else if err != nil {
+	r, err := c.Exchange(ctx, id, engine.Input{Text: message})
+	if err != nil {
 		return "", "", err
 	}
-	tip := id
-	if out.SessionID != "" {
-		tip = out.SessionID
-	}
-	return out.Message.Content, tip, nil
+	return r.Text, r.Tip, nil
 }
+
+// Exchange is Send with files in and the agent's voice note out (wire.ChatRequest's files and
+// audio_format, wire.ChatResponse's message.audio).
+func (c conversations) Exchange(ctx context.Context, id string, m engine.Input) (*engine.Reply, error) {
+	req := wire.ChatRequest{Message: m.Text, AudioFormat: m.AudioFormat}
+	for _, f := range m.Files {
+		req.Files = append(req.Files, wire.ChatFile{Name: f.Name, MIME: f.MIME, Data: f.Data, Marked: f.Marked})
+	}
+	var out wire.ChatResponse
+	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/chat", req, &out)
+	if err == engine.ErrNotFound {
+		if _, err := c.New(ctx, id, ""); err != nil {
+			return nil, err
+		}
+		_, err = c.do(ctx, http.MethodPost, sessionPath(id)+"/chat", req, &out)
+		if err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	r := &engine.Reply{Text: out.Message.Content, Tip: id}
+	if out.SessionID != "" {
+		r.Tip = out.SessionID
+	}
+	if a := out.Message.Audio; a != nil && len(a.Data) > 0 {
+		r.Audio = &engine.Audio{MIME: a.MIME, Name: a.Name, Data: a.Data, WithText: a.WithText}
+	}
+	return r, nil
+}
+
+var _ engine.Exchanger = conversations{}
 
 // Delete removes the conversation's whole lineage in one request; 0 when it did not exist.
 func (c conversations) Delete(ctx context.Context, id string) (int, error) {

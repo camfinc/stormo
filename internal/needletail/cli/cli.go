@@ -879,7 +879,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
 	plat := &platforms{}
-	srv, err := api.New(api.Options{Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
+	srv, err := api.New(api.Options{Files: rt.files, STT: startSTT(rt), Sees: func() bool { return rt.agent.LLM.Sees(0) }, Neutralise: slack.Neutralise,
+		Speaker: rt.speaker, Voice: rt.voiceReplies,
+		Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, MaxTurns: rt.cfg.ChatTurns(), Jail: rt.jail,
 		Trust: func(conv string) error {
 			// the owner (the API's key is theirs) endorses a conversation: kept with an audit record

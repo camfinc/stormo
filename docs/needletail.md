@@ -325,7 +325,7 @@ All routes except `/health` need `Authorization: Bearer API_SERVER_KEY`.
 | `GET /v1/sessions?limit` | Lists sessions. |
 | `POST /v1/sessions {id}` | Creates a session (source always `api_server`: a `source` in the body is ignored); 409 if it exists. |
 | `GET /v1/sessions/{id}/messages?limit&order=latest` | Transcript. |
-| `POST /v1/sessions/{id}/chat {message}` | Synchronous; returns `{session_id: tip, message:{content}}`. |
+| `POST /v1/sessions/{id}/chat {message, audio_format?, files?}` | Synchronous; returns `{session_id: tip, message:{content, audio?}}`. `files` (at most 5: `{name, mime, data (base64), marked?}`) are taken in as a chat gateway's (§4.9: kept in the conversation's `files/`, images shown, voice notes transcribed, text included; `marked`: their sender may not instruct the agent); the message may then be empty. `message.audio` `{mime, name, data (base64), with_text}` is the reply spoken when the agent answered with a voice note (`audio_format` `mp3`, the default, or `opus`: Ogg Opus, a voice note's); with `with_text` false the content is the note's transcript, for the record. |
 | `DELETE /v1/sessions/{id}` | Deletes the whole lineage on the server. |
 | `POST /v1/sessions/{id}/trust` | The owner endorses the conversation (§7): its rows so far no longer taint it (the header's `endorsed`, `endorsed_by: owner (API)`, `endorsed_at`), with an audit record (`approvals-audit.jsonl`, event `trusted`). 409 while a turn runs in it. |
 
@@ -812,6 +812,7 @@ Each is frozen at the first nap of a needletail agent and covered by golden test
 - `needletail.yaml` `slack.commands {prefix, names}` and `channels: [telegram]`: an image older than `slack.commands` refuses a `needletail.yaml` that has it (its keys are checked); one older than the Telegram gateway ignores the channel
 - Telegram conversations (2026-10-28): session ids `telegram-<chat id>[-<topic id>]`, source `telegram` (the API refuses both, §4.8); memory scopes `dm:telegram:<user id>` and `channel:telegram:<chat id>` (RECORDS.md's `scope`); `telegram:<user id>` as a taint's user, a follow-up's `origin.users` and an upload's `author` (`.files-v1.json` `source: telegram`); a taint's `channel` `telegram:<chat id>`; `approvals-v1.json`'s `origin.channel` a numeric chat id (and `thread` a topic) for a Telegram conversation; a job's `origin` `{platform: telegram, chat_id, thread_id}`; delivery targets `telegram`, `telegram:<chat id>[:<topic id>]` (send_message's grammar too)
 - `needletail.yaml` `tts` (§4.1), the `voice` tool's name and arguments (`{action: reply|search|choose, with_text?, say?, query?, gender?, age?, accent?, language?, id?, reason?}`) and `send_message`'s `voice`, `with_text` and `say` (2026-11-12): an image older than `tts` refuses a `needletail.yaml` that has it
+- the chat request's `audio_format` and `files` and the response's `message.audio` (2026-11-12; additive: an older runtime ignores both fields, answers in text and takes no files)
 - `state/needletail/settings-v1.json` v1 (Learning, 0600; §4.9): `{"version":1,"voice":{"id","name","reason"}}`, written by the runtime; the dream reads it as the engine's runtime settings `voice.id` and `voice.name`; `state/needletail/voice-v1.json` is its State copy in the same format
 - the `host_call` ABI
 - the snapshot rule list
