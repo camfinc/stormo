@@ -480,6 +480,10 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   limit)` (short previews), `msg_read(id)` (marks read), `msg_ack(id)`, `msg_thread(id)`. A party
   to a message is its sender or a recipient; nothing else is visible. Subject ≤ 200 characters,
   body ≤ 16 KB, ≤ 10 attachments.
+- *`whatsapp_send(chat, text)`* (pkg/core/whatsapp.go): the caller posts on its own linked WhatsApp
+  account to a group of its `allowed_groups` or a number of its `allowed_users`, and nowhere else;
+  refused for an agent with no WhatsApp channel or no linked, connected account on this core
+  (docs/whatsapp.md). Listed to every agent, like the other tools.
 - *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
   normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
   agents of that unit (else refused and a `unit_boundary` finding).

@@ -39,6 +39,22 @@ type Policy struct {
 	Enabled bool
 }
 
+// AllowedChat is chat as the JID the agent may post to unprompted: a group in Groups (…@g.us) or a
+// phone number in Users. All (anyone may message the agent) never widens where it may write.
+func AllowedChat(p Policy, chat string) (types.JID, error) {
+	chat = strings.TrimSpace(chat)
+	if strings.HasSuffix(chat, "@"+types.GroupServer) {
+		if slices.Contains(p.Groups, chat) {
+			return types.ParseJID(chat)
+		}
+		return types.EmptyJID, fmt.Errorf("%s is not one of your allowed_groups", chat)
+	}
+	if n := strings.TrimPrefix(chat, "+"); n != "" && slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == n }) {
+		return types.NewJID(n, types.DefaultUserServer), nil
+	}
+	return types.EmptyJID, fmt.Errorf("%s is not one of your allowed_users or allowed_groups", chat)
+}
+
 // Me is the linked account's own ids: a group addresses it by phone number or by LID.
 type Me struct{ PN, LID types.JID }
 
@@ -456,27 +472,50 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if in.Group && message {
 		quote = &waE2E.ContextInfo{StanzaID: proto.String(e.Info.ID), Participant: proto.String(e.Info.Sender.ToNonAD().String()), QuotedMessage: e.Message}
 	}
-	for len(reply) > 0 {
-		r := []rune(reply)
+	if _, err := c.post(turn, e.Info.Chat, reply, quote); err != nil {
+		c.set(Status{State: "delivery_error", Error: "A reply could not be delivered. Check the agent conversation before retrying."})
+		done = failed
+	}
+	if message {
+		c.react(turn, e, done)
+	}
+}
+
+// Send posts text to chat on the agent's own account, unprompted (the caller decides the chat may
+// be written to). Like a reply, it is split into parts and remembered, so a reaction or a reply to
+// it reaches the agent.
+func (c *Connector) Send(ctx context.Context, chat types.JID, text string) ([]types.MessageID, error) {
+	if !c.Paired() || !c.client.IsConnected() {
+		return nil, ErrNotConnected
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("whatsapp: empty message")
+	}
+	return c.post(ctx, chat, text, nil)
+}
+
+// post sends text in parts of at most 3500 runes, the first quoting quote when given, and records
+// each part as the agent's.
+func (c *Connector) post(ctx context.Context, chat types.JID, text string, quote *waE2E.ContextInfo) ([]types.MessageID, error) {
+	var ids []types.MessageID
+	for len(text) > 0 {
+		r := []rune(text)
 		count := len(r)
 		if count > 3500 {
 			count = 3500
 		}
 		part := string(r[:count])
-		reply = string(r[count:])
+		text = string(r[count:])
 		m := &waE2E.Message{Conversation: proto.String(part)}
 		if quote != nil {
 			m, quote = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(part), ContextInfo: quote}}, nil
 		}
-		id, err := c.send(turn, e.Info.Chat, m)
+		id, err := c.send(ctx, chat, m)
 		if err != nil {
-			c.set(Status{State: "delivery_error", Error: "A reply could not be delivered. Check the agent conversation before retrying."})
-			done = failed
-			break
+			return ids, err
 		}
-		_, _ = c.db.ExecContext(turn, `INSERT OR REPLACE INTO stormo_sent(id,chat,excerpt,at) VALUES (?,?,?,?)`, id, e.Info.Chat.ToNonAD().String(), clean(part, 200), time.Now().Unix())
+		ids = append(ids, id)
+		_, _ = c.db.ExecContext(ctx, `INSERT OR REPLACE INTO stormo_sent(id,chat,excerpt,at) VALUES (?,?,?,?)`, id, chat.ToNonAD().String(), clean(part, 200), time.Now().Unix())
 	}
-	if message {
-		c.react(turn, e, done)
-	}
+	return ids, nil
 }

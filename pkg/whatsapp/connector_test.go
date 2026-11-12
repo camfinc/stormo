@@ -318,3 +318,33 @@ func TestLIDSenderFromMappings(t *testing.T) {
 		t.Fatalf("calls=%d sends=%v", calls, got)
 	}
 }
+
+func TestAllowedChat(t *testing.T) {
+	p := Policy{Enabled: true, All: true, Users: []string{"+393331234567"}, Groups: []string{group.String()}}
+	for chat, want := range map[string]string{
+		group.String():                group.String(),
+		" +393331234567 ":             owner.String(),
+		"393331234567":                owner.String(),
+		"120363000000000009@g.us":     "",
+		"+393339999999":               "", // anyone may message the agent; it still writes only where allowed
+		"393331234567@s.whatsapp.net": "",
+		"":                            "",
+	} {
+		jid, err := AllowedChat(p, chat)
+		if got := ""; err == nil {
+			got = jid.String()
+			if got != want {
+				t.Errorf("%q: got %s", chat, got)
+			}
+		} else if want != "" {
+			t.Errorf("%q: %v", chat, err)
+		}
+	}
+}
+
+func TestSendNeedsALinkedAccount(t *testing.T) {
+	c := open(t, Policy{Enabled: true}, func(context.Context, string, string) (string, error) { return "", nil })
+	if _, err := c.Send(context.Background(), group, "hello"); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("send while unlinked: %v", err)
+	}
+}

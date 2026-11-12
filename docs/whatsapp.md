@@ -15,7 +15,9 @@ channels:
     allowed_groups: ["120363012345678901@g.us"]   # local: overrides it, as allowed_users
 ```
 
-It does not provide cron delivery, attachments, voice transcription, typing indicators, read receipts, or remote agent routing. Access is denied by default. Channel removal disables task dispatch immediately; use **Unlink** before removing the channel to revoke the device session as well.
+**Posting first.** An agent can start a message with the core's MCP tool `whatsapp_send(chat, text)` (`mcp_core_whatsapp_send` in a turn): on its own linked account, to a group of its `allowed_groups` or a number of its `allowed_users`, never elsewhere (“Anyone may message” lets anyone write to it, not it write to anyone). It needs the account linked and connected on that core; the message is remembered like a reply, so a reaction or a reply to it reaches the agent in that chat's conversation. Use it for an alert or a follow-up the agent was asked to post; answers to people who wrote need nothing.
+
+It does not provide cron delivery (a job's `deliver:`), attachments, voice transcription, typing indicators, read receipts, or remote agent routing. Access is denied by default. Channel removal disables task dispatch immediately; use **Unlink** before removing the channel to revoke the device session as well.
 
 Sessions are restored on core startup. Device keys, received-message IDs and the agent's sent messages (their ids and first 200 characters, kept 90 days, to know a reaction or a reply is to the agent) are stored in `.swarm/core/whatsapp/<agent>/session.db` with file mode 0600 inside a 0700 directory. Protect this directory like a password; do not publish or share it. Pairing codes are exposed only to authenticated operators and are not cached. Unlink removes the local session after successful remote logout; if WhatsApp is unreachable, remove the device from the phone's Linked devices screen and retry.
 

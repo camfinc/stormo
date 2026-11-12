@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +42,10 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 		t.Helper()
 		request(c.handleWhatsAppGroups, method, "/api/agents/atlas/whatsapp/groups", token, want)
 	}
+	_, out := rpc(t, c.MCP.Handle, atlasKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whatsapp_send","arguments":{"chat":"+393331234567","text":"hi"}}}`)
+	if res, _ := out["result"].(map[string]any); res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "no WhatsApp channel") {
+		t.Fatalf("send without a channel: %v", out)
+	}
 	check("GET", "", 403)
 	check("POST", atlasKey, 403)
 	check("GET", owner, 409)
@@ -64,6 +69,22 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	if p := c.whatsappPolicy("atlas"); len(p.Groups) != 1 || p.Groups[0] != "120363000000000001@g.us" {
 		t.Fatalf("local groups not applied: %+v", p)
 	}
+
+	// whatsapp_send: as the agent, over the MCP handler (no initialize needed).
+	send := func(args, want string) {
+		t.Helper()
+		_, out := rpc(t, c.MCP.Handle, atlasKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whatsapp_send","arguments":`+args+`}}`)
+		res, _ := out["result"].(map[string]any)
+		text := fmt.Sprint(res["content"])
+		if res["isError"] != true || !strings.Contains(text, want) {
+			t.Fatalf("%s: want an error with %q, got %v", args, want, out)
+		}
+	}
+	send(`{"chat":"120363000000000001@g.us","text":"hi"}`, "not linked on this core")
+	send(`{"chat":"120363012345678901@g.us","text":"hi"}`, "not one of your allowed_groups") // only local: applies
+	send(`{"chat":"+393339999999","text":"hi"}`, "not one of your allowed_users")
+	send(`{"chat":"120363000000000001@g.us","text":" "}`, "1 byte to 16 KB")
+	send(`{"chat":"120363000000000001@g.us","text":"hi","as":"nova"}`, "bad arguments")
 
 	if p := c.whatsappPolicy("missing"); p.Enabled || p.All || len(p.Users) != 0 {
 		t.Fatal("missing agent grants access")

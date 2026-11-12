@@ -478,7 +478,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 			return secrets.SharedValue(f, name)
 		}})
 	broker.Recover() // before anything is served: a job of this run is never taken for a leftover
-	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker))
+	var c *Core
+	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker), WhatsAppTools(func() *Core { return c }))
 	deps := o.LearnDeps
 	if deps.NapNow == nil {
 		// A nap now: the agent's sidecar takes it over the link, else `docker compose exec` locally.
@@ -492,7 +493,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 		}
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps, Gateways: gateway})
-	c := &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
+	c = &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
 		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{}), ingress: ingress, conversations: o.Conversations}
 	go bus.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)

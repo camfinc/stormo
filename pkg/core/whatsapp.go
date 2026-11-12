@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -198,4 +199,59 @@ func (c *Core) handleWhatsAppGroups(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	writeJSONBody(w, 200, map[string]any{"groups": groups})
+}
+
+// WhatsAppTools are the whatsapp_* MCP tools: an agent posting, unprompted, on its own linked
+// account to a chat its channel allows. core is the running core (the tools are built before it).
+func WhatsAppTools(core func() *Core) []MCPTool {
+	return []MCPTool{{
+		Name: "whatsapp_send",
+		Description: "Post a WhatsApp message on your own linked account without being written to first. Only for an agent " +
+			"with a WhatsApp channel, and only to a chat the channel allows: a group of its allowed_groups (id …@g.us) or a " +
+			"person of its allowed_users (+country code and number). Answers to people who write to you are sent on their " +
+			"own: use this only to start a message. Plain text; a long one is split.",
+		InputSchema: schema([]string{"chat", "text"}, map[string]any{
+			"chat": str("a group id (…@g.us) of your allowed_groups, or a phone number (+…) of your allowed_users"),
+			"text": str("the message, up to 16 KB"),
+		}),
+		Run: func(call ToolCall) (any, error) {
+			var req struct {
+				Chat string `json:"chat"`
+				Text string `json:"text"`
+			}
+			if err := decodeArgs(call, &req); err != nil {
+				return nil, err
+			}
+			return core().whatsappSend(call.Agent, req.Chat, req.Text)
+		},
+	}}
+}
+
+func (c *Core) whatsappSend(agent, chat, text string) (any, error) {
+	p := c.whatsappPolicy(agent)
+	if !p.Enabled {
+		return nil, toolErr("you have no WhatsApp channel")
+	}
+	if strings.TrimSpace(text) == "" || len(text) > 16<<10 {
+		return nil, toolErr("text must be 1 byte to 16 KB")
+	}
+	jid, err := whatsapp.AllowedChat(p, chat)
+	if err != nil {
+		return nil, toolErr("%v", err)
+	}
+	c.whatsapp.Lock()
+	conn := c.whatsapp.clients[agent]
+	c.whatsapp.Unlock()
+	if conn == nil {
+		return nil, toolErr("your WhatsApp account is not linked on this core")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ids, err := conn.Send(ctx, jid, text)
+	if errors.Is(err, whatsapp.ErrNotConnected) {
+		return nil, toolErr("your WhatsApp account is not connected right now; try again later")
+	} else if err != nil {
+		return nil, toolErr("sent %d part(s), then failed: %v", len(ids), err)
+	}
+	return map[string]any{"chat": jid.String(), "parts": len(ids)}, nil
 }
