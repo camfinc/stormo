@@ -1015,18 +1015,23 @@ func (s *Scheduler) recovery(j *Job, what, script, out string) *gateResult {
 		commit: func() {}, recover: recoverPrompt(what, script, j.Bool("no_agent"))}
 }
 
-// rerunHint is how the agent runs a job's script again from its home, as the scheduler runs it.
+// rerunHint is how the agent runs a job's script again from its home, as the scheduler runs it:
+// from the script's own directory.
 func rerunHint(script string) string {
 	if filepath.IsAbs(script) {
 		script = filepath.Base(script)
 	}
-	switch strings.ToLower(filepath.Ext(script)) {
+	dir, name := filepath.Split(filepath.ToSlash(script))
+	run := "python3 "
+	switch strings.ToLower(filepath.Ext(name)) {
 	case ".sh", ".bash":
-		return "if the failure looks transient (a network error, a timeout, a response cut short), run it again with the terminal (`cd scripts && bash " + script + "`); if the script is wrong, fix it in scripts/ (your change is reviewed like any other) and run it again."
+		run = "bash "
 	case ".luau":
 		return "a .luau script runs in the scheduler's sandbox, not the terminal: if it is wrong, fix it in scripts/ (your change is reviewed like any other); its next run uses the fix."
 	}
-	return "if the failure looks transient (a network error, a timeout, a response cut short), run it again with the terminal (`cd scripts && python3 " + script + "`); if the script is wrong, fix it in scripts/ (your change is reviewed like any other) and run it again."
+	return "if the failure looks transient (a network error, a timeout, a response cut short), run it again with the terminal (`cd " +
+		strings.TrimSuffix("scripts/"+dir, "/") + " && " + run + name + "`); if the script is wrong, fix it in scripts/ (your change is " +
+		"reviewed like any other) and run it again."
 }
 
 // recoverPrompt is a recovery's task, in place of the job's prompt (a script-only job has none).

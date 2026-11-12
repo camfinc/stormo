@@ -90,6 +90,19 @@ func TestScriptRecovery(t *testing.T) {
 	}
 }
 
+// The rerun the agent is told to try runs the script as the scheduler does: from its own
+// directory, with the interpreter its extension picks.
+func TestRerunHint(t *testing.T) {
+	for script, want := range map[string]string{
+		"collect.py": "`cd scripts && python3 collect.py`", "social/pull.py": "`cd scripts/social && python3 pull.py`",
+		"watch.sh": "`cd scripts && bash watch.sh`", "probe.luau": "scheduler's sandbox",
+	} {
+		if got := rerunHint(script); !strings.Contains(got, want) {
+			t.Errorf("%s: %s", script, got)
+		}
+	}
+}
+
 // A recovery that finds the jobs' lane busy waits in line with its gate's result, as an agent
 // job's gate does: the script does not run again every tick, and the turn gets the failure once
 // a slot is free.
