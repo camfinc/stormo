@@ -282,11 +282,13 @@ type waiter struct {
 
 // gateResult is what a gated job's gate left for its turn: the monitor's block, the script's (and
 // the handlers' notes), and commit, which stores the monitor's output once the turn's slot is
-// held.
+// held. A recovery (a script-only job's script or a monitor that failed) has its own prompt, in
+// place of the job's.
 type gateResult struct {
 	runContext, scriptBlock string
 	untrusted               string
 	commit                  func()
+	recover                 string
 }
 
 // wait puts a job in line for the lane (keeping its place when it is already in line).
@@ -710,15 +712,15 @@ func (s *Scheduler) start(id string, now time.Time) {
 		return
 	}
 	// a gated job that waits in line with its gate's result takes its slot here, as a job with no
-	// gate does: its scripts already ran
+	// gate does: its scripts already ran (a script-only job waits so only for a recovery's turn)
 	cached := (*gateResult)(nil)
-	if agent && gated {
+	if gated {
 		if cached = s.cachedGate(id, now); cached != nil {
 			gated = false
 		}
 	}
 	var slot Slot
-	if agent && !gated {
+	if (agent || cached != nil) && !gated {
 		due := dueAt(job, now)
 		if s.ahead(id, due) {
 			s.yield(id)
@@ -878,6 +880,10 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			o.text = fmt.Sprintf("⚠ Job '%s' failed\n\n%s", name, capPrompt(o.err))
 		}
 	}()
+	prompt := j.Str("prompt")
+	if cached != nil {
+		return s.turn(ctx, j, slot, session, prompt, cached)
+	}
 	if j.Bool("no_agent") {
 		script := strings.TrimSpace(j.Str("script"))
 		if script == "" {
@@ -888,6 +894,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		case !ok && s.isStopping():
 			return interrupted("")
 		case !ok:
+			if gate := s.recovery(j, "script", script, out); gate != nil {
+				return s.lane(ctx, j, slot, session, prompt, release, gate)
+			}
 			// the notice (and last_error) carry at most capPrompt's share: one post, not dozens
 			return outcome{status: wire.StatusError, err: capPrompt(out), text: fmt.Sprintf("⚠ Job '%s' script failed\n\n%s", name, capPrompt(out)), doc: out}
 		case !wakes(out) || out == "":
@@ -895,12 +904,8 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		}
 		return outcome{status: wire.StatusOK, text: out, doc: out}
 	}
-	prompt := j.Str("prompt")
 	if strings.TrimSpace(prompt) == "" && len(j.Skills()) == 0 && strings.TrimSpace(j.Str("script")) == "" {
 		return outcome{status: wire.StatusError, err: "the job has no prompt, skills or script", pause: "the job has no prompt, skills or script"}
-	}
-	if cached != nil {
-		return s.turn(ctx, j, slot, session, prompt, cached)
 	}
 	runContext, commit := "", func() {}
 	if mon := strings.TrimSpace(j.Str("monitor_script")); mon != "" {
@@ -909,6 +914,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			return interrupted("")
 		}
 		if !ok {
+			if gate := s.recovery(j, "monitor", mon, out); gate != nil {
+				return s.lane(ctx, j, slot, session, prompt, release, gate) // the stored hash stays as it was
+			}
 			return outcome{status: wire.StatusError, err: "monitor: " + capPrompt(out), text: fmt.Sprintf("⚠ Job '%s' monitor failed\n\n%s", name, capPrompt(out))}
 		}
 		block, changed, store := s.monitorGate(j, out)
@@ -938,7 +946,9 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 		case ok:
 			scriptBlock = fence("Script Output", "The following data was collected by the job's script before this run. Use it as context.", capPrompt(out))
 		default:
-			scriptBlock = fence("Script Error", "The job's script failed. Report this.", capPrompt(out))
+			scriptBlock = fence("Script Error", "The job's script `"+sc+"` failed before this run. Try to set it right first: "+
+				rerunHint(sc)+" Then do the task on its output. If it still fails, say in plain words what failed and what you "+
+				"tried, without the raw output.", capPrompt(out))
 		}
 	}
 	if s.o.OnSchedule != nil {
@@ -962,9 +972,17 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			scriptBlock += fence("Handler Notes", "Your on_schedule handlers noted this for the run.", strings.Join(v.Context, "\n\n"))
 		}
 	}
+	return s.lane(ctx, j, slot, session, prompt, release, &gateResult{runContext: runContext, scriptBlock: scriptBlock, commit: commit})
+}
+
+// lane runs a gated job's turn once its gate says the agent runs: it releases the gates' cap and
+// takes a turn slot into *slot. None free, or an older job waiting for one, is statusBusy with
+// the gate's result, which the job keeps while it waits.
+func (s *Scheduler) lane(ctx context.Context, j *Job, slot *Slot, session, prompt string, release func(), gate *gateResult) outcome {
 	release()
-	gate := &gateResult{runContext: runContext, scriptBlock: scriptBlock, commit: commit, untrusted: messaging.UntrustedWhy(ctx)}
+	gate.untrusted = messaging.UntrustedWhy(ctx)
 	if *slot == nil {
+		id := j.ID()
 		if s.ahead(id, dueAt(j, s.o.Now())) {
 			// an older job waits for the lane: it goes first (the kick lets it try now, the lane
 			// may be free), and this one waits behind it with its gate's result
@@ -975,7 +993,7 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 			}
 			return outcome{status: statusBusy, err: "an older job waits for the jobs' turn", gate: gate}
 		}
-		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: name})
+		r, err := s.o.Turns.Reserve(session, wire.Session{Source: SourceCron, Title: j.Name()})
 		if err != nil {
 			return outcome{status: statusBusy, err: err.Error(), gate: gate}
 		}
@@ -984,9 +1002,61 @@ func (s *Scheduler) execute(ctx context.Context, j *Job, slot *Slot, session str
 	return s.turn(ctx, j, slot, session, prompt, gate)
 }
 
+// recovery is the gate of a run whose script-only script or monitor failed: instead of posting
+// the raw failure, the agent gets a turn to set the run right (run it again, fix the script) and
+// to say plainly what is wrong when it cannot. nil, so the failure is posted as it is, when no
+// agent runs here or the job has failed failureNudgeAt runs in a row: a job that keeps failing
+// does not spend a turn on every run.
+func (s *Scheduler) recovery(j *Job, what, script, out string) *gateResult {
+	if s.o.Turns == nil || j.Int("failure_streak") >= failureNudgeAt {
+		return nil
+	}
+	return &gateResult{scriptBlock: fence("Script Error", "The job's "+what+" `"+script+"` failed:", capPrompt(out)),
+		commit: func() {}, recover: recoverPrompt(what, script, j.Bool("no_agent"))}
+}
+
+// rerunHint is how the agent runs a job's script again from its home, as the scheduler runs it.
+func rerunHint(script string) string {
+	if filepath.IsAbs(script) {
+		script = filepath.Base(script)
+	}
+	switch strings.ToLower(filepath.Ext(script)) {
+	case ".sh", ".bash":
+		return "if the failure looks transient (a network error, a timeout, a response cut short), run it again with the terminal (`cd scripts && bash " + script + "`); if the script is wrong, fix it in scripts/ (your change is reviewed like any other) and run it again."
+	case ".luau":
+		return "a .luau script runs in the scheduler's sandbox, not the terminal: if it is wrong, fix it in scripts/ (your change is reviewed like any other); its next run uses the fix."
+	}
+	return "if the failure looks transient (a network error, a timeout, a response cut short), run it again with the terminal (`cd scripts && python3 " + script + "`); if the script is wrong, fix it in scripts/ (your change is reviewed like any other) and run it again."
+}
+
+// recoverPrompt is a recovery's task, in place of the job's prompt (a script-only job has none).
+func recoverPrompt(what, script string, scriptOnly bool) string {
+	done := "If it works now, reply exactly [SILENT]: the job's next run goes on as usual."
+	if scriptOnly {
+		done = "If it works now, reply with exactly what it printed and nothing else, as the job delivers its " +
+			"script's output; reply exactly [SILENT] if it printed nothing or its last line is {\"wakeAgent\": false}."
+	}
+	return "This run is a recovery: the job's " + what + " `" + script + "` failed (above), and you have this turn to set it " +
+		"right before anyone is told. Find out why: " + rerunHint(script) + " If running it again could repeat something " +
+		"the failed run already did, such as a post or a paid call, check that first. Do not do the job's work another " +
+		"way and do not change its schedule.\n\n" + done + " If it still fails, put [CRON_FAILURE] alone on the first " +
+		"line, then say in two or three plain sentences what failed, what you tried and what someone needs to do; no " +
+		"stack traces or raw output (the run's record keeps them)."
+}
+
 // turn runs an agent job's turn in *slot, once its gate (if any) has run: the monitor's output is
-// stored first (commit), then the prompt is built with the gate's blocks.
+// stored first (commit), then the prompt is built with the gate's blocks. A recovery's turn runs
+// its own prompt, and its record keeps the failure it was given.
 func (s *Scheduler) turn(ctx context.Context, j *Job, slot *Slot, session, prompt string, gate *gateResult) outcome {
+	if gate.recover == "" {
+		return s.runTurn(ctx, j, slot, session, prompt, gate)
+	}
+	o := s.runTurn(ctx, j, slot, session, gate.recover, gate)
+	o.doc = gate.scriptBlock + o.doc
+	return o
+}
+
+func (s *Scheduler) runTurn(ctx context.Context, j *Job, slot *Slot, session, prompt string, gate *gateResult) outcome {
 	id := j.ID()
 	s.unwait(id)
 	s.warnOnce("busy:"+id, "")

@@ -92,9 +92,19 @@ proposal for review. (Needletail never lets the agent change what a repo job run
 In this order:
 
 1. **Script-only jobs** (`no_agent: true`, agent.yaml `agent: false`): the script runs and is the
-   whole job (§5). A failure delivers an alert (`⚠ … script failed` and its output); stdout that
-   is empty, or whose last non-empty line is JSON `{"wakeAgent": false}`, is a silent run;
-   anything else is delivered as it is. A monitor is not used with `no_agent`.
+   whole job (§5). Stdout that is empty, or whose last non-empty line is JSON
+   `{"wakeAgent": false}`, is a silent run; anything else is delivered as it is. A monitor is not
+   used with `no_agent`. A failure on Hermes delivers an alert (`⚠ … script failed` and its
+   output). Needletail first gives the agent a **recovery turn** instead: in the jobs' lane, as an
+   agent job's turn, with the failure in a "Script Error" block and a prompt of its own (the job
+   has none) asking it to find the cause, run the script again when the failure looks transient
+   (a network error, a timeout, a response cut short), fix it in `scripts/` when it is wrong (the
+   edit goes to review like any other, §5), and reply with what the script then printed, or
+   `[SILENT]`. When it cannot set the run right it replies `[CRON_FAILURE]` and a few plain
+   sentences on what failed, what it tried and what is needed: that is the failure notice, with no
+   raw traceback (the run's record keeps the script's output with the reply). From
+   `failureNudgeAt` (3) failures in a row on, and when no agent runs, the failure is delivered as
+   the alert above, so a job that keeps failing does not spend a turn on every run.
 2. **Unrunnable jobs** are paused, not retried every tick: a `no_agent` job with no script, an
    agent job with no prompt, skills or script. `paused_reason` says why
    (`Auto-paused by the scheduler: …`) and an alert goes out. Nothing else ever pauses a job: a
@@ -113,12 +123,15 @@ In this order:
      on the same output again (needletail keeps the output in
      `state/needletail/monitor/<id>.out`, Hermes in its cron output dir);
    - a monitor that fails is the run's error (an alert, `last_status: error`) and leaves the stored
-     hash as it was.
+     hash as it was. Needletail first gives the agent a recovery turn on it, as for a script-only
+     job's script (§3.1), in place of the job's prompt: `[SILENT]` once the monitor works again
+     (its next run compares as usual), `[CRON_FAILURE]` and a plain account when it does not.
 4. **Pre-run script** (`script` on an agent job): its stdout goes into the prompt as a
    "Script Output" block (needletail: at most 16 KB of it, with a note of the size; Hermes puts it
    all). Empty stdout, or the `{"wakeAgent": false}` gate, is a silent run with no
    turn. A failing script does not fail the run: the agent gets a "Script Error" block with the
-   failure and reports it.
+   failure and reports it (needletail's block asks it to set the script right first, running it
+   again or fixing it, then to do the task, and to say plainly what failed if it still fails).
 5. **Handlers** (needletail only): the agent's `on_schedule` handlers whose header's `jobs:`
    names the job (its id or name, or `"*"`), in order (skill dir, then name), each with the job
    (`id`, `name`, `schedule`, `prompt`, `skills`, `deliver`, `repo`), the script's output and the
@@ -153,7 +166,7 @@ In this order:
 | `ok` | the run answered (or a script-only job printed) | the reply / stdout | reset to 0 |
 | `silent` | a `[SILENT]` reply, an empty script output, a wake gate | nothing | reset to 0 |
 | `no_change` | the monitor's output did not change | nothing | reset to 0 |
-| `error` | the turn failed, a `[CRON_FAILURE]` reply, an empty reply, a failing monitor or script-only script, an unrunnable job | a failure notice | one more |
+| `error` | the turn failed, a `[CRON_FAILURE]` reply, an empty reply, a failing monitor or script-only script (on needletail, one its recovery turn did not set right), an unrunnable job | a failure notice | one more |
 | `delivery_failed` | the run worked but a target refused its output | (it was attempted) | unchanged |
 
 Hermes (v2026.9.24) records silent and unchanged runs as `ok` (its statuses are `ok`, `error` and
@@ -171,6 +184,7 @@ error, and a job overdue by more than 15 minutes.
   adds a line that the job is worth a review and can be paused. Needletail carries at most 16 KB
   of a failing script's or monitor's output in the notice (and in `last_error`), with a note of its
   size, so a failure is one Slack post; a script-only job's successful output is delivered whole.
+  After a recovery turn (§3.1) the notice and `last_error` are the agent's account instead.
 - `last_error` is cleared by a success; `last_delivery_error` is set by each run's delivery.
 - `repeat.completed` counts every run; with `repeat.times` set, the run that reaches it completes
   the job (`enabled: false`, `state: completed`, no next run).

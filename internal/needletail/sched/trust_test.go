@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -87,13 +88,15 @@ func TestDeliverOriginIsTheJobsOrigin(t *testing.T) {
 	}
 }
 
-// A failing script-only job's or monitor's notice carries at most capPrompt's share of the
-// output: one Slack post, not dozens.
+// A failing script-only job's or monitor's notice, once the agent no longer tries to recover it
+// (failureNudgeAt failures in a row), carries at most capPrompt's share of the output: one Slack
+// post, not dozens.
 func TestFailureNoticesAreCapped(t *testing.T) {
 	t0, _ := time.Parse(time.RFC3339, t0String)
 	script := strings.Replace(jobJSON("loud", `{"kind":"interval","minutes":60}`, `"2026-10-21T08:00:00Z"`), `"prompt":"Report."`, `"no_agent":true,"script":"loud.sh"`, 1)
-	r := bareRig(t, t0, strings.Replace(script, `"deliver":"local"`, `"deliver":"slack"`, 1),
-		strings.Replace(gatedJob("mon", "monitor_script", "loud.sh"), `"deliver":"local"`, `"deliver":"slack"`, 1))
+	streak := fmt.Sprintf(`"deliver":"slack","failure_streak":%d`, failureNudgeAt)
+	r := bareRig(t, t0, strings.Replace(script, `"deliver":"local"`, streak, 1),
+		strings.Replace(gatedJob("mon", "monitor_script", "loud.sh"), `"deliver":"local"`, streak, 1))
 	writeScript(t, r.home, "loud.sh", "head -c 200000 /dev/zero | tr '\\0' 'a'; exit 1\n")
 	r.tick()
 	got := r.sink.taken()

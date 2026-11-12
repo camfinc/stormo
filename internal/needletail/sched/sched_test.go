@@ -365,9 +365,14 @@ func TestRealJobs(t *testing.T) {
 			status: "silent streak=0 err=\"\"", noTurn: true},
 		{name: "script-only watchdog: the wake gate is silent", at: 2 * time.Minute, job: sla,
 			prepare: func() { r.fixture("sla_watchdog.sh", "checked 14 chats\n{\"wakeAgent\": false}\n", 0) }, status: "silent streak=0 err=\"\"", noTurn: true},
-		{name: "script-only watchdog: a failing script alerts the failure lane", at: 2 * time.Minute, job: sla,
-			prepare: func() { r.fixture("sla_watchdog.sh", "partial", 3) }, noTurn: true,
-			status: "error streak=1 err=\"Script exited with code 3\\nstdout:\\npartial\"", deliver: "slack (home)|script failed"},
+		{name: "script-only watchdog: a failing script gets a recovery turn; one it cannot set right fails with the agent's account", at: 2 * time.Minute, job: sla,
+			prepare: func() {
+				r.fixture("sla_watchdog.sh", "partial", 3)
+				r.turns.reply(sla, "[CRON_FAILURE]\nThe watchdog exits 3 again after a rerun: the CRM token looks expired.")
+			},
+			status:  "error streak=1 err=\"The watchdog exits 3 again after a rerun: the CRM token looks expired.\"",
+			turn:    []string{"## Script Error", "Script exited with code 3", "partial", "This run is a recovery", "cd scripts && bash sla_watchdog.sh", "[CRON_FAILURE] alone"},
+			deliver: "slack (home)|the CRM token looks expired"},
 		{name: "collector (python) delivers to its channel", at: 0, job: collect,
 			prepare: func() { r.due(collect); r.fixture("collect.py", "collected 3 accounts", 0) }, noTurn: true,
 			status: "ok streak=0 err=\"\"", deliver: "slack:C0000000002|collected 3 accounts"},
@@ -395,9 +400,19 @@ func TestRealJobs(t *testing.T) {
 				r.turns.reply(watch, "[SILENT]")
 			},
 			status: "silent streak=0 err=\"\"", turn: []string{"MONITOR CHANGE DETECTED", "-FINDING beta owner=b", "### Current output"}},
-		{name: "monitor fails: an error, the hash kept", at: 2 * time.Hour, job: watch,
-			prepare: func() { r.fixture("tracker_watch.sh", "", 1) }, noTurn: true,
-			status: "error streak=1 err=\"monitor: Script exited with code 1\"", deliver: "slack (home)|monitor failed"},
+		{name: "monitor fails: a recovery turn instead of the job's, the hash kept", at: 2 * time.Hour, job: watch,
+			prepare: func() {
+				r.fixture("tracker_watch.sh", "", 1)
+				r.turns.reply(watch, "[CRON_FAILURE]\nThe tracker monitor exits 1 with no output, again on a rerun.")
+			},
+			status:  "error streak=1 err=\"The tracker monitor exits 1 with no output, again on a rerun.\"",
+			turn:    []string{"monitor `tracker_watch.sh` failed", "Script exited with code 1", "reply exactly [SILENT]: the job's next run"},
+			deliver: "slack (home)|again on a rerun",
+			check: func(t *testing.T, c []turnCall) {
+				if strings.Contains(c[0].input, "If findings only disappeared") {
+					t.Errorf("a recovery ran the job's prompt:\n%s", c[0].input)
+				}
+			}},
 		{name: "monitor back with the same output: still no change", at: 2 * time.Hour, job: watch,
 			prepare: func() { r.fixture("tracker_watch.sh", "FINDING alpha owner=a", 0) }, status: "no_change streak=0 err=\"\"", noTurn: true},
 		{name: "a pre-run script's output goes into the prompt", at: 0, job: radar,
@@ -712,6 +727,7 @@ func TestReviewReadsTheRuntimesFile(t *testing.T) {
 	}
 	r.due(sla)
 	r.fixture("sla_watchdog.sh", "boom", 1)
+	r.turns.reply(sla, "[CRON_FAILURE]\nScript exited with code 1 again after a rerun.")
 	r.tick()
 	r.due(collect)
 	_ = r.s.mutate(func(f *File) (bool, error) { f.Find(collect).Set("deliver", "telegram"); return true, nil })
