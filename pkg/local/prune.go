@@ -83,7 +83,7 @@ func PruneImages(inst *instance.Instance, dryRun bool) (PruneReport, error) {
 	}
 	remove, kept := plan(images, r)
 	rep.Kept = kept
-	if dryRun {
+	if dryRun || len(remove) == 0 { // nothing to measure: docker's totals walk every image and the build cache
 		rep.Removed = remove
 		return rep, nil
 	}
