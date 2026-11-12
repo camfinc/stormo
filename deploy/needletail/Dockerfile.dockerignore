@@ -16,5 +16,7 @@ internal/needletail/**/testdata
 !pkg/capability
 !pkg/manifest
 !pkg/shared
+# The voice provider's client (speech to text, text to speech).
+!pkg/elevenlabs
 pkg/**/*_test.go
 pkg/**/testdata
