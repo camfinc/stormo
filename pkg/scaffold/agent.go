@@ -39,6 +39,18 @@ type AgentSpec struct {
 	Secrets []string `json:"secrets,omitempty"`
 	// Soul is SOUL.md; empty writes a starter from the name and role.
 	Soul string `json:"soul,omitempty"`
+	// Voice gives the agent a voice (agent.yaml voice:); nil: none.
+	Voice *VoiceChoice `json:"voice,omitempty"`
+}
+
+// VoiceChoice is a new agent's voice: its voice connection ("": elevenlabs) and the provider's
+// voice (empty id: the agent picks one itself), its model, and its language for listening.
+type VoiceChoice struct {
+	Provider string `json:"provider,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Language string `json:"language,omitempty"`
 }
 
 type EngineChoice struct {
@@ -206,6 +218,14 @@ func NewAgent(inst *instance.Instance, s AgentSpec) (AgentResult, error) {
 	}
 	for _, c := range s.Channels {
 		optional = append(optional, manifest.ChannelSecrets[c.Kind]...)
+	}
+	if v := s.Voice; v != nil {
+		v.Provider = or(v.Provider, instance.KindElevenLabs)
+		c, ok := inst.Connection(v.Provider)
+		if !ok || !c.Voice() {
+			return AgentResult{}, fmt.Errorf("voice: %q is not a voice connection of this instance", v.Provider)
+		}
+		required = append(required, c.Key)
 	}
 	required = append(required, eng.Runtime().APIKeyName())
 	sort.Strings(required)
@@ -392,6 +412,20 @@ func agentYAML(s AgentSpec, secrets, optional []string) (string, error) {
 			comment string
 			v       any
 		}{"# Where people reach the agent.", map[string]any{"channels": chans}})
+	}
+	if v := s.Voice; v != nil {
+		rest = append(rest, struct {
+			comment string
+			v       any
+		}{"# Its voice: voice notes it answers with when it decides to (no id: it picks one itself).", map[string]any{"voice": struct {
+			Provider string `yaml:"provider"`
+			ID       string `yaml:"id,omitempty"`
+			Name     string `yaml:"name,omitempty"`
+			Model    string `yaml:"model,omitempty"`
+			Speak    string `yaml:"speak"`
+			Listen   bool   `yaml:"listen"`
+			Language string `yaml:"language,omitempty"`
+		}{v.Provider, v.ID, v.Name, v.Model, manifest.SpeakAuto, true, v.Language}}})
 	}
 	rest = append(rest, struct {
 		comment string

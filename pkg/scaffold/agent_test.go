@@ -188,3 +188,23 @@ func TestNewAgentWithALook(t *testing.T) {
 		}
 	}
 }
+
+// A new agent with a voice: agent.yaml voice: (speak auto, listening; no id: it picks one), its
+// connection's key declared; it compiles; an unknown voice connection is refused.
+func TestNewAgentWithAVoice(t *testing.T) {
+	inst := newInstance(t, Example)
+	r, err := NewAgent(inst, AgentSpec{Name: "Front Desk", Voice: &VoiceChoice{Language: "es"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.Secrets, "ELEVENLABS_API_KEY") {
+		t.Errorf("secrets %v lack the voice key", r.Secrets)
+	}
+	a := checkAgent(t, inst, "front-desk")
+	if v := a.Voice; v == nil || v.Provider != "elevenlabs" || v.ID != "" || v.Speak != manifest.SpeakAuto || !v.Listen || v.Language != "es" {
+		t.Errorf("voice = %+v", a.Voice)
+	}
+	if _, err := NewAgent(inst, AgentSpec{Name: "Back Desk", Voice: &VoiceChoice{Provider: "openrouter"}}); err == nil || !strings.Contains(err.Error(), "not a voice connection") {
+		t.Errorf("a model connection as voice: %v", err)
+	}
+}
