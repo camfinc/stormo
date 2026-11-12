@@ -102,7 +102,10 @@ actor FakeChat: ChatBackend {
         try check()
         sessions[session]?.messages += [ChatMessage(id: "u\(message)", role: "user", content: message),
                                         ChatMessage(id: "a\(message)", role: "assistant", content: "echo \(message)")]
-        return ChatReply(agent: agent, session: session, reply: "echo \(message)")
+        // "say …" answers with a voice note alone, "tell …" with a note whose transcript reads apart.
+        let audio = message.hasPrefix("say ") ? ChatAudio(path: "/tmp/acme/.swarm/voice/\(message.count).mp3", withText: false)
+            : message.hasPrefix("tell ") ? ChatAudio(path: "/tmp/acme/.swarm/voice/t.mp3") : nil
+        return ChatReply(agent: agent, session: session, reply: message.hasPrefix("tell ") ? "Told." : "echo \(message)", audio: audio)
     }
 
     func clearConversation(_ agent: String, _ id: String) async throws -> ClearResult {
@@ -144,6 +147,31 @@ actor FakeChat: ChatBackend {
         store.send("Again")
         await waitForTurn(store)
         #expect(store.transcript?.messages.count == 4 && store.selection == "api_1")
+    }
+
+    @Test func aVoiceNoteStaysWithItsReply() async throws {
+        let fake = FakeChat()
+        let store = ChatStore(backend: fake)
+        await store.selectAgent("ada")
+        store.send("say hi")
+        await waitForTurn(store)
+        store.send("plain")
+        await waitForTurn(store)
+        store.send("tell me")
+        await waitForTurn(store)
+        let rows = try #require(store.transcript?.messages)
+        #expect(rows.count == 6)
+        #expect(store.voiceNote(for: rows[1]) == ChatAudio(path: "/tmp/acme/.swarm/voice/6.mp3", withText: false))
+        #expect(store.voiceNote(for: rows[0]) == nil && store.voiceNote(for: rows[3]) == nil)
+        // Its reply reads apart from the row: the turn's last answer carries it.
+        #expect(store.voiceNote(for: rows[5])?.path.hasSuffix("t.mp3") == true)
+
+        await store.open(nil)
+        #expect(store.voiceNote(for: rows[1]) == nil)
+        await store.open("api_1")
+        #expect(store.voiceNote(for: rows[1]) != nil)
+        await store.clear("api_1")
+        #expect(store.voiceNotes.isEmpty)
     }
 
     @Test func notRunningIsReported() async {

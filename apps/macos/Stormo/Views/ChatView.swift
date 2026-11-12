@@ -225,7 +225,10 @@ private struct TranscriptPane: View {
         // conversation later: re-read it while it is on screen (ChatStore.startRefreshing).
         .background(WindowVisibility { store.isVisible = $0 })
         .onAppear { store.startRefreshing() }
-        .onDisappear { store.stopRefreshing() }
+        .onDisappear {
+            store.stopRefreshing()
+            VoicePlayer.shared.stop()
+        }
         .onChange(of: openAgent, initial: true) { store.observe(openAgent) }
     }
 
@@ -279,7 +282,7 @@ private struct TranscriptPane: View {
                                 CompactionMarker()
                             }
                             ForEach(rows) { m in
-                                MessageRow(message: m, agentName: agentName)
+                                MessageRow(message: m, agentName: agentName, audio: store.voiceNote(for: m))
                             }
                             if let pending, !rows.contains(where: { $0.isUser && $0.content == pending.text }) {
                                 MessageRow(message: ChatMessage(id: "pending", role: "user", content: pending.text), agentName: agentName)
@@ -355,6 +358,8 @@ private struct TranscriptPane: View {
 private struct MessageRow: View {
     let message: ChatMessage
     let agentName: String
+    /// The voice note the agent answered with (only the app's own turns carry one).
+    var audio: ChatAudio?
     @State private var expanded = false
 
     var body: some View {
@@ -372,12 +377,35 @@ private struct MessageRow: View {
         } else {
             VStack(alignment: .leading, spacing: 3) {
                 Text(agentName).font(.caption).foregroundStyle(.secondary)
-                Text(markdown)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                if let audio {
+                    voiceNote(audio)
+                } else {
+                    Text(markdown)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                }
             }
             .padding(.trailing, 60)
         }
+    }
+
+    /// A reply spoken as a voice note: its player, then its text, or (a note sent alone) the
+    /// transcript folded away.
+    private func voiceNote(_ audio: ChatAudio) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AudioClip(url: audio.url)
+            if audio.withText {
+                Text(markdown)
+            } else if !message.content.isEmpty {
+                DisclosureGroup(isExpanded: $expanded) {
+                    Text(markdown).font(.callout).foregroundStyle(.secondary)
+                } label: {
+                    Text("Transcript").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
     /// A follow-up the agent set itself coming due: its runtime wrote this input, not the owner.

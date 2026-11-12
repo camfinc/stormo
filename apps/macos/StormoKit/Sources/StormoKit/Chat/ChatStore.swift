@@ -90,6 +90,14 @@ extension Transcript {
     }
 }
 
+/// A voice note the agent answered one of the app's turns with, and the reply that came with it.
+public struct VoiceNote: Equatable, Sendable {
+    public var reply: String
+    public var audio: ChatAudio
+    /// The transcript row it belongs to, once the conversation was read after the turn.
+    public var row: String?
+}
+
 /// A turn on its way: the message shows at once, the reply when the agent has finished.
 public struct PendingTurn: Equatable, Sendable {
     public var agent: String
@@ -110,6 +118,9 @@ public final class ChatStore {
     public private(set) var transcript: Transcript?
     public private(set) var loadingTranscript = false
     public private(set) var pending: PendingTurn?
+    /// Voice notes of the app's turns, by agent and conversation ("agent/id"), oldest first: only the
+    /// chat result carries them, the transcript does not (in memory only).
+    public private(set) var voiceNotes: [String: [VoiceNote]] = [:]
     public var problem: ChatProblem? {
         didSet { if problem?.kind == .starting { retryWhileStarting() } }
     }
@@ -148,6 +159,7 @@ public final class ChatStore {
         self.scope = scope
         cancelSend()
         agent = nil
+        voiceNotes = [:]
         conversations = []
         selection = nil
         transcript = nil
@@ -350,12 +362,18 @@ public final class ChatStore {
                         await self.reloadTranscript(id)
                     }
                 }
-                _ = try await backend.send(agent, session: id, message: text)
+                let reply = try await backend.send(agent, session: id, message: text)
                 progress?.cancel()
                 guard let self else { return }
                 self.pending = nil
+                if let audio = reply.audio {
+                    self.voiceNotes["\(agent)/\(id)", default: []].append(VoiceNote(reply: reply.reply, audio: audio))
+                }
                 if self.agent == agent {
-                    if self.selection == id { await self.reloadTranscript(id) }
+                    if self.selection == id {
+                        await self.reloadTranscript(id)
+                        self.placeVoiceNote(agent: agent, conversation: id)
+                    }
                     await self.refreshList()
                 }
             } catch {
@@ -365,6 +383,24 @@ public final class ChatStore {
                 if self.agent == agent, let id = conversation, self.selection == id { await self.reloadTranscript(id) }
             }
         }
+    }
+
+    /// The voice note an assistant row of the open conversation carries, if any.
+    public func voiceNote(for message: ChatMessage) -> ChatAudio? {
+        guard !message.isUser, !message.isTool, let agent, let id = selection, let notes = voiceNotes["\(agent)/\(id)"] else { return nil }
+        if let n = notes.last(where: { $0.row == message.id }) { return n.audio }
+        let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return notes.last(where: { $0.row == nil && $0.reply.trimmingCharacters(in: .whitespacesAndNewlines) == text })?.audio
+    }
+
+    /// Ties the conversation's newest voice note to its row: the assistant row with its reply's text,
+    /// else (the transcript may word it apart) the last assistant row.
+    private func placeVoiceNote(agent: String, conversation id: String) {
+        let key = "\(agent)/\(id)"
+        guard let i = voiceNotes[key]?.indices.last, voiceNotes[key]?[i].row == nil, let rows = transcript?.messages else { return }
+        let answers = rows.filter { !$0.isUser && !$0.isTool }
+        let reply = voiceNotes[key]?[i].reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        voiceNotes[key]?[i].row = (answers.last { $0.content.trimmingCharacters(in: .whitespacesAndNewlines) == reply } ?? answers.last)?.id
     }
 
     /// Tries the agent again until it answers (which clears the problem) or the time runs out.
@@ -406,6 +442,7 @@ public final class ChatStore {
             }
         }
         guard agent == self.agent else { return }
+        voiceNotes["\(agent)/\(id)"] = nil
         conversations.removeAll { $0.id == id }
         if selection == id {
             selection = nil

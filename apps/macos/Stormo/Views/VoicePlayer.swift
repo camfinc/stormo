@@ -90,6 +90,8 @@ final class VoicePlayer {
 struct PlayButton: View {
     let url: URL?
     var label = "Play"
+    /// Stops the clip when the button goes (a sheet closing); a chat row scrolled away keeps playing.
+    var stopsWhenGone = true
     private var player: VoicePlayer { .shared }
 
     var body: some View {
@@ -103,7 +105,7 @@ struct PlayButton: View {
         .foregroundStyle(url == nil ? Color.secondary : Color.accentColor)
         .disabled(url == nil)
         .help(url == nil ? "No sample to play" : on ? "Stop" : label)
-        .onDisappear { if on { player.stop() } }
+        .onDisappear { if stopsWhenGone, player.isPlaying(url) { player.stop() } }
     }
 }
 
@@ -115,7 +117,7 @@ struct AudioClip: View {
     var body: some View {
         let on = player.isPlaying(url)
         HStack(spacing: 8) {
-            PlayButton(url: url, label: "Play the voice note")
+            PlayButton(url: url, label: "Play the voice note", stopsWhenGone: false)
             ProgressView(value: on && player.length > 0 ? min(player.position / player.length, 1) : 0)
                 .progressViewStyle(.linear)
                 .frame(width: 140)
