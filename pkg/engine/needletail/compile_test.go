@@ -12,6 +12,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"go.yaml.in/yaml/v3"
@@ -485,6 +486,44 @@ func TestFilesAndSTTRender(t *testing.T) {
 		if _, err := readAgentConfig(dir); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// agent.yaml voice.listen renders as the runtime's stt: (the one an older image reads); voice:
+// replaces this file's stt:, and a voice connection the runtime cannot reach does not listen.
+func TestVoiceListenRender(t *testing.T) {
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	a.Voice = &manifest.Voice{Provider: "elevenlabs", Listen: true, Language: "es", Speak: manifest.SpeakAuto, MaxSeconds: 120}
+	ac := &agentConfig{}
+	if err := voiceListen(a, inst, ac); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac))
+	for _, want := range []string{"stt:", "enabled: true", "provider: elevenlabs", "language: es"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("needletail.yaml lacks %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "tts") {
+		t.Errorf("speech is not rendered until the runtime reads it:\n%s", raw)
+	}
+	if err := checkSTTKey(a, ac); err != nil {
+		t.Error(err)
+	}
+	a.Voice.Listen = false
+	ac = &agentConfig{}
+	if err := voiceListen(a, inst, ac); err != nil || ac.STT != nil {
+		t.Errorf("listen off: %+v %v", ac.STT, err)
+	}
+	if err := voiceListen(a, inst, &agentConfig{STT: &wire.STTConfig{Enabled: true}}); err == nil || !strings.Contains(err.Error(), "replaces it") {
+		t.Errorf("voice: and stt: both: %v", err)
+	}
+	a.Voice.Listen = true
+	inst.Connections = append(inst.Connections, instance.Connection{Name: "studio", Kind: instance.KindElevenLabs, BaseURL: instance.ElevenLabsURL, Key: "STUDIO_KEY", Serves: instance.ServesVoice})
+	a.Voice.Provider = "studio"
+	if err := voiceListen(a, inst, &agentConfig{}); err == nil || !strings.Contains(err.Error(), "listens through") {
+		t.Errorf("another key name: %v", err)
 	}
 }
 

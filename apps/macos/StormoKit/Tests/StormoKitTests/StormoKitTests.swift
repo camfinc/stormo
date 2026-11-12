@@ -641,7 +641,7 @@ final class Steps: @unchecked Sendable {
         let kinds = try await cli.run(["connections", "kinds"], as: [ConnectionKindInfo].self)
         #expect(kinds.contains { $0.kind == "openai" && $0.key == "OPENAI_API_KEY" && $0.api })
         let before = try await cli.run(["connections"], as: [ConnectionRow].self)
-        #expect(before.map(\.name) == ["openrouter", "chatgpt"] && before[0].usedBy.contains("atlas"))
+        #expect(before.map(\.name) == ["openrouter", "chatgpt", "elevenlabs"] && before[0].usedBy.contains("atlas"))
         let rows = try await cli.run(["connections", "add", "openai", "--kind", "openai"], as: [ConnectionRow].self)
         #expect(rows.first?.name == "openai" && rows.first?.keySet == false)
         _ = try await cli.run(["secrets", "set", "shared", "OPENAI_API_KEY"], as: [String: String].self, stdin: Data("sk-test".utf8))

@@ -11,10 +11,11 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// A connection is a named way to reach models (stormo.yaml connections:): an API provider, keyed by
-// a secret whose NAME the connection gives (values stay in the secrets files), or a ChatGPT sign-in
-// the core holds (local runs only). Agents pick one by name (agent.yaml model.provider, and
-// model.local.connection for the core route).
+// A connection is a named way to reach a provider (stormo.yaml connections:): an API, keyed by a
+// secret whose NAME the connection gives (values stay in the secrets files), or a ChatGPT sign-in
+// the core holds (local runs only). Most serve models, which agents pick by name (agent.yaml
+// model.provider, and model.local.connection for the core route); a voice one serves speech
+// (agent.yaml voice.provider).
 
 // Connection kinds.
 const (
@@ -23,6 +24,13 @@ const (
 	KindOpenAI     = "openai"
 	KindAnthropic  = "anthropic"
 	KindCustom     = "custom" // any OpenAI-compatible API: base_url and key required
+	KindElevenLabs = "elevenlabs"
+)
+
+// What a connection serves.
+const (
+	ServesModels = "models"
+	ServesVoice  = "voice" // speech: text to speech, speech to text, voices
 )
 
 // ConnectionKind is what a kind brings by default.
@@ -33,16 +41,25 @@ type ConnectionKind struct {
 	Key     string `json:"key,omitempty"`
 	// API: reached with a key (any target); else a sign-in the core holds (local runs only).
 	API bool `json:"api"`
+	// Serves is what the kind is for: models or voice.
+	Serves string `json:"serves"`
 }
 
 // ConnectionKinds are the kinds a connection can be, in the order a picker shows them.
 var ConnectionKinds = []ConnectionKind{
-	{KindChatGPT, "ChatGPT plan (signed in on the core)", "", "", false},
-	{KindOpenRouter, "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", true},
-	{KindOpenAI, "OpenAI API", "https://api.openai.com/v1", "OPENAI_API_KEY", true},
-	{KindAnthropic, "Anthropic API", "https://api.anthropic.com/v1/", "ANTHROPIC_API_KEY", true},
-	{KindCustom, "Other OpenAI-compatible API", "", "", true},
+	{KindChatGPT, "ChatGPT plan (signed in on the core)", "", "", false, ServesModels},
+	{KindOpenRouter, "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", true, ServesModels},
+	{KindOpenAI, "OpenAI API", "https://api.openai.com/v1", "OPENAI_API_KEY", true, ServesModels},
+	{KindAnthropic, "Anthropic API", "https://api.anthropic.com/v1/", "ANTHROPIC_API_KEY", true, ServesModels},
+	{KindCustom, "Other OpenAI-compatible API", "", "", true, ServesModels},
+	{KindElevenLabs, "ElevenLabs (voice)", ElevenLabsURL, ElevenLabsKey, true, ServesVoice},
 }
+
+// ElevenLabs' API and the env var its key goes in by default.
+const (
+	ElevenLabsURL = "https://api.elevenlabs.io"
+	ElevenLabsKey = "ELEVENLABS_API_KEY"
+)
 
 // KindOf is the kind named k.
 func KindOf(k string) (ConnectionKind, bool) {
@@ -61,21 +78,31 @@ type Connection struct {
 	BaseURL string `json:"baseUrl,omitempty"`
 	// Key is the API key's env var NAME (API kinds).
 	Key string `json:"key,omitempty"`
-	// Implicit: not written in stormo.yaml (one of the two every instance has).
+	// Serves is its kind's: models or voice.
+	Serves string `json:"serves"`
+	// Implicit: not written in stormo.yaml (one of those every instance has).
 	Implicit bool `json:"implicit,omitempty"`
 }
 
 // API reports whether c is reached with a key (else it is a core sign-in).
 func (c Connection) API() bool { k, _ := KindOf(c.Kind); return k.API }
 
+// Models reports whether c serves models (every kind but a voice one).
+func (c Connection) Models() bool { k, _ := KindOf(c.Kind); return k.Serves == ServesModels }
+
+// Voice reports whether c serves speech.
+func (c Connection) Voice() bool { k, _ := KindOf(c.Kind); return k.Serves == ServesVoice }
+
 // DefaultChatGPT is the connection the core's original sign-in is (.swarm/core/auth/chatgpt.json).
 const DefaultChatGPT = "chatgpt"
 
 // implicit are the connections every instance has unless stormo.yaml defines one by that name:
-// what agents used before connections existed (model.provider: openrouter, the core's sign-in).
+// what agents used before connections existed (model.provider: openrouter, the core's sign-in),
+// and ElevenLabs for voice (agent.yaml voice.provider: elevenlabs), keyed by one shared secret.
 var implicit = []Connection{
-	{Name: KindOpenRouter, Kind: KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY", Implicit: true},
-	{Name: DefaultChatGPT, Kind: KindChatGPT, Implicit: true},
+	{Name: KindOpenRouter, Kind: KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY", Serves: ServesModels, Implicit: true},
+	{Name: DefaultChatGPT, Kind: KindChatGPT, Serves: ServesModels, Implicit: true},
+	{Name: KindElevenLabs, Kind: KindElevenLabs, BaseURL: ElevenLabsURL, Key: ElevenLabsKey, Serves: ServesVoice, Implicit: true},
 }
 
 var (
@@ -118,7 +145,7 @@ func connectionsOf(raw []rawConnection, path string) ([]Connection, error) {
 			}
 			return nil, &Error{fmt.Sprintf("%s: kind must be one of %s", at, strings.Join(kinds, ", "))}
 		}
-		c := Connection{Name: r.Name, Kind: r.Kind, BaseURL: r.BaseURL, Key: r.Key}
+		c := Connection{Name: r.Name, Kind: r.Kind, BaseURL: r.BaseURL, Key: r.Key, Serves: k.Serves}
 		if k.API {
 			if c.BaseURL == "" {
 				c.BaseURL = k.BaseURL
@@ -213,7 +240,7 @@ func editConnections(root string, edit func(list *yaml.Node) error) error {
 	if list == nil {
 		list = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 		k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "connections",
-			HeadComment: "# Ways to reach models; agents pick one by name (model.provider, model.local.connection).\n# Key values live in the secrets, never here."}
+			HeadComment: "# Ways to reach models and voice; agents pick one by name (model.provider,\n# model.local.connection, voice.provider). Key values live in the secrets, never here."}
 		m.Content = append(m.Content, k, list)
 	}
 	if list.Kind != yaml.SequenceNode {

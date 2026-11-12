@@ -116,6 +116,32 @@ var (
 	sttModelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 )
 
+// voiceListen renders agent.yaml voice.listen as the runtime's stt: (voice: replaces this file's
+// stt:, so both is an error). The runtime reaches the provider at its own URL with
+// ELEVENLABS_API_KEY, so a voice connection elsewhere or keyed by another name cannot listen yet.
+func voiceListen(a *manifest.Agent, inst *instance.Instance, ac *agentConfig) error {
+	v := a.Voice
+	if v == nil {
+		return nil
+	}
+	if ac.STT != nil {
+		return fmt.Errorf("%s: stt: is set and agent.yaml has voice:, which replaces it (voice.listen, voice.language); remove stt:", ConfigFile)
+	}
+	if !v.Listen {
+		return nil
+	}
+	c, ok := inst.Connection(v.Provider)
+	if !ok || !c.Voice() {
+		return fmt.Errorf("agent.yaml: voice.provider %q is not a voice connection of this instance", v.Provider)
+	}
+	if c.Kind != instance.KindElevenLabs || strings.TrimRight(c.BaseURL, "/") != instance.ElevenLabsURL || c.Key != sttKeyEnv {
+		return fmt.Errorf("agent.yaml: voice.listen: this runtime listens through %s with %s only; voice.provider %q is %s with %s",
+			instance.ElevenLabsURL, sttKeyEnv, v.Provider, c.BaseURL, c.Key)
+	}
+	ac.STT = &wire.STTConfig{Enabled: true, Provider: sttProvider, Language: v.Language}
+	return nil
+}
+
 // checkSTTKey: speech-to-text needs its key among the agent's secrets (agent.yaml secrets or
 // optional_secrets), or the runtime would have none.
 func checkSTTKey(a *manifest.Agent, ac *agentConfig) error {
@@ -359,7 +385,7 @@ func scheduleProviders(a *manifest.Agent, inst *instance.Instance) ([]wire.Provi
 	out := []wire.Provider{}
 	for _, n := range named {
 		c, ok := inst.Connection(n)
-		if !ok || !c.API() {
+		if !ok || !c.API() || !c.Models() {
 			return nil, fmt.Errorf("a schedule's provider %q is not an API connection of this instance (stormo.yaml connections:)", n)
 		}
 		out = append(out, wire.Provider{Name: n, BaseURL: c.BaseURL, KeyEnv: c.Key})
@@ -453,6 +479,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	}
 	ac, err := readAgentConfig(dir)
 	if err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
+	if err := voiceListen(a, ctx.Instance, ac); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
 	if err := checkSTTKey(a, ac); err != nil {

@@ -279,11 +279,13 @@ type Deploy struct {
 
 // Agent is a validated agents/<id>/agent.yaml with defaults filled.
 type Agent struct {
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	Unit            string           `json:"unit"`
-	Role            string           `json:"role"`
-	Persona         *Persona         `json:"persona,omitempty"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Unit    string   `json:"unit"`
+	Role    string   `json:"role"`
+	Persona *Persona `json:"persona,omitempty"`
+	// Voice is how the agent speaks and listens (voice:); nil: no voice.
+	Voice           *Voice           `json:"voice,omitempty"`
 	Engine          EngineSpec       `json:"engine"`
 	Channels        []Channel        `json:"channels"`
 	Secrets         []string         `json:"secrets"`
@@ -446,6 +448,7 @@ type raw struct {
 	State           []State          `yaml:"state"`
 	Learning        map[string]any   `yaml:"learning"`
 	Deploy          map[string]any   `yaml:"deploy"`
+	Voice           map[string]any   `yaml:"voice"`
 }
 
 func str(v any) string {
@@ -728,6 +731,10 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	voice, err := voiceOf(m, where)
+	if err != nil {
+		return nil, err
+	}
 	if v, ok := num(m.Learning["seed_fill"]); ok {
 		learning.SeedFill = v
 	}
@@ -769,7 +776,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 		state = []State{}
 	}
 	return &Agent{
-		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Engine: engine,
+		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Voice: voice, Engine: engine,
 		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Capabilities: capabilities, Env: envs,
 		State: state, Learning: learning, Deploy: deploy, Limits: limits, Schedules: schedules, Format: format, Legacy: legacy,
 	}, nil

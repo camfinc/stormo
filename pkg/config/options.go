@@ -30,7 +30,10 @@ type Options struct {
 	Scripts   []string        `json:"scripts"`   // the agent's scripts/, for schedules' script and monitor
 	Reasoning []string        `json:"reasoning"` // limits.reasoning levels the agent's engine accepts
 	// Connections the agent may use: API ones for model.provider, ChatGPT ones for model.local.
+	// Only connections serving models: a form that predates voice lists them all as providers.
 	Connections []ConnectionOption `json:"connections"`
+	// VoiceConnections are those serving voice, for voice.provider.
+	VoiceConnections []ConnectionOption `json:"voiceConnections"`
 	// Capabilities the instance declares (stormo.yaml capabilities:), for the agent's capabilities:.
 	Capabilities []CapabilityOption `json:"capabilities"`
 }
@@ -66,13 +69,17 @@ type ChannelOption struct {
 func options(inst *instance.Instance, agent string) *Options {
 	o := &Options{Units: []manifest.Unit{}, Actions: []ActionOption{}, Skills: []string{}, Personas: []string{},
 		Engines: engines.Kinds(), Channels: []ChannelOption{}, AllowBots: manifest.AllowBots, Secrets: []string{},
-		Scripts: []string{}, Reasoning: []string{}, Connections: []ConnectionOption{}, Capabilities: []CapabilityOption{}}
+		Scripts: []string{}, Reasoning: []string{}, Connections: []ConnectionOption{}, VoiceConnections: []ConnectionOption{}, Capabilities: []CapabilityOption{}}
 	for _, c := range inst.Capabilities {
 		o.Capabilities = append(o.Capabilities, CapabilityOption{c.Name, c.Description, c.Unavailable})
 	}
 	for _, c := range inst.Connections {
 		k, _ := instance.KindOf(c.Kind)
-		o.Connections = append(o.Connections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
+		if c.Voice() {
+			o.VoiceConnections = append(o.VoiceConnections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
+		} else {
+			o.Connections = append(o.Connections, ConnectionOption{c.Name, c.Kind, k.Label, k.API, c.Key})
+		}
 	}
 	if a, err := manifest.Load(inst.Root, agent, inst.Names.Secret); err == nil {
 		if eng, err := engines.Get(a.Engine.Kind, inst); err == nil {

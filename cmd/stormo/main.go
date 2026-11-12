@@ -1655,7 +1655,8 @@ func connectionRows(inst *instance.Instance) ([]connectionRow, error) {
 			r.KeySet = v != ""
 		}
 		for _, a := range agents {
-			uses := a.Engine.Provider == c.Name || (a.Engine.Local != nil && a.Engine.Local.ConnectionName() == c.Name)
+			uses := a.Engine.Provider == c.Name || (a.Engine.Local != nil && a.Engine.Local.ConnectionName() == c.Name) ||
+				(a.Voice != nil && a.Voice.Provider == c.Name)
 			for _, s := range a.Schedules {
 				uses = uses || s.Provider == c.Name
 			}

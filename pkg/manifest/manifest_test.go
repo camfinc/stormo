@@ -224,6 +224,12 @@ func TestCheckConnections(t *testing.T) {
 	if err := CheckConnections(a, inst); err != nil {
 		t.Errorf("work-gpt: %v", err)
 	}
+	// A voice through the implicit ElevenLabs connection, its key declared.
+	v := *a
+	v.Voice, v.Secrets = &Voice{Provider: "elevenlabs"}, []string{"OPENAI_API_KEY", "ELEVENLABS_API_KEY"}
+	if err := CheckConnections(&v, inst); err != nil {
+		t.Errorf("voice: %v", err)
+	}
 	for _, c := range []struct {
 		edit func(a *Agent)
 		want string
@@ -233,6 +239,9 @@ func TestCheckConnections(t *testing.T) {
 		{func(a *Agent) { a.Secrets = nil }, "add it under secrets"},
 		{func(a *Agent) { a.Engine.Local.Connection = "openai" }, "not a ChatGPT connection"},
 		{func(a *Agent) { a.Schedules = []Schedule{{ID: "s", Provider: "nowhere"}} }, `schedule "s" provider`},
+		{func(a *Agent) { a.Engine.Provider = "elevenlabs"; a.Secrets = append(a.Secrets, "ELEVENLABS_API_KEY") }, "not an API connection"},
+		{func(a *Agent) { a.Voice = &Voice{Provider: "openai"} }, "not a voice connection"},
+		{func(a *Agent) { a.Voice = &Voice{Provider: "elevenlabs"} }, `voice.provider "elevenlabs" is keyed by ELEVENLABS_API_KEY`},
 	} {
 		b := *a
 		l := *a.Engine.Local
@@ -261,6 +270,49 @@ func TestWhatsAppAllowedGroups(t *testing.T) {
 	} {
 		secrets := "secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN, TELEGRAM_BOT_TOKEN]\n"
 		if _, err := parseAs(t, atlasHead+"engine: {kind: hermes, version: 1, model: m}\n"+secrets+"channels:\n"+body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
+	}
+}
+
+// voice: is optional; present, it fills its defaults (the implicit elevenlabs, speak auto, listen,
+// 120 s a note) and refuses what it does not know or cannot use.
+func TestVoice(t *testing.T) {
+	head := atlasHead + "engine: {kind: hermes, version: 1, model: m}\n"
+	a, err := parseAs(t, head)
+	if err != nil || a.Voice != nil {
+		t.Fatalf("no voice: %+v %v", a.Voice, err)
+	}
+	a, err = parseAs(t, head+"voice: {}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := a.Voice; v == nil || v.Provider != "elevenlabs" || v.Speak != SpeakAuto || !v.Listen || v.MaxSeconds != DefaultVoiceSeconds || v.Settings != nil {
+		t.Errorf("defaults = %+v", a.Voice)
+	}
+	a, err = parseAs(t, head+"voice:\n  id: JddqVF50ZSIR7SRbJE6u\n  name: Valeria\n  model: eleven_v4\n  settings: {stability: 0.4, similarity: 1}\n  speak: never\n  listen: false\n  language: es\n  max_seconds: 90\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := a.Voice; v.ID != "JddqVF50ZSIR7SRbJE6u" || v.Name != "Valeria" || v.Model != "eleven_v4" || v.Speak != SpeakNever || v.Listen ||
+		v.Language != "es" || v.MaxSeconds != 90 || *v.Settings.Stability != 0.4 || *v.Settings.Similarity != 1 {
+		t.Errorf("voice = %+v", v)
+	}
+	for body, want := range map[string]string{
+		"voice: {tone: warm}\n":               `unknown key "tone"`,
+		"voice: {speak: always}\n":            "voice.speak is auto or never",
+		"voice: {listen: maybe}\n":            "voice.listen is true or false",
+		"voice: {id: \"not/an id\"}\n":        "not a voice id",
+		"voice: {model: \"Eleven V4\"}\n":     "not a model id",
+		"voice: {language: Spanish}\n":        "ISO 639",
+		"voice: {provider: Eleven}\n":         "connection name",
+		"voice: {max_seconds: 600}\n":         "10 to 300",
+		"voice: {max_seconds: 1.5}\n":         "whole number",
+		"voice: {settings: {stability: 2}}\n": "0 to 1",
+		"voice: {settings: {speed: 1}}\n":     `unknown key "speed"`,
+		"voice: {name: \"one\\ntwo\"}\n":      "one line",
+	} {
+		if _, err := parseAs(t, head+body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want %q, got %v", body, want, err)
 		}
 	}

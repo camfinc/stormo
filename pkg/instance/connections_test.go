@@ -28,12 +28,19 @@ func TestConnections(t *testing.T) {
 	if c, ok := inst.Connection(DefaultChatGPT); !ok || c.API() {
 		t.Errorf("chatgpt = %+v", c)
 	}
+	// ElevenLabs for voice, keyed by one secret every agent with a voice declares.
+	if c, ok := inst.Connection(KindElevenLabs); !ok || !c.API() || !c.Voice() || c.Models() || c.Key != ElevenLabsKey || c.BaseURL != ElevenLabsURL || !c.Implicit {
+		t.Errorf("elevenlabs = %+v", c)
+	}
+	if or, _ := inst.Connection("openrouter"); !or.Models() || or.Voice() || or.Serves != ServesModels {
+		t.Errorf("openrouter serves %q", or.Serves)
+	}
 	// Adding one keeps them (an agent saying provider: openrouter keeps working); a kind's defaults fill in.
 	inst, err = load(t, "connections:\n  - {name: work-gpt, kind: chatgpt}\n  - {name: openai, kind: openai}\n  - {name: local-llm, kind: custom, base_url: http://localhost:11434/v1, key: OLLAMA_API_KEY}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inst.Connections) != 5 {
+	if len(inst.Connections) != 6 {
 		t.Errorf("connections = %+v", inst.Connections)
 	}
 	if c, _ := inst.Connection("openai"); c.BaseURL != "https://api.openai.com/v1" || c.Key != "OPENAI_API_KEY" || c.Implicit {
@@ -44,8 +51,16 @@ func TestConnections(t *testing.T) {
 	}
 	// Redefining an implicit one by name replaces it.
 	inst, _ = load(t, "connections:\n  - {name: openrouter, kind: openrouter, key: OR_TEAM_KEY}\n")
-	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 2 {
+	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 3 {
 		t.Errorf("redefined = %+v", inst.Connections)
+	}
+	// A second ElevenLabs account under its own name and key; the review never goes through voice.
+	inst, err = load(t, "connections:\n  - {name: studio-voice, kind: elevenlabs, key: STUDIO_ELEVENLABS_KEY}\n")
+	if c, _ := inst.Connection("studio-voice"); err != nil || !c.Voice() || c.BaseURL != ElevenLabsURL || c.Key != "STUDIO_ELEVENLABS_KEY" {
+		t.Errorf("studio-voice = %+v %v", c, err)
+	}
+	if _, err := load(t, "core:\n  learning:\n    review_connection: elevenlabs\n    review_model: m\n"); err == nil || !strings.Contains(err.Error(), "serves voice") {
+		t.Errorf("review through a voice connection: %v", err)
 	}
 	for body, want := range map[string]string{
 		"connections:\n  - {name: x, kind: gemini}\n":                              "kind must be one of",

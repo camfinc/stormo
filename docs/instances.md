@@ -183,11 +183,18 @@ instance: inside a sidecar it is the agent's engine home.
   the instance's parent). A persona is one agent's look (its office character `sprite:`, its `desk:`
   and the `## Avatar lock` a portrait is baked from), so each agent normally has its own:
   `stormo new agent` with a `look` writes `personas/<id>`, and `stormo look show|set` edits it.
-- **Connections** (`connections:`): named ways to reach models, `{name, kind: chatgpt|openrouter|openai|anthropic|custom, base_url?, key?}`;
-  `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`). Every
-  instance has `openrouter` and `chatgpt` unless it redefines them. An agent's `model.provider` names an
-  API connection (and declares its key under `secrets:`); `model.local.connection` names the ChatGPT
-  sign-in the core serves it with (default `chatgpt`). `stormo connections add|remove` edits the list.
+- **Connections** (`connections:`): named ways to reach models and voice, `{name, kind: chatgpt|openrouter|openai|anthropic|custom|elevenlabs, base_url?, key?}`;
+  `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`, set once
+  for every agent that declares it). Every kind serves models except `elevenlabs`, which serves voice. Every
+  instance has `openrouter`, `chatgpt` and `elevenlabs` (key `ELEVENLABS_API_KEY`) unless it redefines them.
+  An agent's `model.provider` names an API connection serving models (and declares its key under
+  `secrets:`); `model.local.connection` names the ChatGPT sign-in the core serves it with (default
+  `chatgpt`); `voice.provider` names a voice connection (its key declared too), and
+  `core.learning.review_connection` one serving models. `stormo connections add|remove` edits the list.
+- **Voice** (agent.yaml `voice:`, optional, engine-neutral): `{provider (elevenlabs), id, name, model,
+  settings {stability, similarity}, speak (auto|never), listen (true), language, max_seconds (120; 10 to 300)}`.
+  Without it the agent has no voice. needletail renders `listen` as its speech-to-text (`stt:`, which
+  `voice:` replaces); speaking comes with a runtime that reads it. Hermes ignores it.
 - **Engines.** Agents pick `engine.kind`; what only that engine reads lives in `agents/<id>/engine/<kind>/`
   (format 0: `agents/<id>/<engine>/`). agent.yaml itself is engine-neutral (format 1,
   docs/agent-standard.md); `stormo migrate agent` brings a format-0 agent there. Two engines, one
