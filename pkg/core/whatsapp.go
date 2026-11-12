@@ -2,19 +2,21 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/local"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/whatsapp"
 )
 
-var whatsappPath = regexp.MustCompile(`^/api/agents/([a-z][a-z0-9-]*)/whatsapp$`)
+var whatsappPath = regexp.MustCompile(`^/api/agents/([a-z][a-z0-9-]*)/whatsapp(/groups)?$`)
 
 type whatsappConnections struct {
 	sync.Mutex
@@ -36,8 +38,11 @@ func (c *Core) whatsappPolicy(id string) whatsapp.Policy {
 				if ch.Local.AllowAllUsers != nil {
 					s.AllowAllUsers = ch.Local.AllowAllUsers
 				}
+				if ch.Local.AllowedGroups != nil {
+					s.AllowedGroups = ch.Local.AllowedGroups
+				}
 			}
-			return whatsapp.Policy{Enabled: true, Users: s.AllowedUsers, All: s.AllowAllUsers != nil && *s.AllowAllUsers}
+			return whatsapp.Policy{Enabled: true, Users: s.AllowedUsers, Groups: s.AllowedGroups, All: s.AllowAllUsers != nil && *s.AllowAllUsers}
 		}
 	}
 	return whatsapp.Policy{}
@@ -157,4 +162,40 @@ func (c *Core) handleWhatsApp(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	writeJSONBody(w, 200, conn.Status())
+}
+
+// handleWhatsAppGroups lists the groups the agent's linked account is in, for the allowed groups
+// picker. Operators only, like the pairing status: the names are the account's.
+func (c *Core) handleWhatsAppGroups(w http.ResponseWriter, r *http.Request, id string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !c.caller(r).Can(ScopeOperate) {
+		writeJSONBody(w, 403, errBody("forbidden", "An operator credential is required"))
+		return
+	}
+	if r.Method != "GET" {
+		writeJSONBody(w, 405, errBody("method", "Use GET"))
+		return
+	}
+	if !c.whatsappPolicy(id).Enabled {
+		writeJSONBody(w, 409, errBody("not_configured", "Add WhatsApp and save the agent before linking."))
+		return
+	}
+	c.whatsapp.Lock()
+	conn := c.whatsapp.clients[id]
+	c.whatsapp.Unlock()
+	if conn == nil {
+		writeJSONBody(w, 409, errBody("not_connected", "Link the agent's WhatsApp account to list its groups."))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	groups, err := conn.Groups(ctx)
+	if errors.Is(err, whatsapp.ErrNotConnected) {
+		writeJSONBody(w, 409, errBody("not_connected", "Link the agent's WhatsApp account to list its groups."))
+		return
+	} else if err != nil {
+		writeJSONBody(w, 502, errBody("groups_failed", "Could not list the account's groups. Try again."))
+		return
+	}
+	writeJSONBody(w, 200, map[string]any{"groups": groups})
 }

@@ -9,7 +9,7 @@ enum SlackChoices {
         let group: String
     }
 
-    /// Menu sections, in order.
+    /// Menu sections, in order (a list's menu shows them in the order its choices come).
     static let groups = ["People", "Guests", "Other agents and bots"]
 
     static func people(_ d: SlackDirectory) -> [Choice] {

@@ -46,6 +46,9 @@ type SlackSettings struct {
 	HomeChannelName string `json:"home_channel_name,omitempty"`
 	// Slack only. Messages from other bots: none | mentions | all.
 	AllowBots string `json:"allow_bots,omitempty"`
+	// WhatsApp only. Group chats (ids …@g.us) the agent answers in, when a message mentions it or
+	// replies to one of its messages; allowed_users still decides whom it takes instructions from.
+	AllowedGroups []string `json:"allowed_groups,omitempty"`
 }
 
 // Channel is one messaging platform an agent is reachable on.
@@ -328,6 +331,7 @@ var (
 	credRe    = regexp.MustCompile(`(TOKEN|KEY|SECRET|PASSWORD)$`)
 	memberRe  = regexp.MustCompile(`^[UW][A-Z0-9]{6,}$`)
 	numericRe = regexp.MustCompile(`^\d+$`)
+	groupRe   = regexp.MustCompile(`^[0-9]+(-[0-9]+)?@g\.us$`)
 )
 
 func exists(p string) bool {
@@ -489,6 +493,7 @@ func settings(m map[string]any, okBools *bool) SlackSettings {
 		HomeChannel:     str(m["home_channel"]),
 		HomeChannelName: str(m["home_channel_name"]),
 		AllowBots:       str(m["allow_bots"]),
+		AllowedGroups:   anyStrs(m["allowed_groups"]),
 	}
 }
 
@@ -663,6 +668,18 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 					return nil, err
 				}
 			} else if err := req(numericRe.MatchString(u), `%s: telegram allowed_users entry "%s" is not a numeric user id`, where, u); err != nil {
+				return nil, err
+			}
+		}
+		groups := append([]string{}, ch.AllowedGroups...)
+		if ch.Local != nil {
+			groups = append(groups, ch.Local.AllowedGroups...)
+		}
+		for _, g := range groups {
+			if err := req(kind == "whatsapp", "%s: allowed_groups is whatsapp-only", where); err != nil {
+				return nil, err
+			}
+			if err := req(groupRe.MatchString(g), `%s: WhatsApp allowed_groups entry "%s" must be a group id (…@g.us)`, where, g); err != nil {
 				return nil, err
 			}
 		}

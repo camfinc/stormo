@@ -6,7 +6,10 @@ struct WhatsAppSetup: View {
     @Environment(AppModel.self) private var model
     let agentID: String
     let hasUnsavedChanges: Bool
+    /// The linked account's groups, for the allowed groups picker: read while it is connected.
+    @Binding var groups: [WhatsAppGroup]
     let saveSettings: () async -> Bool
+    @State private var groupsReadAt: Date?
     @State private var needsSave = false
     @State private var status: WhatsAppStatus?
     @State private var problem: String?
@@ -16,7 +19,7 @@ struct WhatsAppSetup: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(status?.state.replacingOccurrences(of: "_", with: " ").capitalized ?? "Not linked", systemImage: "message")
-            Text("Link a dedicated WhatsApp account. The agent must run locally on this core. Keep both running for replies. Direct text chats only.")
+            Text("Link a dedicated WhatsApp account. The agent must run locally on this core. Keep both running for replies. It answers text from allowed people, and in allowed groups when someone mentions it or replies to it. It reacts 👀 while it works, and reactions to its messages reach it.")
                 .font(.callout).foregroundStyle(.secondary)
             if let code = status?.qr, let image = qrImage(code) {
                 Image(nsImage: image).interpolation(.none).resizable().frame(width: 240, height: 240)
@@ -49,7 +52,7 @@ struct WhatsAppSetup: View {
                     .disabled(busy || !model.core.state.isRunning)
                 if busy { ProgressView().controlSize(.small) }
             }
-            Text("Unofficial WhatsApp integration. WhatsApp may restrict linked accounts. Use a dedicated number and allow only the people who should control this agent.")
+            Text("Unofficial WhatsApp integration. WhatsApp may restrict linked accounts. Use a dedicated number and allow only the people who should control this agent: in a group anyone can talk to it, but it takes instructions only from allowed people.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .confirmationDialog("Unlink this agent’s WhatsApp account?", isPresented: $confirmUnlink) {
@@ -70,6 +73,13 @@ struct WhatsAppSetup: View {
             status = try await model.slack.client.with(timeout: 30).whatsApp(agent: agentID, method: method)
             problem = nil
             needsSave = false
+            if status?.state == "connected", groupsReadAt.map({ Date.now.timeIntervalSince($0) > 60 }) ?? true {
+                groupsReadAt = .now
+                if let list = try? await model.slack.client.with(timeout: 30).whatsAppGroups(agent: agentID) { groups = list }
+            } else if status?.state == "unlinked" {
+                groups = []
+                groupsReadAt = nil
+            }
         } catch CoreClient.Failure.notFound {
             problem = "This core does not support WhatsApp yet. Restart the core from Settings using this app’s bundled Stormo."
         } catch CoreClient.Failure.unreachable {

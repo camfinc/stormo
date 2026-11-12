@@ -221,6 +221,8 @@ private struct AgentForm: View {
     let agentID: String
     let migrate: () -> Void
     let editLook: () -> Void
+    /// The linked WhatsApp account's groups, loaded by its setup while connected.
+    @State private var whatsAppGroups: [WhatsAppGroup] = []
 
     typealias Path = [JSONValue.Key]
 
@@ -355,7 +357,7 @@ private struct AgentForm: View {
         return Section {
             if slack { SlackDirectoryStatus(agentID: agentID) }
             if kind == "whatsapp" {
-                WhatsAppSetup(agentID: agentID, hasUnsavedChanges: editor.isDirty) {
+                WhatsAppSetup(agentID: agentID, hasUnsavedChanges: editor.isDirty, groups: $whatsAppGroups) {
                     guard let cli = model.cli else { return false }
                     return await editor.save(with: cli)
                 }
@@ -364,6 +366,13 @@ private struct AgentForm: View {
                            prompt: slack ? "Slack member ID (U…)" : (kind == "whatsapp" ? "+country code and phone number" : "Telegram user id"), suggestions: [], monospaced: true,
                            named: directory.map(SlackChoices.people) ?? [], display: directory.map { d in { d.label(for: $0) } })
             Toggle("Anyone may message", isOn: toggle(base + ["allow_all_users"], default: false))
+            if kind == "whatsapp" {
+                StringListRows(title: "Allowed groups", items: strings(base + ["allowed_groups"]),
+                               prompt: "group id (…@g.us)", suggestions: [], monospaced: true,
+                               named: whatsAppGroups.map { SlackChoices.Choice(id: $0.id, label: $0.label, group: "Groups") },
+                               display: { id in whatsAppGroups.first { $0.id == id }?.label },
+                               namedIcon: "person.3", namedHelp: "Pick a group the linked WhatsApp account is in")
+            }
             if slack {
                 Picker("Messages from other bots", selection: text(base + ["allow_bots"])) {
                     Text("Default").tag("")
@@ -941,6 +950,9 @@ private struct StringListRows: View {
     var named: [SlackChoices.Choice] = []
     /// A name to show beside an id, when one is known.
     var display: ((String) -> String?)? = nil
+    /// The pick-by-name menu's icon and help.
+    var namedIcon = "person.crop.circle.badge.plus"
+    var namedHelp = "Pick someone from the agent's Slack workspace"
     @State private var draft = ""
 
     var body: some View {
@@ -967,17 +979,17 @@ private struct StringListRows: View {
             let byName = named.filter { !items.contains($0.id) }
             if !byName.isEmpty {
                 Menu {
-                    ForEach(SlackChoices.groups.filter { g in byName.contains { $0.group == g } }, id: \.self) { group in
+                    ForEach(byName.reduce(into: [String]()) { if !$0.contains($1.group) { $0.append($1.group) } }, id: \.self) { group in
                         Section(group) {
                             ForEach(byName.filter { $0.group == group }) { c in Button(c.label) { items.append(c.id) } }
                         }
                     }
                 } label: {
-                    Image(systemName: "person.crop.circle.badge.plus")
+                    Image(systemName: namedIcon)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Pick someone from the agent's Slack workspace")
+                .help(namedHelp)
             }
             let more = suggestions.filter { !items.contains($0) }
             if !more.isEmpty {

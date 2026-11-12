@@ -677,7 +677,11 @@ func StartCore(o CoreOptions) (*Core, error) {
 			_, _ = w.Write([]byte(strings.ReplaceAll(reviewHTML, "{{name}}", htmlEscaper.Replace(inst.Name))))
 			return
 		case whatsappPath.MatchString(path):
-			c.handleWhatsApp(w, r, whatsappPath.FindStringSubmatch(path)[1])
+			if m := whatsappPath.FindStringSubmatch(path); m[2] != "" {
+				c.handleWhatsAppGroups(w, r, m[1])
+			} else {
+				c.handleWhatsApp(w, r, m[1])
+			}
 			return
 		case slackDirectoryPath.MatchString(path):
 			m := slackDirectoryPath.FindStringSubmatch(path)

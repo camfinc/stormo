@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,21 +17,35 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	check := func(method, token string, want int) {
+	request := func(handle func(http.ResponseWriter, *http.Request, string), method, path, token string, want int) {
 		t.Helper()
-		r := httptest.NewRequest(method, "/api/agents/atlas/whatsapp", nil)
+		r := httptest.NewRequest(method, path, nil)
 		if token != "" {
 			r.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
-		c.handleWhatsApp(w, r, "atlas")
-		if w.Code != want {
-			t.Fatalf("%s: got %d: %s", method, w.Code, w.Body.String())
+		if handle == nil {
+			c.Server.Handler.ServeHTTP(w, r)
+		} else {
+			handle(w, r, "atlas")
 		}
+		if w.Code != want {
+			t.Fatalf("%s %s: got %d: %s", method, path, w.Code, w.Body.String())
+		}
+	}
+	check := func(method, token string, want int) {
+		t.Helper()
+		request(c.handleWhatsApp, method, "/api/agents/atlas/whatsapp", token, want)
+	}
+	groups := func(method, token string, want int) {
+		t.Helper()
+		request(c.handleWhatsAppGroups, method, "/api/agents/atlas/whatsapp/groups", token, want)
 	}
 	check("GET", "", 403)
 	check("POST", atlasKey, 403)
 	check("GET", owner, 409)
+	groups("GET", atlasKey, 403)
+	groups("GET", owner, 409)
 
 	path := filepath.Join(inst.Root, "agents", "atlas", "agent.yaml")
 	raw, err := os.ReadFile(path)
@@ -40,6 +55,15 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	raw = []byte(strings.ReplaceAll(string(raw), "kind: slack", "kind: whatsapp"))
 	write(t, path, string(raw))
 	check("GET", owner, 200)
+	groups("POST", owner, 405)
+	request(nil, "POST", "/api/agents/atlas/whatsapp/groups", owner, 405) // routed to the groups handler
+	groups("GET", owner, 409)                                             // not linked
+
+	raw = []byte(strings.ReplaceAll(string(raw), "kind: whatsapp", "kind: whatsapp\n    allowed_groups: [120363012345678901@g.us]\n    local: {allowed_groups: [120363000000000001@g.us]}"))
+	write(t, path, string(raw))
+	if p := c.whatsappPolicy("atlas"); len(p.Groups) != 1 || p.Groups[0] != "120363000000000001@g.us" {
+		t.Fatalf("local groups not applied: %+v", p)
+	}
 
 	if p := c.whatsappPolicy("missing"); p.Enabled || p.All || len(p.Users) != 0 {
 		t.Fatal("missing agent grants access")

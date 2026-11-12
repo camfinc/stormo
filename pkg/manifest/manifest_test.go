@@ -243,3 +243,25 @@ func TestCheckConnections(t *testing.T) {
 		}
 	}
 }
+
+func TestWhatsAppAllowedGroups(t *testing.T) {
+	a, err := parseAs(t, atlasHead+"engine: {kind: hermes, version: 1, model: m}\nchannels:\n  - kind: whatsapp\n    allowed_users: [\"+393331234567\"]\n    allowed_groups: [120363012345678901@g.us, 393331234567-1595512345@g.us]\n    local: {allowed_groups: [120363000000000001@g.us]}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch := a.Channels[0]; !slices.Equal(ch.AllowedGroups, []string{"120363012345678901@g.us", "393331234567-1595512345@g.us"}) ||
+		ch.Local == nil || !slices.Equal(ch.Local.AllowedGroups, []string{"120363000000000001@g.us"}) {
+		t.Errorf("channel = %+v", ch)
+	}
+	for body, want := range map[string]string{
+		"  - kind: whatsapp\n    allowed_groups: [\"+393331234567\"]\n":       "must be a group id",
+		"  - kind: whatsapp\n    local: {allowed_groups: [family]}\n":         "must be a group id",
+		"  - kind: slack\n    allowed_groups: [120363012345678901@g.us]\n":    "allowed_groups is whatsapp-only",
+		"  - kind: telegram\n    allowed_groups: [120363012345678901@g.us]\n": "allowed_groups is whatsapp-only",
+	} {
+		secrets := "secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN, TELEGRAM_BOT_TOKEN]\n"
+		if _, err := parseAs(t, atlasHead+"engine: {kind: hermes, version: 1, model: m}\n"+secrets+"channels:\n"+body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
+	}
+}
