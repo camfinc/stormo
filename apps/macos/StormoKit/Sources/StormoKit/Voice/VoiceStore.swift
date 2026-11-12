@@ -33,6 +33,8 @@ public final class VoiceStore {
     public private(set) var voicesProblem: Problem?
     public private(set) var loadingVoices = false
 
+    @ObservationIgnored private var pickTask: Task<Void, Never>?
+
     public init() {}
 
     // MARK: The agent's voice
@@ -64,6 +66,23 @@ public final class VoiceStore {
             self.pickReply = try await cli.run(["voice", "pick", agent], as: ChatReply.self)
         }
         if pickReply != nil { await show(agent, with: cli) }
+    }
+
+    /// Starts pick in the background: it outlives the page that asked (keep the store), and
+    /// cancelPick() ends it.
+    public func startPick(_ agent: String, with cli: StormoCLI) {
+        guard pickTask == nil else { return }
+        action = .picking
+        pickTask = Task {
+            await pick(agent, with: cli)
+            // A cancelled one was let go by cancelPick() already.
+            if !Task.isCancelled { pickTask = nil }
+        }
+    }
+
+    public func cancelPick() {
+        pickTask?.cancel()
+        pickTask = nil
     }
 
     /// Checks what the connection's key may do, without spending.

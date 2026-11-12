@@ -12,15 +12,16 @@ struct VoicePane: View {
     let agentID: String
     let name: String
     let running: Bool
+    /// The agent's voice and what runs on it, kept by the editor: a pick goes on while another page
+    /// is open.
+    let store: VoiceStore
 
-    @State private var store = VoiceStore()
     /// The account's voices, to show the current one's labels and sample.
     @State private var account = VoiceStore()
     /// The voice chosen in this session (it may not be among the account's yet).
     @State private var chosen: ProviderVoice?
     @State private var choosing = false
     @State private var line = ""
-    @State private var picking: Task<Void, Never>?
 
     typealias Path = [JSONValue.Key]
 
@@ -31,6 +32,7 @@ struct VoicePane: View {
     private var voiceID: String? { read(["id"])?.string.flatMap { $0.isEmpty ? nil : $0 } }
     /// The voice as saved: what `voice try` and `voice pick` use.
     private var saved: JSONValue? { editor.file?.doc?[["voice"]] }
+    /// voice: has unsaved changes (the rest of the form may too: Try and Pick read only voice:).
     private var voiceDirty: Bool { !(saved ?? .null).same(as: editor.doc?[["voice"]] ?? .null) }
 
     var body: some View {
@@ -58,7 +60,6 @@ struct VoicePane: View {
                     }
                 }
             }
-            .onDisappear { picking?.cancel() }
             #if DEBUG
             // STORMO_CHOOSE_VOICE opens the chooser (with STORMO_EDIT_PAGE=voice and STORMO_SNAPSHOT, a visual check).
             .task {
@@ -168,7 +169,7 @@ struct VoicePane: View {
             }
             Spacer()
             Button("Try", systemImage: "play.fill") { Task { await trySample() } }
-                .disabled(store.action != nil || model.cli == nil || editor.isDirty)
+                .disabled(store.action != nil || model.cli == nil || voiceDirty)
                 .help("Hear a line in the picked voice (costs a few characters)")
         }
     }
@@ -180,11 +181,11 @@ struct VoicePane: View {
                 ProgressView().controlSize(.small)
                 Text("\(name) is listening to voices and picking one…").foregroundStyle(.secondary)
                 Spacer()
-                Button("Stop") { picking?.cancel() }
+                Button("Stop") { store.cancelPick() }
             } else {
-                Button("Let \(name) Pick") { pick() }
-                    .disabled(!canPick || editor.isDirty || store.action != nil || model.cli == nil)
-                Text(editor.isDirty ? "Save first: it picks with the saved settings."
+                Button("Let \(name) Pick") { if let cli = model.cli { store.startPick(agentID, with: cli) } }
+                    .disabled(!canPick || voiceDirty || store.action != nil || model.cli == nil)
+                Text(voiceDirty ? "Save first: it picks with the saved settings."
                      : !canPick ? (saved?[["speak"]]?.string == "never" ? "It never speaks, so it has nothing to pick." : "")
                      : running ? "A conversation turn: it searches, listens and chooses. Its pick is in use at once."
                      : "\(name) picks while running: start it first.")
@@ -205,7 +206,7 @@ struct VoicePane: View {
                 .onChange(of: line) { if line.count > 300 { line = String(line.prefix(300)) } }
             HStack(spacing: 10) {
                 Button("Try a Line") { Task { await trySample() } }
-                    .disabled(!hasVoice || editor.isDirty || store.action != nil || model.cli == nil)
+                    .disabled(!hasVoice || voiceDirty || store.action != nil || model.cli == nil)
                 if store.action == .trying { ProgressView().controlSize(.small) }
                 if let s = store.sample {
                     AudioClip(url: URL(filePath: s.path))
@@ -213,7 +214,7 @@ struct VoicePane: View {
                 }
                 Spacer()
             }
-            Text(editor.isDirty ? "Save first: a line is spoken with the saved voice and settings."
+            Text(voiceDirty ? "Save first: a line is spoken with the saved voice and settings."
                  : !hasVoice ? "Choose a voice, or let \(name) pick one, to hear it."
                  : "Costs a few \(providerLabel) characters (a line of up to 300).")
                 .font(.caption).foregroundStyle(.secondary)
@@ -400,8 +401,4 @@ struct VoicePane: View {
         }
     }
 
-    private func pick() {
-        guard let cli = model.cli else { return }
-        picking = Task { await store.pick(agentID, with: cli) }
-    }
 }

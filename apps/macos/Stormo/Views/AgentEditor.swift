@@ -37,6 +37,8 @@ struct AgentEditor: View {
     @State private var confirmMigrate = false
     @State private var migration: MigrateResult?
     @State private var lookDirty = false
+    /// The Voice page's store: what runs on the agent's voice (a pick) goes on across pages.
+    @State private var voice = VoiceStore()
 
     init(agentID: String) {
         self.agentID = agentID
@@ -144,7 +146,7 @@ struct AgentEditor: View {
             }
         case .voice:
             if let options = definition.file?.options, definition.doc != nil {
-                VoicePane(editor: definition, options: options, agentID: agentID, name: name, running: agent?.state == "running")
+                VoicePane(editor: definition, options: options, agentID: agentID, name: name, running: agent?.state == "running", store: voice)
                     .disabled(definition.isTextDirty || definition.busy || definition.isStale)
             } else {
                 formUnavailable

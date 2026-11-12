@@ -194,7 +194,9 @@ private func voiceStormo(_ s: Scratch) throws -> (cli: StormoCLI, log: URL) {
         let sample = await store.trySample("atlas", text: "  Hola  ", with: cli)
         #expect(sample?.path.hasSuffix(".mp3") == true && store.action == nil)
 
-        await store.pick("atlas", with: cli)
+        store.startPick("atlas", with: cli)
+        #expect(store.action == .picking)
+        for _ in 0..<300 where store.action != nil { try await Task.sleep(for: .milliseconds(10)) }
         #expect(store.pickReply?.reply == "Bruno: calm and clear.")
 
         await store.loadModels("elevenlabs", agent: "atlas", with: cli)
