@@ -231,8 +231,8 @@ var flowThemes = map[string]flowTheme{
 }
 
 // flow is the README's "How it fits together": the instance is built into a baseline, a task
-// rehydrates from it and its latest nap, naps come back through the dream and a person's review
-// into the ledger, and accepted lessons ship with the next build. Three lanes, as the README's
+// rehydrates from it and its latest nap, naps come back through the dream and a review (a model, or
+// a person) into the ledger, and accepted lessons ship with the next build. Three lanes, as the README's
 // words have them; the arrows cool from teal (out) to indigo (back) like the spiral.
 func flow(t flowTheme) string {
 	var b strings.Builder
@@ -266,7 +266,7 @@ func flow(t flowTheme) string {
 	for _, l := range []struct {
 		x, w       float64
 		title, sub string
-	}{{0, 244, "INSTANCE", "plain files in git"}, {260, 304, "STORMO", "one Go binary"}, {580, 360, "WHERE AGENTS RUN", "local compose or ECS task"}} {
+	}{{0, 244, "INSTANCE", "plain files in git"}, {260, 304, "STORMO", "one Go binary"}, {580, 360, "WHERE AGENTS RUN", "compose, a runner host or ECS"}} {
 		f(`<rect x="%g" y="0" width="%g" height="%g" rx="14" fill="%s" fill-opacity=".03"/>`, l.x, l.w, lanes, t.ink)
 		f(`<text x="%g" y="34" text-anchor="middle" class="h">%s</text><text x="%g" y="52" text-anchor="middle" class="s">%s</text>`, l.x+l.w/2, l.title, l.x+l.w/2, l.sub)
 	}
@@ -294,9 +294,9 @@ func flow(t flowTheme) string {
 	arrow(t.back, "back", "M672 %g V%g", bottom, top+2)
 	f(`<text x="684" y="%g" class="s">latest nap</text>`, (top+bottom)/2+4)
 
-	// Back: the dream proposes, a person reviews, accepted lessons ship with the next build.
+	// Back: the dream proposes, a model or a person reviews, accepted lessons ship with the next build.
 	card(430, r3, 118, "dream", "PII scrubbed", "")
-	card(274, r3, 118, "review", "a person decides", fmt.Sprintf(` style="stroke:%s;stroke-opacity:1"`, t.back))
+	card(274, r3, 118, "review", "model or person", fmt.Sprintf(` style="stroke:%s;stroke-opacity:1"`, t.back))
 	f(`<rect x="18" y="%g" width="208" height="60" rx="10" class="card"/>`, bottom)
 	f(`<text x="122" y="%g" text-anchor="middle" class="m">learnings/ledger.jsonl</text><text x="122" y="%g" text-anchor="middle" class="s">proposed lessons</text>`, r3-4, r3+15)
 	for _, x := range [][2]float64{{596, 550}, {430, 394}, {274, 228}} {
