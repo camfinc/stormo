@@ -47,7 +47,7 @@ func voiceInstance(t *testing.T, base, key string) *instance.Instance {
 		}
 	}
 	add("stormo.yaml", "\nconnections:\n  - {name: test-voice, kind: elevenlabs, base_url: \""+base+"\", key: TEST_VOICE_KEY}\n")
-	add("agents/atlas/agent.yaml", "\nvoice: {provider: test-voice, id: Val1, name: Valeria}\n")
+	add("agents/atlas/agent.yaml", "\nvoice: {provider: test-voice, id: Val1, name: Ada}\n")
 	if key != "" {
 		if err := os.WriteFile(filepath.Join(root, "secrets.local.yaml"), []byte("shared:\n  TEST_VOICE_KEY: "+key+"\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -68,7 +68,7 @@ func TestConnectionVoices(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`{"voices":[{"voice_id":"Val1","name":"Valeria","labels":{"gender":"female"}},{"voice_id":"Ale2","name":"Alonso","labels":{"gender":"male"}}]}`))
+		_, _ = w.Write([]byte(`{"voices":[{"voice_id":"Val1","name":"Ada","labels":{"gender":"female"}},{"voice_id":"Ale2","name":"Ben","labels":{"gender":"male"}}]}`))
 	}))
 	defer srv.Close()
 	inst := voiceInstance(t, srv.URL, "k-test")

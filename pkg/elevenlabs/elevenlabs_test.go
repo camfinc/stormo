@@ -57,8 +57,8 @@ func fake(t *testing.T, denied ...string) *httptest.Server {
 				return
 			}
 			_, _ = w.Write([]byte(`{"voices":[
-				{"voice_id":"Val1","name":"Valeria","category":"professional","labels":{"gender":"female","age":"young","accent":"latin american","descriptive":"warm","use_case":"conversational","language":"es"},"preview_url":"https://storage.example/val.mp3"},
-				{"voice_id":"Ale2","name":"Alonso","category":"professional","labels":{"gender":"male","age":"middle_aged","accent":"latin american","language":"es"}},
+				{"voice_id":"Val1","name":"Ada","category":"professional","labels":{"gender":"female","age":"young","accent":"british","descriptive":"warm","use_case":"conversational","language":"es"},"preview_url":"https://storage.example/val.mp3"},
+				{"voice_id":"Ale2","name":"Ben","category":"professional","labels":{"gender":"male","age":"middle_aged","accent":"british","language":"es"}},
 				{"voice_id":"","name":"broken"}]}`))
 		case r.URL.Path == "/v1/shared-voices":
 			if deny(w, "voices_read") {
@@ -68,7 +68,7 @@ func fake(t *testing.T, denied ...string) *httptest.Server {
 			if q.Get("gender") != "female" || q.Get("language") != "es" || q.Get("page_size") != "5" {
 				t.Errorf("library query = %v", q)
 			}
-			_, _ = w.Write([]byte(`{"voices":[{"public_owner_id":"own1","voice_id":"Lib1","name":"Lucía","gender":"female","age":"young","accent":"mexican","language":"es","use_case":"conversational","preview_url":"https://storage.example/lucia.mp3"}],"has_more":false}`))
+			_, _ = w.Write([]byte(`{"voices":[{"public_owner_id":"own1","voice_id":"Lib1","name":"Cleo","gender":"female","age":"young","accent":"american","language":"es","use_case":"conversational","preview_url":"https://storage.example/lucia.mp3"}],"has_more":false}`))
 		case strings.HasPrefix(r.URL.Path, "/v1/voices/add/"):
 			if deny(w, "voices_write") {
 				return
@@ -115,7 +115,7 @@ func TestVoices(t *testing.T) {
 	if err != nil || len(all) != 2 || !all[0].InAccount || all[0].UseCase != "conversational" || all[0].PreviewURL == "" {
 		t.Fatalf("voices = %+v %v", all, err)
 	}
-	f, err := c.Voices(context.Background(), Query{Gender: "Female", Accent: "Latin American"})
+	f, err := c.Voices(context.Background(), Query{Gender: "Female", Accent: "British"})
 	if err != nil || len(f) != 1 || f[0].ID != "Val1" {
 		t.Errorf("filtered = %+v %v", f, err)
 	}
@@ -126,7 +126,7 @@ func TestVoices(t *testing.T) {
 		t.Errorf("none = %#v %v", none, err)
 	}
 	lib, err := c.Library(context.Background(), Query{Gender: "female", Language: "es", Limit: 5})
-	if err != nil || len(lib) != 1 || lib[0].InAccount || lib[0].Owner != "own1" || lib[0].Accent != "mexican" {
+	if err != nil || len(lib) != 1 || lib[0].InAccount || lib[0].Owner != "own1" || lib[0].Accent != "american" {
 		t.Errorf("library = %+v %v", lib, err)
 	}
 	models, err := c.Models(context.Background())

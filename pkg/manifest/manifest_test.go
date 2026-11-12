@@ -290,11 +290,11 @@ func TestVoice(t *testing.T) {
 	if v := a.Voice; v == nil || v.Provider != "elevenlabs" || v.Speak != SpeakAuto || !v.Listen || v.MaxSeconds != DefaultVoiceSeconds || v.Settings != nil {
 		t.Errorf("defaults = %+v", a.Voice)
 	}
-	a, err = parseAs(t, head+"voice:\n  id: JddqVF50ZSIR7SRbJE6u\n  name: Valeria\n  model: eleven_v4\n  settings: {stability: 0.4, similarity: 1}\n  speak: never\n  listen: false\n  language: es\n  max_seconds: 90\n")
+	a, err = parseAs(t, head+"voice:\n  id: AcmeVoice0Ada0000001\n  name: Ada\n  model: eleven_v4\n  settings: {stability: 0.4, similarity: 1}\n  speak: never\n  listen: false\n  language: es\n  max_seconds: 90\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := a.Voice; v.ID != "JddqVF50ZSIR7SRbJE6u" || v.Name != "Valeria" || v.Model != "eleven_v4" || v.Speak != SpeakNever || v.Listen ||
+	if v := a.Voice; v.ID != "AcmeVoice0Ada0000001" || v.Name != "Ada" || v.Model != "eleven_v4" || v.Speak != SpeakNever || v.Listen ||
 		v.Language != "es" || v.MaxSeconds != 90 || *v.Settings.Stability != 0.4 || *v.Settings.Similarity != 1 {
 		t.Errorf("voice = %+v", v)
 	}
