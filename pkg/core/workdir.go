@@ -291,6 +291,49 @@ func (w *Workdir) Read(agent, p string) (*FileContent, error) {
 	return out, nil
 }
 
+// ReadBytes gives the whole of p as the agent sees it, refused past max bytes (a file to hand on,
+// such as an image to post: Read's text view caps and decodes).
+func (w *Workdir) ReadBytes(agent, p string, max int64) ([]byte, string, error) {
+	key, _, err := w.resolve(agent, p, false)
+	if err != nil {
+		return nil, "", err
+	}
+	root, rel, err := w.open(key)
+	if err != nil {
+		return nil, "", err
+	}
+	defer root.Close()
+	if st, err := root.Lstat(rel); err == nil && st.Mode()&fs.ModeSymlink != 0 {
+		return nil, "", toolErr("%s is a link; the core does not follow links", shown(key))
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		if cerr := confined(root, key, rel, err); cerr != err {
+			return nil, "", cerr
+		}
+		return nil, "", toolErr("%s does not exist", shown(key))
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	if st.IsDir() {
+		return nil, "", toolErr("%s is a directory", shown(key))
+	}
+	if st.Size() > max {
+		return nil, "", toolErr("%s is %d bytes, over the %d allowed", shown(key), st.Size(), max)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(b)) > max {
+		return nil, "", toolErr("%s grew past %d bytes", shown(key), max)
+	}
+	return b, shown(key), nil
+}
+
 // trimRune drops a rune the read cap cut in half.
 func trimRune(b []byte) []byte {
 	for i := 0; i < utf8.UTFMax && len(b) > 0 && !utf8.Valid(b); i++ {

@@ -13,7 +13,8 @@ import (
 func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	_, inst := fixture(t)
 	const owner = "owner-token-0123456789"
-	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: owner, NoMirror: true})
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: owner, NoMirror: true,
+		Roster: func() []BusAgent { return []BusAgent{{ID: "atlas", Unit: "sales"}, {ID: "nova", Unit: "support"}} }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +86,11 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	send(`{"chat":"+393339999999","text":"hi"}`, "not one of your allowed_users")
 	send(`{"chat":"120363000000000001@g.us","text":" "}`, "1 byte to 16 KB")
 	send(`{"chat":"120363000000000001@g.us","text":"hi","as":"nova"}`, "bad arguments")
+	send(`{"chat":"120363000000000001@g.us"}`, "or send an image")
+	send(`{"chat":"120363000000000001@g.us","image":"/shared/support/x.png"}`, "is not mounted for you") // another unit's layer: refused before WhatsApp
+	send(`{"chat":"120363000000000001@g.us","image":"/shared/group/missing.png"}`, "does not exist")
+	write(t, filepath.Join(inst.Root, "workdir", "group", "pic.png"), "\x89PNG\r\n\x1a\n")
+	send(`{"chat":"120363000000000001@g.us","image":"/shared/group/pic.png","text":"caption"}`, "not linked on this core")
 
 	if p := c.whatsappPolicy("missing"); p.Enabled || p.All || len(p.Users) != 0 {
 		t.Fatal("missing agent grants access")

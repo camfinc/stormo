@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/local"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/whatsapp"
+	"go.mau.fi/whatsmeow/types"
 )
 
 var whatsappPath = regexp.MustCompile(`^/api/agents/([a-z][a-z0-9-]*)/whatsapp(/groups)?$`)
@@ -206,38 +207,51 @@ func (c *Core) handleWhatsAppGroups(w http.ResponseWriter, r *http.Request, id s
 func WhatsAppTools(core func() *Core) []MCPTool {
 	return []MCPTool{{
 		Name: "whatsapp_send",
-		Description: "Post a WhatsApp message on your own linked account without being written to first. Only for an agent " +
-			"with a WhatsApp channel, and only to a chat the channel allows: a group of its allowed_groups (id …@g.us) or a " +
-			"person of its allowed_users (+country code and number). Answers to people who write to you are sent on their " +
-			"own: use this only to start a message. Plain text; a long one is split.",
-		InputSchema: schema([]string{"chat", "text"}, map[string]any{
-			"chat": str("a group id (…@g.us) of your allowed_groups, or a phone number (+…) of your allowed_users"),
-			"text": str("the message, up to 16 KB"),
+		Description: "Post a WhatsApp message, or an image, on your own linked account without being written to first: " +
+			"a result that was not ready when you answered, an alert. Only for an agent with a WhatsApp channel, and only to a " +
+			"chat the channel allows: a group of its allowed_groups (id …@g.us) or a person of its allowed_users (+country " +
+			"code and number). A WhatsApp message you receive names its chat (`chat …`): pass that to write back there. " +
+			"`image` is a PNG or JPEG in the shared space (/shared/group/… or your unit's), up to 16 MB, with `text` as its " +
+			"caption. Answers to people who write to you are sent on their own: use this only to start a message.",
+		InputSchema: schema([]string{"chat"}, map[string]any{
+			"chat":  str("a group id (…@g.us) of your allowed_groups, or a phone number (+…) of your allowed_users"),
+			"text":  str("the message, up to 16 KB; with an image, its caption (optional)"),
+			"image": str("a PNG or JPEG shared-space path (/shared/…), up to 16 MB"),
 		}),
 		Run: func(call ToolCall) (any, error) {
 			var req struct {
-				Chat string `json:"chat"`
-				Text string `json:"text"`
+				Chat  string `json:"chat"`
+				Text  string `json:"text"`
+				Image string `json:"image"`
 			}
 			if err := decodeArgs(call, &req); err != nil {
 				return nil, err
 			}
-			return core().whatsappSend(call.Agent, req.Chat, req.Text)
+			return core().whatsappSend(call.Agent, req.Chat, req.Text, req.Image)
 		},
 	}}
 }
 
-func (c *Core) whatsappSend(agent, chat, text string) (any, error) {
+// maxWhatsAppImage is the largest image whatsapp_send posts (WhatsApp's own limit for a photo).
+const maxWhatsAppImage = 16 << 20
+
+func (c *Core) whatsappSend(agent, chat, text, image string) (any, error) {
 	p := c.whatsappPolicy(agent)
 	if !p.Enabled {
 		return nil, toolErr("you have no WhatsApp channel")
 	}
-	if strings.TrimSpace(text) == "" || len(text) > 16<<10 {
-		return nil, toolErr("text must be 1 byte to 16 KB")
+	if len(text) > 16<<10 || image == "" && strings.TrimSpace(text) == "" {
+		return nil, toolErr("text must be 1 byte to 16 KB (or send an image)")
 	}
 	jid, err := whatsapp.AllowedChat(p, chat)
 	if err != nil {
 		return nil, toolErr("%v", err)
+	}
+	var data []byte
+	if image != "" {
+		if data, _, err = c.Workdir.ReadBytes(agent, image, maxWhatsAppImage); err != nil {
+			return nil, err
+		}
 	}
 	c.whatsapp.Lock()
 	conn := c.whatsapp.clients[agent]
@@ -245,9 +259,14 @@ func (c *Core) whatsappSend(agent, chat, text string) (any, error) {
 	if conn == nil {
 		return nil, toolErr("your WhatsApp account is not linked on this core")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	ids, err := conn.Send(ctx, jid, text)
+	var ids []types.MessageID
+	if data != nil {
+		ids, err = conn.SendImage(ctx, jid, data, text)
+	} else {
+		ids, err = conn.Send(ctx, jid, text)
+	}
 	if errors.Is(err, whatsapp.ErrNotConnected) {
 		return nil, toolErr("your WhatsApp account is not connected right now; try again later")
 	} else if err != nil {
