@@ -191,12 +191,20 @@ enum ScreenArt {
 final class RobotNode: SKNode {
     private let body = SKSpriteNode(texture: RobotArt.body, size: CGSize(width: 30, height: 34))
     private let note = SKSpriteNode()
+    private let ring = SKShapeNode(ellipseOf: CGSize(width: 30, height: 9))
     private var lastNote = ""
     private var state = ""
+    /// The note grows against the camera like the floor's other labels.
+    var noteScale: CGFloat = 1 { didSet { note.setScale(noteScale) } }
 
     override init() {
         super.init()
         name = "robot"
+        ring.strokeColor = .clear
+        ring.lineWidth = 2
+        ring.position = CGPoint(x: 0, y: -5)
+        ring.zPosition = -1
+        addChild(ring)
         // The floor point is the robot's base: (15, 24) in its 30×34 drawing.
         body.anchorPoint = CGPoint(x: 0.5, y: 10.0 / 34)
         addChild(body)
@@ -215,6 +223,12 @@ final class RobotNode: SKNode {
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func setSelected(_ on: Bool) {
+        let color = Art.nsColor("#67e8f9")
+        ring.strokeColor = on ? color : .clear
+        ring.fillColor = on ? color.withAlphaComponent(0.18) : .clear
+    }
 
     func apply(_ f: RobotFrame, note text: String, still: Bool) {
         body.xScale = f.facingLeft ? -1 : 1
@@ -277,15 +291,18 @@ enum LabelArt {
     }
 
     /// The name tag under a person: portrait (or initials), name, what it is doing, ringed in its mode's colour.
-    static func tag(name: String, status: String, ring: String, hue: String, avatar: NSImage?) -> SKTexture {
-        cached("tag|\(name)|\(status)|\(ring)|\(hue)|\(avatar.map { ObjectIdentifier($0).hashValue } ?? 0)") {
+    /// `stacked` puts the status under the name: narrower, so it can grow when the camera is far.
+    static func tag(name: String, status: String, ring: String, hue: String, avatar: NSImage?, stacked: Bool = false) -> SKTexture {
+        cached("tag|\(name)|\(status)|\(ring)|\(hue)|\(avatar.map { ObjectIdentifier($0).hashValue } ?? 0)|\(stacked)") {
             let nameText = Art.attributed(name, Art.font(11, weight: .bold), Art.nsColor(BuildingArt.ink))
-            let statusText = Art.attributed(status, Art.font(11, weight: .semibold), NSColor(cgColor: Art.mix(ring, "#ffffff", 0.25))!)
+            let statusText = Art.attributed(status, Art.font(stacked ? 10 : 11, weight: .semibold), NSColor(cgColor: Art.mix(ring, "#ffffff", 0.25))!)
             let ns = nameText.size(), ss = statusText.size()
-            let statusW = min(ss.width, 150)
-            let size = CGSize(width: 2 + 18 + 6 + ns.width + 6 + statusW + 9 + 4, height: 22 + 4)
+            let statusW = min(ss.width, stacked ? 96 : 150)
+            let size = stacked
+                ? CGSize(width: 2 + max(18 + 6 + ns.width, statusW) + 20 + 4, height: 38 + 4)
+                : CGSize(width: 2 + 18 + 6 + ns.width + 6 + statusW + 9 + 4, height: 22 + 4)
             return Art.texture(size) { ctx in
-                let pill = CGRect(x: 2, y: 2, width: size.width - 4, height: 22)
+                let pill = CGRect(x: 2, y: 2, width: size.width - 4, height: size.height - 4)
                 Art.shadowed(ctx, blur: 8, offset: CGSize(width: 0, height: 3), alpha: 0.5) {
                     Art.fill(ctx, pill, Art.color("#0d141c", 0.95), radius: 11)
                 }
@@ -306,8 +323,12 @@ enum LabelArt {
                 ctx.setStrokeColor(Art.color(ring))
                 ctx.setLineWidth(2)
                 ctx.strokeEllipse(in: mini.insetBy(dx: -1, dy: -1))
-                Art.text(nameText, at: CGPoint(x: mini.maxX + 6, y: pill.midY - ns.height / 2))
-                Art.text(statusText, at: CGPoint(x: mini.maxX + 6 + ns.width + 6, y: pill.midY - ss.height / 2), maxWidth: statusW)
+                Art.text(nameText, at: CGPoint(x: mini.maxX + 6, y: mini.midY - ns.height / 2))
+                if stacked {
+                    Art.text(statusText, at: CGPoint(x: pill.minX + 10, y: mini.maxY + 1), maxWidth: statusW)
+                } else {
+                    Art.text(statusText, at: CGPoint(x: mini.maxX + 6 + ns.width + 6, y: pill.midY - ss.height / 2), maxWidth: statusW)
+                }
             }
         }
     }
@@ -342,6 +363,40 @@ enum LabelArt {
                 Art.fill(ctx, r, Art.color(alert ? OfficePalette.bad : OfficePalette.gold), radius: 10)
                 ctx.setShadow(offset: .zero, blur: 0, color: nil)
                 Art.text(t, at: CGPoint(x: r.midX - s.width / 2, y: r.midY - s.height / 2))
+            }
+        }
+    }
+
+    /// A room from far away: its name and its people by what they are doing.
+    static func room(name: String, hue: String, summary s: RoomSummary) -> SKTexture {
+        cached("room|\(name)|\(hue)|\(s.working)|\(s.idle)|\(s.attention)|\(s.offShift)|\(s.toReview)") {
+            let title = Art.attributed(name.uppercased(), Art.font(13, weight: .heavy, mono: true), NSColor(cgColor: Art.mix(hue, "#ffffff", 0.35))!, kern: 1.2)
+            let counts: [(Int, String)] = [(s.working, OfficePalette.busy), (s.idle, OfficePalette.ok), (s.attention, OfficePalette.bad),
+                                           (s.offShift, OfficePalette.off), (s.toReview, OfficePalette.gold)].filter { $0.0 > 0 }
+            let numbers = counts.map { Art.attributed("\($0.0)", Art.font(15, weight: .heavy, mono: true), Art.nsColor(BuildingArt.ink)) }
+            let empty = Art.attributed("nobody here", Art.font(11, weight: .semibold), Art.nsColor(BuildingArt.ink3))
+            let row = counts.isEmpty ? empty.size().width : numbers.reduce(CGFloat(0)) { $0 + 13 + $1.size().width } + 12 * CGFloat(counts.count - 1)
+            let ts = title.size()
+            let size = CGSize(width: max(ts.width, row) + 32 + 4, height: 62 + 4)
+            return Art.texture(size) { ctx in
+                let panel = CGRect(x: 2, y: 2, width: size.width - 4, height: 62)
+                Art.shadowed(ctx, blur: 10, offset: CGSize(width: 0, height: 4), alpha: 0.55) {
+                    Art.fill(ctx, panel, Art.color("#0d141c", 0.94), radius: 12)
+                }
+                Art.stroke(ctx, panel, Art.mix(BuildingArt.line, hue, 0.6), width: 1.5, radius: 12)
+                Art.text(title, at: CGPoint(x: panel.midX - ts.width / 2, y: panel.minY + 10))
+                var x = panel.midX - row / 2
+                let y = panel.minY + 33
+                if counts.isEmpty { Art.text(empty, at: CGPoint(x: x, y: y + 2)) }
+                for (i, (_, color)) in counts.enumerated() {
+                    let n = numbers[i], ns = n.size()
+                    ctx.saveGState()
+                    ctx.setShadow(offset: .zero, blur: 5, color: Art.color(color))
+                    Art.circle(ctx, CGPoint(x: x + 4, y: y + ns.height / 2), 4, Art.color(color))
+                    ctx.restoreGState()
+                    Art.text(n, at: CGPoint(x: x + 13, y: y))
+                    x += 13 + ns.width + 12
+                }
             }
         }
     }

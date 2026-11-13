@@ -6,7 +6,7 @@
 // shown to copy and run in a terminal.
 
 const POLL_MS = 2500;
-const MIN_DESKS = 4;
+const MIN_DESKS = 2;
 const PRESENT = new Set(["idle", "busy", "arriving", "alert", "unknown"]);
 const MODE = {
   idle: { label: "At desk", color: "var(--ok)" },

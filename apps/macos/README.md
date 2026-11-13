@@ -63,6 +63,8 @@ Debug builds take a picture of their own windows and quit:
 STORMO_SNAPSHOT=/tmp/snap .../Stormo.app/Contents/MacOS/Stormo   # writes /tmp/snap/<n>-<title>.png
 ```
 
+`STORMO_SNAPSHOT_SIZE=900x560` sizes the windows first (the office from further away, for one).
+
 `go run ./examples/office-demo -port 18699` with `SWARM_CORE_PORT=18699` gives it a fleet to show.
 The capture does not draw system materials (the sidebar and inspector backgrounds come out blank).
 

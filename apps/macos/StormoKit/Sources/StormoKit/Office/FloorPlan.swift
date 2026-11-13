@@ -54,7 +54,8 @@ public struct FloorPlan: Sendable {
     // Workstation and furniture sizes, shared with the scene.
     public static let workstation = CGSize(width: 156, height: 136)
     static let deskGap = CGSize(width: 40, height: 26)
-    static let minDesks = 4
+    /// A room has at least one row of desks; an odd count is padded with an open one.
+    static let minDesks = 2
     static let wall: CGFloat = 8, gap: CGFloat = 6, hall: CGFloat = 52
     static let officeWidth: CGFloat = 433, middleWidth: CGFloat = 390
     /// The chair centre inside a workstation box.

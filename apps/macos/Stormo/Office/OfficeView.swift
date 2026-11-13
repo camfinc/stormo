@@ -9,12 +9,20 @@ struct OfficeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scene = OfficeScene(size: CGSize(width: 1200, height: 800))
     @State private var selection: OfficeSelection?
+    /// The agent whose recent activity is open (a double-click, or Return).
+    @State private var opened: OpenedAgent?
 
     var body: some View {
         Group {
             if model.core.state.isRunning, let fleet = model.fleet.fleet {
-                OfficeSpriteView(scene: scene)
-                    .overlay(alignment: .bottom) { OfficeHUD(fleet: fleet).padding(.bottom, 14) }
+                // The counts sit under the floor, not over it: nothing on the floor is covered.
+                VStack(spacing: 0) {
+                    OfficeSpriteView(scene: scene)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel("Office floor")
+                        .accessibilityChildren { OfficeAccessibleFloor(fleet: fleet, look: OfficeLook(instance: model.fleet.look), select: { select(.agent($0)) }) }
+                    OfficeHUD(fleet: fleet)
+                }
                     .onAppear {
                         configure()
                         push()
@@ -28,6 +36,7 @@ struct OfficeView: View {
             }
         }
         .navigationTitle("Office")
+        .sheet(item: $opened) { o in AgentActivitySheet(agentID: o.id) }
         // Always open: an inspector that came and went would resize the floor (and refit its zoom)
         // on every click. With nothing selected it gives the overview.
         .inspector(isPresented: .constant(true)) {
@@ -53,6 +62,7 @@ struct OfficeView: View {
     private func configure() {
         scene.reduceMotion = reduceMotion
         scene.onSelect = { selection = $0 }
+        scene.onOpen = { opened = OpenedAgent(id: $0) }
         scene.menuForAgent = { id in agentMenu(id) }
     }
 
@@ -99,6 +109,7 @@ struct OfficeView: View {
         }
         menu.addItem(.separator())
         menu.addItem(MenuActions.item("Show Details") { select(.agent(id)) })
+        menu.addItem(MenuActions.item("Recent Activity…") { opened = OpenedAgent(id: id) })
         return menu
     }
 }
@@ -137,9 +148,17 @@ struct OfficeSpriteView: NSViewRepresentable {
 final class OfficeSKView: SKView {
     private var office: OfficeScene? { scene as? OfficeScene }
 
-    /// Scrolling zooms around the pointer; dragging open floor pans (OfficeScene).
+    override var acceptsFirstResponder: Bool { true }
+
+    /// A wheel zooms around the pointer. A trackpad (or a touch mouse) moves the floor once it is
+    /// zoomed in, as two fingers do everywhere else; with the whole floor in view there is nowhere
+    /// to move, so it zooms, and with ⌘ held it always does. Dragging open floor pans too.
     override func scrollWheel(with e: NSEvent) {
         guard let office else { return }
+        if e.hasPreciseScrollingDeltas, office.isZoomed, !e.modifierFlags.contains(.command) {
+            office.pan(dx: e.scrollingDeltaX, dy: e.scrollingDeltaY)
+            return
+        }
         let step: CGFloat = e.hasPreciseScrollingDeltas ? 0.005 : 0.08
         office.zoom(by: exp(e.scrollingDeltaY * step), at: e.location(in: office))
     }
@@ -153,14 +172,15 @@ final class OfficeSKView: SKView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
 
     override func mouseMoved(with e: NSEvent) {
         guard let office else { return }
-        let p = e.location(in: office)
-        (office.hit(at: p) == nil ? NSCursor.openHand : NSCursor.pointingHand).set()
+        (office.hover(at: e.location(in: office)) ? NSCursor.pointingHand : NSCursor.openHand).set()
     }
+
+    override func mouseExited(with e: NSEvent) { _ = office?.hover(at: nil) }
 
     /// Debug snapshots: the whole floor as the scene draws it.
     func floorImage() -> CGImage? {
@@ -189,9 +209,14 @@ struct OfficeHUD: View {
             case .limited: Meter(label: "ChatGPT plan", value: "limited", color: plan.color)
             }
         }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
         .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .glassEffect(.regular, in: .capsule)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+        .accessibilityElement(children: .combine)
     }
 
     private struct Meter: View {
@@ -206,6 +231,95 @@ struct OfficeHUD: View {
                 if !value.isEmpty { Text(value).monospacedDigit().fontWeight(.semibold) }
             }
             .font(.callout)
+        }
+    }
+}
+
+struct OpenedAgent: Identifiable, Equatable {
+    let id: String
+}
+
+/// The floor for VoiceOver: each room with its counts, then its people as buttons.
+struct OfficeAccessibleFloor: View {
+    let fleet: Fleet
+    let look: OfficeLook
+    let select: (String) -> Void
+
+    var body: some View {
+        let now = fleet.now
+        ForEach(fleet.units) { unit in
+            let people = fleet.agents.filter { $0.unit == unit.id }
+            Text("\(look.shortName(unit.name)): \(RoomSummary(people).words)")
+            ForEach(people) { a in
+                Button("\(a.name), \(OfficeLook.statusText(a, serverNow: now))\(a.toReview > 0 ? ", \(a.toReview) to review" : "")") { select(a.id) }
+            }
+        }
+    }
+}
+
+/// What an agent did lately: its hook events and tools, newest first (the core's timeline; no
+/// message text).
+struct AgentActivitySheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let agentID: String
+    @State private var entries: [AgentTimeline.Entry]?
+    @State private var problem: String?
+
+    var body: some View {
+        let agent = model.fleet.agent(agentID)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if let agent { AgentBadge(agent: agent, size: 32) }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent?.name ?? agentID).font(.headline)
+                    if let agent {
+                        Text(OfficeLook.statusText(agent, serverNow: Int64(Date().timeIntervalSince1970 * 1000) + model.fleet.clockOffset))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }.labelStyle(.iconOnly)
+            }
+            .padding(14)
+            Divider()
+            Group {
+                if let problem {
+                    ContentUnavailableView("Could not read the activity", systemImage: "exclamationmark.triangle", description: Text(problem))
+                } else if let entries, entries.isEmpty {
+                    ContentUnavailableView("Nothing yet", systemImage: "clock", description: Text("The core has no events from this agent in the last 7 days."))
+                } else if let entries {
+                    List(Array(entries.enumerated()), id: \.offset) { _, e in
+                        HStack {
+                            Text(e.words)
+                            Spacer()
+                            if let d = Date(isoString: e.at) {
+                                Text(d, format: .dateTime.month(.abbreviated).day().hour().minute().second()).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            Divider()
+            HStack {
+                Text("The last \(entries?.count ?? 0) events").font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 460, height: 520)
+        .task { await load() }
+    }
+
+    private func load() async {
+        do {
+            entries = try await model.fleet.client.timeline(agent: agentID, limit: 200).entries
+            problem = nil
+        } catch {
+            problem = String(describing: error)
         }
     }
 }
@@ -230,7 +344,7 @@ struct OfficeOverview: View {
                 } header: {
                     Label(model.instances.active?.name ?? "Office", systemImage: "building.2")
                 } footer: {
-                    Text("Click a person, a desk, the core rack or the robot for details. Right-click a person for actions.")
+                    Text("Click a person, a desk, the core rack or the robot for details; double-click a person for its recent activity, right-click for actions. Arrow keys move between people.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(fleet.units.filter { u in fleet.agents.contains { $0.unit == u.id } }) { unit in

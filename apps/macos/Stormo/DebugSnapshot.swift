@@ -2,7 +2,7 @@
 import AppKit
 
 /// Debug builds only: with STORMO_SNAPSHOT=<dir>, the app writes each of its windows to
-/// <dir>/<n>-<title>.png after a few seconds and quits. A visual check of the UI with no Screen
+/// <dir>/<n>-<title>.png after a few seconds and quits (STORMO_SNAPSHOT_SIZE sizes them first). A visual check of the UI with no Screen
 /// Recording permission (an app may always draw its own windows).
 enum DebugSnapshot {
     static func allSubviews(_ v: NSView?) -> [NSView] {
@@ -14,6 +14,14 @@ enum DebugSnapshot {
         guard let dir = ProcessInfo.processInfo.environment["STORMO_SNAPSHOT"], !dir.isEmpty else { return }
         let delay = Double(ProcessInfo.processInfo.environment["STORMO_SNAPSHOT_DELAY"] ?? "") ?? 6
         Task { @MainActor in
+            // STORMO_SNAPSHOT_SIZE=<width>x<height> sizes the windows first: a layout at a size
+            // other than the one the window was left at (the office from far away, say).
+            if let size = ProcessInfo.processInfo.environment["STORMO_SNAPSHOT_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
+                try? await Task.sleep(for: .seconds(1))
+                for window in NSApp.windows where window.isVisible && window.styleMask.contains(.resizable) {
+                    window.setContentSize(NSSize(width: size[0], height: size[1]))
+                }
+            }
             try? await Task.sleep(for: .seconds(delay))
             let out = URL(filePath: dir)
             try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)

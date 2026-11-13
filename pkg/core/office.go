@@ -109,11 +109,12 @@ type RobotState struct {
 	Queue []string `json:"queue"`
 }
 
-// RobotTimings are the robot's moves.
+// RobotTimings are the robot's moves. WriteMs is how long its note shows at the desk: long enough
+// to read a full one ("3 naps · 6 learning, 3 conversation logs").
 var RobotTimings = struct {
 	TransitMs, HopMs, WriteMs int64
 	LogSize                   int
-}{7_000, 6_000, 5_000, 8}
+}{7_000, 6_000, 8_000, 8}
 
 type officeAgent struct {
 	OfficeState

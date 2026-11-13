@@ -269,6 +269,30 @@ public struct GatewaySummary: Codable, Sendable, Equatable {
     public var active: [String: Int]?
 }
 
+/// `GET /api/agents/<id>/timeline`: the agent's hook events, newest first.
+public struct AgentTimeline: Codable, Sendable, Equatable {
+    public struct Entry: Codable, Sendable, Equatable {
+        /// RFC 3339.
+        public var at: String
+        public var event: String
+        public var tool: String?
+
+        /// "Ran read_file", "Turn started": the event in words.
+        public var words: String {
+            let tool = tool.flatMap { $0.isEmpty ? nil : $0 }
+            switch event {
+            case "pre_tool_call": return "Started \(tool ?? "a tool")"
+            case "post_tool_call": return "Finished \(tool ?? "a tool")"
+            default:
+                let e = event.replacingOccurrences(of: "_", with: " ")
+                return (e.prefix(1).uppercased() + e.dropFirst()) + (tool.map { " · \($0)" } ?? "")
+            }
+        }
+    }
+    public var agent: String
+    public var entries: [Entry]
+}
+
 /// `GET /api/fleet`.
 public struct Fleet: Codable, Sendable, Equatable {
     public var polledAt: String?

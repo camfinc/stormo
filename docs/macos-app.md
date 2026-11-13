@@ -385,7 +385,7 @@ new.
 
 - **Layout** (`FloorLayout`, pure Swift, unit-tested): the same plan as `app.js` `build()`: units
   other than `group` alternate left and right of two hallways, the last office on a short side spans
-  the remaining rows; each office has a two-column desk grid (at least 4 desks, padded to an even
+  the remaining rows; each office has a two-column desk grid (at least 2 desks, padded to an even
   count with vacant desks), windows on the outer wall, a door to the hall, wall art and a plant; the
   middle column is the server room over the lobby (clocks, kitchen, water cooler, seating,
   reception, entrance, desks for `group` and unassigned agents). Output: rectangles in a logical

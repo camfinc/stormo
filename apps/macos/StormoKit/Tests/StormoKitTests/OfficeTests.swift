@@ -75,6 +75,41 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
     }
 }
 
+@Suite struct Camera {
+    @Test func zoomNeverLeavesWhatTheCameraShows() {
+        var c = OfficeCamera(fit: 1)
+        #expect(c.scale == 1 && c.maxZoom == 1.6)
+        for _ in 0..<10 { c.setZoom(c.zoom * 1.25) }
+        #expect(c.zoom == 1.6 && abs(c.scale - OfficeCamera.closest) < 1e-9)
+        // One step out moves the camera at once: nothing was spent past the limit.
+        c.setZoom(c.zoom / 1.25)
+        #expect(c.scale > OfficeCamera.closest)
+        for _ in 0..<10 { c.setZoom(c.zoom / 1.25) }
+        #expect(c.zoom == 1 && !c.isZoomed)
+        // A view too large for the floor: a margin, and no zoom to offer.
+        let big = OfficeCamera(fit: 0.5, zoom: 3)
+        #expect(big.scale == 0.6 && big.maxZoom == 1 && big.zoom == 1)
+    }
+
+    @Test func detailFollowsTheDistance() {
+        #expect(OfficeDetail(cameraScale: 0.7) == .near && OfficeDetail(cameraScale: 1.4) == .mid && OfficeDetail(cameraScale: 2.4) == .far)
+        #expect(OfficeDetail.labelScale(cameraScale: 0.7) == 1)
+        // Out at 2 floor points per view point a label still shows at 0.9 of its size.
+        #expect(abs(OfficeDetail.labelScale(cameraScale: 2) / 2 - 0.9) < 1e-9)
+    }
+
+    @Test func roomsCountTheirPeopleOnce() {
+        let working = OfficeState(activity: "desk", phase: "seated", start: 0, end: nil, from: nil, slot: 0, label: "", working: true, seq: 1)
+        var idle = agent("byte", office: working)
+        idle.office?.working = false
+        idle.pendingLearnings = 2
+        let s = RoomSummary([agent("echo", office: working), idle, agent("nova", state: "stopped"), agent("scout", state: "exited")])
+        #expect(s.total == 4 && s.working == 1 && s.idle == 1 && s.attention == 1 && s.offShift == 1 && s.toReview == 2)
+        #expect(s.words == "1 working, 1 idle, 1 needs attention, 1 off shift, 2 to review")
+        #expect(RoomSummary([]).words == "nobody here")
+    }
+}
+
 @Suite struct Floor {
     @Test func everyDeskIsInItsOfficeAndRoutesConnect() throws {
         let (fleet, look) = try demo()
@@ -97,8 +132,11 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
             #expect(route.first == plan.dock)
             #expect(route.last == CGPoint(x: ws.seat.x + 46, y: ws.seat.y + 4))
         }
-        // Each office has at least four desks, open ones included.
-        for o in plan.offices { #expect(plan.workstations.filter { $0.office == o.unit.id }.count >= 4) }
+        // Each office has at least one row of two desks; an odd count gets one open desk.
+        for o in plan.offices {
+            let desks = plan.workstations.filter { $0.office == o.unit.id }
+            #expect(desks.count >= 2 && desks.count % 2 == 0 && desks.filter { $0.agent == nil }.count <= 1)
+        }
         #expect(plan.lobby.minY > plan.server.maxY && plan.racks.count == 4 && plan.clocks.count == 2)
         #expect(plan.size.width == 1400)
         // Two short clocks fit beside the lobby sign; four long ones get their own row, kitchen below.

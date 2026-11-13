@@ -14,6 +14,8 @@ enum OfficeSelection: Hashable {
 /// the racks' lights, clocks, people and the robot are nodes over it, moved by server time.
 final class OfficeScene: SKScene {
     var onSelect: (OfficeSelection?) -> Void = { _ in }
+    /// A double-click (or Return) on a person: show what it has been doing.
+    var onOpen: (String) -> Void = { _ in }
     var menuForAgent: (String) -> NSMenu? = { _ in nil }
     var selection: OfficeSelection? { didSet { showSelection() } }
     var reduceMotion = false {
@@ -58,8 +60,18 @@ final class OfficeScene: SKScene {
     private var rackHighlight = SKShapeNode()
     private var clocks: [(node: SKSpriteNode, clock: InstanceLook.Clock, rect: CGRect)] = []
     private var lastSecond = 0
-    private var userZoom: CGFloat = 1
+    private var lens = OfficeCamera(fit: 1)
     private var panOffset = CGPoint.zero
+    /// What the floor shows at the camera's distance, and how much its labels grow against it.
+    private var detail = OfficeDetail.near
+    private var labelScale: CGFloat = 0
+    /// Rooms from far away: a scrim over the room and its counts.
+    private var roomTiles: [(unit: String, rect: CGRect, scrim: SKSpriteNode, tile: SKSpriteNode)] = []
+    private var vacantRings: [String: [SKShapeNode]] = [:]
+    private var robotRing = false
+    /// The person under the pointer: its tag shows in full whatever the distance.
+    private var hovered: String?
+    private var focusedAt: TimeInterval = 0
     /// False until the floor has been laid out for the view's settled size: the scene starts at a
     /// placeholder size, and showing that layout would jump when the real one replaces it.
     private var revealed = false
@@ -99,7 +111,10 @@ final class OfficeScene: SKScene {
 
     /// Lays the floor out for the current size if needed, then shows it (once).
     private func settle() {
-        if needsRelayout { rebuild() }
+        if needsRelayout {
+            rebuild()
+            refresh(force: true)
+        }
         guard !revealed, view != nil else { return }
         revealed = true
         world.run(.fadeIn(withDuration: reduceMotion ? 0 : 0.15))
@@ -150,6 +165,7 @@ final class OfficeScene: SKScene {
         world.removeAllChildren()
         people = [:]; chairs = [:]; chairState = [:]; screens = [:]; stickies = [:]; tags = [:]; tagKeys = [:]
         bubbles = [:]; reviewMarkers = [:]; alertMarkers = [:]; arcs = [:]; arcFrames = [:]; robot = nil; coreLEDs = []; slots = []; blades = []; clocks = []
+        roomTiles = []; vacantRings = [:]; hovered = nil
         playback.reset()
 
         let clockList = look.instance?.clocks ?? []
@@ -173,7 +189,18 @@ final class OfficeScene: SKScene {
             let chair = SKSpriteNode(texture: Self.chairTexture, size: CGSize(width: 48, height: 46))
             chair.position = sp(ws.seat)
             chair.zPosition = 1
-            if ws.agent == nil { chair.alpha = 0.6; chair.position.y += 6 }
+            if ws.agent == nil {
+                chair.alpha = 0.6
+                chair.position.y += 6
+                let ring = SKShapeNode(rect: CGRect(x: -hit.size.width / 2, y: -hit.size.height / 2, width: hit.size.width, height: hit.size.height).insetBy(dx: 6, dy: 4), cornerRadius: 10)
+                ring.position = hit.position
+                ring.strokeColor = Art.nsColor("#e8eef5", 0.7)
+                ring.lineWidth = 2
+                ring.zPosition = 2.4
+                ring.isHidden = true
+                world.addChild(ring)
+                vacantRings[ws.unit, default: []].append(ring)
+            }
             world.addChild(chair)
             guard let id = ws.agent, let agent = byID[id] else { continue }
             chairs[id] = chair
@@ -235,8 +262,38 @@ final class OfficeScene: SKScene {
             world.addChild(r)
             robot = r
         }
+        buildRoomTiles(plan, groupName: groupName)
+        labelScale = 0  // new labels: size them for the camera again
         placeCamera()
         showSelection()
+    }
+
+    /// One tile per room with a scrim under it, shown from far away; the lobby too when people sit there.
+    private func buildRoomTiles(_ plan: FloorPlan, groupName: String) {
+        var rooms = plan.offices.map { (unit: $0.unit.id, rect: $0.rect) }
+        if plan.workstations.contains(where: { $0.office == nil && $0.agent != nil }) { rooms.append((unit: "group", rect: plan.lobby)) }
+        for room in rooms {
+            let scrim = SKSpriteNode(color: Art.nsColor("#0b1117", 0.5), size: room.rect.size)
+            scrim.position = sp(CGPoint(x: room.rect.midX, y: room.rect.midY))
+            scrim.zPosition = 24
+            scrim.isHidden = true
+            world.addChild(scrim)
+            let tile = SKSpriteNode()
+            tile.position = scrim.position
+            tile.zPosition = 25
+            tile.isHidden = true
+            tile.isAccessibilityElement = true
+            tile.accessibilityRole = NSAccessibility.Role.button.rawValue
+            world.addChild(tile)
+            roomTiles.append((room.unit, room.rect, scrim, tile))
+        }
+    }
+
+    /// The people of a room (`group`: whoever sits in the lobby).
+    private func members(of unit: String) -> [FleetAgent] {
+        guard let fleet, let plan else { return [] }
+        if unit != "group" { return fleet.agents.filter { $0.unit == unit } }
+        return fleet.agents.filter { plan.workstation(of: $0.id)?.office == nil }
     }
 
     private static let chairTexture: SKTexture = Art.texture(CGSize(width: 48, height: 46)) { ctx in
@@ -334,16 +391,18 @@ final class OfficeScene: SKScene {
             for s in screens[a.id] ?? [] { s.set(mode, still: reduceMotion) }
             updateTag(a, mode: mode, now: now, force: force)
             let r = a.toReview
+            // From far away the room's tile carries the counts: no markers or bubbles over it.
+            let far = detail == .far
             if let m = reviewMarkers[a.id] {
-                m.isHidden = r == 0
+                m.isHidden = r == 0 || far
                 if r > 0 { setTexture(m, LabelArt.marker("\(r)", alert: false)) }
             }
             if let m = alertMarkers[a.id] {
-                m.isHidden = !mode.needsAttention
+                m.isHidden = !mode.needsAttention || far
                 if mode.needsAttention { setTexture(m, LabelArt.marker("!", alert: true)) }
             }
             if let b = bubbles[a.id] {
-                b.isHidden = mode != .busy
+                b.isHidden = mode != .busy || far
                 if mode == .busy { setTexture(b, LabelArt.bubble(OfficeLook.workLabel(a), thinking: (gw.active?[a.id] ?? 0) > 0)) }
             }
             people[a.id]?.alpha = mode == .unknown ? 0.55 : 1
@@ -413,6 +472,15 @@ final class OfficeScene: SKScene {
                 arcFrames[a.id] = nil
             }
         }
+        for room in roomTiles {
+            room.scrim.isHidden = detail != .far
+            room.tile.isHidden = detail != .far
+            let unit = fleet.units.first { $0.id == room.unit }
+            let name = look.shortName(unit?.name ?? room.unit)
+            let summary = RoomSummary(members(of: room.unit))
+            room.tile.accessibilityLabel = "\(name): \(summary.words)"
+            if detail == .far { setTexture(room.tile, LabelArt.room(name: name, hue: look.hue(unit: room.unit), summary: summary)) }
+        }
         showSelection()
     }
 
@@ -429,19 +497,26 @@ final class OfficeScene: SKScene {
     /// Steps in one dash period (2 + 12 points), marched through every 0.45 s.
     private static let arcSteps = 14
 
+    /// A label's texture at its drawn size; the node's own scale (the camera's distance) is kept.
     private func setTexture(_ node: SKSpriteNode, _ t: SKTexture) {
         guard node.texture !== t else { return }
+        let sx = node.xScale, sy = node.yScale
+        node.setScale(1)
         node.texture = t
         node.size = t.size().applying(CGAffineTransform(scaleX: 1 / Art.scale, y: 1 / Art.scale))
+        node.xScale = sx
+        node.yScale = sy
     }
 
     private func updateTag(_ a: FleetAgent, mode: OfficeMode, now: Int64, force: Bool) {
         guard let node = tags[a.id] else { return }
         let status = OfficeLook.statusText(a, serverNow: now)
-        let key = "\(status)|\(mode.color)|\(avatars[a.id] != nil)"
+        // Close up, or under the pointer: one line. Further out it stacks, so it can grow.
+        let stacked = detail != .near && hovered != a.id
+        let key = "\(status)|\(mode.color)|\(avatars[a.id] != nil)|\(stacked)"
         guard force || tagKeys[a.id] != key else { return }
         tagKeys[a.id] = key
-        setTexture(node, LabelArt.tag(name: a.name, status: status, ring: mode.color, hue: look.hue(unit: a.unit), avatar: avatars[a.id]))
+        setTexture(node, LabelArt.tag(name: a.name, status: status, ring: mode.color, hue: look.hue(unit: a.unit), avatar: avatars[a.id], stacked: stacked))
         node.isHidden = false
     }
 
@@ -460,7 +535,11 @@ final class OfficeScene: SKScene {
             let down = modes[a.id] == .down
             if let t = tags[a.id] {
                 t.position = sp(CGPoint(x: p.x, y: p.y + 24))
-                t.isHidden = frame.away && !down
+                // From far away only the one under the pointer, or the selected one, is named.
+                let named = detail != .far || hovered == a.id || selection == .agent(a.id)
+                t.isHidden = (frame.away && !down) || !named
+                // Over a far room's scrim when it is the one being looked at.
+                t.zPosition = hovered == a.id || selection == .agent(a.id) ? 26 : 20
             }
             bubbles[a.id]?.position = sp(CGPoint(x: p.x + 9, y: p.y - 50))
             followMarkers(a.id, p, time: currentTime)
@@ -566,6 +645,32 @@ final class OfficeScene: SKScene {
             p.setSelected(on, color: Art.nsColor((modes[id] ?? .unknown).color))
         }
         rackHighlight.isHidden = selection != .core
+        for (unit, rings) in vacantRings { for r in rings { r.isHidden = selection != .vacant(unit) } }
+        robot?.setSelected(selection == .robot)
+    }
+
+    /// The pointer moved: name whoever is under it. True when a click there does something.
+    func hover(at point: CGPoint?) -> Bool {
+        let h = point.flatMap(hit(at:))
+        var id: String?
+        if case .agent(let a)? = h { id = a }
+        if id != hovered {
+            let old = hovered
+            hovered = id
+            let now = serverNow
+            for changed in [old, id].compactMap({ $0 }) {
+                if let a = agentsByID[changed] { updateTag(a, mode: modes[changed] ?? .unknown, now: now, force: true) }
+            }
+        }
+        if h != nil { return true }
+        return detail == .far && point.map { room(at: $0) != nil } == true
+    }
+
+    /// The room a scene point is in.
+    private func room(at point: CGPoint) -> CGRect? {
+        guard let plan else { return nil }
+        let p = CGPoint(x: point.x, y: plan.size.height - point.y)
+        return roomTiles.first { $0.rect.contains(p) }?.rect
     }
 
     /// What is under a point in the scene.
@@ -595,6 +700,8 @@ final class OfficeScene: SKScene {
     private var pressOnFloor = false
 
     override func mouseDown(with event: NSEvent) {
+        // Keys (arrows, Return, Escape) go to the floor once it has been clicked.
+        if let view, view.window?.firstResponder !== view { view.window?.makeFirstResponder(view) }
         dragging = false
         pressOnFloor = hit(at: event.location(in: self)) == nil
     }
@@ -615,21 +722,56 @@ final class OfficeScene: SKScene {
             return
         }
         let p = event.location(in: self)
-        if event.clickCount == 2, hit(at: p) == nil {
-            resetZoom()
+        let h = hit(at: p)
+        if event.clickCount == 2 {
+            // Twice on a person: what it has been doing (the first click already chose it, or let
+            // it go: either way it is chosen now). Twice on open floor: the whole floor again.
+            if case .agent(let id)? = h {
+                selection = h
+                onSelect(h)
+                onOpen(id)
+            } else if h == nil, event.timestamp - focusedAt > 0.6 {
+                resetZoom()
+            }
             return
         }
-        let h = hit(at: p)
+        // From far away a room is one thing: a click goes into it.
+        if detail == .far, let room = room(at: p) {
+            focusedAt = event.timestamp
+            focus(on: room)
+            return
+        }
         selection = h == selection ? nil : h
         onSelect(selection)
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53, selection != nil {  // Escape: back to the overview
+        switch event.keyCode {
+        case 53 where selection != nil:  // Escape: back to the overview
             selection = nil
             onSelect(nil)
-        } else {
-            super.keyDown(with: event)
+        case 48: step(event.modifierFlags.contains(.shift) ? -1 : 1)  // Tab
+        case 124, 125: step(1)  // right, down
+        case 123, 126: step(-1)  // left, up
+        case 36, 76:  // Return, Enter
+            if case .agent(let id)? = selection { onOpen(id) } else { super.keyDown(with: event) }
+        default: super.keyDown(with: event)
+        }
+    }
+
+    /// The next (or previous) person, desk by desk through the rooms; kept in view when zoomed in.
+    private func step(_ by: Int) {
+        guard let plan else { return }
+        let order = plan.workstations.compactMap(\.agent)
+        guard !order.isEmpty else { return }
+        var i = by > 0 ? 0 : order.count - 1
+        if case .agent(let id)? = selection, let at = order.firstIndex(of: id) { i = (at + by + order.count) % order.count }
+        selection = .agent(order[i])
+        onSelect(selection)
+        if lens.isZoomed, let seat = plan.workstation(of: order[i])?.seat {
+            let p = sp(seat)
+            panOffset = CGPoint(x: p.x - plan.size.width / 2, y: p.y - plan.size.height / 2)
+            placeCamera()
         }
     }
 
@@ -645,27 +787,60 @@ final class OfficeScene: SKScene {
         return max(plan.size.width / size.width, plan.size.height / size.height)
     }
 
-    /// Fit the floor to the view, then the user's zoom (pinch) and pan (scroll).
+    /// Fit the floor to the view, then the user's zoom and pan.
     func placeCamera() {
         guard let plan else { return }
-        let fit = fitScale()
-        let s = min(fit * 1.2, max(1 / 1.6, fit / userZoom))
+        lens.fit = fitScale()
+        lens.setZoom(lens.zoom)
+        if !lens.isZoomed { panOffset = .zero }
+        let s = lens.scale
         cam.setScale(s)
         let visible = CGSize(width: size.width * s, height: size.height * s)
         // Keep the floor in view.
         let maxX = max(0, (plan.size.width - visible.width) / 2 + 40), maxY = max(0, (plan.size.height - visible.height) / 2 + 40)
         panOffset = CGPoint(x: min(maxX, max(-maxX, panOffset.x)), y: min(maxY, max(-maxY, panOffset.y)))
         cam.position = CGPoint(x: plan.size.width / 2 + panOffset.x, y: plan.size.height / 2 + panOffset.y)
+        showDetail(for: s)
     }
+
+    /// What the floor shows at this distance: labels grow against the camera, and past the rooms'
+    /// reach each room becomes its counts.
+    private func showDetail(for s: CGFloat) {
+        let d = OfficeDetail(cameraScale: s), k = OfficeDetail.labelScale(cameraScale: s)
+        let changed = d != detail
+        detail = d
+        if k != labelScale {
+            labelScale = k
+            for dict in [tags, bubbles, reviewMarkers, alertMarkers] { for n in dict.values { n.setScale(k) } }
+            for room in roomTiles {
+                room.tile.setScale(k)
+                room.tile.position = sp(tileCentre(room.unit, room.rect, height: 66 * k))
+            }
+            robot?.noteScale = k
+        }
+        if changed { refresh(force: true) }
+    }
+
+    /// A room's tile sits over the open floor above its desks when it fits there, so the people
+    /// stay in sight; else in the middle of the room.
+    private func tileCentre(_ unit: String, _ rect: CGRect, height: CGFloat) -> CGPoint {
+        let desks = plan?.workstations.filter { ($0.office ?? "group") == unit && rect.contains($0.rect) } ?? []
+        guard let deskTop = desks.map(\.rect.minY).min() else { return CGPoint(x: rect.midX, y: rect.midY) }
+        let top = rect.minY + 48
+        return deskTop - top >= height + 16 ? CGPoint(x: rect.midX, y: (top + deskTop) / 2) : CGPoint(x: rect.midX, y: rect.midY)
+    }
+
+    /// Whether there is floor outside the view to move to.
+    var isZoomed: Bool { lens.isZoomed }
 
     /// Zoom; with an anchor (a point in the scene), that point stays under the pointer.
     func zoom(by factor: CGFloat, at anchor: CGPoint? = nil) {
         let before = cam.xScale
-        userZoom = min(4, max(1, userZoom * factor))
-        if userZoom == 1 { panOffset = .zero }
-        if let anchor, userZoom > 1, let plan {
-            let fit = fitScale()
-            let after = min(fit * 1.2, max(1 / 1.6, fit / userZoom))
+        lens.fit = fitScale()
+        lens.setZoom(lens.zoom * factor)
+        if !lens.isZoomed { panOffset = .zero }
+        if let anchor, lens.isZoomed, let plan {
+            let after = lens.scale
             let k = after / before
             let c = CGPoint(x: plan.size.width / 2 + panOffset.x, y: plan.size.height / 2 + panOffset.y)
             panOffset.x += (anchor.x - c.x) * (1 - k)
@@ -682,8 +857,18 @@ final class OfficeScene: SKScene {
     }
 
     func resetZoom() {
-        userZoom = 1
+        lens.setZoom(1)
         panOffset = .zero
+        placeCamera()
+    }
+
+    /// Goes into a room (a floor rect): close enough to read it, centred on it.
+    private func focus(on room: CGRect) {
+        guard let plan else { return }
+        lens.fit = fitScale()
+        lens.setZoom(lens.fitScale / 1.0)
+        let c = sp(CGPoint(x: room.midX, y: room.midY))
+        panOffset = CGPoint(x: c.x - plan.size.width / 2, y: c.y - plan.size.height / 2)
         placeCamera()
     }
 }
