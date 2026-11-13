@@ -339,13 +339,11 @@ struct StateDot: View {
             .accessibilityLabel(agent.statusLine)
     }
 
+    /// The office's colour for what the agent is doing (OfficeMode), so a dot means the same in
+    /// every list as on the floor: violet working, green idle, amber arriving, red needs attention.
     private var color: Color {
-        if agent.needsAttention { return .red }
-        switch agent.state {
-        case "running": return agent.office?.working == true ? .green : .teal
-        case "starting", "restarting": return .yellow
-        default: return .secondary
-        }
+        let mode = OfficeLook.mode(of: agent)
+        return mode == .away || mode == .unknown ? .secondary : Color(hex: mode.color) ?? .secondary
     }
 }
 

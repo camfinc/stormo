@@ -3,7 +3,8 @@ import SpriteKit
 import StormoKit
 import SwiftUI
 
-/// The office: the fleet on a floor plan, live (SpriteKit), with the inspector beside it.
+/// The office: the fleet on a floor plan, live (SpriteKit), or over time (the timeline), with the
+/// inspector beside it.
 struct OfficeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -11,16 +12,31 @@ struct OfficeView: View {
     @State private var selection: OfficeSelection?
     /// The agent whose recent activity is open (a double-click, or Return).
     @State private var opened: OpenedAgent?
+    @State private var mode = OfficeViewMode.saved
+
+    /// The timeline's chosen agent is the floor's: the inspector follows either.
+    private var chosenAgent: Binding<String?> {
+        Binding {
+            if case .agent(let id) = selection { id } else { nil }
+        } set: { id in
+            select(id.map { .agent($0) })
+        }
+    }
 
     var body: some View {
         Group {
             if model.core.state.isRunning, let fleet = model.fleet.fleet {
                 // The counts sit under the floor, not over it: nothing on the floor is covered.
                 VStack(spacing: 0) {
-                    OfficeSpriteView(scene: scene)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel("Office floor")
-                        .accessibilityChildren { OfficeAccessibleFloor(fleet: fleet, look: OfficeLook(instance: model.fleet.look), select: { select(.agent($0)) }) }
+                    switch mode {
+                    case .floor:
+                        OfficeSpriteView(scene: scene)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("Office floor")
+                            .accessibilityChildren { OfficeAccessibleFloor(fleet: fleet, look: OfficeLook(instance: model.fleet.look), select: { select(.agent($0)) }) }
+                    case .timeline:
+                        OfficeTimelineView(fleet: fleet, selection: chosenAgent, open: { opened = OpenedAgent(id: $0) })
+                    }
                     OfficeHUD(fleet: fleet)
                 }
                     .onAppear {
@@ -48,13 +64,25 @@ struct OfficeView: View {
             return .handled
         }
         .toolbar {
+            ToolbarItem {
+                Picker("View", selection: $mode) {
+                    ForEach(OfficeViewMode.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .help("The floor now, or everyone's work over time")
+                .onChange(of: mode) { mode.save() }
+            }
             ToolbarItemGroup {
-                Button("Zoom Out", systemImage: "minus.magnifyingglass") { scene.zoom(by: 1 / 1.25) }
-                    .keyboardShortcut("-")
-                Button("Fit", systemImage: "arrow.up.left.and.arrow.down.right") { scene.resetZoom() }
-                    .keyboardShortcut("0")
-                Button("Zoom In", systemImage: "plus.magnifyingglass") { scene.zoom(by: 1.25) }
-                    .keyboardShortcut("=")
+                // The floor's camera: nothing to zoom on the timeline.
+                Group {
+                    Button("Zoom Out", systemImage: "minus.magnifyingglass") { scene.zoom(by: 1 / 1.25) }
+                        .keyboardShortcut("-")
+                    Button("Fit", systemImage: "arrow.up.left.and.arrow.down.right") { scene.resetZoom() }
+                        .keyboardShortcut("0")
+                    Button("Zoom In", systemImage: "plus.magnifyingglass") { scene.zoom(by: 1.25) }
+                        .keyboardShortcut("=")
+                }
+                .disabled(mode != .floor)
             }
         }
     }
@@ -344,7 +372,7 @@ struct OfficeOverview: View {
                 } header: {
                     Label(model.instances.active?.name ?? "Office", systemImage: "building.2")
                 } footer: {
-                    Text("Click a person, a desk, the core rack or the robot for details; double-click a person for its recent activity, right-click for actions. Arrow keys move between people.")
+                    Text("Click a person, a desk, the core rack or the robot for details; double-click a person for its recent activity, right-click for actions. Arrow keys move between people. The timeline shows when everyone worked.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(fleet.units.filter { u in fleet.agents.contains { $0.unit == u.id } }) { unit in

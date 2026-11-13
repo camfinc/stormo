@@ -1,6 +1,7 @@
 // Command office-demo serves the core's office UI for a made-up company (./instance) with
 // simulated activity: every agent "running", some busy on a turn or a scheduled job, others idle,
-// and a nap landing every few seconds so the sync robot makes its rounds. No container, model or
+// a nap landing every few seconds so the sync robot makes its rounds, and a few hours of past tool
+// calls so the timeline has something to show. No container, model or
 // secret is involved; it is the real core and office with the outside world faked.
 //
 //	go run ./examples/office-demo            # then open http://127.0.0.1:18700/
@@ -80,6 +81,7 @@ func main() {
 		log.Fatal(err)
 	}
 	fleet.Start()
+	seedActivity(c.Monitor, manifest.AgentIDs(inst.Root))
 	go napRounds(inst)
 	fmt.Printf("office demo on http://%s/ (Ctrl-C to stop)\n", c.Addr)
 	sig := make(chan os.Signal, 1)
@@ -124,6 +126,26 @@ func fakeEngine(inst *instance.Instance) core.ActivityFetch {
 		}
 		b, _ := json.Marshal(a)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(b)), Header: http.Header{"Content-Type": {"application/json"}}}, nil
+	}
+}
+
+// seedActivity gives the timeline a past: a stretch of tool calls per agent in most of the last
+// hours. A delivery is recognised by its id, so running the demo again within the hour adds nothing.
+func seedActivity(m *core.Monitor, ids []string) {
+	hour := time.Now().Truncate(time.Hour)
+	tools := []string{"read_file", "search", "write_file", "send_message"}
+	for n, id := range ids {
+		for h := 1; h <= 8; h++ {
+			if (h+n)%3 == 0 {
+				continue // a quiet hour
+			}
+			start := hour.Add(-time.Duration(h)*time.Hour + time.Duration((n*7+h*11)%40)*time.Minute)
+			for i := 0; i < 6+(n+h)%9; i++ {
+				at := start.Add(time.Duration(i) * 50 * time.Second)
+				_ = m.Ingest(id, &engine.HookEvent{Kind: engine.ToolDone, Name: "post_tool_call", Tool: tools[(i+n)%len(tools)], At: at,
+					Delivery: fmt.Sprintf("demo-%s-%d", id, at.Unix())})
+			}
+		}
 	}
 }
 

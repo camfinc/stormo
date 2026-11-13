@@ -898,6 +898,25 @@ func StartCore(o CoreOptions) (*Core, error) {
 			writeJSONBody(w, 200, map[string]any{"findings": fs})
 			return
 		}
+		if get && path == "/api/timeline" {
+			// The fleet over time: when each agent was at work, for the last hours (the retention at most).
+			hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
+			if hours <= 0 {
+				hours = 6
+			}
+			if max := int(RetainActivity / time.Hour); hours > max {
+				hours = max
+			}
+			now := time.Now()
+			from := now.Add(-time.Duration(hours) * time.Hour)
+			spans, err := monitor.Spans(from)
+			if err != nil {
+				writeJSONBody(w, 500, errBody("core_internal", "could not read the timeline"))
+				return
+			}
+			writeJSONBody(w, 200, map[string]any{"now": now.UnixMilli(), "from": from.UnixMilli(), "gapMs": SpanGap.Milliseconds(), "agents": spans})
+			return
+		}
 		if m := agentPath.FindStringSubmatch(path); m != nil && get {
 			// timeline: event, tool and time only (the office's agent page). activity: with sessions
 			// and previews, which can hold client data: the owner, or that agent itself.

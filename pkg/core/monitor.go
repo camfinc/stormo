@@ -363,6 +363,45 @@ func (m *Monitor) Timeline(agent string, limit int, private bool) ([]TimelineEnt
 	return out, rows.Err()
 }
 
+// Span is a stretch of an agent's activity: events no further apart than SpanGap. Times are epoch ms.
+type Span struct {
+	Start  int64 `json:"start"`
+	End    int64 `json:"end"`
+	Events int   `json:"events"`
+}
+
+// SpanGap is the longest quiet between two events of one stretch of work: a model call between two
+// tool calls fits in it, a pause between two conversations does not.
+const SpanGap = 2 * time.Minute
+
+// Spans is every agent's activity since a time as stretches of work, oldest first: when each agent
+// was at it, with no event names, tools or previews.
+func (m *Monitor) Spans(since time.Time) (map[string][]Span, error) {
+	rows, err := m.db.Query(`SELECT agent, at FROM activity WHERE at >= ? ORDER BY agent, at`, since.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]Span{}
+	gap := SpanGap.Milliseconds()
+	for rows.Next() {
+		var agent string
+		var at int64
+		if err := rows.Scan(&agent, &at); err != nil {
+			return nil, err
+		}
+		spans := out[agent]
+		if n := len(spans); n > 0 && at-spans[n-1].End <= gap {
+			spans[n-1].End = at
+			spans[n-1].Events++
+		} else {
+			spans = append(spans, Span{Start: at, End: at, Events: 1})
+		}
+		out[agent] = spans
+	}
+	return out, rows.Err()
+}
+
 // Prune deletes activity older than RetainActivity.
 func (m *Monitor) Prune() error {
 	_, err := m.db.Exec(`DELETE FROM activity WHERE at < ?`, m.now().Add(-RetainActivity).UnixMilli())

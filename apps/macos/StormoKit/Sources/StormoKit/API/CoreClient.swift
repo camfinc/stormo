@@ -135,6 +135,12 @@ public struct CoreClient: Sendable {
     }
 
     /// The agent's portrait, nil when it has none.
+    /// When each agent was at work over the last hours (`notFound` from a core older than the route).
+    public func fleetTimeline(hours: Int) async throws -> FleetTimeline {
+        let url = base.appending(path: "api/timeline").appending(queryItems: [URLQueryItem(name: "hours", value: "\(hours)")])
+        return try JSONDecoder().decode(FleetTimeline.self, from: try await send(URLRequest(url: url)))
+    }
+
     /// What an agent did lately: hook events and tools, newest first (no previews).
     public func timeline(agent: String, limit: Int = 100) async throws -> AgentTimeline {
         let url = base.appending(path: "api/agents/\(agent)/timeline").appending(queryItems: [URLQueryItem(name: "limit", value: "\(limit)")])

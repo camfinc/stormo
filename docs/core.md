@@ -325,7 +325,9 @@ while working; while idle it leans back, stretches, looks out of the window or w
 the water cooler or the sofa, and hurries back when work arrives. Agents that start walk in from the
 entrance, along the hallway, through their office door to their chair; agents that stop walk out.
 The name tag says what the agent is doing ("Working · Slack", "Idle 12m · getting coffee"): that is
-the signal, the body's position is flavour. **The office runs in the core** (`pkg/core/office.go`, a
+the signal, the body's position is flavour. The floor is now; `GET /api/timeline` is the fleet over
+time (each agent's hook events of the last hours as stretches of work, times only), which the macOS
+app draws as a lane per agent. **The office runs in the core** (`pkg/core/office.go`, a
 1 s tick over the fleet snapshot and the gateway's calls in flight): it decides working (held 8 s
 across tool gaps), when an idle agent gets up and where it goes, with fixed walk and dwell times, at
 most two agents out in the lobby at once. `/api/fleet` carries each agent's `office` state (activity,
@@ -342,8 +344,12 @@ a visit is queued fold into it. Notes are counts per file class (learning: memor
 state: databases; raw: conversation logs) and files removed, never paths or contents. The robot
 shows the sync, it does not cause it; the first nap seen after a core restart is not visited (there
 is nothing to compare it with). `/api/fleet` carries it as `robot` (phase, from, target, timings,
-note, the last 8 notes, the queue); clicking it opens its notebook. Vacant desks fill each office. What the desk shows comes
-from `/api/fleet`:
+note, the last 8 notes, the queue); clicking it opens its notebook. An office has at least one row
+of two desks; an odd count gets an open desk. An agent stopped on purpose (`stopped`: its
+containers are down) leaves an "off shift" note on its desk; a container that is there and not
+running (`exited`, `dead`…) is **not running** instead: the note names the state in red and it
+counts as attention. The meters count each agent once, by what it is doing: working, idle or
+attention. What the desk shows comes from `/api/fleet`:
 
 | desk | from |
 |---|---|

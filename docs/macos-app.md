@@ -420,6 +420,29 @@ new.
 Done when: side by side with the web office on the same core, every agent is in the same activity
 and phase at the same time, and the catalog test passes.
 
+**As built** (SpriteKit, not `Canvas`: `Stormo/Office/`, with the pure parts in StormoKit `Office/`):
+
+- **Distance** (`OfficeCamera`, `OfficeDetail`): the zoom stays inside what the camera can show.
+  Close up the floor is as described above; further out (a smaller window, a bigger fleet) name tags
+  stack and grow against the camera so they stay readable, and the one under the pointer shows in
+  full; from far away each room is a tile with its people by what they are doing (`RoomSummary`),
+  and a click goes into the room.
+- **Input**: click → inspector; double-click a person (or Return) → its recent activity
+  (`/api/agents/<id>/timeline`; the app has no logs view); arrow keys and Tab move between people;
+  right-click → actions. A wheel zooms at the pointer; a trackpad moves the floor once zoomed in
+  (it zooms at the whole floor, and with ⌘ held); drag pans; double-click open floor fits.
+- **Counts**: a bar under the floor, each agent counted once by its mode (`FleetSummary`), "to
+  review" as items. The ChatGPT plan shows only when an agent routes through the core or the plan is
+  signed in or limited.
+- **Timeline** (`OfficeTimelineView`, the toolbar's Floor / Timeline switch): a lane per agent,
+  grouped by unit, with its stretches of work over the last 1 hour to 7 days from `GET /api/timeline`
+  (`FleetTimeline`, `TimelineAxis`), the time worked, and the same inspector and activity sheet. A
+  core without the route gets a note to restart it.
+- **Accessibility**: the floor's children for VoiceOver are the rooms with their counts and the
+  people as buttons (`OfficeAccessibleFloor`); each timeline lane reads as one line.
+- **Not built**: hover labels at close range (the tag is already in full there), the office in its
+  own window, Increase Contrast outlines, and the web/app catalog test.
+
 ## Phase 5: build, sign, ship
 
 - **The bundled binary**: `go build` darwin/arm64 and darwin/amd64 with the release flags, `lipo`

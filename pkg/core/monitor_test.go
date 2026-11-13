@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -115,6 +116,32 @@ func TestVerifySignature(t *testing.T) {
 		if _, ok := k.VerifySignature(body, sig(h)); ok {
 			t.Errorf("%q must not verify", h)
 		}
+	}
+}
+
+func TestSpansGroupEventsIntoStretchesOfWork(t *testing.T) {
+	m := NewMonitor(testDB(t), testKeys(t), nil)
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	// atlas: three events close together, a pause, then one more; nova: one event; echo: too old.
+	for i, e := range []struct {
+		agent string
+		after time.Duration
+	}{{"atlas", 0}, {"atlas", 30 * time.Second}, {"atlas", 30*time.Second + SpanGap}, {"atlas", 20 * time.Minute}, {"nova", time.Minute}, {"echo", -3 * time.Hour}} {
+		if _, err := m.db.Exec(`INSERT INTO activity(agent, at, event, delivery) VALUES(?,?,?,?)`, e.agent, base.Add(e.after).UnixMilli(), "pre_tool_call", fmt.Sprint("d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := m.Spans(base.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := func(d time.Duration) int64 { return base.Add(d).UnixMilli() }
+	want := map[string][]Span{
+		"atlas": {{Start: ms(0), End: ms(30*time.Second + SpanGap), Events: 3}, {Start: ms(20 * time.Minute), End: ms(20 * time.Minute), Events: 1}},
+		"nova":  {{Start: ms(time.Minute), End: ms(time.Minute), Events: 1}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("spans %+v, want %+v", got, want)
 	}
 }
 
@@ -289,6 +316,10 @@ func TestActivityRoutesNeedOwnerOrSelf(t *testing.T) {
 	}
 	if code, body := get("/api/agents/atlas/timeline", ""); code != 200 || !strings.Contains(body, `"read_file"`) || strings.Contains(body, "plan.md") {
 		t.Errorf("timeline %d %s", code, body)
+	}
+	// The fleet over time: when atlas was at it, and nothing of what it did.
+	if code, body := get("/api/timeline?hours=1", ""); code != 200 || !strings.Contains(body, `"atlas":[{"start":`) || !strings.Contains(body, `"events":1`) || strings.Contains(body, "read_file") {
+		t.Errorf("fleet timeline %d %s", code, body)
 	}
 	for _, who := range []string{"", novaKey, "wrong"} {
 		if code, _ := get("/api/agents/atlas/activity", who); code != 401 {

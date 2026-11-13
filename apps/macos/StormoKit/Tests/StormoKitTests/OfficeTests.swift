@@ -110,6 +110,40 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
     }
 }
 
+@Suite struct Timeline {
+    @Test func decodesAndAddsUpTheWork() throws {
+        let json = #"{"now":7200000,"from":0,"gapMs":120000,"agents":{"atlas":[{"start":600000,"end":1320000,"events":9},{"start":3600000,"end":3600000,"events":1}]}}"#
+        let t = try JSONDecoder().decode(FleetTimeline.self, from: Data(json.utf8))
+        #expect(t.agents["atlas"]?.count == 2 && t.agents["nova"] == nil)
+        // 12 minutes, and a lone event counted as half a minute.
+        #expect(t.worked("atlas") == 750_000 && t.worked("nova") == 0)
+        #expect(FleetTimeline.duration(750_000) == "13m" && FleetTimeline.duration(0) == "" && FleetTimeline.duration(20_000) == "under a minute")
+        #expect(FleetTimeline.duration(72 * 60_000) == "1h 12m" && FleetTimeline.duration(120 * 60_000) == "2h")
+    }
+
+    @Test func axisPlacesMomentsAndRoundMarks() {
+        let hour: Int64 = 3_600_000
+        let axis = TimelineAxis(from: 10 * hour + 20 * 60_000, to: 16 * hour + 20 * 60_000, width: 600)
+        #expect(axis.x(axis.from) == 0 && axis.x(axis.to) == 600 && axis.x(13 * hour + 20 * 60_000) == 300)
+        #expect(axis.x(0) == 0 && axis.x(99 * hour) == 600)
+        #expect(axis.time(at: 300) == 13 * hour + 20 * 60_000)
+        // Six hours over 600 points: a mark an hour, on the hour.
+        let utc = TimeZone(identifier: "UTC")!
+        #expect(axis.marks(zone: utc) == (11...16).map { Int64($0) * hour })
+        // Half-hour zones round on their own clock.
+        let kolkata = TimeZone(identifier: "Asia/Kolkata")!
+        #expect(axis.marks(zone: kolkata).allSatisfy { ($0 + 19_800_000) % hour == 0 })
+        // A week: a mark a day.
+        let week = TimelineAxis(from: 0, to: 7 * 24 * hour, width: 600)
+        #expect(week.marks(zone: utc) == (1...6).map { Int64($0) * 24 * hour })
+        // A lone event is still a bar, inside the lane.
+        let lone = axis.bar(.init(start: axis.to, end: axis.to, events: 1))
+        #expect(lone.width == 2 && lone.x == 598)
+        let spans = [FleetTimeline.Span(start: 11 * hour, end: 11 * hour + 60_000, events: 3)]
+        #expect(axis.span(at: 11 * hour - 30_000, in: spans, slop: 60_000) == spans[0] && axis.span(at: 12 * hour, in: spans, slop: 60_000) == nil)
+    }
+}
+
 @Suite struct Floor {
     @Test func everyDeskIsInItsOfficeAndRoutesConnect() throws {
         let (fleet, look) = try demo()

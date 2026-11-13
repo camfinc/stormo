@@ -19,7 +19,7 @@ import (
 // openViews are the reads a direct loopback request gets without a token.
 func openView(path string) bool {
 	switch path {
-	case "/", "/review", "/api/core", "/api/instance", "/api/fleet", "/api/gateway", "/api/gateway/models", "/api/learning":
+	case "/", "/review", "/api/core", "/api/instance", "/api/fleet", "/api/timeline", "/api/gateway", "/api/gateway/models", "/api/learning":
 		return true
 	}
 	if uiFiles[path].body != nil || avatarPath.MatchString(path) {
