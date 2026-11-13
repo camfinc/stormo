@@ -33,6 +33,9 @@ final class OfficeScene: SKScene {
     private var clockOffset: Int64 = 0
     private var avatars: [String: NSImage] = [:]
     private var rosterKey = ""
+    /// The fleet by id and each agent's mode, as of the last refresh (read every frame).
+    private var agentsByID: [String: FleetAgent] = [:]
+    private var modes: [String: OfficeMode] = [:]
 
     private var people: [String: PersonNode] = [:]
     private var chairs: [String: SKSpriteNode] = [:]
@@ -45,6 +48,8 @@ final class OfficeScene: SKScene {
     private var reviewMarkers: [String: SKSpriteNode] = [:]
     private var alertMarkers: [String: SKSpriteNode] = [:]
     private var arcs: [String: SKShapeNode] = [:]
+    /// Each arc's dashes at every step of their march, made once: a frame only picks one.
+    private var arcFrames: [String: [CGPath]] = [:]
     private var robot: RobotNode?
     private var coreLEDs: [SKSpriteNode] = []
     private var slots: [SKSpriteNode] = []
@@ -108,6 +113,8 @@ final class OfficeScene: SKScene {
         self.look = look
         self.clockOffset = clockOffset
         self.avatars = avatars
+        agentsByID = Dictionary(fleet.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        modes = agentsByID.mapValues(OfficeLook.mode(of:))
         let key = Self.rosterKey(fleet, look)
         if key != rosterKey {
             rosterKey = key
@@ -142,14 +149,14 @@ final class OfficeScene: SKScene {
         guard let fleet else { return }
         world.removeAllChildren()
         people = [:]; chairs = [:]; chairState = [:]; screens = [:]; stickies = [:]; tags = [:]; tagKeys = [:]
-        bubbles = [:]; reviewMarkers = [:]; alertMarkers = [:]; arcs = [:]; robot = nil; coreLEDs = []; slots = []; blades = []; clocks = []
+        bubbles = [:]; reviewMarkers = [:]; alertMarkers = [:]; arcs = [:]; arcFrames = [:]; robot = nil; coreLEDs = []; slots = []; blades = []; clocks = []
         playback.reset()
 
         let clockList = look.instance?.clocks ?? []
         let aspect = size.width > 0 && size.height > 0 ? size.width / size.height : nil
         let plan = FloorPlan(units: fleet.units, agents: fleet.agents, look: look, clocks: clockList.map(\.city), fitting: aspect)
         self.plan = plan
-        let byID = Dictionary(uniqueKeysWithValues: fleet.agents.map { ($0.id, $0) })
+        let byID = agentsByID
         let groupName = fleet.units.first { $0.id == "group" }?.name ?? "Commons"
 
         let building = SKSpriteNode(texture: BuildingArt.texture(.init(plan: plan, look: look, agents: byID, groupName: groupName)), size: plan.size)
@@ -323,7 +330,7 @@ final class OfficeScene: SKScene {
         let gw = fleet.gateway
         let now = serverNow
         for a in fleet.agents {
-            let mode = OfficeLook.mode(of: a)
+            let mode = modes[a.id] ?? .unknown
             for s in screens[a.id] ?? [] { s.set(mode, still: reduceMotion) }
             updateTag(a, mode: mode, now: now, force: force)
             let r = a.toReview
@@ -332,8 +339,8 @@ final class OfficeScene: SKScene {
                 if r > 0 { setTexture(m, LabelArt.marker("\(r)", alert: false)) }
             }
             if let m = alertMarkers[a.id] {
-                m.isHidden = mode != .alert
-                if mode == .alert { setTexture(m, LabelArt.marker("!", alert: true)) }
+                m.isHidden = !mode.needsAttention
+                if mode.needsAttention { setTexture(m, LabelArt.marker("!", alert: true)) }
             }
             if let b = bubbles[a.id] {
                 b.isHidden = mode != .busy
@@ -343,14 +350,18 @@ final class OfficeScene: SKScene {
             people[a.id]?.accessibilityLabel = "\(a.name), \(OfficeLook.statusText(a, serverNow: now))"
         }
         // The core rack: its colour says the plan's state; slots say calls in flight.
-        let limited = gw.planLimitedUntil != nil
-        let rackColor = limited ? OfficePalette.bad : (gw.login == "ok" ? OfficePalette.ok : OfficePalette.warn)
+        let planState = OfficeLook.plan(fleet)
+        // Nobody on the plan: the rack is just on, in its room's green.
+        let rackColor = planState == .unused ? OfficePalette.ok : planState.color
         for led in coreLEDs { led.color = Art.nsColor(rackColor) }
         let sub: String
-        if limited, let until = gw.planLimitedUntil.flatMap(OfficeLook.epochMillis) {
+        switch planState {
+        case .limited(let until?):
             sub = "plan limit · \(Date(timeIntervalSince1970: Double(until) / 1000).formatted(date: .omitted, time: .shortened))"
-        } else {
-            sub = gw.login == "ok" ? "Using ChatGPT plan" : "not signed in"
+        case .limited: sub = "plan limit"
+        case .online: sub = "Using ChatGPT plan"
+        case .signedOut: sub = "not signed in"
+        case .unused: sub = "online"
         }
         if let core = plan.racks.first(where: { $0.kind == .core }) {
             setTexture(rackSub, LabelArt.rackSub(sub, color: rackColor, width: core.rect.width + 20))
@@ -380,7 +391,7 @@ final class OfficeScene: SKScene {
                 }
             }
             for (i, a) in fleet.agents.enumerated() where i < blades.count {
-                blades[i].texture = LabelArt.blade(a.id, color: OfficeLook.mode(of: a).color, size: rects[i].size)
+                blades[i].texture = LabelArt.blade(a.id, color: (modes[a.id] ?? .unknown).color, size: rects[i].size)
             }
         }
         // Model calls in flight through the core: a dotted arc from the rack to the agent's screen.
@@ -394,13 +405,29 @@ final class OfficeScene: SKScene {
                 n.zPosition = 9
                 world.addChild(n)
                 arcs[a.id] = n
+                arcFrames[a.id] = arcPaths(to: a.id)
+                n.path = arcFrames[a.id]?.first
             } else if !active, let n = arcs[a.id] {
                 n.removeFromParent()
                 arcs[a.id] = nil
+                arcFrames[a.id] = nil
             }
         }
         showSelection()
     }
+
+    /// The dotted arc from the core rack to an agent's first screen, at each step of its march.
+    private func arcPaths(to id: String) -> [CGPath] {
+        guard let plan, let screen = screens[id]?.first, let core = plan.racks.first(where: { $0.kind == .core }) else { return [] }
+        let from = sp(CGPoint(x: core.rect.midX, y: core.rect.midY)), to = screen.position
+        let path = CGMutablePath()
+        path.move(to: from)
+        path.addQuadCurve(to: to, control: CGPoint(x: (from.x + to.x) / 2, y: max(from.y, to.y) + 60))
+        return (0..<Self.arcSteps).map { path.copy(dashingWithPhase: CGFloat($0) / CGFloat(Self.arcSteps) * -14, lengths: [2, 12]) }
+    }
+
+    /// Steps in one dash period (2 + 12 points), marched through every 0.45 s.
+    private static let arcSteps = 14
 
     private func setTexture(_ node: SKSpriteNode, _ t: SKTexture) {
         guard node.texture !== t else { return }
@@ -429,22 +456,23 @@ final class OfficeScene: SKScene {
             person.apply(frame, reduceMotion: reduceMotion)
             person.zPosition = frame.walking || !frame.pose.seated ? 11 : 10
             let p = frame.point
+            // Off shift there is nobody to name; a container that died keeps its tag and its `!`.
+            let down = modes[a.id] == .down
             if let t = tags[a.id] {
                 t.position = sp(CGPoint(x: p.x, y: p.y + 24))
-                t.isHidden = frame.away
+                t.isHidden = frame.away && !down
             }
             bubbles[a.id]?.position = sp(CGPoint(x: p.x + 9, y: p.y - 50))
             followMarkers(a.id, p, time: currentTime)
             if frame.away { bubbles[a.id]?.isHidden = true }
-            stickies[a.id]?.isHidden = !frame.away
+            stickies[a.id]?.isHidden = !frame.away || down
             moveChair(a.id, frame)
-            if let arc = arcs[a.id], let screen = screens[a.id]?.first, let core = plan.racks.first(where: { $0.kind == .core }) {
-                let from = sp(CGPoint(x: core.rect.midX, y: core.rect.midY)), to = screen.position
-                let path = CGMutablePath()
-                path.move(to: from)
-                path.addQuadCurve(to: to, control: CGPoint(x: (from.x + to.x) / 2, y: max(from.y, to.y) + 60))
-                let phase = reduceMotion ? 0 : CGFloat(currentTime.truncatingRemainder(dividingBy: 0.9) / 0.9) * -28
-                arc.path = path.copy(dashingWithPhase: phase, lengths: [2, 12])
+        }
+        if !reduceMotion, !arcs.isEmpty {
+            let step = Int(currentTime.truncatingRemainder(dividingBy: 0.45) / 0.45 * Double(Self.arcSteps)) % Self.arcSteps
+            if step != arcStep {
+                arcStep = step
+                for (id, arc) in arcs { if let frames = arcFrames[id], step < frames.count { arc.path = frames[step] } }
             }
         }
         if let robot, let r = fleet.robot {
@@ -457,12 +485,14 @@ final class OfficeScene: SKScene {
             lastSecond = second
             tickClocks(now: now)
             if second % 15 == 0 {
-                for a in fleet.agents { updateTag(a, mode: OfficeLook.mode(of: a), now: now, force: false) }
+                for a in fleet.agents { updateTag(a, mode: modes[a.id] ?? .unknown, now: now, force: false) }
             }
         }
     }
 
     /// Markers ride above the person's head, bobbing gently (1.8 s).
+    private var arcStep = -1
+
     private func followMarkers(_ id: String, _ p: CGPoint, time: TimeInterval) {
         let base = sp(CGPoint(x: p.x, y: p.y - 46))
         let bob = reduceMotion ? 0 : 1.5 * (1 - cos(time * 2 * .pi / 1.8))
@@ -516,7 +546,7 @@ final class OfficeScene: SKScene {
 
     private func noteText(_ n: RobotNote?) -> String {
         guard let n else { return "" }
-        let name = fleet?.agents.first { $0.id == n.agent }?.name ?? n.agent
+        let name = agentsByID[n.agent]?.name ?? n.agent
         var parts: [String] = []
         if let c = n.changed {
             if c.learning > 0 { parts.append("\(c.learning) learning") }
@@ -533,8 +563,7 @@ final class OfficeScene: SKScene {
     private func showSelection() {
         for (id, p) in people {
             let on = selection == .agent(id)
-            let mode = fleet?.agents.first { $0.id == id }.map(OfficeLook.mode(of:)) ?? .unknown
-            p.setSelected(on, color: Art.nsColor(mode.color))
+            p.setSelected(on, color: Art.nsColor((modes[id] ?? .unknown).color))
         }
         rackHighlight.isHidden = selection != .core
     }

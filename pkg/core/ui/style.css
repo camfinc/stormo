@@ -564,7 +564,8 @@ a.meter { text-decoration: none; }
 /* off shift: nobody at the desk, the chair tucked in, a note on the desk */
 .ws.away .agent { opacity: 0; pointer-events: none; }
 .ws.away .chair { transform: translateY(-6px); }
-.ws.away .sticky, .ws[data-mode="away"] .sticky { opacity: 1; }
+.ws.away .sticky, .ws[data-mode="away"] .sticky, .ws[data-mode="down"] .sticky { opacity: 1; }
+.ws[data-mode="down"] .sticky { background: var(--bad); color: #fff; }
 .sticky {
   position: absolute; left: 50%; top: 18px; transform: translateX(-50%) rotate(-4deg); opacity: 0;
   padding: 2px 5px; background: #fde68a; color: #3f3005; font: 700 9px var(--mono); letter-spacing: 0.06em;

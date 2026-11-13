@@ -175,21 +175,18 @@ struct OfficeHUD: View {
 
     var body: some View {
         let s = FleetSummary(fleet)
-        let idle = fleet.agents.filter { OfficeLook.mode(of: $0) == .idle }.count
-        let g = fleet.gateway
+        let plan = OfficeLook.plan(fleet)
         HStack(spacing: 14) {
             Meter(label: "On shift", value: "\(s.onShift)/\(s.total)", color: s.onShift > 0 ? OfficePalette.ok : OfficePalette.off)
             Meter(label: "Working", value: "\(s.working)", color: s.working > 0 ? OfficePalette.busy : nil)
-            Meter(label: "Idle", value: "\(idle)", color: idle > 0 ? OfficePalette.ok : nil)
-            Meter(label: "To review", value: "\(fleet.agents.reduce(0) { $0 + $1.toReview })",
-                  color: s.toReview > 0 ? OfficePalette.gold : nil)
+            Meter(label: "Idle", value: "\(s.idle)", color: s.idle > 0 ? OfficePalette.ok : nil)
+            Meter(label: "To review", value: "\(s.reviewItems)", color: s.reviewItems > 0 ? OfficePalette.gold : nil)
             if s.attention > 0 { Meter(label: "Attention", value: "\(s.attention)", color: OfficePalette.bad) }
-            if g.planLimitedUntil != nil {
-                Meter(label: "ChatGPT plan", value: "limited", color: OfficePalette.bad)
-            } else if g.login == "ok" {
-                Meter(label: "Using ChatGPT plan", value: "", color: OfficePalette.ok)
-            } else {
-                Meter(label: "ChatGPT plan", value: g.login == "missing" ? "signed out" : g.login, color: OfficePalette.warn)
+            switch plan {
+            case .unused: EmptyView()
+            case .online: Meter(label: "Using ChatGPT plan", value: "", color: plan.color)
+            case .signedOut(let why): Meter(label: "ChatGPT plan", value: why, color: plan.color)
+            case .limited: Meter(label: "ChatGPT plan", value: "limited", color: plan.color)
             }
         }
         .padding(.horizontal, 16)
@@ -225,8 +222,11 @@ struct OfficeOverview: View {
                 Section {
                     LabeledContent("On shift", value: "\(s.onShift) of \(s.total)")
                     LabeledContent("Working", value: "\(s.working)")
+                    LabeledContent("Idle", value: "\(s.idle)")
                     if s.attention > 0 { LabeledContent("Needs attention") { Text("\(s.attention)").foregroundStyle(.red) } }
-                    if s.toReview > 0 { LabeledContent("With learnings to review", value: "\(s.toReview)") }
+                    if s.reviewItems > 0 {
+                        LabeledContent("To review", value: "\(s.reviewItems) from \(s.toReview) \(s.toReview == 1 ? "agent" : "agents")")
+                    }
                 } header: {
                     Label(model.instances.active?.name ?? "Office", systemImage: "building.2")
                 } footer: {

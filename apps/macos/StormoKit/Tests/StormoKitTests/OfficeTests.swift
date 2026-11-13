@@ -47,8 +47,31 @@ private func agent(_ id: String, unit: String = "sales", state: String = "runnin
         #expect(OfficeLook.statusText(a, serverNow: now) == "Idle 12m · getting coffee")
         a.health = "unhealthy"
         #expect(OfficeLook.mode(of: a) == .alert)
-        #expect(OfficeLook.mode(of: agent("x", state: "exited")) == .away)
+        // Stopped on purpose is off shift; a container that is there and not running asks for a look.
+        #expect(OfficeLook.mode(of: agent("x", state: "stopped")) == .away)
+        let gone = agent("x", state: "exited")
+        #expect(OfficeLook.mode(of: gone) == .down && gone.needsAttention && OfficeLook.statusText(gone, serverNow: 0) == "Exited")
+        #expect(!OfficeMode.down.present)
         #expect(OfficeLook.sourceLabel("api_server") == "API run" && OfficeLook.sourceLabel("my_bot") == "my bot")
+    }
+
+    /// The counts are the modes: nobody is in two of working, idle and attention.
+    @Test func summaryCountsEachAgentOnce() throws {
+        let working = OfficeState(activity: "desk", phase: "seated", start: 0, end: nil, from: nil, slot: 0, label: "", working: true, seq: 1)
+        var alerting = agent("sage", office: working)
+        alerting.detail = "nap sidecar exited"
+        var idle = agent("byte", office: working)
+        idle.office?.working = false
+        idle.pendingLearnings = 3
+        var busy = agent("echo", office: working)
+        busy.pendingSkills = 1
+        let fleet = [alerting, idle, busy, agent("nova", state: "stopped"), agent("scout", state: "exited")]
+        var f = try JSONDecoder().decode(Fleet.self, from: fixture("api_fleet"))
+        f.agents = fleet
+        let s = FleetSummary(f)
+        #expect(s.total == 5 && s.onShift == 3 && s.working == 1 && s.idle == 1 && s.attention == 2)
+        #expect(s.working + s.idle + s.attention + 1 == s.total)
+        #expect(s.toReview == 2 && s.reviewItems == 4)
     }
 }
 

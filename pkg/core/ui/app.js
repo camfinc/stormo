@@ -15,6 +15,7 @@ const MODE = {
   alert: { label: "Needs attention", color: "var(--bad)" },
   unknown: { label: "Unknown", color: "var(--off)" },
   away: { label: "Off shift", color: "var(--off)" },
+  down: { label: "Not running", color: "var(--bad)" },
   leaving: { label: "Leaving", color: "var(--off)" },
 };
 
@@ -108,7 +109,9 @@ function modeOf(a, gw) {
   }
   if (a.state === "starting" || a.state === "restarting") return "arriving";
   if (a.state === "unknown") return "unknown";
-  return "away";
+  // `stormo stop` takes the containers down ("stopped"); any other state is a container that is
+  // there and not running (exited, dead…): nobody asked for that.
+  return a.state === "stopped" ? "away" : "down";
 }
 
 const review = (a) => a.pendingLearnings + a.pendingSkills;
@@ -380,6 +383,7 @@ function workLabel(a) {
 function statusText(a, mode, p) {
   if (mode === "busy") return `Working · ${workLabel(a)}`;
   if (mode === "idle") return `Idle${idleFor(a) ? ` ${idleFor(a)}` : ""}${a.office?.label ? ` · ${a.office.label}` : ""}`;
+  if (mode === "down") return a.state === "exited" ? "Exited" : `Not running · ${a.state}`;
   return { arriving: "Arriving", alert: "Needs attention", unknown: "Status unknown", away: "Off shift", leaving: "Leaving" }[mode] ?? mode;
 }
 
@@ -860,6 +864,8 @@ function updateAgent(a, gw) {
   marker.classList.toggle("on", r > 0);
   marker.title = `${a.pendingLearnings} learnings, ${a.pendingSkills} skill proposals waiting for review`;
   $(".marker.alert", ws).classList.toggle("on", mode === "alert");
+  // The note on an empty desk: off shift, or what its container is doing instead of running.
+  $(".sticky", ws).textContent = mode === "down" ? a.state : "off shift";
   $(".tag .what", ws).textContent = statusText(a, mode, p);
   $(".bubble .src", ws).textContent = workLabel(a);
   const label = `${a.name}, ${statusText(a, mode, p)}${r ? `, ${r} to review` : ""}`;
@@ -885,6 +891,7 @@ function logTransition(a, from, to) {
     alert: `${n} needs attention: ${esc(a.detail ?? a.health ?? "a platform needs attention")}`,
     unknown: `Can't see ${n}'s desk${a.detail ? ` (${esc(a.detail)})` : ""}`,
     away: `${n} left the office`,
+    down: `${n} is not running (${esc(a.state)})`,
   }[to];
   if (msg) feed(msg);
 }
@@ -913,10 +920,10 @@ function updateGateway(gw) {
 function meters() {
   const gw = snap.gateway;
   const modes = snap.agents.map((a) => modeOf(a, gw));
-  const onShift = modes.filter((m) => m !== "away" && m !== "unknown").length;
+  const onShift = modes.filter((m) => PRESENT.has(m) && m !== "unknown").length;
   const working = modes.filter((m) => m === "busy").length;
   const idle = modes.filter((m) => m === "idle").length;
-  const alerts = modes.filter((m) => m === "alert").length;
+  const alerts = modes.filter((m) => m === "alert" || m === "down").length;
   const toReview = snap.agents.reduce((n, a) => n + review(a), 0);
   const usage = Object.values(gw.usage ?? {});
   const calls = usage.reduce((n, u) => n + u.requests, 0);

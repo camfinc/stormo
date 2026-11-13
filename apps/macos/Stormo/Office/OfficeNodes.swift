@@ -48,7 +48,7 @@ final class ScreenNode: SKNode {
         saver.isHidden = true
         glow.isHidden = true
         switch mode {
-        case .away, .unknown:
+        case .away, .unknown, .down:
             break
         case .idle:
             glow.isHidden = false

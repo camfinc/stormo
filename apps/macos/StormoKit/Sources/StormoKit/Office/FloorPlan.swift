@@ -66,6 +66,8 @@ public struct FloorPlan: Sendable {
     public private(set) var server: CGRect = .zero
     public private(set) var lobby: CGRect = .zero
     public private(set) var workstations: [Workstation] = []
+    /// Each agent's place in `workstations` (the scene asks every frame).
+    private var deskIndex: [String: Int] = [:]
     public private(set) var racks: [Rack] = []
     public private(set) var lobbyDoors: [Side: CGRect] = [:]
     public private(set) var serverDoor: CGRect = .zero
@@ -259,6 +261,7 @@ public struct FloorPlan: Sendable {
             let col = CGFloat(i % 2), row = CGFloat(i / 2)
             let origin = CGPoint(x: left + col * (w.width + Self.deskGap.width), y: top + row * (w.height + Self.deskGap.height))
             let rect = CGRect(origin: origin, size: w)
+            if let id { deskIndex[id] = workstations.count }
             workstations.append(Workstation(agent: id, unit: unit, rect: rect,
                                             seat: CGPoint(x: origin.x + Self.seatOffset.x, y: origin.y + Self.seatOffset.y), office: office))
         }
@@ -266,7 +269,7 @@ public struct FloorPlan: Sendable {
 
     // MARK: Places
 
-    public func workstation(of agent: String) -> Workstation? { workstations.first { $0.agent == agent } }
+    public func workstation(of agent: String) -> Workstation? { deskIndex[agent].map { workstations[$0] } }
     public func office(_ id: String?) -> Office? { offices.first { $0.unit.id == id } }
     public var coreRack: CGRect { racks.first { $0.kind == .core }?.rect ?? .zero }
 

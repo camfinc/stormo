@@ -5,10 +5,13 @@ import Foundation
 
 /// What an agent is doing, as the office shows it.
 public enum OfficeMode: String, Sendable, CaseIterable {
-    case idle, busy, arriving, alert, unknown, away
+    case idle, busy, arriving, alert, unknown, away, down
 
     /// At (or on the way to) the desk.
-    public var present: Bool { self != .away }
+    public var present: Bool { self != .away && self != .down }
+
+    /// Asking for a person: the red `!`.
+    public var needsAttention: Bool { self == .alert || self == .down }
 
     public var label: String {
         switch self {
@@ -18,6 +21,7 @@ public enum OfficeMode: String, Sendable, CaseIterable {
         case .alert: "Needs attention"
         case .unknown: "Unknown"
         case .away: "Off shift"
+        case .down: "Not running"
         }
     }
 
@@ -27,7 +31,7 @@ public enum OfficeMode: String, Sendable, CaseIterable {
         case .idle: OfficePalette.ok
         case .busy: OfficePalette.busy
         case .arriving: OfficePalette.warn
-        case .alert: OfficePalette.bad
+        case .alert, .down: OfficePalette.bad
         case .unknown, .away: OfficePalette.off
         }
     }
@@ -166,13 +170,16 @@ public struct OfficeLook: Sendable {
     public static func mode(of a: FleetAgent) -> OfficeMode {
         switch a.state {
         case "running":
-            if a.health == "unhealthy" || !(a.detail ?? "").isEmpty || a.needsAttention { return .alert }
+            if a.health == "unhealthy" || !(a.detail ?? "").isEmpty || a.platformNeedsAttention { return .alert }
             if let o = a.office { return o.working ? .busy : .idle }
             let working = (a.activity?.activeAgents ?? 0) > 0 || a.activity?.gatewayBusy == true || !(a.activity?.runningJobs ?? []).isEmpty
             return working ? .busy : .idle
         case "starting", "restarting": return .arriving
         case "unknown": return .unknown
-        default: return .away
+        // `stormo stop` takes the containers down ("stopped"); any other state is a container that
+        // is there and not running (exited, dead…): nobody asked for that.
+        case "stopped": return .away
+        default: return .down
         }
     }
 
@@ -216,7 +223,33 @@ public struct OfficeLook: Sendable {
         case .alert: return "Needs attention"
         case .unknown: return "Status unknown"
         case .away: return "Off shift"
+        case .down: return a.state == "exited" ? "Exited" : "Not running · \(a.state.replacingOccurrences(of: "_", with: " "))"
         }
+    }
+
+    /// The ChatGPT plan as the office shows it. `unused` when the sign-in is missing and no agent
+    /// routes through the core (no `model.local`): nothing to warn about.
+    public enum Plan: Sendable, Equatable {
+        case unused, online
+        case signedOut(String)
+        case limited(until: Int64?)
+
+        public var color: String {
+            switch self {
+            case .unused: OfficePalette.off
+            case .online: OfficePalette.ok
+            case .signedOut: OfficePalette.warn
+            case .limited: OfficePalette.bad
+            }
+        }
+    }
+
+    public static func plan(_ fleet: Fleet) -> Plan {
+        let g = fleet.gateway
+        if let until = g.planLimitedUntil { return .limited(until: epochMillis(until)) }
+        if g.login == "ok" { return .online }
+        let inUse = fleet.agents.contains { !($0.localModel ?? "").isEmpty }
+        return inUse ? .signedOut(g.login == "missing" ? "signed out" : g.login.replacingOccurrences(of: "_", with: " ")) : .unused
     }
 
     /// RFC 3339 → epoch milliseconds.

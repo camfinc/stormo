@@ -4,24 +4,33 @@ import Observation
 /// The fleet at a glance: what the menu bar and the toolbar count.
 public struct FleetSummary: Sendable, Equatable {
     public var total = 0
-    /// Containers running.
+    // The counts below are the office's modes (OfficeLook.mode), as the web office counts them: an
+    // agent is in one of working, idle and attention, never two.
+    /// At work or on the way in.
     public var onShift = 0
-    /// Working at their desk right now (the office's view).
+    /// Working at their desk right now.
     public var working = 0
-    /// Unhealthy, or a platform asking for attention.
+    /// On shift with nothing to do.
+    public var idle = 0
+    /// The office's red `!`: unhealthy, a platform asking for attention, or not running unasked.
     public var attention = 0
     /// Agents with learnings or skill proposals waiting for review.
     public var toReview = 0
+    /// Everything waiting for review, over all agents.
+    public var reviewItems = 0
 
     public init() {}
 
     public init(_ fleet: Fleet) {
         total = fleet.agents.count
         for a in fleet.agents {
-            if a.state == "running" { onShift += 1 }
-            if a.office?.working == true { working += 1 }
-            if a.needsAttention { attention += 1 }
+            let mode = OfficeLook.mode(of: a)
+            if mode.present, mode != .unknown { onShift += 1 }
+            if mode == .busy { working += 1 }
+            if mode == .idle { idle += 1 }
+            if mode.needsAttention { attention += 1 }
             if a.toReview > 0 { toReview += 1 }
+            reviewItems += a.toReview
         }
     }
 }
@@ -30,10 +39,12 @@ extension FleetAgent {
     /// Everything of its waiting for review: lessons, skills, runtime schedules and settings.
     public var toReview: Int { (pendingLearnings ?? 0) + (pendingSkills ?? 0) + (pendingChanges ?? 0) }
 
-    /// Unhealthy, or a platform (Slack…) reporting it needs attention: the office's red `!`.
-    public var needsAttention: Bool {
-        if health == "unhealthy" { return true }
-        return activity?.platforms?.values.contains(where: \.needsAttention) ?? false
+    /// The office's red `!` (OfficeLook.mode): unhealthy, a detail to read, a platform (Slack…)
+    /// reporting it needs attention, or a container that is not running without having been stopped.
+    public var needsAttention: Bool { OfficeLook.mode(of: self).needsAttention }
+
+    var platformNeedsAttention: Bool {
+        activity?.platforms?.values.contains(where: \.needsAttention) ?? false
     }
 
     /// One line for lists: "Working · Slack", "Idle", "Stopped".
