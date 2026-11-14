@@ -85,36 +85,42 @@ func TestVisionOffStripsImages(t *testing.T) {
 	}
 }
 
-// vision auto: a model that refuses images (a 400 naming them) gets the request again without
-// them, and the endpoint is not given images again for the process.
+// vision auto: a model that refuses images (a 400 naming them, or OpenRouter's 404 when none of
+// its providers takes them) gets the request again without them, and the endpoint is not given
+// images again for the process.
 func TestVisionAutoFallsBackOnRefusal(t *testing.T) {
-	rec := &recorder{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec.add(r)
-		if rec.n() == 1 {
-			w.WriteHeader(400)
-			_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"This model does not support image input."}}`))
-			return
-		}
-		sse(w, true, text("ok"))
-	}))
-	defer srv.Close()
-	c := &Client{Endpoints: []Endpoint{{BaseURL: srv.URL + "/v1", Model: "m"}}}
-	if !c.Sees(0) {
-		t.Fatal("auto should try images")
-	}
 	req := Request{Messages: []Message{{Role: "user", Content: "look", Images: []Image{{Name: "cat.png", MIME: "image/png", Data: []byte("x")}}}}}
-	if _, err := c.NewTurn().Complete(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	if rec.n() != 2 {
-		t.Fatalf("%d requests", rec.n())
-	}
-	if urls, _, _ := imageParts(rec.bodies[1]); len(urls) != 0 {
-		t.Errorf("the retry still had images")
-	}
-	if c.Sees(0) {
-		t.Error("the refusing endpoint is still given images")
+	for status, refusal := range map[int]string{
+		400: `{"error":{"code":"invalid_request","message":"This model does not support image input."}}`,
+		404: `{"error":{"code":404,"message":"No endpoints found that support image input"}}`,
+	} {
+		rec := &recorder{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec.add(r)
+			if rec.n() == 1 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(refusal))
+				return
+			}
+			sse(w, true, text("ok"))
+		}))
+		defer srv.Close()
+		c := &Client{Endpoints: []Endpoint{{BaseURL: srv.URL + "/v1", Model: "m"}}}
+		if !c.Sees(0) {
+			t.Fatal("auto should try images")
+		}
+		if _, err := c.NewTurn().Complete(context.Background(), req); err != nil {
+			t.Fatalf("%d: %v", status, err)
+		}
+		if rec.n() != 2 {
+			t.Fatalf("%d: %d requests", status, rec.n())
+		}
+		if urls, _, _ := imageParts(rec.bodies[1]); len(urls) != 0 {
+			t.Errorf("%d: the retry still had images", status)
+		}
+		if c.Sees(0) {
+			t.Errorf("%d: the refusing endpoint is still given images", status)
+		}
 	}
 	// a plain 400 not about images is the request's fault: no retry
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

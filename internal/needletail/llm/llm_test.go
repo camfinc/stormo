@@ -131,6 +131,10 @@ func TestFallback(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":{"code":"usage_limit_reached","resets_in_seconds":3600}}`))
 		}, true, 1},
 		"502": {func(w http.ResponseWriter) { w.WriteHeader(502) }, true, 1},
+		"model not served": {func(w http.ResponseWriter) {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"model b is not served"}}`))
+		}, true, 1},
 		"in-band error": {func(w http.ResponseWriter) {
 			sse(w, false, text("partial "), `{"error":{"code":"upstream_timeout_idle","message":"idle"}}`)
 		}, true, 1},
@@ -218,10 +222,10 @@ func TestFatalAndExhausted(t *testing.T) {
 	}
 	dead := httptest.NewServer(http.NotFoundHandler())
 	dead.Close()
-	cl = &Client{Endpoints: []Endpoint{{BaseURL: dead.URL}, {BaseURL: cloud.URL}}}
+	cl = &Client{Endpoints: []Endpoint{{BaseURL: dead.URL}, {BaseURL: cloud.URL}}, Sleep: func(context.Context, time.Duration) error { return nil }}
 	_, err = cl.NewTurn().Complete(context.Background(), Request{})
-	if err == nil || !strings.Contains(err.Error(), "HTTP 500") || rec.n() != 1 {
-		t.Errorf("all failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") || rec.n() != 1+transientRounds {
+		t.Errorf("all failed: %v (cloud calls %d)", err, rec.n())
 	}
 	// a stalled stream is a failed attempt, not a hang
 	stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +238,47 @@ func TestFatalAndExhausted(t *testing.T) {
 	cl = &Client{Endpoints: []Endpoint{{BaseURL: stall.URL}}, IdleTimeout: 100 * time.Millisecond}
 	if _, err := cl.NewTurn().Complete(context.Background(), Request{}); err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("stall: %v", err)
+	}
+}
+
+// A chain that fails on a transient failure (the core's token refresh failing) runs again after
+// 5 s, then 10 s; a timeout does not.
+func TestTransientRunsTheChainAgain(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		failures int // answers that fail before one that works
+		status   int
+		calls    int
+		waits    []time.Duration
+		ok       bool
+	}{
+		{"blip", 2, 502, 3, []time.Duration{5 * time.Second, 10 * time.Second}, true},
+		{"down", 9, 502, 3, []time.Duration{5 * time.Second, 10 * time.Second}, false},
+		{"timeout", 9, 504, 1, nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := &recorder{}
+			core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rec.add(r)
+				if rec.n() <= c.failures {
+					w.WriteHeader(c.status)
+					_, _ = w.Write([]byte(`{"error":{"code":"core_refresh_failed","message":"token refresh failed: TimeoutError"}}`))
+					return
+				}
+				sse(w, true, text("ok"))
+			}))
+			defer core.Close()
+			var waits []time.Duration
+			cl := &Client{Endpoints: []Endpoint{{BaseURL: core.URL, Model: "a"}},
+				Sleep: func(_ context.Context, d time.Duration) error { waits = append(waits, d); return nil }}
+			resp, err := cl.NewTurn().Complete(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+			if (err == nil) != c.ok || rec.n() != c.calls || fmt.Sprint(waits) != fmt.Sprint(c.waits) {
+				t.Errorf("err %v, calls %d (want %d), waits %v (want %v)", err, rec.n(), c.calls, waits, c.waits)
+			}
+			if c.ok && resp.Content != "ok" {
+				t.Errorf("content %q", resp.Content)
+			}
+		})
 	}
 }
 

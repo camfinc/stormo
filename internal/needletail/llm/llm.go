@@ -181,6 +181,8 @@ const (
 	defaultContext        = 128_000
 	rateLimitRetries      = 2
 	busyRetries           = 3
+	transientRounds       = 2
+	transientWait         = 5 * time.Second
 	maxSSELine            = 16 << 20
 	maxErrorBody          = 64 << 10
 	codeUsageLimitReached = "usage_limit_reached"
@@ -235,11 +237,12 @@ const (
 )
 
 // classify is what a failure leads to (§4.3): rate limits and a busy core wait and retry; a 401,
-// a plan limit, a connection error, a 5xx or a broken stream move to the next endpoint; any other
-// 4xx is the request's fault, which another endpoint would refuse too.
+// a plan limit, a 404 (the endpoint does not serve the model), a connection error, a 5xx or a
+// broken stream move to the next endpoint; any other 4xx is the request's fault, which another
+// endpoint would refuse too.
 func classify(f *Failure) action {
 	switch {
-	case f.Status == 0, f.Status == 401, f.Status == 403:
+	case f.Status == 0, f.Status == 401, f.Status == 403, f.Status == 404:
 		return fallback
 	case f.Status == 429 && f.Code == codeUsageLimitReached:
 		return fallback
@@ -251,6 +254,17 @@ func classify(f *Failure) action {
 		return fallback
 	}
 	return fatal
+}
+
+// transient is a failure worth the whole chain again after a pause: a connection refused or a 5xx
+// (the core's token refresh failing, a network blip). Not a timeout (504, a stalled stream): that
+// would hold the turn as long again.
+func transient(err error) bool {
+	var f *Failure
+	if !errors.As(err, &f) {
+		return false
+	}
+	return f.Status == 0 && f.Code == "connection" || f.Status >= 500 && f.Status != 504
 }
 
 // ContextExceeded: err is a refusal of a request too long for the model's context window
@@ -274,62 +288,73 @@ func (t *Turn) Complete(ctx context.Context, req Request) (*Response, error) {
 		return nil, errors.New("no model endpoint configured")
 	}
 	var last error
-	for i := t.start; i < len(c.Endpoints); i++ {
-		ep := c.Endpoints[i]
-		limited, busy := 0, 0
-		for {
-			resp, f := c.attempt(ctx, i, ep, req)
-			if f == nil {
-				t.start = i
-				resp.Endpoint = i
-				return resp, nil
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			last = f
-			c.logf("llm endpoint=%d status=%d code=%s", i, f.Status, f.Code)
-			act := classify(f)
-			if act == retrySame {
-				wait := f.RetryAfter
-				if f.Status == 429 {
-					limited++
-					if limited > rateLimitRetries {
-						act = fallback
-					}
-				} else {
-					busy++
-					if busy > busyRetries {
-						act = fallback
-					}
-					if wait == 0 {
-						wait = time.Duration(1<<busy) * time.Second
-					}
+	for round := 0; ; round++ {
+		for i := t.start; i < len(c.Endpoints); i++ {
+			ep := c.Endpoints[i]
+			limited, busy := 0, 0
+			for {
+				resp, f := c.attempt(ctx, i, ep, req)
+				if f == nil {
+					t.start = i
+					resp.Endpoint = i
+					return resp, nil
 				}
-				if act == retrySame {
-					if wait <= 0 {
-						wait = time.Second
-					}
-					if m := c.maxWait(); wait > m {
-						wait = m
-					}
-					if err := c.sleep(ctx, wait); err != nil {
-						return nil, err
-					}
-					continue
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
 				}
-			}
-			if act == fatal {
+				last = f
+				c.logf("llm endpoint=%d status=%d code=%s", i, f.Status, f.Code)
 				if c.imageRefusal(i, req, f) {
 					c.logf("llm endpoint=%d refused images: sending without them from now on", i)
 					continue
 				}
-				return nil, f
+				act := classify(f)
+				if act == retrySame {
+					wait := f.RetryAfter
+					if f.Status == 429 {
+						limited++
+						if limited > rateLimitRetries {
+							act = fallback
+						}
+					} else {
+						busy++
+						if busy > busyRetries {
+							act = fallback
+						}
+						if wait == 0 {
+							wait = time.Duration(1<<busy) * time.Second
+						}
+					}
+					if act == retrySame {
+						if wait <= 0 {
+							wait = time.Second
+						}
+						if m := c.maxWait(); wait > m {
+							wait = m
+						}
+						if err := c.sleep(ctx, wait); err != nil {
+							return nil, err
+						}
+						continue
+					}
+				}
+				if act == fatal {
+					return nil, f
+				}
+				break // fallback
 			}
-			break // fallback
+		}
+		// Every endpoint failed: a transient failure runs the chain again after a pause (5 s,
+		// then 10 s) before the turn fails.
+		if round == transientRounds || !transient(last) {
+			return nil, last
+		}
+		wait := transientWait << round
+		c.logf("llm chain failed: again in %s", wait)
+		if err := c.sleep(ctx, wait); err != nil {
+			return nil, err
 		}
 	}
-	return nil, last
 }
 
 func (c *Client) logf(format string, args ...any) {

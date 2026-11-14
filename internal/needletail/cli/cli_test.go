@@ -158,11 +158,12 @@ func TestOneshotBench(t *testing.T) {
 		t.Errorf("session file = %s", raw)
 	}
 
-	// a failure is still one result line, with exit code 1
+	// a failure is still one result line, with exit code 1 (a refusal: a chain of dead endpoints
+	// would run again after a pause)
 	stdout.Reset()
-	dead2 := httptest.NewServer(http.NotFoundHandler())
-	dead2.Close()
-	h2 := home(t, dead.URL+"/v1", dead2.URL+"/v1")
+	refuse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) }))
+	defer refuse.Close()
+	h2 := home(t, dead.URL+"/v1", refuse.URL+"/v1")
 	setenv(t, h2)
 	code = Run(context.Background(), []string{"oneshot", "--format", "stream-json", "-q", "hi"}, &stdout, &stderr)
 	run = adapter.New(&instance.Instance{}).ParseBench(stdout.String(), code)

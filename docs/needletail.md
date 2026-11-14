@@ -198,7 +198,8 @@ An OpenAI chat-completions client with streaming SSE.
 **Retries and fallback**
 - 429: honours `Retry-After` and `resets_in_seconds`.
 - 503 `core_busy`: retried with backoff.
-- Fallback chain: the core gateway first (local with `engine.local`). On a 401, a 429 `usage_limit_reached`, a connection error or a 5xx it moves to the cloud provider. The core is tried again on the next turn.
+- Fallback chain: the core gateway first (local with `engine.local`). On a 401, a 429 `usage_limit_reached`, a 404 (the endpoint does not serve the model), a connection error or a 5xx it moves to the cloud provider. The core is tried again on the next turn.
+- A chain that every endpoint failed, the last one with a refused connection or a 5xx other than a 504 (the core's token refresh failing, a network blip), runs again after 5 s, then 10 s, before the call fails. A timeout (504, a stalled stream) is not run again.
 - On AWS the cloud provider is the only entry.
 
 **Other**
