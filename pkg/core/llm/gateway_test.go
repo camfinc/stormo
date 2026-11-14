@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -428,6 +429,74 @@ func TestModelsCatalog(t *testing.T) {
 	eq(t, "catalog", got, [][]any{{"gpt-6-luna", 400000}, {"gpt-6-sol", 272000}})
 	if rec := chat(e.gw, with(hi, "model", "hidden")); rec.Code != 404 {
 		t.Errorf("hidden model: %d", rec.Code)
+	}
+}
+
+// A catalog refresh that fails (here the token refresh behind it) keeps the last catalog: a model
+// it lists is not refused as unknown, and the call fails as the token does, a retryable 502.
+func TestCatalogRefreshFailureKeepsCatalog(t *testing.T) {
+	f := newFake(t)
+	f.catalog = map[string]any{"models": []any{
+		map[string]any{"slug": "gpt-6-luna", "visibility": "list"},
+		map[string]any{"slug": "gpt-6.1-sol", "visibility": "list"},
+	}}
+	var logs []string
+	e := setup(t, f, nil, false, func(o *llm.GatewayOptions) { o.Log = func(l string) { logs = append(logs, l) } })
+	sol := with(hi, "model", "gpt-6.1-sol")
+	if rec := chat(e.gw, sol); rec.Code != 200 {
+		t.Fatalf("fresh catalog: %d %s", rec.Code, rec.Body.String())
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	b, _ := json.Marshal(conn(expiringSoon))
+	if err := os.WriteFile(e.paths.Connection, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.setUpstream(func(w http.ResponseWriter, r *http.Request, body string) {
+		if r.URL.Path == f.tokenPath() {
+			writeJSON(w, 500, map[string]any{})
+			return
+		}
+		writeSSE(w, textEvents)
+	})
+	e.gw.ExpireCatalog()
+	if rec := chat(e.gw, sol); rec.Code != 502 || errCode(t, rec) != "core_refresh_failed" {
+		t.Fatalf("refresh failing: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := httptest.NewRecorder()
+	e.gw.Handle(rec, modelsReq())
+	var ids []any
+	for _, m := range decode(t, rec)["data"].([]any) {
+		ids = append(ids, m.(map[string]any)["id"])
+	}
+	eq(t, "kept catalog", ids, []any{"gpt-6-luna", "gpt-6.1-sol"})
+	if rec := chat(e.gw, with(hi, "model", "hidden")); rec.Code != 404 {
+		t.Errorf("hidden model on the kept catalog: %d", rec.Code)
+	}
+	if !slices.ContainsFunc(logs, func(l string) bool {
+		return strings.Contains(l, "llm catalog refresh failed (core_refresh_failed") && strings.HasSuffix(l, "serving the last catalog")
+	}) {
+		t.Errorf("no refresh failure logged: %q", logs)
+	}
+
+	f.setUpstream(func(w http.ResponseWriter, r *http.Request, body string) {
+		if r.URL.Path == f.tokenPath() {
+			writeJSON(w, 200, map[string]any{"access_token": "at-2", "refresh_token": "rt-2", "token_type": "Bearer", "expires_in": 3600})
+			return
+		}
+		writeSSE(w, textEvents)
+	})
+	if rec := chat(e.gw, sol); rec.Code != 200 {
+		t.Fatalf("token back: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Before the catalog was ever reached, the defaults refuse nothing: the upstream answers.
+func TestNoCatalogYetForwards(t *testing.T) {
+	f := newFake(t) // no catalog: GET /models answers 404
+	e := setup(t, f, nil, false, nil)
+	if rec := chat(e.gw, with(hi, "model", "gpt-6.1-sol")); rec.Code != 200 || len(f.responsesCalls()) != 1 {
+		t.Fatalf("status %d, upstream calls %d: %s", rec.Code, len(f.responsesCalls()), rec.Body.String())
 	}
 }
 

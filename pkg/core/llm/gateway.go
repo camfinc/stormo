@@ -299,28 +299,50 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Models is the signed-in plan's model catalog (`visibility: "list"`, server order), cached for
-// 10 min; the configured defaults before sign-in or when the catalog is unreachable.
+// 10 min; while a refresh fails (a token refresh or the network), the last catalog fetched; the
+// configured defaults before sign-in or before the catalog was first reached.
 func (g *Gateway) Models(ctx context.Context) []ModelInfo {
+	models, _ := g.models(ctx)
+	return models
+}
+
+// models is Models, and whether the list is the plan's catalog (fresh, or kept from an earlier
+// fetch) rather than the defaults: only the catalog can say a model is not served.
+func (g *Gateway) models(ctx context.Context) ([]ModelInfo, bool) {
 	g.mu.Lock()
-	if g.catalog != nil && time.Since(g.catalogAt) < catalogTTL {
-		c := g.catalog
-		g.mu.Unlock()
-		return c
-	}
+	last, at := g.catalog, g.catalogAt
 	failedRecently := time.Since(g.catalogFailedAt) < time.Minute
 	g.mu.Unlock()
-	if g.o.Auth.State() != LoginOK || failedRecently {
-		return g.o.Models
+	if last != nil && time.Since(at) < catalogTTL {
+		return last, true
 	}
-	fail := func() []ModelInfo {
+	if g.o.Auth.State() != LoginOK {
+		return g.o.Models, false
+	}
+	kept := func() ([]ModelInfo, bool) {
+		if last != nil {
+			return last, true
+		}
+		return g.o.Models, false
+	}
+	if failedRecently {
+		return kept()
+	}
+	fail := func(why string) ([]ModelInfo, bool) {
 		g.mu.Lock()
 		g.catalogFailedAt = time.Now()
 		g.mu.Unlock()
-		return g.o.Models
+		what := "the defaults"
+		if last != nil {
+			what = "the last catalog"
+		}
+		g.o.Log(fmt.Sprintf("%s llm catalog refresh failed (%s): serving %s", isoNow(), why, what))
+		return kept()
 	}
 	token, err := g.o.Auth.AccessToken(ctx)
 	if err != nil {
-		return fail()
+		f := authFailure(err)
+		return fail(f.Code + ": " + f.Message)
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -329,15 +351,21 @@ func (g *Gateway) Models(ctx context.Context) []ModelInfo {
 	req.Header.Set("Accept", "application/json")
 	res, err := g.o.Client.Do(req)
 	if err != nil {
-		return fail()
+		if cctx.Err() != nil {
+			return fail("timed out")
+		}
+		return fail(fmt.Sprintf("request failed: %T", err))
 	}
 	defer res.Body.Close()
 	var body struct {
 		Models []map[string]any `json:"models"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
-	if res.StatusCode < 200 || res.StatusCode > 299 || json.Unmarshal(raw, &body) != nil || body.Models == nil {
-		return fail()
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return fail(fmt.Sprintf("HTTP %d", res.StatusCode))
+	}
+	if json.Unmarshal(raw, &body) != nil || body.Models == nil {
+		return fail("unreadable catalog")
 	}
 	known := map[string]int{}
 	for _, m := range g.o.Models {
@@ -368,12 +396,12 @@ func (g *Gateway) Models(ctx context.Context) []ModelInfo {
 		models = append(models, info)
 	}
 	if len(models) == 0 {
-		return fail()
+		return fail("no listed model")
 	}
 	g.mu.Lock()
 	g.catalog, g.catalogAt = models, time.Now()
 	g.mu.Unlock()
-	return models
+	return models, true
 }
 
 func (g *Gateway) record(agent string, status int, m *StreamMapper) {
@@ -516,14 +544,16 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request, agent string) {
 		return
 	}
 	model := ModelSlug(body.Model)
-	served := g.Models(r.Context())
+	served, catalog := g.models(r.Context())
 	found := false
 	ids := make([]string, len(served))
 	for i, m := range served {
 		ids[i] = m.ID
 		found = found || m.ID == model
 	}
-	if !found {
+	// Only the plan's catalog refuses a model: without one (a token refresh or the network
+	// failing), the defaults do not know, and the call goes on for the upstream to answer.
+	if !found && catalog {
 		g.fail(w, agent, model, started, UpstreamFailure{Status: 404, Code: "model_not_found", Message: fmt.Sprintf("model %s is not served (have: %s)", body.Model, strings.Join(ids, ", "))})
 		return
 	}

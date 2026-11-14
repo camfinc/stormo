@@ -185,7 +185,10 @@ rotate, so exactly one process holds and refreshes them: core.
   back, so the agent sees plain tool names. A forced specific tool becomes `tool_choice: required`.
 - Models: after sign-in, `/v1/models` is the plan's catalog (`visibility: "list"`, server order,
   cached 10 min) with a context length when the catalog publishes one (else 272,000); before
-  sign-in it serves the configured default (`gpt-6-luna`).
+  sign-in it serves the configured default (`gpt-6-luna`). A refresh that fails (the token refresh
+  behind it, the network) keeps the last catalog, retried a minute later, and logs `llm catalog
+  refresh failed`. Only a catalog refuses a model (404 `model_not_found`): before the core first
+  reached one, a model the default does not list goes to the upstream, which answers for it.
 - Also: images, `reasoning_effort` (clamped to the nearest weaker supported level, never a 400),
   usage, and encrypted reasoning cached in memory by `call_id` and replayed on the next tool turn.
 - Errors: plan problems arrive in the stream (`response.failed`), so core holds the HTTP status
