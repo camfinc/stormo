@@ -141,8 +141,9 @@ type Options struct {
 	Voice   *voice.Replies
 	Sees    func() bool
 	// Forward sends a message to another agent of the swarm over the core's bus (msg_send), for a
-	// handler's route (nil: not on a core, such a route is refused).
-	Forward func(ctx context.Context, to, subject, body string) error
+	// handler's route (nil: not on a core, such a route is refused). untrusted is the route's mark
+	// ("" when none): the core keeps it on the message, and its reader is marked by it.
+	Forward func(ctx context.Context, to, subject, body, untrusted string) error
 	// Approve puts an action to the approvers as the tool call that would run (the approvals
 	// service, as for a tool): a handler's route of an unverified message. nil: refused.
 	Approve func(ctx context.Context, session, tool string, args json.RawMessage, need *messaging.ApprovalNeeded) (any, error)

@@ -38,28 +38,37 @@ func (f *fakeCore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// A handler's route to an agent goes over the core's bus as the agent's msg_send; a refusal by the
-// core is the route's error.
+// A handler's route to an agent goes over the core's bus as the agent's msg_send, a marked one with
+// its mark in the call's _meta (never an argument); a refusal by the core is the route's error.
 func TestCoreForward(t *testing.T) {
 	core := &fakeCore{}
 	srv := httptest.NewServer(core)
 	defer srv.Close()
 	forward := coreForward(func() *mcp.Client { return mcp.New(srv.URL, "core-key", nil) })
-	if err := forward(context.Background(), "atlas", "Forwarded from Slack: hi", "[Forwarded…]\n\nhi"); err != nil {
+	if err := forward(context.Background(), "atlas", "Forwarded from Slack: hi", "[Forwarded…]\n\nhi", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := forward(context.Background(), "atlas", "Forwarded from Slack: hey", "hey", "the message is from someone who may not instruct the agent"); err != nil {
 		t.Fatal(err)
 	}
 	core.mu.Lock()
-	call := core.calls[0]
+	call, marked := core.calls[0], core.calls[1]
 	core.mu.Unlock()
 	args := call["arguments"].(map[string]any)
-	if call["name"] != "msg_send" || args["to"] != "atlas" || args["subject"] != "Forwarded from Slack: hi" || !strings.Contains(args["body"].(string), "hi") {
+	if call["name"] != "msg_send" || args["to"] != "atlas" || args["subject"] != "Forwarded from Slack: hi" || !strings.Contains(args["body"].(string), "hi") || call["_meta"] != nil {
 		t.Errorf("call %+v", call)
 	}
+	if meta, _ := marked["_meta"].(map[string]any); meta["untrusted"] != "the message is from someone who may not instruct the agent" {
+		t.Errorf("marked call %+v", marked)
+	}
+	if _, ok := marked["arguments"].(map[string]any)["untrusted"]; ok {
+		t.Errorf("the mark is an argument: %+v", marked)
+	}
 	core.fail = true
-	if err := forward(context.Background(), "beta", "s", "b"); err == nil || !strings.Contains(err.Error(), "unknown agent beta") {
+	if err := forward(context.Background(), "beta", "s", "b", ""); err == nil || !strings.Contains(err.Error(), "unknown agent beta") {
 		t.Errorf("refused: %v", err)
 	}
-	if err := coreForward(func() *mcp.Client { return nil })(context.Background(), "atlas", "s", "b"); err == nil {
+	if err := coreForward(func() *mcp.Client { return nil })(context.Background(), "atlas", "s", "b", ""); err == nil {
 		t.Error("forwarded with no core")
 	}
 }

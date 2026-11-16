@@ -111,15 +111,16 @@ func sharedPath(cfg *config.Config) func(real string) (string, bool) {
 }
 
 // coreForward is the Slack gateway's route to another agent (a handler's route action): the core's
-// msg_send as the agent, through its relay. A tool error is the route's error.
-func coreForward(client func() *mcp.Client) func(ctx context.Context, to, subject, body string) error {
-	return func(ctx context.Context, to, subject, body string) error {
+// msg_send as the agent, through its relay, with the route's mark (untrusted). A tool error is the
+// route's error.
+func coreForward(client func() *mcp.Client) func(ctx context.Context, to, subject, body, untrusted string) error {
+	return func(ctx context.Context, to, subject, body, untrusted string) error {
 		c := client()
 		if c == nil {
 			return errors.New("the agent is not connected to a swarm core")
 		}
 		args, _ := json.Marshal(map[string]string{"to": to, "subject": subject, "body": body})
-		res, err := c.Call(ctx, "msg_send", args)
+		res, err := c.CallMarked(ctx, "msg_send", args, untrusted)
 		if err != nil {
 			return err
 		}

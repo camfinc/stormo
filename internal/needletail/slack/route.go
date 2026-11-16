@@ -20,8 +20,9 @@ const (
 // routeMessage carries out a handler's route (docs/needletail.md §5.5): the message j is forwarded, with
 // no model turn, to another agent over the core's bus or to another Slack conversation the
 // messaging policy allows, with its provenance (who wrote it, whether they are verified, where).
-// Forwarding words the agent may not obey is an outbound forward: it is put to the approvers as
-// the call that would run (send_message, mcp_core_msg_send), never sent at once. Such words are
+// Forwarding words the agent may not obey to Slack is an outbound forward: it is put to the
+// approvers as the call that would run (send_message), never sent at once; to another agent it
+// goes with the mark (the core keeps it on the message, and its reader is marked). Such words are
 // an unverified author's (or a relay bot's), a note made from unverified thread context or marked
 // data, anything in a conversation marked for good (its durable taint), and, to Slack, a text the
 // before_send handlers rewrote from marked data: the decision is taken again on the text they
@@ -53,15 +54,15 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 			why = g.routeTaint(sctx, session, j, v)
 		}
 	}
-	marked := why != ""
+	waits := why != "" && agent == "" // a marked route to Slack waits for the owner
 	switch {
-	case marked:
-		err = g.routeForApproval(hctx, session, agent, target, canonical, subject, body, text, why, v)
+	case waits:
+		err = g.routeForApproval(hctx, session, target, canonical, text, why, v)
 	case agent != "":
 		if g.o.Forward == nil {
 			err = fmt.Errorf("the agent is not on a swarm core: no route to another agent")
 		} else {
-			err = g.o.Forward(messaging.WithSession(g.base, session), agent, subject, body)
+			err = g.o.Forward(messaging.WithSession(g.base, session), agent, subject, body, why)
 		}
 	default:
 		err = g.routeToSlack(session, target, text)
@@ -70,9 +71,9 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 		g.logf("slack: %s: %s's route to %s not carried out: %v", session, v.By, canonical, err)
 		return
 	}
-	g.logf("slack: %s: %s routed a message to %s (no turn)%s", session, v.By, canonical, map[bool]string{true: ", put to the approvers", false: ""}[marked])
+	g.logf("slack: %s: %s routed a message to %s (no turn)%s", session, v.By, canonical, map[bool]string{true: ", put to the approvers", false: ""}[waits])
 	// the acknowledgement says it was passed on: not while it waits for the owner
-	if strings.TrimSpace(v.Text) != "" && !marked {
+	if strings.TrimSpace(v.Text) != "" && !waits {
 		if err := g.handlerReply(session, j, messaging.Verdict{Text: v.Text, By: v.By}); err != nil {
 			g.logf("slack: %s: %s's acknowledgement not posted: %v", session, v.By, err)
 		}
@@ -202,28 +203,15 @@ func (g *Gateway) routeToSlack(session string, t messaging.Target, text string) 
 	return err
 }
 
-// routeForApproval puts a marked route to the approvers as the tool call that would run: to an
-// agent, the core's msg_send with the forward's body; to Slack, send_message with text, the
-// final text before_send left (bound: the approved send posts exactly it). why is the mark.
-func (g *Gateway) routeForApproval(hctx context.Context, session, agent string, t messaging.Target, canonical, subject, body, text, why string, v messaging.Verdict) error {
+// routeForApproval puts a marked route to Slack to the approvers as the call that would run:
+// send_message with text, the final text before_send left (bound: the approved send posts exactly
+// it). why is the mark.
+func (g *Gateway) routeForApproval(hctx context.Context, session string, t messaging.Target, canonical, text, why string, v messaging.Verdict) error {
 	if g.o.Approve == nil {
 		return fmt.Errorf("it forwards words the agent may not obey, which needs the owner's approval, and approvals are not available")
 	}
-	need := &messaging.ApprovalNeeded{What: "a handler's route of a message to " + canonical, Why: why, Trust: true}
-	tool := "mcp_core_msg_send"
-	var payload map[string]any
-	if agent != "" {
-		if g.o.Forward == nil {
-			return fmt.Errorf("the agent is not on a swarm core: no route to another agent")
-		}
-		payload = map[string]any{"to": agent, "subject": subject, "body": body}
-	} else {
-		tool = messaging.SendTool
-		payload = map[string]any{"target": t.String(), "message": text}
-		need.Filtered = true
-	}
-	need.Payload, _ = json.Marshal(payload)
-	args := need.Payload
-	_, err := g.o.Approve(messaging.WithReason(hctx, "a message handler ("+v.By+") routes this message"), session, tool, args, need)
+	need := &messaging.ApprovalNeeded{What: "a handler's route of a message to " + canonical, Why: why, Trust: true, Filtered: true}
+	need.Payload, _ = json.Marshal(map[string]any{"target": t.String(), "message": text})
+	_, err := g.o.Approve(messaging.WithReason(hctx, "a message handler ("+v.By+") routes this message"), session, messaging.SendTool, need.Payload, need)
 	return err
 }

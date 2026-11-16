@@ -40,7 +40,9 @@ const (
 
 // CoreCaller calls the swarm core's tools as the agent (mcp.Client).
 type CoreCaller interface {
-	Call(ctx context.Context, name string, args json.RawMessage) (*mcp.Result, error)
+	// CallMarked calls tool name from a run holding untrusted input for why ("" when it does not):
+	// mcp.Client.CallMarked.
+	CallMarked(ctx context.Context, name string, args json.RawMessage, why string) (*mcp.Result, error)
 }
 
 // Runtime is what Luau runs against in one agent home. Fields are set once at boot.
@@ -853,8 +855,10 @@ func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 
 // core calls one of the core's tools: an object answer as it is, any other text as {result}.
 func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any, error) {
-	if why := c.quarantined(ctx); why != "" && !messaging.ReadOnlyCoreTool(tool) {
-		// a tainted run's core write: a person approves exactly this call, or it is refused
+	why := c.quarantined(ctx)
+	if why != "" && !messaging.MarkedRunCoreTool(tool) {
+		// a tainted run's core write that carries content out: a person approves exactly this
+		// call, or it is refused (a message to another agent carries the run's mark instead)
 		b, _ := json.Marshal(args)
 		return c.approval(ctx, "mcp_core_"+tool, b, &messaging.ApprovalNeeded{What: "core_call " + tool, Why: why, Trust: true})
 	}
@@ -865,7 +869,7 @@ func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any,
 	if err != nil {
 		return nil, errf("bad_args", "%s: %v", tool, err)
 	}
-	res, err := c.rt.Core.Call(ctx, tool, b)
+	res, err := c.rt.Core.CallMarked(ctx, tool, b, why)
 	if err != nil {
 		if mcp.Away(err) {
 			return nil, errf("core_away", "%s: the swarm core is unreachable right now", tool)
@@ -875,6 +879,12 @@ func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any,
 	text := strings.TrimSpace(res.Text)
 	if res.IsError {
 		return nil, errf("core", "%s: %s", tool, text)
+	}
+	if mark := mcp.ReadMark(tool, text); mark != "" {
+		// a marked message's words reach the script only in a run marked by them
+		if err := messaging.MarkUntrusted(ctx, mark); err != nil {
+			return nil, errf("refused", "%s: the message carries untrusted input and this run cannot be marked (%v)", tool, err)
+		}
 	}
 	if strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
 		return json.RawMessage(text), nil

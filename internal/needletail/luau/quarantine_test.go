@@ -31,7 +31,6 @@ func TestQuarantineRefusesLuauWrites(t *testing.T) {
 		{"fs.write", `{"path":"/shared/group/new.md","content":"later instructions"}`},
 		{"memory.update", `{"id":"m0123456789a","fields":{"text":"changed"}}`},
 		{"memory.delete", `{"id":"m0123456789a"}`},
-		{"core.call", `{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`},
 		{"core.call", `{"tool":"fs_write","args":{"path":"/shared/group/new.md","content":"later"}}`},
 		{"core.call", `{"tool":"future_read_sounding_tool","args":{}}`},
 	} {
@@ -50,6 +49,13 @@ func TestQuarantineRefusesLuauWrites(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rt.Home, "reports", "new.md")); !os.IsNotExist(err) {
 		t.Fatal("file write escaped")
+	}
+	// a message to another agent goes, carrying the run's mark (the core keeps it on the message)
+	if raw := call.Call(ctx, "core.call", []byte(`{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`)); !strings.Contains(string(raw), `"ok":true`) {
+		t.Errorf("a marked script's message: %s", raw)
+	}
+	if got := core.got(); len(got) != 1 || got[0] != `msg_send {"message":"later","to":"atlas"} marked: unverified author` {
+		t.Errorf("core calls %q", got)
 	}
 	// a tainted run's save is kept, marked (never hot, never recalled)
 	if raw := call.Call(ctx, "memory.save", []byte(`{"text":"The client prefers calls after noon."}`)); !strings.Contains(string(raw), `"ok":true`) {
@@ -230,11 +236,12 @@ func (approvingMessenger) Send(context.Context, messaging.Request) (messaging.Se
 	return messaging.Sent{}, messaging.NeedsApproval("send_message to slack:C0OTHER001", "unverified author")
 }
 
-// A tainted script's core write and send elsewhere are put to a person as the same call
-// (Runtime.Approve): the script gets the approval's answer; in a dry run they stay refused.
+// A tainted script's core write that carries content out and its send elsewhere are put to a
+// person as the same call (Runtime.Approve): the script gets the approval's answer; in a dry run
+// they stay refused.
 func TestTaintedLuauWritesGoToApproval(t *testing.T) {
 	rt, core := newRuntime(t)
-	rt.Grants = append(rt.Grants, "message:*")
+	rt.Grants = append(rt.Grants, "message:*", "core:fs_*")
 	rt.Messenger = approvingMessenger{}
 	type asked struct{ session, tool, args string }
 	var got []asked
@@ -242,14 +249,14 @@ func TestTaintedLuauWritesGoToApproval(t *testing.T) {
 		got = append(got, asked{session, tool, string(args)})
 		return map[string]any{"status": "pending_approval", "approval_id": "ap_test"}, nil
 	}
-	caps, err := NewCaps([]string{"core:msg_*", "message:*"}, rt.Grants)
+	caps, err := NewCaps([]string{"core:msg_*", "core:fs_*", "message:*"}, rt.Grants)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := messaging.WithUntrusted(context.Background(), "unverified author")
 	call := rt.NewCall("relay", "slack-C0DEV-1.1", caps, false)
 	for _, tc := range []struct{ name, args string }{
-		{"core.call", `{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`},
+		{"core.call", `{"tool":"fs_write","args":{"path":"/shared/group/new.md","content":"later"}}`},
 		{"message.send", `{"target":"slack:C0OTHER001","text":"hello there"}`},
 	} {
 		raw := call.Call(ctx, tc.name, []byte(tc.args))
@@ -257,7 +264,7 @@ func TestTaintedLuauWritesGoToApproval(t *testing.T) {
 			t.Errorf("%s: %s", tc.name, raw)
 		}
 	}
-	if len(got) != 2 || got[0].tool != "mcp_core_msg_send" || got[0].args != `{"message":"later","to":"atlas"}` ||
+	if len(got) != 2 || got[0].tool != "mcp_core_fs_write" || got[0].args != `{"content":"later","path":"/shared/group/new.md"}` ||
 		got[1].tool != "send_message" || got[1].args != `{"message":"hello there","target":"slack:C0OTHER001"}` || got[0].session != "slack-C0DEV-1.1" {
 		t.Fatalf("asked %+v", got)
 	}
@@ -265,7 +272,7 @@ func TestTaintedLuauWritesGoToApproval(t *testing.T) {
 		t.Fatal("the core write ran before approval", core.got())
 	}
 	dry := rt.NewCall("relay", "slack-C0DEV-1.1", caps, true)
-	if raw := dry.Call(ctx, "core.call", []byte(`{"tool":"msg_send","args":{"to":"atlas","message":"later"}}`)); strings.Contains(string(raw), `"ok":true`) || len(got) != 2 {
+	if raw := dry.Call(ctx, "core.call", []byte(`{"tool":"fs_write","args":{"path":"/shared/group/new.md","content":"later"}}`)); strings.Contains(string(raw), `"ok":true`) || len(got) != 2 {
 		t.Errorf("a dry run asked: %s", raw)
 	}
 }

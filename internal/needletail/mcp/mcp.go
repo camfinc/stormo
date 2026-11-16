@@ -244,9 +244,17 @@ type Result struct {
 	IsError bool
 }
 
-// Call runs tool name with args (a JSON object; empty means {}).
+// Call runs tool name with args (a JSON object; empty means {}), from a run marked as ctx says.
 func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (*Result, error) {
-	if why := messaging.UntrustedWhy(ctx); why != "" && !messaging.ReadOnlyCoreTool(name) {
+	return c.CallMarked(ctx, name, args, messaging.UntrustedWhy(ctx))
+}
+
+// CallMarked runs tool name from a run that holds untrusted input for why ("" when it does not;
+// the caller passes its conversation's mark too, which ctx alone may not carry): a marked run
+// calls only what messaging.MarkedRunCoreTool allows, and a message it sends carries why in the
+// call's _meta, where the core keeps it (docs/core.md, marked messages).
+func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessage, why string) (*Result, error) {
+	if why != "" && !messaging.MarkedRunCoreTool(name) {
 		return nil, messaging.Deferred("core tool "+name, why)
 	}
 	if len(bytes.TrimSpace(args)) == 0 {
@@ -258,7 +266,11 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (*
 	if err := c.initialize(ctx); err != nil {
 		return nil, err
 	}
-	raw, err := c.rpc(ctx, "tools/call", map[string]any{"name": name, "arguments": args}, false)
+	params := map[string]any{"name": name, "arguments": args}
+	if why != "" && messaging.MarkCarryingCoreTool(name) {
+		params["_meta"] = map[string]string{"untrusted": why}
+	}
+	raw, err := c.rpc(ctx, "tools/call", params, false)
 	if err != nil {
 		return nil, err
 	}
@@ -292,11 +304,13 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 			Description: info.Description,
 			Schema:      info.InputSchema,
 			Run: func(ctx context.Context, env *tools.Env, args json.RawMessage) (any, error) {
-				if why := tools.UntrustedWhy(ctx, env); why != "" && !messaging.ReadOnlyCoreTool(name) {
-					// a tainted run's core write (msg_send, fs_write, …): a person approves it
+				why := tools.UntrustedWhy(ctx, env)
+				if why != "" && !messaging.MarkedRunCoreTool(name) {
+					// a tainted run's core write that carries content out (fs_write, cap_run, …):
+					// a person approves it; talk to another agent carries the mark instead
 					return nil, messaging.NeedsApproval("core tool "+name, why)
 				}
-				res, err := c.Call(ctx, name, args)
+				res, err := c.CallMarked(ctx, name, args, why)
 				if err != nil {
 					if Away(err) {
 						return nil, fmt.Errorf("the swarm core is unreachable right now; try again later (%s)", name)
@@ -307,6 +321,12 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 					return nil, errors.New(strings.TrimSpace(res.Text))
 				}
 				text := strings.TrimSpace(res.Text)
+				if mark := ReadMark(name, text); mark != "" {
+					// a marked message's words reach the model only in a run marked by them
+					if err := messaging.MarkUntrusted(ctx, mark); err != nil {
+						return nil, fmt.Errorf("refused: the message carries untrusted input and this run cannot be marked (%v)", err)
+					}
+				}
 				if strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
 					return json.RawMessage(text), nil
 				}
@@ -315,6 +335,40 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 		})
 	}
 	return out
+}
+
+// ReadMark is why reading a core tool's answer marks the reader's run ("" when it does not): a
+// swarm message msg_read or msg_thread shows whole, written by a run that held untrusted input
+// (the core keeps its mark). msg_inbox lists such a message without its words, so it never marks.
+func ReadMark(tool, text string) string {
+	type msg struct {
+		From      string `json:"from"`
+		Untrusted string `json:"untrusted"`
+	}
+	var ms []msg
+	switch tool {
+	case "msg_read":
+		var m msg
+		if json.Unmarshal([]byte(text), &m) == nil {
+			ms = []msg{m}
+		}
+	case "msg_thread":
+		var t struct {
+			Messages []msg `json:"messages"`
+		}
+		if json.Unmarshal([]byte(text), &t) == nil {
+			ms = t.Messages
+		}
+	}
+	for _, m := range ms {
+		if why := strings.TrimSpace(m.Untrusted); why != "" {
+			if r := []rune(why); len(r) > 200 {
+				why = string(r[:200]) + "…"
+			}
+			return fmt.Sprintf("read a swarm message from %s that carries untrusted input (%s)", m.From, why)
+		}
+	}
+	return ""
 }
 
 // Register adds the core's tools to reg as soon as the core lists them: it retries with backoff

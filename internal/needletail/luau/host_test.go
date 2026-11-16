@@ -35,9 +35,13 @@ type fakeCore struct {
 	reply func(name string, args map[string]any) (*mcp.Result, error)
 }
 
-func (f *fakeCore) Call(_ context.Context, name string, args json.RawMessage) (*mcp.Result, error) {
+func (f *fakeCore) CallMarked(_ context.Context, name string, args json.RawMessage, why string) (*mcp.Result, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, name+" "+string(args))
+	call := name + " " + string(args)
+	if why != "" {
+		call += " marked: " + why
+	}
+	f.calls = append(f.calls, call)
 	f.mu.Unlock()
 	if f.reply != nil {
 		var m map[string]any
