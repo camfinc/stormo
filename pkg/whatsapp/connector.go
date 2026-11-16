@@ -70,10 +70,54 @@ func (m Me) Is(j types.JID) bool {
 	return j.User != "" && (j == m.PN.ToNonAD() || j == m.LID.ToNonAD())
 }
 
-// Group is a group chat the linked account is in.
+// Group is a group chat the linked account is in, with its other members.
 type Group struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []Member `json:"members,omitempty"`
+}
+
+// Member is one of a group's participants: their phone number (+ and digits, as allowed_users
+// takes it) when WhatsApp gives it, else only their LID; and whether they administer the group.
+type Member struct {
+	Number string `json:"number,omitempty"`
+	LID    string `json:"lid,omitempty"`
+	Admin  bool   `json:"admin,omitempty"`
+}
+
+// members is ps as Members, the linked account left out, sorted by number (those WhatsApp gives
+// only a LID for last).
+func members(ps []types.GroupParticipant, me Me) []Member {
+	out := []Member{}
+	for _, p := range ps {
+		if me.Is(p.JID) || me.Is(p.PhoneNumber) || me.Is(p.LID) {
+			continue
+		}
+		m := Member{Admin: p.IsAdmin || p.IsSuperAdmin}
+		for _, j := range []types.JID{p.PhoneNumber, p.JID} {
+			if j.Server == types.DefaultUserServer && j.User != "" {
+				m.Number = "+" + j.User
+				break
+			}
+		}
+		for _, j := range []types.JID{p.LID, p.JID} {
+			if j.Server == types.HiddenUserServer && j.User != "" {
+				m.LID = j.ToNonAD().String()
+				break
+			}
+		}
+		if m.Number != "" || m.LID != "" {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if (a.Number == "") != (b.Number == "") {
+			return b.Number == ""
+		}
+		return a.Number < b.Number || a.Number == b.Number && a.LID < b.LID
+	})
+	return out
 }
 
 // ErrNotConnected: listing groups needs a linked, connected account.
@@ -283,7 +327,7 @@ func (c *Connector) Logout(ctx context.Context) error {
 	return nil
 }
 
-// Groups lists the group chats the linked account is in, by name.
+// Groups lists the group chats the linked account is in, by name, with their members.
 func (c *Connector) Groups(ctx context.Context) ([]Group, error) {
 	if !c.connected() {
 		return nil, ErrNotConnected
@@ -293,10 +337,11 @@ func (c *Connector) Groups(ctx context.Context) ([]Group, error) {
 		return nil, err
 	}
 	out := make([]Group, 0, len(infos))
+	me := c.me()
 	c.mu.Lock()
 	for _, g := range infos {
 		c.names[g.JID.ToNonAD()] = g.Name
-		out = append(out, Group{ID: g.JID.ToNonAD().String(), Name: g.Name})
+		out = append(out, Group{ID: g.JID.ToNonAD().String(), Name: g.Name, Members: members(g.Participants, me)})
 	}
 	c.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool {

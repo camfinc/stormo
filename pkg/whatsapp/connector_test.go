@@ -642,3 +642,18 @@ func TestMentionInAReplyToSomeoneElse(t *testing.T) {
 		t.Fatalf("reply input = %q", input)
 	}
 }
+
+func TestMembers(t *testing.T) {
+	lid := func(u string) types.JID { return types.NewJID(u, types.HiddenUserServer) }
+	got := members([]types.GroupParticipant{
+		{JID: lid("888"), PhoneNumber: member, LID: lid("888")},                     // a LID-addressed group gives both
+		{JID: owner, IsSuperAdmin: true},                                            // a phone-addressed one
+		{JID: lid("999"), LID: lid("999")},                                          // no number given
+		{JID: me.LID, PhoneNumber: me.PN, LID: me.LID},                              // the linked account itself
+		{JID: types.NewJID("393331111111", types.DefaultUserServer), IsAdmin: true}, // another admin
+	}, me)
+	want := []Member{{Number: "+393331111111", Admin: true}, {Number: "+393331234567", Admin: true}, {Number: "+393339999999", LID: "888@lid"}, {LID: "999@lid"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("members = %+v", got)
+	}
+}
