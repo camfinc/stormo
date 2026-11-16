@@ -532,12 +532,58 @@ func (rt *runtime) describeCall(env *tools.Env, tool string, raw json.RawMessage
 			card.Title += " (" + id + ")"
 		}
 	case strings.HasPrefix(tool, "mcp_core_"):
-		card.Title = "call the core's " + strings.TrimPrefix(tool, "mcp_core_")
+		name := strings.TrimPrefix(tool, "mcp_core_")
+		card.Title = "use the core's " + name
 		if p := str("path"); p != "" {
 			card.Target = p
 		}
 		if to := str("to"); to != "" {
 			card.Target = to
+		}
+		// the payload stays the whole call (JSON); the title says it in words and the preview
+		// carries the text a person reads first
+		num := func(k string) string {
+			if n, ok := a[k].(float64); ok {
+				return strconv.FormatFloat(n, 'f', -1, 64)
+			}
+			return "?"
+		}
+		switch name {
+		case "msg_send":
+			card.Title = "send a swarm message to " + orDefault(str("to"), "no one")
+			if str("priority") == "urgent" {
+				card.Title += " (urgent)"
+			}
+			card.Preview = strings.TrimSpace(str("subject") + "\n\n" + str("body"))
+		case "msg_ack":
+			card.Title = "mark swarm message " + num("id") + " as dealt with"
+		case "fs_write":
+			card.Title = "write the shared file " + str("path")
+			if str("mode") == "append" {
+				card.Title = "append to the shared file " + str("path")
+			}
+			card.Preview = str("content")
+		case "fs_note":
+			card.Title = fmt.Sprintf("record the shared file %s as %s by it", str("path"), orDefault(str("action"), "modified"))
+		case "fs_lock":
+			card.Title = "lock " + str("path") + " in the shared space"
+		case "fs_unlock":
+			card.Title = "unlock " + str("path") + " in the shared space"
+		case "fs_renew":
+			card.Title = "extend its lock on " + str("path")
+		case "whatsapp_send":
+			card.Title = "send a WhatsApp message to " + str("chat")
+			if str("image") != "" {
+				card.Title = "send a WhatsApp image to " + str("chat")
+			}
+			card.Target = str("chat")
+			card.Preview = str("text")
+		case "cap_run":
+			card.Title = "run a job of the capability " + str("capability")
+		case "cap_start":
+			card.Title = "queue a job of the capability " + str("capability")
+		case "cap_cancel":
+			card.Title = "cancel capability job " + num("job")
 		}
 	}
 	if len(card.Payload) > approvals.MaxPayload {

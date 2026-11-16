@@ -138,6 +138,10 @@ type Card struct {
 	// PayloadKind says which ("text", "diff", "json", "command").
 	Payload     string `json:"payload"`
 	PayloadKind string `json:"payload_kind"`
+	// Preview is the part a person reads first (a message's subject and text, a file's content),
+	// shown at the top of the card as plain text, clipped: never what runs (Payload is), and not
+	// hashed. "" when the payload reads well as it is.
+	Preview string `json:"preview,omitempty"`
 }
 
 // Request is one approval request (approvals-v1.json).

@@ -166,16 +166,42 @@ func outcomeLine(r *approvals.Request, who, code func(string) string) string {
 
 // cardText is a card's notification and fallback text: what is asked and the default.
 func (g *Gateway) cardText(r *approvals.Request) string {
-	return fmt.Sprintf("Approval needed: %s. If no one decides by %s it is denied (the buttons need the Slack app's Interactivity turned on).",
-		inlineCode(r.Card.Title), r.Expires.UTC().Format("2006-01-02 15:04 UTC"))
+	return fmt.Sprintf("%s wants to %s. If no one decides by %s it is denied (the buttons need the Slack app's Interactivity turned on).",
+		esc(clipRunes(g.agentName(), 80)), inlineCode(r.Card.Title), r.Expires.UTC().Format("2006-01-02 15:04 UTC"))
 }
 
-// cardBlocks renders a request as Block Kit, from the structured action only: what, where, why,
-// who brought the untrusted input in (with a link to where), the agent's reason labelled as its
-// claim, the exact payload, and (open) the buttons, else the outcome. The model's words (the
-// title's and target's parts, the reason) are shown as code or plain text, clipped, never as
+// previewMax is the most characters of the preview the summary shows; a readable payload (text, a
+// command) this short is shown there whole instead.
+const previewMax = 700
+
+// headline is the card's header (plain text, one line, within Slack's 150): the request in words,
+// and once decided, how it ended.
+func (g *Gateway) headline(r *approvals.Request) string {
+	what := clipRunes(g.agentName(), 80) + " wants to " + r.Card.Title
+	if r.Status != approvals.StatusPending {
+		what = clipRunes(g.agentName(), 80) + " asked to " + r.Card.Title
+	}
+	mark := map[string]string{
+		approvals.StatusPending:     "⚠️",
+		approvals.StatusApproved:    "⏳ Approved, running:",
+		approvals.StatusDone:        "✅ Approved:",
+		approvals.StatusDenied:      "❌ Denied:",
+		approvals.StatusExpired:     "⌛ Expired, not done:",
+		approvals.StatusFailed:      "⚠️ Failed:",
+		approvals.StatusInterrupted: "⏹ Interrupted:",
+	}[r.Status]
+	return clipRunes(strings.TrimSpace(orDefault(mark, r.Status+":")+" "+strings.Join(strings.Fields(what), " ")), 145)
+}
+
+// cardBlocks renders a request as Block Kit, from the structured action only. The summary first:
+// what is asked in words (the header), the text a person reads (the preview, or a short readable
+// payload whole), why it needs a person and the agent's reason labelled as its claim. Then in
+// depth: where, who brought the untrusted input in (with a link to where), the exact payload;
+// last (open) the buttons, else the outcome is under the header. The model's words (the title's
+// and target's parts, the preview, the reason) are shown as plain text or code, clipped, never as
 // formatting; the payload as preformatted rich text, exactly (no markup is read in it); every
-// block within Slack's limits, so no field the model sizes can keep the card from posting.
+// block within Slack's limits, so no field the model sizes can keep the card from posting. A
+// decided card keeps everything but the buttons: what was decided on stays readable.
 func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, error) {
 	type text struct {
 		Type string `json:"type"`
@@ -186,10 +212,51 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 	plain := func(s string) map[string]any {
 		return map[string]any{"type": "section", "text": text{Type: "plain_text", Text: clipRunes(s, 2900)}}
 	}
-	blocks := []map[string]any{
-		{"type": "header", "text": text{Type: "plain_text", Text: "Approval needed"}},
-		section(fmt.Sprintf("*%s* wants to %s", esc(clipRunes(g.agentName(), 80)), inlineCode(r.Card.Title))),
+	deadline := r.Expires.UTC().Format("2006-01-02 15:04 UTC")
+	kind := orDefault(r.Card.PayloadKind, "text")
+	preview := strings.TrimSpace(r.Card.Preview)
+	readable := kind == "text" || kind == "command"
+	payloadOnTop := preview == "" && readable && r.Card.Payload != "" && utf8.RuneCountInString(r.Card.Payload) <= previewMax
+	if preview == "" && readable && !payloadOnTop {
+		preview = r.Card.Payload
 	}
+	payloadHead := section(fmt.Sprintf("*Exactly what runs* (%s, sha256 `%s…`):", esc(kind), r.Hash[:16]))
+
+	// the summary
+	blocks := []map[string]any{{"type": "header", "text": text{Type: "plain_text", Text: g.headline(r)}}}
+	if !open {
+		blocks = append(blocks, section(outcomeLine(r, g.mention, inlineCode)))
+	}
+	if preview != "" {
+		blocks = append(blocks, map[string]any{"type": "rich_text", "elements": []map[string]any{{"type": "rich_text_quote",
+			"elements": []map[string]any{{"type": "text", "text": clipRunes(preview, previewMax)}}}}})
+	}
+	if payloadOnTop {
+		blocks = append(blocks, payloadHead)
+		blocks = append(blocks, preformatted([]string{r.Card.Payload})...)
+	}
+	why := "*Why it needs your OK:* "
+	if !open {
+		why = "*Why it needed your OK:* "
+	}
+	blocks = append(blocks, section(why+esc(clipRunes(r.Why, whyMax))))
+	reason := strings.TrimSpace(r.Reason)
+	if reason != "" {
+		blocks = append(blocks, section(fmt.Sprintf("*%s's reason* (its own claim, not verified):", esc(clipRunes(g.agentName(), 80)))), plain(clipRunes(reason, reasonMax)))
+	}
+	notes := []string{}
+	if reason == "" {
+		notes = append(notes, "The agent gave no reason.")
+	}
+	if open {
+		notes = append(notes, "If no one decides by "+deadline+", it is denied.")
+	}
+	if len(notes) > 0 {
+		blocks = append(blocks, map[string]any{"type": "context", "elements": []text{md(strings.Join(notes, " "))}})
+	}
+
+	// in depth
+	blocks = append(blocks, map[string]any{"type": "divider"})
 	fields := []text{}
 	if r.Card.Target != "" {
 		fields = append(fields, md("*Target*\n"+"`"+esc(strings.ReplaceAll(clipRunes(strings.Join(strings.Fields(r.Card.Target), " "), targetMax), "`", "ˋ"))+"`"))
@@ -206,9 +273,8 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 		}
 		fields = append(fields, md("*Asked in*\n"+where))
 	}
-	fields = append(fields, md("*Expires*\n"+r.Expires.UTC().Format("2006-01-02 15:04 UTC")+" (denied without a decision)"))
-	blocks = append(blocks, map[string]any{"type": "section", "fields": fields})
-	blocks = append(blocks, section("*Why a person must approve*\n"+esc(clipRunes(r.Why, whyMax))))
+	fields = append(fields, md("*Expires*\n"+deadline+" (denied without a decision)"))
+	blocks = append(blocks, map[string]any{"type": "section", "text": md("*In depth*"), "fields": fields})
 	if len(r.Taint) > 0 {
 		lines := []string{}
 		for i, t := range r.Taint {
@@ -234,6 +300,9 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 				}
 			}
 			line := "• " + who + ": " + esc(clipRunes(t.Why, 300))
+			if t.Why == r.Why {
+				line = "• " + who + " (the reason above)" // said once, in the summary
+			}
 			if t.At != "" {
 				line += " — " + esc(clipRunes(t.At, 40))
 			}
@@ -244,14 +313,8 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 		}
 		blocks = append(blocks, section("*Untrusted input in the conversation*\n"+strings.Join(lines, "\n")))
 	}
-	reason := strings.TrimSpace(r.Reason)
-	if reason == "" {
-		reason = "(the agent gave none)"
-	}
-	blocks = append(blocks, section("*The agent's stated reason* (its own claim, not verified):"), plain(clipRunes(reason, reasonMax)))
-	if open {
-		head := fmt.Sprintf("*Exactly what runs* (%s, sha256 `%s…`):", esc(orDefault(r.Card.PayloadKind, "text")), r.Hash[:16])
-		blocks = append(blocks, section(head))
+	if !payloadOnTop {
+		blocks = append(blocks, payloadHead)
 		chunks := chunkRunes(r.Card.Payload, cardChunk)
 		if len(chunks) == 0 {
 			chunks = []string{"(empty)"}
@@ -266,10 +329,16 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 			}
 			chunks = chunks[:room-1]
 			blocks = append(blocks, preformatted(chunks)...)
-			blocks = append(blocks, section(fmt.Sprintf("*The payload is cut here*: %d more bytes are not shown, and Approve runs them too. Deny unless you have seen it whole.", len(r.Card.Payload)-shown)))
+			cut := fmt.Sprintf("*The payload is cut here*: %d more bytes are not shown.", len(r.Card.Payload)-shown)
+			if open {
+				cut = fmt.Sprintf("*The payload is cut here*: %d more bytes are not shown, and Approve runs them too. Deny unless you have seen it whole.", len(r.Card.Payload)-shown)
+			}
+			blocks = append(blocks, section(cut))
 		} else {
 			blocks = append(blocks, preformatted(chunks)...)
 		}
+	}
+	if open {
 		value := r.ID + "|" + r.Hash
 		buttons := []map[string]any{
 			{"type": "button", "action_id": actionApprove, "style": "primary", "value": value, "text": text{Type: "plain_text", Text: "Approve"}},
@@ -282,7 +351,6 @@ func (g *Gateway) cardBlocks(r *approvals.Request, open bool) (json.RawMessage, 
 		blocks = append(blocks, map[string]any{"type": "context", "elements": []text{md(fmt.Sprintf("Approval %s. Only this exact payload runs, once. If the buttons do nothing, the Slack app's Interactivity is off: the request is denied at %s.",
 			r.ID, r.Expires.UTC().Format("15:04 UTC")))}})
 	} else {
-		blocks = append(blocks, section(outcomeLine(r, g.mention, inlineCode)))
 		blocks = append(blocks, map[string]any{"type": "context", "elements": []text{md(fmt.Sprintf("Approval %s · sha256 `%s…`", r.ID, r.Hash[:16]))}})
 	}
 	var b strings.Builder
