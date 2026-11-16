@@ -240,6 +240,9 @@ var migrations = []string{
 		device_id   TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX device_pairings_code ON device_pairings(code_hash, state);`,
+	// 13: a bus message's mark: why its sender's run held untrusted input when it wrote it (its
+	// runtime says so, never the model), '' when none. A reader's run is marked by it in turn.
+	`ALTER TABLE messages ADD COLUMN untrusted TEXT NOT NULL DEFAULT '';`,
 }
 
 // DB is core.db.

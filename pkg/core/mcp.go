@@ -26,6 +26,16 @@ var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05
 type ToolCall struct {
 	Agent string
 	Args  json.RawMessage
+	// Meta is the params' _meta: what the agent's runtime says about the call, never the
+	// model's arguments.
+	Meta CallMeta
+}
+
+// CallMeta is a tools/call's _meta as the core reads it.
+type CallMeta struct {
+	// Untrusted is why the calling run holds untrusted input ("" when it does not): its runtime
+	// marks the call, and msg_send keeps the mark on the message (docs/core.md §4).
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // MCPTool is a tool the core serves.
@@ -146,6 +156,7 @@ func (m *MCP) Handle(w http.ResponseWriter, r *http.Request) {
 		var p struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
+			Meta      CallMeta        `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			writeRPC(w, req.ID, nil, &rpcError{-32602, "params must be {name, arguments}"})
@@ -159,7 +170,7 @@ func (m *MCP) Handle(w http.ResponseWriter, r *http.Request) {
 		if len(p.Arguments) == 0 || string(p.Arguments) == "null" {
 			p.Arguments = json.RawMessage("{}")
 		}
-		out, err := t.Run(ToolCall{Agent: agent, Args: p.Arguments})
+		out, err := t.Run(ToolCall{Agent: agent, Args: p.Arguments, Meta: p.Meta})
 		if err != nil {
 			msg := err.Error()
 			if _, ok := err.(ToolError); !ok {

@@ -494,6 +494,14 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   else; `image` is a PNG or JPEG shared-space path the caller can see (read as `fs_*` reads, up to
   16 MB). Refused for an agent with no WhatsApp channel or no linked, connected account on this core
   (docs/whatsapp.md). Listed to every agent, like the other tools.
+- *Marked messages*: a message written by a run that holds untrusted input (it read a web page,
+  an unverified person's words, another marked message) keeps that mark, `messages.untrusted`
+  (migration 13): the sender's runtime puts why in the call's `_meta.untrusted`, never an argument
+  (`untrusted` in the arguments is refused as unknown), and the sidecar relay spools the request
+  as it is. `msg_read` and `msg_thread` show `untrusted`, and the reader's runtime marks its run
+  with it, so the reader's own sends out of the swarm are what waits for a person, not the talk
+  between agents (docs/needletail.md §7). `msg_inbox` lists a marked message without its subject
+  or preview, so listing never marks; its wake input and urgent mirror leave the subject out.
 - *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
   normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
   agents of that unit (else refused and a `unit_boundary` finding).
