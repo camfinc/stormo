@@ -462,7 +462,7 @@ work alike in both places; there is no separate `/workdir` mount.
 Slack stays the channel for people (and for @mention handoffs people should see). Core adds an
 internal bus for agent-to-agent work that should not clutter Slack.
 
-- MCP tools: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?)` where `to` is an agent,
+- MCP tools: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?, answers?)` where `to` is an agent,
   `unit:<id>` or `group`; `msg_inbox(unread_only)`, `msg_read(id)`, `msg_ack(id)`, `msg_thread(id)`.
   Attachments are workdir paths, never file contents.
 - Delivery: stored in `core.db`; if the recipient is idle, core wakes it with a run on its API
@@ -486,7 +486,7 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   a result with `isError`, so the model reads why. A local build of an agent on the core lists it
   as `mcp_servers.core` (`Authorization: Bearer ${SWARM_CORE_KEY}`, expanded by Hermes from the
   agent's env); Hermes names the tools `mcp_core_msg_send` and so on.
-- *Tools*: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?)`, `msg_inbox(unread_only,
+- *Tools*: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?, answers?)`, `msg_inbox(unread_only,
   limit)` (short previews), `msg_read(id)` (marks read), `msg_ack(id)`, `msg_thread(id)`. A party
   to a message is its sender or a recipient; nothing else is visible. Subject ≤ 200 characters,
   body ≤ 16 KB, ≤ 10 attachments.
@@ -515,22 +515,31 @@ subprocesses of one Hermes install, which does not fit one container per agent.
 - *Follow-ups* (migration 14): a turn can end without answering what it was woken for (a model
   error, a turn that just stops), and the request must not die with it. A direct message from an
   agent (not `group` or `unit:`, not a core notice) is *unanswered* while its recipient has not
-  `msg_ack`ed it and wrote nothing in the thread since, nor to its sender in the thread of another
-  message the same wake brought (one turn answers a batch in the first one's conversation). Once its recipient was woken for it or read
-  it, and has been quiet in the thread for 2 min (no turn open in `swarm-bus-<thread>`, no approval
-  it asked for there waiting: the activity monitor's `SessionState`), it gets a follow-up wake in
-  that session (`Idempotency-Key` …`-f<n>`, input `[AGENT MESSAGE from <sender>] <subject>: a
-  follow-up (n of 2)`), up to 2, while the message is younger than 6 h; they count toward the wake
-  cap. When they ran out, the sender gets a core notice in the thread ("Not answered: …"; no hop of
-  the thread used, the original subject left out when the message is marked), asking it to update
-  any person it promised an answer, and the recipient a `bus_unanswered` finding. `due_minutes`
-  (1 to 1440) sets when the sender wants an answer: past it, unanswered, the sender is told once
-  where it stands (still working, its answer waiting for approval, not running, or no answer).
-  Recipients show their `followUps`, a message its `due`. `BusLimits.FollowUps < 0` turns follow-ups
-  off (a due time still tells).
+  acked it (`msg_ack`, or a reply's `answers`, which names the messages it answers: one turn can
+  bring several, answered in one conversation) and wrote nothing in its thread since. Once the
+  recipient was woken for it or read it and has been quiet for 2 min since its last wake, read or
+  follow-up, it gets a follow-up wake in the thread's session (`Idempotency-Key` …`-f<n>`, input
+  `[AGENT MESSAGE from <sender>] <subject>: a follow-up (n of 2)`; in a thread that takes no more
+  messages, it is asked to answer in a new message naming it in `answers`), up to 2 tries, while the
+  message is younger than 6 h. Nothing holds it but a turn open in the message's thread or in the
+  session its last wake ran in (a batch runs in its first message's), confirmed by the agent's own
+  state (a turn whose end hook was lost holds nothing), or an approval it asked for there still
+  waiting (the activity monitor's `SessionState`). A try that cannot wake it counts and waits like
+  one that did. When the tries ran out with the recipient quiet, or the 6 h window closed whatever
+  it got (a stopped recipient, an approval never answered), the sender gets one core notice in the
+  thread ("Not answered: …", where it stands, the follow-ups and the last wake error; no hop of the
+  thread used; the original subject left out when the message is marked), asking it to update any
+  person it promised an answer, and the recipient a `bus_unanswered` finding. `due_minutes` (1 to
+  1440, a message to one agent) sets when the sender wants an answer: past it, unanswered, the
+  sender is told once where it stands. Each wake and notice is checked again just before it happens
+  (a reply or an ack can land during a round); notices need no wake run, so the cap never holds them.
+  Every wake run is a row of `wakes`, which the hourly cap counts. Deliveries from before migration
+  14 are left as they were (`told` 2). Recipients show their `followUps`, a message its `due`.
+  `BusLimits.FollowUps < 0` turns follow-ups and their notices off (a due time still tells).
 - *Loop guards* (each breach is refused, and recorded as a finding): 20 messages an hour from one
   agent to another (`bus_rate`), 12 messages per thread (`bus_hops`), no new message in a thread
-  older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet (`bus_wake_cap`).
+  older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet, follow-ups included
+  (`bus_wake_cap`).
 - *Urgent* messages are also posted to each recipient's Slack home channel with its own bot token
   (subject only), as its local run is configured.
 - *Owner reads*: `GET /api/messages` and `GET /api/findings` (owner token), `stormo core messages

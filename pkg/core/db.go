@@ -243,12 +243,20 @@ var migrations = []string{
 	// 13: a bus message's mark: why its sender's run held untrusted input when it wrote it (its
 	// runtime says so, never the model), '' when none. A reader's run is marked by it in turn.
 	`ALTER TABLE messages ADD COLUMN untrusted TEXT NOT NULL DEFAULT '';`,
-	// 14: a message its recipient left unanswered: the follow-up wakes the delivery got, whether its
-	// sender was told (1: past the message's due time, 2: the follow-ups ran out), and the due time
-	// a sender may set (ms, 0: none).
+	// 14: a message is not dropped with a turn (Bus.followUp): a delivery's follow-up wakes (tried)
+	// and when the last was tried, the session its last wake ran in, what its sender was told (1:
+	// past the message's due time; 2: done with, told it went unanswered, or delivered before this
+	// migration), a message's due time (ms, 0: none), and every wake run, for the hourly wake cap.
 	`ALTER TABLE deliveries ADD COLUMN followups INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE deliveries ADD COLUMN followed_at INTEGER;
+	ALTER TABLE deliveries ADD COLUMN session TEXT NOT NULL DEFAULT '';
 	ALTER TABLE deliveries ADD COLUMN told INTEGER NOT NULL DEFAULT 0;
-	ALTER TABLE messages ADD COLUMN due INTEGER NOT NULL DEFAULT 0;`,
+	ALTER TABLE messages ADD COLUMN due INTEGER NOT NULL DEFAULT 0;
+	UPDATE deliveries SET told = 2;
+	CREATE TABLE wakes (agent TEXT NOT NULL, at INTEGER NOT NULL);
+	CREATE INDEX wakes_at ON wakes(at);
+	INSERT INTO wakes(agent, at) SELECT DISTINCT agent, woken_at FROM deliveries
+		WHERE woken_at >= (CAST(strftime('%s', 'now') AS INTEGER) - 86400) * 1000;`,
 }
 
 // DB is core.db.
