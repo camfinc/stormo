@@ -695,7 +695,9 @@ type openDelivery struct {
 // it, its sender is told once in the thread that it went unanswered and the recipient gets a
 // bus_unanswered finding. Work still held when the window closes (a turn open, an approval waiting)
 // is not closed: its sender is told once where it stands, as when a due time it set has passed.
-// Every wake and notice is checked again just before it happens: the round's list is a snapshot, and
+// No age drops a delivery from this list: each one followed up ends closed (deliveries from before
+// follow-ups are marked so), so it stays bounded and survives a core down for days. Every wake and
+// notice is checked again just before it happens: the round's list is a snapshot, and
 // a read, a reply or an ack can come meanwhile. Notices need no wake run: the cap never holds them.
 func (b *Bus) followUp(r *round) {
 	l := b.o.Limits
@@ -704,8 +706,8 @@ func (b *Bus) followUp(r *round) {
 			d.followups, d.told, d.session, d.wake_error, COALESCE(d.woken_at, 0), COALESCE(d.read_at, 0), COALESCE(d.followed_at, 0),
 			(SELECT created FROM messages WHERE id = m.thread), (SELECT MAX(hop) FROM messages WHERE thread = m.thread)
 		FROM deliveries d JOIN messages m ON m.id = d.message
-		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND (m.created >= ? OR m.due > 0 AND d.told = 0 OR d.told = ?) AND `+unanswered+`
-		ORDER BY m.id`, toldDone, CoreSender, r.now.Add(-l.ThreadTTL).UnixMilli(), toldStatus)
+		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND `+unanswered+`
+		ORDER BY m.id`, toldDone, CoreSender)
 	if err != nil {
 		log.Printf("bus: %v", err)
 		return

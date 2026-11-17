@@ -1179,3 +1179,17 @@ func TestWakeAnnouncesWhatIsLeftOfABatch(t *testing.T) {
 		t.Fatalf("wake %+v", w)
 	}
 }
+
+// A core down for longer than a thread's lifetime still closes what it left open.
+func TestFollowUpSurvivesALongDowntime(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Before the outage", Body: "x"})
+	f.bus.WakeRound()
+	f.takeWakes()
+	_, _ = f.bus.Read("nova", q.ID)
+	f.now = f.now.Add(26 * time.Hour) // no round ran meanwhile
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 1 || !strings.HasPrefix(in[0].Subject, "Not answered") {
+		t.Fatalf("notices %+v", in)
+	}
+}
