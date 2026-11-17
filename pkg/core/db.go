@@ -243,6 +243,12 @@ var migrations = []string{
 	// 13: a bus message's mark: why its sender's run held untrusted input when it wrote it (its
 	// runtime says so, never the model), '' when none. A reader's run is marked by it in turn.
 	`ALTER TABLE messages ADD COLUMN untrusted TEXT NOT NULL DEFAULT '';`,
+	// 14: a message its recipient left unanswered: the follow-up wakes the delivery got, whether its
+	// sender was told (1: past the message's due time, 2: the follow-ups ran out), and the due time
+	// a sender may set (ms, 0: none).
+	`ALTER TABLE deliveries ADD COLUMN followups INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE deliveries ADD COLUMN told INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE messages ADD COLUMN due INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // DB is core.db.

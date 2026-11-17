@@ -23,7 +23,8 @@ import (
 // with no person in the loop. Loop guards keep two agents from talking forever: a per-pair rate,
 // a hop limit and a lifetime per thread, and a fleet-wide cap on wake runs. A breach is refused
 // and becomes a finding. Message bodies stay in core.db; only the owner token or a party to the
-// message reads them.
+// message reads them. A message is not dropped with a turn: one its recipient was woken for or
+// read but left unanswered gets follow-up wakes, then its sender is told (followUp).
 
 // BusAgent is one agent as the bus sees it.
 type BusAgent struct {
@@ -48,6 +49,13 @@ type BusLimits struct {
 	ThreadTTL    time.Duration // a thread takes no new message after this (24 h)
 	WakesPerHour int           // wake runs across the fleet in an hour (30)
 	WakeTries    int           // failed wake attempts before a delivery waits for msg_inbox (3)
+	// A message its recipient was woken for or read, then left unanswered (no msg_ack, nothing
+	// written in the thread since), gets FollowUps more wakes (2; negative: none, and its sender is
+	// not told), each once the recipient was quiet in the thread for FollowUpAfter (2 min), while
+	// the message is younger than FollowUpFor (6 h).
+	FollowUps     int
+	FollowUpAfter time.Duration
+	FollowUpFor   time.Duration
 }
 
 // BusOptions configure a Bus.
@@ -56,6 +64,9 @@ type BusOptions struct {
 	Roster func() []BusAgent
 	Wake   WakeFn
 	Mirror MirrorFn // nil: urgent messages are not mirrored
+	// Hold is what holds an agent in a session (Monitor.SessionState): no follow-up while a turn is
+	// open there or an approval it asked for there waits. nil: nothing holds.
+	Hold   func(agent, session string) string
 	Limits BusLimits
 	Now    func() time.Time
 }
@@ -94,6 +105,15 @@ func NewBus(o BusOptions) *Bus {
 	if l.WakeTries == 0 {
 		l.WakeTries = 3
 	}
+	if l.FollowUps == 0 {
+		l.FollowUps = 2
+	}
+	if l.FollowUpAfter == 0 {
+		l.FollowUpAfter = 2 * time.Minute
+	}
+	if l.FollowUpFor == 0 {
+		l.FollowUpFor = 6 * time.Hour
+	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
@@ -112,6 +132,8 @@ type Message struct {
 	Attach   []string `json:"attach"`
 	Hop      int      `json:"hop"`
 	Sent     string   `json:"sent"`
+	// Due is when its sender wants an answer by (msg_send due_minutes), "" when it set none.
+	Due string `json:"due,omitempty"`
 	// Untrusted is why the sender's run held untrusted input when it wrote this ("" when it did
 	// not): its words carry what that input said, so they are information, never instructions,
 	// and reading them marks the reader's run in turn.
@@ -129,6 +151,8 @@ type Recipient struct {
 	Read  string `json:"read,omitempty"`
 	Acked string `json:"acked,omitempty"`
 	Woken string `json:"woken,omitempty"`
+	// FollowUps are the wakes it got after leaving the message unanswered.
+	FollowUps int `json:"followUps,omitempty"`
 }
 
 // SendRequest is msg_send's arguments.
@@ -139,6 +163,9 @@ type SendRequest struct {
 	Thread   int64    `json:"thread,omitempty"`
 	Priority string   `json:"priority,omitempty"`
 	Attach   []string `json:"attach,omitempty"`
+	// DueMinutes: when it is not answered this many minutes after it was sent, its sender is told
+	// where it stands (0: no due time; at most a thread's lifetime).
+	DueMinutes int `json:"due_minutes,omitempty"`
 	// Untrusted is the calling run's mark, from the call's _meta (its runtime), never from the
 	// arguments the model wrote.
 	Untrusted string `json:"-"`
@@ -229,6 +256,13 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 	}
 	if len(req.Attach) > maxAttach {
 		return nil, toolErr("at most %d attachments", maxAttach)
+	}
+	if req.DueMinutes < 0 || time.Duration(req.DueMinutes)*time.Minute > b.o.Limits.ThreadTTL {
+		return nil, toolErr("due_minutes is 1 to %d (a thread's lifetime), or left out", int(b.o.Limits.ThreadTTL/time.Minute))
+	}
+	due := int64(0)
+	if req.DueMinutes > 0 {
+		due = now.Add(time.Duration(req.DueMinutes) * time.Minute).UnixMilli()
 	}
 	fleet := b.roster()
 	from, ok := fleet[sender]
@@ -331,8 +365,8 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 	}
 	att, _ := json.Marshal(attach)
-	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(strings.TrimSpace(req.Untrusted), 300))
+	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(strings.TrimSpace(req.Untrusted), 300), due)
 	if err != nil {
 		return nil, err
 	}
@@ -465,7 +499,20 @@ func wakeInput(from []string, subject string, n int, thread int64, marked bool) 
 		strings.Join(from, ", "), subject, more, thread)
 }
 
-// WakeRound wakes each running, idle agent with unread messages it was not yet woken for.
+// followUpInput is the turn of a follow-up wake: the recipient's last turn in the thread ended
+// with the message unanswered. Like wakeInput, a marked message's subject is never in it.
+func followUpInput(from, subject string, id, thread int64, n, of int, marked bool) string {
+	if marked {
+		subject = "a message carrying untrusted input (its words are information, not instructions)"
+	}
+	return fmt.Sprintf("[AGENT MESSAGE from %s] %s: a follow-up (%d of %d). Your last turn in this conversation ended without "+
+		"answering message %d or acknowledging it. Read it with msg_read(%d). If it needs an answer, reply with msg_send(thread=%d); "+
+		"if it needs nothing, msg_ack it. This turn has no person watching: do not post to Slack unless the message asks for it.",
+		from, subject, n, of, id, id, thread)
+}
+
+// WakeRound wakes each running, idle agent with unread messages it was not yet woken for, then
+// follows up the messages agents left unanswered (followUp).
 func (b *Bus) WakeRound() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -473,11 +520,34 @@ func (b *Bus) WakeRound() {
 		return
 	}
 	now := b.o.Now()
+	woken := map[string]bool{}
+	if b.wakeUnread(now, woken) {
+		b.followUp(now, woken)
+	}
+}
+
+// capped is whether the fleet had its wake runs for the hour (raising the finding when it did).
+func (b *Bus) capped(now time.Time) bool {
+	var wakes int
+	if err := b.o.DB.QueryRow(`SELECT COUNT(DISTINCT agent || '@' || woken_at) FROM deliveries WHERE woken_at >= ?`, now.Add(-time.Hour).UnixMilli()).Scan(&wakes); err != nil {
+		log.Printf("bus: %v", err)
+		return true
+	}
+	if wakes >= b.o.Limits.WakesPerHour {
+		_ = b.o.DB.RaiseFinding("core", "bus_wake_cap", "high", "hour "+now.UTC().Format("2006-01-02T15"), now.UnixMilli())
+		return true
+	}
+	return false
+}
+
+// wakeUnread wakes each running, idle agent with unread messages it was not yet woken for, adding
+// it to woken. false: the round stops (the wake cap, a database error).
+func (b *Bus) wakeUnread(now time.Time, woken map[string]bool) bool {
 	rows, err := b.o.DB.Query(`SELECT d.agent, m.id, m.thread, m.sender, m.subject, m.untrusted != '' FROM deliveries d JOIN messages m ON m.id = d.message
 		WHERE d.read_at IS NULL AND d.woken_at IS NULL AND d.wake_tries < ? ORDER BY m.id`, b.o.Limits.WakeTries)
 	if err != nil {
 		log.Printf("bus: %v", err)
-		return
+		return false
 	}
 	type pending struct {
 		ids     []int64
@@ -495,7 +565,7 @@ func (b *Bus) WakeRound() {
 		if err := rows.Scan(&agent, &id, &thread, &sender, &subject, &marked); err != nil {
 			rows.Close()
 			log.Printf("bus: %v", err)
-			return
+			return false
 		}
 		p := byAgent[agent]
 		if p == nil {
@@ -511,7 +581,7 @@ func (b *Bus) WakeRound() {
 	}
 	rows.Close()
 	if len(order) == 0 {
-		return
+		return true
 	}
 	fleet := b.roster()
 	for _, id := range order {
@@ -519,20 +589,15 @@ func (b *Bus) WakeRound() {
 		if !ok || !a.Running || a.Busy || a.Endpoint == "" {
 			continue // busy: the next round; down: at its next msg_inbox
 		}
-		var wakes int
-		if err := b.o.DB.QueryRow(`SELECT COUNT(DISTINCT agent || '@' || woken_at) FROM deliveries WHERE woken_at >= ?`, now.Add(-time.Hour).UnixMilli()).Scan(&wakes); err != nil {
-			log.Printf("bus: %v", err)
-			return
-		}
-		if wakes >= b.o.Limits.WakesPerHour {
-			_ = b.o.DB.RaiseFinding("core", "bus_wake_cap", "high", "hour "+now.UTC().Format("2006-01-02T15"), now.UnixMilli())
-			return
+		if b.capped(now) {
+			return false
 		}
 		p := byAgent[id]
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		err := b.o.Wake(ctx, a, wakeInput(p.from, p.subject, len(p.ids), p.thread, p.marked), fmt.Sprintf("swarm-bus-%d", p.thread),
 			fmt.Sprintf("swarm-bus-%s-%d", id, p.ids[len(p.ids)-1]))
 		cancel()
+		woken[id] = true
 		stamp := now.UnixMilli()
 		for _, mid := range p.ids {
 			if err != nil {
@@ -545,6 +610,163 @@ func (b *Bus) WakeRound() {
 			log.Printf("bus: waking %s: %v", id, err)
 		}
 	}
+	return true
+}
+
+// What a message's sender was told about it (deliveries.told).
+const (
+	toldDue    = 1 // past the message's due time, unanswered
+	toldGaveUp = 2 // the follow-ups ran out
+)
+
+// followUp keeps a message from being dropped with a turn. A direct message from an agent whose
+// recipient was woken for it or read it, then wrote nothing in the thread and did not msg_ack it,
+// is unanswered: once the recipient is quiet in the thread (no turn open there, no approval it
+// asked for there waiting, FollowUpAfter since its last wake or read) it gets a follow-up wake in
+// the thread's session, up to FollowUps; when they ran out, its sender is told in the thread and
+// the recipient gets a bus_unanswered finding. A message past the due time its sender set is
+// told about once, wherever it stands. One wake per agent a round, after the round's unread wakes.
+func (b *Bus) followUp(now time.Time, woken map[string]bool) {
+	l := b.o.Limits
+	window := now.Add(-l.FollowUpFor).UnixMilli()
+	rows, err := b.o.DB.Query(`SELECT d.agent, m.id, m.thread, m.sender, m.subject, m.untrusted != '', m.created, m.due, d.followups, d.told,
+			MAX(COALESCE(d.woken_at, 0), COALESCE(d.read_at, 0))
+		FROM deliveries d JOIN messages m ON m.id = d.message
+		WHERE d.acked_at IS NULL AND d.told < ? AND m.audience = d.agent AND m.sender != ?
+		AND (m.created >= ? OR (m.due > 0 AND d.told = 0))
+		AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.thread = m.thread AND r.sender = d.agent AND r.id > m.id)
+		ORDER BY m.id`, toldGaveUp, CoreSender, window)
+	if err != nil {
+		log.Printf("bus: %v", err)
+		return
+	}
+	type open struct {
+		agent, sender, subject         string
+		id, thread, created, due, last int64
+		marked                         bool
+		followups, told                int
+	}
+	var todo []open
+	for rows.Next() {
+		var o open
+		if err := rows.Scan(&o.agent, &o.id, &o.thread, &o.sender, &o.subject, &o.marked, &o.created, &o.due, &o.followups, &o.told, &o.last); err != nil {
+			rows.Close()
+			log.Printf("bus: %v", err)
+			return
+		}
+		todo = append(todo, o)
+	}
+	rows.Close()
+	if len(todo) == 0 {
+		return
+	}
+	fleet := b.roster()
+	for _, o := range todo {
+		session := fmt.Sprintf("swarm-bus-%d", o.thread)
+		hold := ""
+		if b.o.Hold != nil {
+			hold = b.o.Hold(o.agent, session)
+		}
+		a, known := fleet[o.agent]
+		if o.due > 0 && now.UnixMilli() >= o.due && o.told == 0 {
+			state := fmt.Sprintf("%s has not answered your message %d yet.", o.agent, o.id)
+			switch {
+			case hold == SessionTurn:
+				state = fmt.Sprintf("%s is still working on your message %d (a turn is open in this conversation).", o.agent, o.id)
+			case hold == SessionApproval:
+				state = fmt.Sprintf("%s's answer to your message %d waits for a person's approval.", o.agent, o.id)
+			case !known || !a.Running:
+				state = fmt.Sprintf("%s is not running: it reads your message %d when it next starts.", o.agent, o.id)
+			}
+			b.tell(o.id, o.agent, toldDue, fmt.Sprintf("Not answered by its due time: %s", b.about(o.id, o.subject, o.marked)),
+				state+" If you told a person you would get back to them by now, tell them where it stands.")
+			continue
+		}
+		if l.FollowUps < 0 || o.created < window || o.last == 0 || hold != "" || now.UnixMilli()-o.last < l.FollowUpAfter.Milliseconds() {
+			continue // off; too old; never woken nor read (the unread wakes); held, or not quiet long enough yet
+		}
+		if o.followups < l.FollowUps {
+			if woken[o.agent] || !known || !a.Running || a.Busy || a.Endpoint == "" {
+				continue
+			}
+			if b.capped(now) {
+				return
+			}
+			n := o.followups + 1
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			err := b.o.Wake(ctx, a, followUpInput(o.sender, o.subject, o.id, o.thread, n, l.FollowUps, o.marked), session,
+				fmt.Sprintf("swarm-bus-%s-%d-f%d", o.agent, o.id, n))
+			cancel()
+			woken[o.agent] = true
+			if err != nil {
+				// a failed follow-up counts too: they stay bounded
+				_, _ = b.o.DB.Exec(`UPDATE deliveries SET followups = ?, wake_error = ? WHERE message = ? AND agent = ?`, n, clip(err.Error(), 200), o.id, o.agent)
+				log.Printf("bus: following up %s: %v", o.agent, err)
+				continue
+			}
+			_, _ = b.o.DB.Exec(`UPDATE deliveries SET followups = ?, woken_at = ?, wake_error = '' WHERE message = ? AND agent = ?`, n, now.UnixMilli(), o.id, o.agent)
+			continue
+		}
+		b.tell(o.id, o.agent, toldGaveUp, fmt.Sprintf("Not answered: %s", b.about(o.id, o.subject, o.marked)),
+			fmt.Sprintf("%s was woken for your message %d %d times and each turn ended without an answer or msg_ack. "+
+				"If you told a person you would get back to them, tell them where it stands now. If it still matters, "+
+				"ask again in a new message or ask someone else.", o.agent, o.id, o.followups+1))
+		_ = b.o.DB.RaiseFinding(o.agent, "bus_unanswered", "medium", fmt.Sprintf("message %d", o.id), now.UnixMilli())
+	}
+}
+
+// about names message id in a notice to its sender: by its subject, unless the message is marked
+// (its words carry untrusted input, and a core notice is not marked).
+func (b *Bus) about(id int64, subject string, marked bool) string {
+	if marked {
+		return fmt.Sprintf("message %d", id)
+	}
+	return fmt.Sprintf("%s (message %d)", subject, id)
+}
+
+// tell leaves the sender of message id a core notice about recipient in the message's thread, and
+// records that it was told (told). The notice takes no hop of the thread, and the sender is woken
+// for it in the thread's session like for any message.
+func (b *Bus) tell(id int64, recipient string, told int, subject, body string) {
+	var thread int64
+	var sender string
+	if err := b.o.DB.QueryRow(`SELECT thread, sender FROM messages WHERE id = ?`, id).Scan(&thread, &sender); err != nil {
+		log.Printf("bus: telling the sender of %d: %v", id, err)
+		return
+	}
+	tx, err := b.o.DB.Begin()
+	if err != nil {
+		log.Printf("bus: %v", err)
+		return
+	}
+	defer tx.Rollback()
+	if _, ok := b.roster()[sender]; ok {
+		var hop int
+		if err := tx.QueryRow(`SELECT COALESCE(MAX(hop), 1) FROM messages WHERE thread = ?`, thread).Scan(&hop); err != nil {
+			log.Printf("bus: %v", err)
+			return
+		}
+		res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created) VALUES(?,?,?,?,?,'normal','[]',?,?)`,
+			thread, CoreSender, sender, clip(subject, maxSubject), body, hop, b.o.Now().UnixMilli())
+		if err != nil {
+			log.Printf("bus: %v", err)
+			return
+		}
+		nid, _ := res.LastInsertId()
+		if _, err := tx.Exec(`INSERT INTO deliveries(message, agent) VALUES(?, ?)`, nid, sender); err != nil {
+			log.Printf("bus: %v", err)
+			return
+		}
+	} // a sender no longer in the fleet: nobody to tell
+	if _, err := tx.Exec(`UPDATE deliveries SET told = ? WHERE message = ? AND agent = ?`, told, id, recipient); err != nil {
+		log.Printf("bus: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("bus: %v", err)
+		return
+	}
+	b.Kick()
 }
 
 func optIso(v sql.NullInt64) string {
@@ -560,9 +782,9 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		var att string
-		var sent int64
+		var sent, due int64
 		var read, acked sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Thread, &m.From, &m.To, &m.Subject, &m.Body, &m.Priority, &att, &m.Hop, &sent, &m.Untrusted, &read, &acked); err != nil {
+		if err := rows.Scan(&m.ID, &m.Thread, &m.From, &m.To, &m.Subject, &m.Body, &m.Priority, &att, &m.Hop, &sent, &m.Untrusted, &due, &read, &acked); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(att), &m.Attach)
@@ -570,6 +792,9 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 			m.Attach = []string{}
 		}
 		m.Sent, m.Read, m.Acked = isoMs(sent), optIso(read), optIso(acked)
+		if due > 0 {
+			m.Due = isoMs(due)
+		}
 		if !withBody {
 			m.Body = clip(m.Body, 160)
 		}
@@ -578,7 +803,7 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 	return out, rows.Err()
 }
 
-const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.priority, m.attach, m.hop, m.created, m.untrusted`
+const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.priority, m.attach, m.hop, m.created, m.untrusted, m.due`
 
 // Inbox is the agent's received messages, newest first, with a short body preview.
 func (b *Bus) Inbox(agent string, unreadOnly bool, limit int) ([]Message, error) {
@@ -605,7 +830,7 @@ func (b *Bus) Inbox(agent string, unreadOnly bool, limit int) ([]Message, error)
 }
 
 func (b *Bus) recipients(id int64) ([]Recipient, error) {
-	rows, err := b.o.DB.Query(`SELECT agent, read_at, acked_at, woken_at FROM deliveries WHERE message = ? ORDER BY agent`, id)
+	rows, err := b.o.DB.Query(`SELECT agent, read_at, acked_at, woken_at, followups FROM deliveries WHERE message = ? ORDER BY agent`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -614,7 +839,7 @@ func (b *Bus) recipients(id int64) ([]Recipient, error) {
 	for rows.Next() {
 		var r Recipient
 		var read, acked, woken sql.NullInt64
-		if err := rows.Scan(&r.Agent, &read, &acked, &woken); err != nil {
+		if err := rows.Scan(&r.Agent, &read, &acked, &woken, &r.FollowUps); err != nil {
 			return nil, err
 		}
 		r.Read, r.Acked, r.Woken = optIso(read), optIso(acked), optIso(woken)
@@ -811,7 +1036,9 @@ func BusTools(b *Bus) []MCPTool {
 				"`unit:<id>` for every agent of a unit, or `group` for all agents. Reply in a conversation by passing `thread` " +
 				"(any message id in it). An idle recipient is woken to read it. Attach files by their shared-space path " +
 				"(/shared/group/…; a unit's own layer only to agents of that unit), never by pasting contents. Cross-unit messages " +
-				"follow the group rules: no client personal data. Use priority `urgent` only when it cannot wait for the next turn.",
+				"follow the group rules: no client personal data. Use priority `urgent` only when it cannot wait for the next turn. " +
+				"A direct message its recipient leaves unanswered (no reply in the thread, no msg_ack) is followed up, and if it still " +
+				"goes unanswered you get a core notice in the thread.",
 			InputSchema: schema([]string{"to", "subject", "body"}, map[string]any{
 				"to":       str("agent id, unit:<id> or group"),
 				"subject":  str("one line, up to 200 characters"),
@@ -819,6 +1046,8 @@ func BusTools(b *Bus) []MCPTool {
 				"thread":   integer("a message id of the conversation this answers"),
 				"priority": map[string]any{"type": "string", "enum": []string{"normal", "urgent"}},
 				"attach":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared-space paths"},
+				"due_minutes": integer("for a request someone waits on: if it is not answered this many minutes after you send it " +
+					"(1 to 1440), you are told where it stands, so you can update whoever waits on you"),
 			}),
 			Run: func(c ToolCall) (any, error) {
 				var req SendRequest
@@ -868,7 +1097,7 @@ func BusTools(b *Bus) []MCPTool {
 		},
 		{
 			Name:        "msg_ack",
-			Description: "Mark a received message as dealt with. It notifies no one.",
+			Description: "Mark a received message as dealt with. It notifies no one. A direct message you neither answer nor ack is followed up.",
 			InputSchema: schema([]string{"id"}, map[string]any{"id": integer("message id")}),
 			Run: func(c ToolCall) (any, error) {
 				var args struct {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,7 @@ type busFixture struct {
 	mirror []string
 	fail   error
 	now    time.Time
+	hold   map[string]string // agent/session → Monitor.SessionState
 }
 
 func newBusFixture(t *testing.T, limits BusLimits) *busFixture {
@@ -55,6 +57,11 @@ func newBusFixture(t *testing.T, limits BusLimits) *busFixture {
 			return nil
 		},
 		Mirror: func(agent, text string) error { f.mirror = append(f.mirror, agent+": "+text); return nil },
+		Hold: func(agent, session string) string {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.hold[agent+"/"+session]
+		},
 	})
 	return f
 }
@@ -474,5 +481,231 @@ func TestMarkedMessages(t *testing.T) {
 	}
 	if m, _ := f.bus.Read("atlas", r.ID); m.Untrusted != "" {
 		t.Errorf("an unmarked reply is marked: %q", m.Untrusted)
+	}
+}
+
+// A recipient whose turn ended with the message read but unanswered is woken again, twice; then
+// its sender is told in the thread, which keeps its hops, and the recipient gets a finding.
+func TestFollowUpAMessageLeftUnansweredThenTellTheSender(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Check the launch date", Body: "Is the 26th confirmed?"})
+	session := fmt.Sprintf("swarm-bus-%d", q.Thread)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 1 || w[0].agent != "nova" {
+		t.Fatalf("first wake %+v", w)
+	}
+	if _, err := f.bus.Read("nova", q.ID); err != nil { // its turn reads it, then ends with no reply
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(time.Minute)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("followed up before the recipient was quiet for 2 min: %+v", w)
+	}
+	for n := 1; n <= 2; n++ {
+		f.now = f.now.Add(2 * time.Minute)
+		f.bus.WakeRound()
+		w := f.takeWakes()
+		if len(w) != 1 || w[0].agent != "nova" || w[0].session != session || w[0].idem != fmt.Sprintf("swarm-bus-nova-%d-f%d", q.ID, n) {
+			t.Fatalf("follow-up %d: %+v", n, w)
+		}
+		if !strings.Contains(w[0].input, fmt.Sprintf("a follow-up (%d of 2)", n)) || !strings.Contains(w[0].input, fmt.Sprintf("msg_read(%d)", q.ID)) ||
+			!strings.Contains(w[0].input, "Check the launch date") || strings.Contains(w[0].input, "26th") {
+			t.Errorf("follow-up %d input %q", n, w[0].input)
+		}
+		f.bus.WakeRound()
+		if w := f.takeWakes(); len(w) != 0 {
+			t.Fatalf("follow-up %d twice: %+v", n, w)
+		}
+	}
+	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 0 {
+		t.Fatalf("the sender was told before the follow-ups ran out: %+v", in)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("a third follow-up: %+v", w)
+	}
+	in, _ := f.bus.Inbox("atlas", true, 0)
+	if len(in) != 1 || in[0].From != CoreSender || in[0].Thread != q.Thread || !strings.Contains(in[0].Subject, "Check the launch date") {
+		t.Fatalf("the sender's notice %+v", in)
+	}
+	if got := findingRules(t, f.db); !slices.Contains(got, "nova:bus_unanswered") {
+		t.Errorf("findings %v", got)
+	}
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 1 || w[0].agent != "atlas" || w[0].session != session || !strings.HasPrefix(w[0].input, "[CORE NOTICE] Not answered") {
+		t.Fatalf("the sender is woken in the thread: %+v", w)
+	}
+	notice, _ := f.bus.Read("atlas", in[0].ID)
+	if !strings.Contains(notice.Body, "nova was woken for your message") || !strings.Contains(notice.Body, "tell them where it stands") {
+		t.Errorf("notice body %q", notice.Body)
+	}
+	f.now = f.now.Add(10 * time.Minute)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("told once, the notice is not followed up: %+v", w)
+	}
+	m, _ := f.bus.Read("atlas", q.ID)
+	if len(m.Recipients) != 1 || m.Recipients[0].FollowUps != 2 {
+		t.Errorf("the sender's view %+v", m.Recipients)
+	}
+	again := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Again: the launch date", Body: "Still need it.", Thread: q.ID})
+	var hop int
+	_ = f.db.QueryRow(`SELECT hop FROM messages WHERE id = ?`, again.ID).Scan(&hop)
+	if hop != 2 {
+		t.Errorf("the core's notice took a hop of the thread: the reply is hop %d", hop)
+	}
+}
+
+// Answered is acked, or anything the recipient wrote in the thread since; neither is chased. (A
+// reply is a message like any other: its reader acks it, or it is followed up in turn.)
+func TestFollowUpNotForAnAckOrAReply(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	a := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "FYI: new price list", Body: "No answer needed."})
+	b := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Which sizes?", Body: "For the banner."})
+	f.bus.WakeRound()
+	f.takeWakes()
+	if err := f.bus.Ack("nova", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.bus.Read("nova", b.ID)
+	r := mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "Re: sizes", Body: "1200x628.", Thread: b.ID}) // nova does not ack b
+	f.bus.WakeRound()
+	f.takeWakes() // atlas, for the reply
+	if err := f.bus.Ack("atlas", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		f.now = f.now.Add(3 * time.Minute)
+		f.bus.WakeRound()
+		for _, w := range f.takeWakes() {
+			if w.agent == "nova" {
+				t.Fatalf("an answered message was followed up: %+v", w)
+			}
+		}
+	}
+	if in, _ := f.bus.Inbox("atlas", false, 0); len(in) != 1 || in[0].From != "nova" {
+		t.Errorf("atlas got more than the reply: %+v", in)
+	}
+}
+
+// No follow-up while the recipient's turn is open in the thread or its answer waits for approval.
+func TestFollowUpHeldByAnOpenTurnOrAWaitingApproval(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Draft ready?", Body: "For the review."})
+	key := fmt.Sprintf("nova/swarm-bus-%d", q.Thread)
+	f.bus.WakeRound()
+	f.takeWakes()
+	for _, h := range []string{SessionTurn, SessionApproval} {
+		f.mu.Lock()
+		f.hold = map[string]string{key: h}
+		f.mu.Unlock()
+		f.now = f.now.Add(10 * time.Minute)
+		f.bus.WakeRound()
+		if w := f.takeWakes(); len(w) != 0 {
+			t.Fatalf("followed up while held by %s: %+v", h, w)
+		}
+	}
+	f.mu.Lock()
+	f.hold = nil
+	f.mu.Unlock()
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 1 || !strings.Contains(w[0].input, "a follow-up (1 of 2)") {
+		t.Fatalf("once nothing holds it: %+v", w)
+	}
+}
+
+// Broadcasts, the core's own notices and old messages are never followed up; FollowUps < 0 is off.
+func TestFollowUpLeavesBroadcastsNoticesAndOldMessages(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	g := mustSend(t, f, "atlas", SendRequest{To: "group", Subject: "Office closed Friday", Body: "All day."})
+	if err := f.bus.Notify("nova", "capability job 3 done", "output in /shared/group/out.txt", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.bus.WakeRound()
+	f.takeWakes()
+	in, _ := f.bus.Inbox("nova", true, 0)
+	for _, m := range in {
+		_, _ = f.bus.Read("nova", m.ID)
+	}
+	if len(in) != 2 || g.ID == 0 {
+		t.Fatalf("nova's inbox %+v", in)
+	}
+	f.now = f.now.Add(10 * time.Minute)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("a broadcast or a notice was followed up: %+v", w)
+	}
+
+	old := newBusFixture(t, BusLimits{})
+	q := mustSend(t, old, "atlas", SendRequest{To: "nova", Subject: "Old one", Body: "From this morning."})
+	old.bus.WakeRound()
+	old.takeWakes()
+	_, _ = old.bus.Read("nova", q.ID)
+	old.now = old.now.Add(7 * time.Hour)
+	old.bus.WakeRound()
+	if w := old.takeWakes(); len(w) != 0 {
+		t.Fatalf("a message older than FollowUpFor was followed up: %+v", w)
+	}
+
+	off := newBusFixture(t, BusLimits{FollowUps: -1})
+	q = mustSend(t, off, "atlas", SendRequest{To: "nova", Subject: "No follow-ups here", Body: "Off."})
+	off.bus.WakeRound()
+	off.takeWakes()
+	for i := 0; i < 4; i++ {
+		off.now = off.now.Add(3 * time.Minute)
+		off.bus.WakeRound()
+		if w := off.takeWakes(); len(w) != 0 {
+			t.Fatalf("follow-ups off, yet: %+v", w)
+		}
+	}
+	if in, _ := off.bus.Inbox("atlas", true, 0); len(in) != 0 {
+		t.Errorf("follow-ups off, yet the sender was told: %+v", in)
+	}
+}
+
+// A sender's due time: past it, unanswered, the sender is told once where it stands.
+func TestDueMinutesTellsTheSenderWhereItStands(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	for _, bad := range []int{-1, 24*60 + 1} {
+		if _, err := f.bus.Send("atlas", SendRequest{To: "nova", Subject: "x", Body: "y", DueMinutes: bad}); err == nil {
+			t.Errorf("due_minutes %d accepted", bad)
+		}
+	}
+	off := mustSend(t, f, "atlas", SendRequest{To: "scout", Subject: "Numbers for the report", Body: "By noon.", DueMinutes: 30})
+	busy := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Banner copy", Body: "Two lines.", DueMinutes: 30})
+	if m, _ := f.bus.Read("atlas", off.ID); m.Due == "" {
+		t.Errorf("the message shows no due time: %+v", m)
+	}
+	f.bus.WakeRound()
+	f.takeWakes()
+	f.mu.Lock()
+	f.hold = map[string]string{fmt.Sprintf("nova/swarm-bus-%d", busy.Thread): SessionApproval}
+	f.mu.Unlock()
+	f.now = f.now.Add(29 * time.Minute)
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 0 {
+		t.Fatalf("told before the due time: %+v", in)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	f.bus.WakeRound()
+	f.bus.WakeRound()
+	in, _ := f.bus.Inbox("atlas", true, 0)
+	if len(in) != 2 {
+		t.Fatalf("notices %+v", in)
+	}
+	bodies := map[int64]string{}
+	for _, m := range in {
+		full, _ := f.bus.Read("atlas", m.ID)
+		bodies[m.Thread] = full.Body
+	}
+	if !strings.Contains(bodies[off.Thread], "scout is not running") || !strings.Contains(bodies[busy.Thread], "waits for a person's approval") {
+		t.Errorf("where it stands: %v", bodies)
+	}
+	f.now = f.now.Add(time.Hour)
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", false, 0); len(in) != 2 {
+		t.Errorf("told more than once: %+v", in)
 	}
 }

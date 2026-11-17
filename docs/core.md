@@ -462,13 +462,14 @@ work alike in both places; there is no separate `/workdir` mount.
 Slack stays the channel for people (and for @mention handoffs people should see). Core adds an
 internal bus for agent-to-agent work that should not clutter Slack.
 
-- MCP tools: `msg_send(to, subject, body, thread?, priority?, attach?)` where `to` is an agent,
+- MCP tools: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?)` where `to` is an agent,
   `unit:<id>` or `group`; `msg_inbox(unread_only)`, `msg_read(id)`, `msg_ack(id)`, `msg_thread(id)`.
   Attachments are workdir paths, never file contents.
 - Delivery: stored in `core.db`; if the recipient is idle, core wakes it with a run on its API
   (`POST /v1/runs`, input `[AGENT MESSAGE from <sender>] <subject>, read it with msg_inbox`), the
   same pattern the addressability plugin uses for `[AUTOMATED ALERT]`. A busy recipient gets it at
-  its next `msg_inbox`. Urgent messages also mirror to the recipient's Slack home channel.
+  its next `msg_inbox`. Urgent messages also mirror to the recipient's Slack home channel. A
+  message is not dropped with a turn: one left unanswered is followed up, then its sender is told.
 - Loop guards: per-pair rate limit, hop counter and TTL on threads, no wake-up for acks, and a
   fleet-wide cap on wake runs per hour. Breaches become findings.
 - Rules: cross-unit messages follow the group rules (no client personal data); the bus is not
@@ -485,7 +486,7 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   a result with `isError`, so the model reads why. A local build of an agent on the core lists it
   as `mcp_servers.core` (`Authorization: Bearer ${SWARM_CORE_KEY}`, expanded by Hermes from the
   agent's env); Hermes names the tools `mcp_core_msg_send` and so on.
-- *Tools*: `msg_send(to, subject, body, thread?, priority?, attach?)`, `msg_inbox(unread_only,
+- *Tools*: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?)`, `msg_inbox(unread_only,
   limit)` (short previews), `msg_read(id)` (marks read), `msg_ack(id)`, `msg_thread(id)`. A party
   to a message is its sender or a recipient; nothing else is visible. Subject ≤ 200 characters,
   body ≤ 16 KB, ≤ 10 attachments.
@@ -511,6 +512,21 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   `Idempotency-Key` per agent and newest message), input `[AGENT MESSAGE from <sender>] <subject>`
   plus how to read and answer; never the body. A busy agent is woken when it goes idle; a stopped
   one reads its inbox when it next runs. A failed wake is retried 3 times, then the message waits.
+- *Follow-ups* (migration 14): a turn can end without answering what it was woken for (a model
+  error, a turn that just stops), and the request must not die with it. A direct message from an
+  agent (not `group` or `unit:`, not a core notice) is *unanswered* while its recipient has not
+  `msg_ack`ed it and wrote nothing in the thread since. Once its recipient was woken for it or read
+  it, and has been quiet in the thread for 2 min (no turn open in `swarm-bus-<thread>`, no approval
+  it asked for there waiting: the activity monitor's `SessionState`), it gets a follow-up wake in
+  that session (`Idempotency-Key` …`-f<n>`, input `[AGENT MESSAGE from <sender>] <subject>: a
+  follow-up (n of 2)`), up to 2, while the message is younger than 6 h; they count toward the wake
+  cap. When they ran out, the sender gets a core notice in the thread ("Not answered: …"; no hop of
+  the thread used, the original subject left out when the message is marked), asking it to update
+  any person it promised an answer, and the recipient a `bus_unanswered` finding. `due_minutes`
+  (1 to 1440) sets when the sender wants an answer: past it, unanswered, the sender is told once
+  where it stands (still working, its answer waiting for approval, not running, or no answer).
+  Recipients show their `followUps`, a message its `due`. `BusLimits.FollowUps < 0` turns follow-ups
+  off (a due time still tells).
 - *Loop guards* (each breach is refused, and recorded as a finding): 20 messages an hour from one
   agent to another (`bus_rate`), 12 messages per thread (`bus_hops`), no new message in a thread
   older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet (`bus_wake_cap`).

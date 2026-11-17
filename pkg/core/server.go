@@ -427,7 +427,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if fleet != nil {
 		fleet.SetLinks(links)
 	}
-	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror}
+	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror, Hold: monitor.SessionState}
 	if bo.Roster == nil {
 		bo.Roster = func() []BusAgent {
 			out := []BusAgent{}
