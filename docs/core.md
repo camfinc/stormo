@@ -519,20 +519,25 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   bring several, answered in one conversation) and wrote nothing in its thread since. Once the
   recipient was woken for it or read it and has been quiet for 2 min since its last wake, read or
   follow-up, it gets a follow-up wake in the thread's session (`Idempotency-Key` …`-f<n>`, input
-  `[AGENT MESSAGE from <sender>] <subject>: a follow-up (n of 2)`; in a thread that takes no more
-  messages, it is asked to answer in a new message naming it in `answers`), up to 2 tries, while the
-  message is younger than 6 h. Nothing holds it but a turn open in the message's thread or in the
+  `[AGENT MESSAGE from <sender>] <subject>: a follow-up (n of 2)`), up to 2 tries, while the message
+  is younger than 6 h and its thread takes replies (a full thread is a loop guard's end: it is not
+  followed up into a new conversation). Nothing holds it but a turn open in the message's thread or in the
   session its last wake ran in (a batch runs in its first message's), confirmed by the agent's own
   state (a turn whose end hook was lost holds nothing), or an approval it asked for there still
   waiting (the activity monitor's `SessionState`). A try that cannot wake it counts and waits like
-  one that did. When the tries ran out with the recipient quiet, or the 6 h window closed whatever
-  it got (a stopped recipient, an approval never answered), the sender gets one core notice in the
-  thread ("Not answered: …", where it stands, the follow-ups and the last wake error; no hop of the
-  thread used; the original subject left out when the message is marked), asking it to update any
-  person it promised an answer, and the recipient a `bus_unanswered` finding. `due_minutes` (1 to
+  one that did. When the tries ran out, the thread takes no more messages, or the 6 h window closed
+  (a stopped recipient, one never woken), with the recipient quiet and nothing holding it, the
+  sender gets one core notice in the thread ("Not answered: …", where it stands, the follow-ups and
+  the last wake error; no hop of the thread used; the original subject left out when the message is
+  marked), asking it to update any person it promised an answer and to ask someone else or a person
+  if it still matters, and the recipient a `bus_unanswered` finding. Work still held when the window
+  closes (a turn open, an approval waiting) is never closed so: its sender hears once where it
+  stands ("Still open: …"). `due_minutes` (1 to
   1440, a message to one agent) sets when the sender wants an answer: past it, unanswered, the
-  sender is told once where it stands. Each wake and notice is checked again just before it happens
-  (a reply or an ack can land during a round); notices need no wake run, so the cap never holds them.
+  sender is told once where it stands, however late (one status notice per message: a due time or
+  the window). Each wake and notice is checked again just before it happens (a read, a reply or an
+  ack can land during a round, and a queued unread wake drops what was read or acked meanwhile);
+  one round tries an agent once, woken or not; notices need no wake run, so the cap never holds them.
   Every wake run is a row of `wakes`, which the hourly cap counts. Deliveries from before migration
   14 are left as they were (`told` 2). Recipients show their `followUps`, a message its `due`.
   `BusLimits.FollowUps < 0` turns follow-ups and their notices off (a due time still tells).

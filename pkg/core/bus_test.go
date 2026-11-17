@@ -21,16 +21,18 @@ import (
 type wakeCall struct{ agent, input, session, idem string }
 
 type busFixture struct {
-	bus    *Bus
-	db     *DB
-	mu     sync.Mutex
-	agents map[string]*BusAgent
-	wakes  []wakeCall
-	mirror []string
-	fail   error
-	now    time.Time
-	hold   map[string]string // agent/session → Monitor.SessionState
-	onHold func()            // runs when the bus asks what holds an agent (a concurrent change)
+	bus      *Bus
+	db       *DB
+	mu       sync.Mutex
+	agents   map[string]*BusAgent
+	wakes    []wakeCall
+	mirror   []string
+	fail     error
+	now      time.Time
+	hold     map[string]string // agent/session → Monitor.SessionState
+	onHold   func()            // runs when the bus asks what holds an agent (a concurrent change)
+	onRoster func()            // runs when the bus reads the roster
+	calls    int               // every Wake call, failed ones included
 }
 
 func newBusFixture(t *testing.T, limits BusLimits) *busFixture {
@@ -43,6 +45,12 @@ func newBusFixture(t *testing.T, limits BusLimits) *busFixture {
 	f.bus = NewBus(BusOptions{DB: f.db, Limits: limits, Now: func() time.Time { return f.now },
 		Roster: func() []BusAgent {
 			f.mu.Lock()
+			hook := f.onRoster
+			f.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
+			f.mu.Lock()
 			defer f.mu.Unlock()
 			out := []BusAgent{}
 			for _, a := range f.agents {
@@ -53,6 +61,7 @@ func newBusFixture(t *testing.T, limits BusLimits) *busFixture {
 		Wake: func(_ context.Context, a BusAgent, input, session, idem string) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			f.calls++
 			if f.fail != nil {
 				return f.fail
 			}
@@ -904,8 +913,9 @@ func TestFollowUpWindowClosesIntoANotice(t *testing.T) {
 	}
 }
 
-// A thread that takes no more messages is answered in a new one, naming what it answers.
-func TestFollowUpIntoAFullThreadAsksForANewMessage(t *testing.T) {
+// A thread that takes no more messages is not followed up (its end is a loop guard's, not a reason
+// for a new conversation): the sender is told at once, and pointed to a person.
+func TestFollowUpNotIntoAFullThread(t *testing.T) {
 	f := newBusFixture(t, BusLimits{MaxHops: 2})
 	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Sizes?", Body: "x"})
 	r := mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "Which banner?", Body: "Spring or summer?", Thread: q.ID, Answers: []int64{q.ID}})
@@ -914,17 +924,126 @@ func TestFollowUpIntoAFullThreadAsksForANewMessage(t *testing.T) {
 	_, _ = f.bus.Read("atlas", r.ID)
 	f.now = f.now.Add(3 * time.Minute)
 	f.bus.WakeRound()
-	w := f.takeWakes()
-	if len(w) != 1 || w[0].agent != "atlas" || !strings.Contains(w[0].input, fmt.Sprintf(`takes no more messages: if it needs an answer, send a new msg_send(to="nova", answers=[%d])`, r.ID)) {
-		t.Fatalf("follow-up into a full thread: %+v", w)
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("followed up into a full thread: %+v", w)
 	}
-	mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Spring", Body: "The spring one.", Answers: []int64{r.ID}})
+	in, _ := f.bus.Inbox("nova", true, 0)
+	if len(in) != 1 || in[0].From != CoreSender {
+		t.Fatalf("the sender's notice %+v", in)
+	}
+	n, _ := f.bus.Read("nova", in[0].ID)
+	if !strings.Contains(n.Body, "takes no more messages") || !strings.Contains(n.Body, "tell a person in Slack") || strings.Contains(n.Body, "new message") {
+		t.Errorf("notice %q", n.Body)
+	}
+}
+
+// Work still held when the window closes is not closed: its sender hears once where it stands. A
+// recipient woken just now gets its grace before anything is said.
+func TestFollowUpWindowNeverClosesHeldWork(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Long job", Body: "x"})
+	f.bus.WakeRound()
+	f.takeWakes()
+	_, _ = f.bus.Read("nova", q.ID)
+	f.mu.Lock()
+	f.hold = map[string]string{fmt.Sprintf("nova/swarm-bus-%d", q.Thread): SessionTurn}
+	f.agents["nova"].Busy = true
+	f.mu.Unlock()
+	f.now = f.now.Add(7 * time.Hour)
+	f.bus.WakeRound()
+	f.bus.WakeRound()
+	in, _ := f.bus.Inbox("atlas", false, 0)
+	if len(in) != 1 || !strings.HasPrefix(in[0].Subject, "Still open") {
+		t.Fatalf("notices %+v", in)
+	}
+	if got := findingRules(t, f.db); slices.Contains(got, "nova:bus_unanswered") {
+		t.Errorf("held work raised a finding: %v", got)
+	}
+	mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "Done", Body: "Here.", Thread: q.ID})
+	f.mu.Lock()
+	f.hold, f.agents["nova"].Busy = nil, false
+	f.mu.Unlock()
+	f.now = f.now.Add(time.Hour)
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", false, 0); len(in) != 2 || in[0].From != "nova" {
+		t.Fatalf("after the answer, only the answer: %+v", in)
+	}
+
+	g := newBusFixture(t, BusLimits{})
+	g.agents["nova"].Running = false
+	late := mustSend(t, g, "atlas", SendRequest{To: "nova", Subject: "While you were down", Body: "x"})
+	g.now = g.now.Add(7 * time.Hour)
+	g.agents["nova"].Running = true
+	g.bus.WakeRound()
+	if w := g.takeWakes(); len(w) != 1 || w[0].agent != "nova" {
+		t.Fatalf("the first wake after its downtime: %+v", w)
+	}
+	if in, _ := g.bus.Inbox("atlas", true, 0); len(in) != 0 {
+		t.Fatalf("closed in the round that woke it: %+v", in)
+	}
+	g.now = g.now.Add(3 * time.Minute)
+	g.bus.WakeRound()
+	if in, _ := g.bus.Inbox("atlas", true, 0); len(in) != 1 || !strings.HasPrefix(in[0].Subject, "Not answered") || in[0].Thread != late.Thread {
+		t.Fatalf("once quiet after its wake: %+v", in)
+	}
+}
+
+// One round tries a failing agent once, however many of its messages wait.
+func TestFollowUpFailingAgentTriedOncePerRound(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	for i := 0; i < 3; i++ {
+		q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: fmt.Sprintf("Ask %d", i), Body: "x"})
+		f.now = f.now.Add(5 * time.Second)
+		f.bus.WakeRound()
+		_, _ = f.bus.Read("nova", q.ID)
+	}
+	f.takeWakes()
+	f.mu.Lock()
+	f.fail, f.calls = errors.New("timeout"), 0
+	f.mu.Unlock()
 	f.now = f.now.Add(3 * time.Minute)
 	f.bus.WakeRound()
-	for _, w := range f.takeWakes() {
-		if w.agent == "atlas" {
-			t.Fatalf("answered in a new thread, yet followed up: %+v", w)
-		}
+	if f.calls != 1 {
+		t.Fatalf("%d wake calls in one round to a failing agent", f.calls)
+	}
+}
+
+// A due time as long as a thread's lifetime is still told, however late the round that sees it.
+func TestDueMinutesAtTheThreadsLifetime(t *testing.T) {
+	f := newBusFixture(t, BusLimits{FollowUps: -1})
+	mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "By tomorrow", Body: "x", DueMinutes: 24 * 60})
+	f.bus.WakeRound()
+	f.takeWakes()
+	f.now = f.now.Add(26 * time.Hour) // the core was down past it
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 1 || !strings.HasPrefix(in[0].Subject, "Past its due time") {
+		t.Fatalf("notices %+v", in)
+	}
+}
+
+// A first read during the round, or an ack while its unread wake waits, is seen before acting.
+func TestFollowUpAndWakeSeeAReadOrAnAckDuringTheRound(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Check", Body: "x"})
+	f.bus.WakeRound()
+	f.takeWakes() // woken, never read
+	f.mu.Lock()
+	f.onHold = func() { _, _ = f.bus.Read("nova", q.ID) }
+	f.mu.Unlock()
+	f.now = f.now.Add(3 * time.Minute)
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 0 {
+		t.Fatalf("followed up although it was read just now: %+v", w)
+	}
+
+	g := newBusFixture(t, BusLimits{})
+	u := mustSend(t, g, "atlas", SendRequest{To: "nova", Subject: "FYI", Body: "x"})
+	g.mu.Lock()
+	g.onRoster = func() { _ = g.bus.Ack("nova", u.ID) }
+	g.mu.Unlock()
+	g.bus.WakeRound()
+	if w := g.takeWakes(); len(w) != 0 {
+		t.Fatalf("woken for a message acked meanwhile: %+v", w)
 	}
 }
 
