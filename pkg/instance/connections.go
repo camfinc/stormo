@@ -16,7 +16,8 @@ import (
 // the core holds (local runs only). Most serve models, which agents pick by name (agent.yaml
 // model.provider, and model.local.connection for the core route); a voice one serves speech
 // (agent.yaml voice.provider); a tools one is an API the agents' skills and scripts call with its
-// key, which an agent uses by declaring that key.
+// key, or a search provider their web_search tool asks (needletail's web.search), which an agent
+// uses by declaring that key.
 
 // Connection kinds.
 const (
@@ -28,13 +29,15 @@ const (
 	KindElevenLabs = "elevenlabs"
 	KindApify      = "apify"
 	KindComfy      = "comfy"
+	KindTavily     = "tavily"
+	KindBrave      = "brave"
 )
 
 // What a connection serves.
 const (
 	ServesModels = "models"
 	ServesVoice  = "voice" // speech: text to speech, speech to text, voices
-	ServesTools  = "tools" // an API skills and scripts call with the key (web data, image and video generation)
+	ServesTools  = "tools" // an API skills, scripts or a tool call with the key (web data and search, image and video generation)
 )
 
 // ConnectionKind is what a kind brings by default.
@@ -59,6 +62,8 @@ var ConnectionKinds = []ConnectionKind{
 	{KindElevenLabs, "ElevenLabs (voice)", ElevenLabsURL, ElevenLabsKey, true, ServesVoice},
 	{KindApify, "Apify (web scraping and data)", ApifyURL, ApifyKey, true, ServesTools},
 	{KindComfy, "Comfy Cloud (image and video generation)", ComfyURL, ComfyKey, true, ServesTools},
+	{KindTavily, "Tavily (web search)", TavilyURL, TavilyKey, true, ServesTools},
+	{KindBrave, "Brave Search (web search)", BraveURL, BraveKey, true, ServesTools},
 }
 
 // The tools and voice APIs and the env vars their keys go in by default.
@@ -69,6 +74,13 @@ const (
 	ApifyKey      = "APIFY_API_TOKEN"
 	ComfyURL      = "https://cloud.comfy.org"
 	ComfyKey      = "COMFY_API_KEY"
+	// The search providers of needletail's web_search (web.search.provider tavily or brave). Its
+	// runtime reads these key names only, so a second account under another key name is not one
+	// web_search can use.
+	TavilyURL = "https://api.tavily.com"
+	TavilyKey = "TAVILY_API_KEY"
+	BraveURL  = "https://api.search.brave.com"
+	BraveKey  = "BRAVE_SEARCH_API_KEY"
 )
 
 // KindOf is the kind named k.
@@ -111,14 +123,16 @@ const DefaultChatGPT = "chatgpt"
 
 // implicit are the connections every instance has unless stormo.yaml defines one by that name:
 // what agents used before connections existed (model.provider: openrouter, the core's sign-in),
-// ElevenLabs for voice (agent.yaml voice.provider: elevenlabs), and the tools APIs Apify and Comfy
-// Cloud; each API keyed by one shared secret.
+// ElevenLabs for voice (agent.yaml voice.provider: elevenlabs), the tools APIs Apify and Comfy
+// Cloud, and web_search's providers Tavily and Brave Search; each API keyed by one shared secret.
 var implicit = []Connection{
 	{Name: KindOpenRouter, Kind: KindOpenRouter, BaseURL: "https://openrouter.ai/api/v1", Key: "OPENROUTER_API_KEY", Serves: ServesModels, Implicit: true},
 	{Name: DefaultChatGPT, Kind: KindChatGPT, Serves: ServesModels, Implicit: true},
 	{Name: KindElevenLabs, Kind: KindElevenLabs, BaseURL: ElevenLabsURL, Key: ElevenLabsKey, Serves: ServesVoice, Implicit: true},
 	{Name: KindApify, Kind: KindApify, BaseURL: ApifyURL, Key: ApifyKey, Serves: ServesTools, Implicit: true},
 	{Name: KindComfy, Kind: KindComfy, BaseURL: ComfyURL, Key: ComfyKey, Serves: ServesTools, Implicit: true},
+	{Name: KindTavily, Kind: KindTavily, BaseURL: TavilyURL, Key: TavilyKey, Serves: ServesTools, Implicit: true},
+	{Name: KindBrave, Kind: KindBrave, BaseURL: BraveURL, Key: BraveKey, Serves: ServesTools, Implicit: true},
 }
 
 var (

@@ -25,6 +25,10 @@ func TestToolsConnections(t *testing.T) {
 	if comfy.Serves != "tools" || comfy.Key != "COMFY_API_KEY" || len(comfy.UsedBy) != 0 || !strings.HasPrefix(comfy.Label, "Comfy Cloud") {
 		t.Errorf("comfy = %+v", comfy)
 	}
+	// web_search's providers: implicit too, keyed by the names the runtime reads.
+	if tv, br := byName["tavily"], byName["brave"]; tv.Serves != "tools" || !tv.Implicit || tv.Key != "TAVILY_API_KEY" || br.Serves != "tools" || br.Key != "BRAVE_SEARCH_API_KEY" {
+		t.Errorf("tavily = %+v, brave = %+v", tv, br)
+	}
 	if _, err := connectionModels(inst, "apify", ""); err == nil || !strings.Contains(err.Error(), "serves tools, not models") {
 		t.Errorf("models of a tools API: %v", err)
 	}

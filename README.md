@@ -42,9 +42,9 @@ snapshot back to the server room and notes what changed. This one is the bundled
   carries messages between agents and owns their shared documents. Models come through named
   connections: a ChatGPT plan, which the core signs in to and serves to its agents, or an API
   (OpenRouter, OpenAI, Anthropic, any compatible endpoint). Tools APIs the agents' scripts call
-  (Apify for web data, Comfy Cloud for image and video generation) are connections too, keyed
-  once for every agent. The core can run on another machine, reached by URL and token
-  ([docs/core.md](docs/core.md)).
+  (Apify for web data, Comfy Cloud for image and video generation) and the web search providers
+  (Tavily, Brave Search) are connections too, keyed once for every agent. The core can run on
+  another machine, reached by URL and token ([docs/core.md](docs/core.md)).
 - **Channels and voice.** Agents work in Slack, Telegram and WhatsApp
   ([docs/whatsapp.md](docs/whatsapp.md)) and answer over their own chat API. With a voice
   connection (ElevenLabs), needletail agents hear voice notes and answer with them, in a voice

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
 func load(t *testing.T, yaml string) (*Instance, error) {
@@ -40,6 +42,9 @@ func TestConnections(t *testing.T) {
 	for name, want := range map[string]Connection{
 		KindApify: {Name: KindApify, Kind: KindApify, BaseURL: ApifyURL, Key: ApifyKey, Serves: ServesTools, Implicit: true},
 		KindComfy: {Name: KindComfy, Kind: KindComfy, BaseURL: ComfyURL, Key: ComfyKey, Serves: ServesTools, Implicit: true},
+		// web_search's providers, keyed by the names needletail's runtime reads.
+		KindTavily: {Name: KindTavily, Kind: KindTavily, BaseURL: TavilyURL, Key: wire.SearchKeyEnv(wire.SearchTavily), Serves: ServesTools, Implicit: true},
+		KindBrave:  {Name: KindBrave, Kind: KindBrave, BaseURL: BraveURL, Key: wire.SearchKeyEnv(wire.SearchBrave), Serves: ServesTools, Implicit: true},
 	} {
 		if c, ok := inst.Connection(name); !ok || c != want || !c.API() || !c.Tools() || c.Models() || c.Voice() {
 			t.Errorf("%s = %+v", name, c)
@@ -50,7 +55,7 @@ func TestConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inst.Connections) != 8 {
+	if len(inst.Connections) != 10 {
 		t.Errorf("connections = %+v", inst.Connections)
 	}
 	if c, _ := inst.Connection("openai"); c.BaseURL != "https://api.openai.com/v1" || c.Key != "OPENAI_API_KEY" || c.Implicit {
@@ -61,7 +66,7 @@ func TestConnections(t *testing.T) {
 	}
 	// Redefining an implicit one by name replaces it.
 	inst, _ = load(t, "connections:\n  - {name: openrouter, kind: openrouter, key: OR_TEAM_KEY}\n")
-	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 5 {
+	if c, _ := inst.Connection("openrouter"); c.Key != "OR_TEAM_KEY" || c.Implicit || len(inst.Connections) != 7 {
 		t.Errorf("redefined = %+v", inst.Connections)
 	}
 	// A second ElevenLabs account under its own name and key; the review never goes through voice.

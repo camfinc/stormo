@@ -183,13 +183,17 @@ instance: inside a sidecar it is the agent's engine home.
   the instance's parent). A persona is one agent's look (its office character `sprite:`, its `desk:`
   and the `## Avatar lock` a portrait is baked from), so each agent normally has its own:
   `stormo new agent` with a `look` writes `personas/<id>`, and `stormo look show|set` edits it.
-- **Connections** (`connections:`): named ways to reach models, voice and tools APIs, `{name, kind: chatgpt|openrouter|openai|anthropic|custom|elevenlabs|apify|comfy, base_url?, key?}`;
+- **Connections** (`connections:`): named ways to reach models, voice and tools APIs, `{name, kind: chatgpt|openrouter|openai|anthropic|custom|elevenlabs|apify|comfy|tavily|brave, base_url?, key?}`;
   `key` is the API key's env var NAME (values stay in the secrets: `stormo secrets set shared NAME`, set once
   for every agent that declares it). Every kind serves models except `elevenlabs`, which serves voice, and
-  `apify` (web scraping and data, `https://api.apify.com/v2`) and `comfy` (Comfy Cloud image and video
-  generation, `https://cloud.comfy.org`), which serve tools: APIs the agents' skills and scripts call with the
-  key. Every instance has `openrouter`, `chatgpt`, `elevenlabs` (key `ELEVENLABS_API_KEY`), `apify` (key
-  `APIFY_API_TOKEN`) and `comfy` (key `COMFY_API_KEY`) unless it redefines them.
+  `apify` (web scraping and data, `https://api.apify.com/v2`), `comfy` (Comfy Cloud image and video
+  generation, `https://cloud.comfy.org`), `tavily` and `brave` (web search, `https://api.tavily.com` and
+  `https://api.search.brave.com`), which serve tools: APIs the agents' skills and scripts call with the
+  key, or for `tavily` and `brave` the provider a needletail agent's `web_search` asks (its
+  `engine/needletail/config.yaml` `web.search.provider`; the runtime reads the default key names only). Every
+  instance has `openrouter`, `chatgpt`, `elevenlabs` (key `ELEVENLABS_API_KEY`), `apify` (key
+  `APIFY_API_TOKEN`), `comfy` (key `COMFY_API_KEY`), `tavily` (key `TAVILY_API_KEY`) and `brave` (key
+  `BRAVE_SEARCH_API_KEY`) unless it redefines them.
   An agent's `model.provider` names an API connection serving models (and declares its key under
   `secrets:`); `model.local.connection` names the ChatGPT sign-in the core serves it with (default
   `chatgpt`); `voice.provider` names a voice connection (its key declared too), and
