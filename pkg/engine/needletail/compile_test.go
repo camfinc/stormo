@@ -98,6 +98,16 @@ func isRebuilt(p string) bool {
 	return false
 }
 
+// The instance's web search connections carry the key names web.search's runtime reads, so a key
+// set on the Providers page is the one web_search gets.
+func TestSearchConnectionsKeys(t *testing.T) {
+	for _, p := range []string{wire.SearchTavily, wire.SearchBrave} {
+		if k, ok := instance.KindOf(p); !ok || k.Key != wire.SearchKeyEnv(p) || k.Serves != instance.ServesTools {
+			t.Errorf("connection kind %s = %+v, runtime key %s", p, k, wire.SearchKeyEnv(p))
+		}
+	}
+}
+
 func TestCompileRefusesUnknownReasoning(t *testing.T) {
 	inst, a := atlas(t)
 	a.Limits.Reasoning = "galaxy-brain"

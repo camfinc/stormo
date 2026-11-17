@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/camfinc/stormo/internal/needletail/wire"
 )
 
 func load(t *testing.T, yaml string) (*Instance, error) {
@@ -42,9 +40,9 @@ func TestConnections(t *testing.T) {
 	for name, want := range map[string]Connection{
 		KindApify: {Name: KindApify, Kind: KindApify, BaseURL: ApifyURL, Key: ApifyKey, Serves: ServesTools, Implicit: true},
 		KindComfy: {Name: KindComfy, Kind: KindComfy, BaseURL: ComfyURL, Key: ComfyKey, Serves: ServesTools, Implicit: true},
-		// web_search's providers, keyed by the names needletail's runtime reads.
-		KindTavily: {Name: KindTavily, Kind: KindTavily, BaseURL: TavilyURL, Key: wire.SearchKeyEnv(wire.SearchTavily), Serves: ServesTools, Implicit: true},
-		KindBrave:  {Name: KindBrave, Kind: KindBrave, BaseURL: BraveURL, Key: wire.SearchKeyEnv(wire.SearchBrave), Serves: ServesTools, Implicit: true},
+		// web_search's providers, keyed by the names the engine's runtime reads.
+		KindTavily: {Name: KindTavily, Kind: KindTavily, BaseURL: TavilyURL, Key: "TAVILY_API_KEY", Serves: ServesTools, Implicit: true},
+		KindBrave:  {Name: KindBrave, Kind: KindBrave, BaseURL: BraveURL, Key: "BRAVE_SEARCH_API_KEY", Serves: ServesTools, Implicit: true},
 	} {
 		if c, ok := inst.Connection(name); !ok || c != want || !c.API() || !c.Tools() || c.Models() || c.Voice() {
 			t.Errorf("%s = %+v", name, c)

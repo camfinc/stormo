@@ -16,8 +16,8 @@ import (
 // the core holds (local runs only). Most serve models, which agents pick by name (agent.yaml
 // model.provider, and model.local.connection for the core route); a voice one serves speech
 // (agent.yaml voice.provider); a tools one is an API the agents' skills and scripts call with its
-// key, or a search provider their web_search tool asks (needletail's web.search), which an agent
-// uses by declaring that key.
+// key, or a search provider the engine's web_search tool asks, which an agent uses by declaring
+// that key.
 
 // Connection kinds.
 const (
@@ -74,9 +74,8 @@ const (
 	ApifyKey      = "APIFY_API_TOKEN"
 	ComfyURL      = "https://cloud.comfy.org"
 	ComfyKey      = "COMFY_API_KEY"
-	// The search providers of needletail's web_search (web.search.provider tavily or brave). Its
-	// runtime reads these key names only, so a second account under another key name is not one
-	// web_search can use.
+	// The search providers of the engine's web_search tool. Its runtime reads these key names
+	// only, so a second account under another key name is not one web_search can use.
 	TavilyURL = "https://api.tavily.com"
 	TavilyKey = "TAVILY_API_KEY"
 	BraveURL  = "https://api.search.brave.com"
