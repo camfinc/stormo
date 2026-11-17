@@ -43,7 +43,7 @@ struct ProvidersView: View {
                 Section {
                     ForEach(tools) { apiRow($0, icon: "wrench.and.screwdriver") }
                 } header: {
-                    SectionTitle("Tools", note: "APIs the agents' skills and scripts call with the key: web data, image and video generation. Set the key once here; an agent uses it by declaring the key under Secrets or Optional secrets in its form.")
+                    SectionTitle("Tools", note: "APIs the agents' skills, scripts and web search call with the key: web data and search, image and video generation. Set the key once here; an agent uses it by declaring the key under Secrets or Optional secrets in its form.")
                 }
             }
             Section {

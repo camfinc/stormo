@@ -261,8 +261,8 @@ private func voiceStormo(_ s: Scratch) throws -> (cli: StormoCLI, log: URL) {
         let rows = try await cli.run(["connections"], as: [ConnectionRow].self)
         #expect(rows.filter(\.servesVoice).map(\.name) == ["elevenlabs"])
         #expect(rows.first { $0.name == "openrouter" }?.servesVoice == false)
-        // The tools APIs every instance has, used by the agents that declare their key.
-        #expect(rows.filter(\.servesTools).map(\.name) == ["apify", "comfy"])
+        // The tools APIs every instance has (web_search's providers among them), used by the agents that declare their key.
+        #expect(rows.filter(\.servesTools).map(\.name) == ["apify", "comfy", "tavily", "brave"])
         #expect(rows.first { $0.name == "apify" }?.usedBy == ["atlas"])
         #expect(rows.filter(\.servesModels).allSatisfy { !$0.servesTools && !$0.servesVoice })
 
