@@ -532,7 +532,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   marked), asking it to update any person it promised an answer and to ask someone else or a person
   if it still matters, and the recipient a `bus_unanswered` finding. Work still held when the window
   closes (a turn open, an approval waiting) is never closed so: its sender hears once where it
-  stands ("Still open: …"). `due_minutes` (1 to
+  stands ("Still open: …"), and it stays followed until it is closed, however old. Closing checks the
+  recipient's quiet in the notice's own transaction, so a read landing during a round keeps it open. `due_minutes` (1 to
   1440, a message to one agent) sets when the sender wants an answer: past it, unanswered, the
   sender is told once where it stands, however late (one status notice per message: a due time or
   the window). Each wake and notice is checked again just before it happens (a read, a reply or an

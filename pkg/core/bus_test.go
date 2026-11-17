@@ -1115,3 +1115,67 @@ func TestMigration14LeavesWhatWasDeliveredBefore(t *testing.T) {
 		t.Errorf("a delivery from before follow-ups was followed up: %+v", f.wakes)
 	}
 }
+
+// Closing is checked against the read time in its own transaction: a first read that lands during
+// the round keeps it open.
+func TestFollowUpReadDuringTheRoundKeepsItOpen(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Check", Body: "x"})
+	f.bus.WakeRound()
+	f.takeWakes() // woken, never read
+	f.mu.Lock()
+	f.onHold = func() { _, _ = f.bus.Read("nova", q.ID) }
+	f.mu.Unlock()
+	f.now = f.now.Add(7 * time.Hour)
+	f.bus.WakeRound()
+	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 0 {
+		t.Fatalf("closed although it was read just now: %+v", in)
+	}
+	if got := findingRules(t, f.db); slices.Contains(got, "nova:bus_unanswered") {
+		t.Errorf("findings %v", got)
+	}
+}
+
+// Held work told "still open" is closed once nothing holds it, however old it is by then.
+func TestFollowUpHeldWorkIsClosedWhenTheHoldClears(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Needs approval", Body: "x"})
+	f.bus.WakeRound()
+	f.takeWakes()
+	_, _ = f.bus.Read("nova", q.ID)
+	f.mu.Lock()
+	f.hold = map[string]string{fmt.Sprintf("nova/swarm-bus-%d", q.Thread): SessionApproval}
+	f.mu.Unlock()
+	f.now = f.now.Add(7 * time.Hour)
+	f.bus.WakeRound()
+	f.mu.Lock()
+	f.hold = nil
+	f.mu.Unlock()
+	f.now = f.now.Add(18 * time.Hour) // past the thread's lifetime
+	f.bus.WakeRound()
+	f.bus.WakeRound()
+	in, _ := f.bus.Inbox("atlas", false, 0)
+	subjects := []string{}
+	for _, m := range in {
+		subjects = append(subjects, m.Subject)
+	}
+	if len(in) != 2 || !strings.HasPrefix(in[0].Subject, "Not answered") || !strings.HasPrefix(in[1].Subject, "Still open") {
+		t.Fatalf("notices %v", subjects)
+	}
+}
+
+// A queued batch that lost its first message meanwhile is announced as what is left.
+func TestWakeAnnouncesWhatIsLeftOfABatch(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	a := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "First, acked meanwhile", Body: "x"})
+	b := mustSend(t, f, "scout", SendRequest{To: "nova", Subject: "Second, still unread", Body: "y"})
+	f.mu.Lock()
+	f.onRoster = func() { _ = f.bus.Ack("nova", a.ID) }
+	f.mu.Unlock()
+	f.bus.WakeRound()
+	w := f.takeWakes()
+	if len(w) != 1 || w[0].session != fmt.Sprintf("swarm-bus-%d", b.Thread) || !strings.Contains(w[0].input, "[AGENT MESSAGE from scout] Second, still unread") ||
+		strings.Contains(w[0].input, "atlas") || strings.Contains(w[0].input, "more)") {
+		t.Fatalf("wake %+v", w)
+	}
+}

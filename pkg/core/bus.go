@@ -587,35 +587,25 @@ func (b *Bus) wakeUnread(r *round) {
 		log.Printf("bus: %v", err)
 		return
 	}
-	type pending struct {
-		ids     []int64
-		thread  int64
-		subject string
-		from    []string
-		marked  bool
+	type unread struct {
+		id, thread      int64
+		sender, subject string
+		marked          bool
 	}
-	byAgent := map[string]*pending{}
+	byAgent := map[string][]unread{}
 	order := []string{}
 	for rows.Next() {
-		var agent, sender, subject string
-		var id, thread int64
-		var marked bool
-		if err := rows.Scan(&agent, &id, &thread, &sender, &subject, &marked); err != nil {
+		var agent string
+		var u unread
+		if err := rows.Scan(&agent, &u.id, &u.thread, &u.sender, &u.subject, &u.marked); err != nil {
 			rows.Close()
 			log.Printf("bus: %v", err)
 			return
 		}
-		p := byAgent[agent]
-		if p == nil {
-			p = &pending{thread: thread, subject: subject}
-			byAgent[agent] = p
+		if byAgent[agent] == nil {
 			order = append(order, agent)
 		}
-		p.ids = append(p.ids, id)
-		p.marked = p.marked || marked
-		if !slices.Contains(p.from, sender) {
-			p.from = append(p.from, sender)
-		}
+		byAgent[agent] = append(byAgent[agent], u)
 	}
 	rows.Close()
 	if len(order) == 0 {
@@ -630,15 +620,29 @@ func (b *Bus) wakeUnread(r *round) {
 		if !b.admit(r) {
 			return
 		}
-		p := byAgent[id]
-		// still unread? an earlier wake in this round took time, and the agent may have read or acked some
-		p.ids = slices.DeleteFunc(p.ids, func(mid int64) bool {
+		// still unread? an earlier wake in this round took time, and the agent may have read or acked
+		// some: the batch is what is left, its first message giving the thread, the subject and the session
+		items := slices.DeleteFunc(byAgent[id], func(u unread) bool {
 			var n int
-			_ = b.o.DB.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE message = ? AND agent = ? AND read_at IS NULL AND acked_at IS NULL`, mid, id).Scan(&n)
+			_ = b.o.DB.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE message = ? AND agent = ? AND read_at IS NULL AND acked_at IS NULL`, u.id, id).Scan(&n)
 			return n == 0
 		})
-		if len(p.ids) == 0 {
+		if len(items) == 0 {
 			continue
+		}
+		p := struct {
+			ids     []int64
+			thread  int64
+			subject string
+			from    []string
+			marked  bool
+		}{thread: items[0].thread, subject: items[0].subject}
+		for _, u := range items {
+			p.ids = append(p.ids, u.id)
+			p.marked = p.marked || u.marked
+			if !slices.Contains(p.from, u.sender) {
+				p.from = append(p.from, u.sender)
+			}
 		}
 		session := fmt.Sprintf("swarm-bus-%d", p.thread)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -700,8 +704,8 @@ func (b *Bus) followUp(r *round) {
 			d.followups, d.told, d.session, d.wake_error, COALESCE(d.woken_at, 0), COALESCE(d.read_at, 0), COALESCE(d.followed_at, 0),
 			(SELECT created FROM messages WHERE id = m.thread), (SELECT MAX(hop) FROM messages WHERE thread = m.thread)
 		FROM deliveries d JOIN messages m ON m.id = d.message
-		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND (m.created >= ? OR m.due > 0 AND d.told = 0) AND `+unanswered+`
-		ORDER BY m.id`, toldDone, CoreSender, r.now.Add(-l.ThreadTTL).UnixMilli())
+		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND (m.created >= ? OR m.due > 0 AND d.told = 0 OR d.told = ?) AND `+unanswered+`
+		ORDER BY m.id`, toldDone, CoreSender, r.now.Add(-l.ThreadTTL).UnixMilli(), toldStatus)
 	if err != nil {
 		log.Printf("bus: %v", err)
 		return
@@ -732,15 +736,14 @@ func (b *Bus) followUp(r *round) {
 		replyable := nowMs-o.root < l.ThreadTTL.Milliseconds() && o.hop < l.MaxHops
 		switch {
 		case o.due > 0 && nowMs >= o.due && o.told == 0:
-			b.tell(o, toldStatus, "Past its due time: "+b.about(o),
+			b.tell(o, toldStatus, 0, "Past its due time: "+b.about(o),
 				fmt.Sprintf("Your message %d to %s is past its due time. %s If you told a person you would get back to them by now, tell them where it stands.",
 					o.id, o.agent, standing(o, hold, running)))
-		case l.FollowUps < 0, o.created < r.now.Add(-l.ThreadTTL).UnixMilli():
-			// off; or kept only for a due time
+		case l.FollowUps < 0:
 		case hold != "" || last > 0 && !quiet:
 			// held, or woken or read just now: never closed so. Past the window, its sender hears once where it stands
 			if expired && hold != "" && o.told == 0 {
-				b.tell(o, toldStatus, "Still open: "+b.about(o),
+				b.tell(o, toldStatus, 0, "Still open: "+b.about(o),
 					fmt.Sprintf("Your message %d to %s has been open for over %s. %s It is not closed: you hear when it is answered. "+
 						"If you told a person you would get back to them, tell them where it stands.", o.id, o.agent, l.FollowUpFor, standing(o, hold, running)))
 			}
@@ -757,7 +760,7 @@ func (b *Bus) followUp(r *round) {
 			if !replyable && last > 0 {
 				why += " Its conversation takes no more messages (its hops or its lifetime), so it was not followed up further."
 			}
-			if b.tell(o, toldDone, "Not answered: "+b.about(o),
+			if b.tell(o, toldDone, nowMs-l.FollowUpAfter.Milliseconds(), "Not answered: "+b.about(o),
 				fmt.Sprintf("Your message %d to %s is not answered. %s%s If you told a person you would get back to them, tell them where it stands now. "+
 					"If it still matters, ask someone else, or tell a person in Slack what is unresolved.", o.id, o.agent, standing(o, hold, running), why)) {
 				_ = b.o.DB.RaiseFinding(o.agent, "bus_unanswered", "medium", fmt.Sprintf("message %d", o.id), nowMs)
@@ -854,11 +857,11 @@ func (b *Bus) about(o openDelivery) string {
 }
 
 // tell leaves o's sender a core notice in the message's thread and records what it was told,
-// unless the delivery was answered or told so meanwhile (checked in the same transaction): false
-// then. The notice takes no hop of the thread, and the sender is woken for it in the thread's
+// unless the delivery was answered or told so meanwhile, or (quietSince > 0) its recipient woke,
+// read or was followed up after quietSince (checked in the same transaction): false then. The notice takes no hop of the thread, and the sender is woken for it in the thread's
 // session like for any message. A sender no longer in the fleet is not told; the delivery is still
 // marked.
-func (b *Bus) tell(o openDelivery, told int, subject, body string) bool {
+func (b *Bus) tell(o openDelivery, told int, quietSince int64, subject, body string) bool {
 	tx, err := b.o.DB.Begin()
 	if err != nil {
 		log.Printf("bus: %v", err)
@@ -866,8 +869,9 @@ func (b *Bus) tell(o openDelivery, told int, subject, body string) bool {
 	}
 	defer tx.Rollback()
 	res, err := tx.Exec(`UPDATE deliveries SET told = ? WHERE message = ? AND agent = ? AND told < ? AND acked_at IS NULL
+		AND (? = 0 OR MAX(COALESCE(woken_at, 0), COALESCE(read_at, 0), COALESCE(followed_at, 0)) <= ?)
 		AND NOT EXISTS (SELECT 1 FROM messages r JOIN messages m ON m.id = deliveries.message
-			WHERE r.thread = m.thread AND r.sender = deliveries.agent AND r.id > m.id)`, told, o.id, o.agent, told)
+			WHERE r.thread = m.thread AND r.sender = deliveries.agent AND r.id > m.id)`, told, o.id, o.agent, told, quietSince, quietSince)
 	if err != nil {
 		log.Printf("bus: %v", err)
 		return false
