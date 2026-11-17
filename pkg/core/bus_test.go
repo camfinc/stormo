@@ -590,6 +590,51 @@ func TestFollowUpNotForAnAckOrAReply(t *testing.T) {
 	}
 }
 
+// One wake brings several messages; the turn answers them all in the first one's conversation.
+// A reply to a sender there answers that sender's message of the batch; not one woken apart.
+func TestFollowUpABatchAnsweredInOneThread(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	first := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Close the open items", Body: "List what is left."})
+	second := mustSend(t, f, "scout", SendRequest{To: "nova", Subject: "Which draft stands?", Body: "58 or 59?"})
+	f.bus.WakeRound()
+	if w := f.takeWakes(); len(w) != 1 || !strings.Contains(w[0].input, "(and 1 more)") {
+		t.Fatalf("one wake for the batch: %+v", w)
+	}
+	_, _ = f.bus.Read("nova", first.ID)
+	_, _ = f.bus.Read("nova", second.ID)
+	mustSend(t, f, "nova", SendRequest{To: "scout", Subject: "Draft 58 stands", Body: "59 was a regression.", Thread: first.ID})
+	mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "Items closed", Body: "Two left, both waiting.", Thread: first.ID})
+	f.now = f.now.Add(3 * time.Minute)
+	f.bus.WakeRound()
+	for _, w := range f.takeWakes() {
+		if w.agent == "nova" {
+			t.Fatalf("a batch answered in one thread was followed up: %+v", w)
+		}
+	}
+	later := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Check one more date", Body: "The 26th?", Thread: first.ID})
+	f.now = f.now.Add(5 * time.Second) // wake rounds are apart: each wake has its own stamp
+	f.bus.WakeRound()
+	f.takeWakes()
+	_, _ = f.bus.Read("nova", later.ID)
+	other := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "A separate ask", Body: "Different topic."})
+	f.now = f.now.Add(5 * time.Second)
+	f.bus.WakeRound()
+	f.takeWakes()
+	_, _ = f.bus.Read("nova", other.ID)
+	mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "On the separate ask", Body: "Done.", Thread: other.ID})
+	f.now = f.now.Add(3 * time.Minute)
+	f.bus.WakeRound()
+	var nova []wakeCall
+	for _, w := range f.takeWakes() { // atlas is woken for the reply too
+		if w.agent == "nova" {
+			nova = append(nova, w)
+		}
+	}
+	if len(nova) != 1 || !strings.Contains(nova[0].input, fmt.Sprintf("msg_read(%d)", later.ID)) {
+		t.Fatalf("a reply in another wake's thread does not answer it: %+v", nova)
+	}
+}
+
 // No follow-up while the recipient's turn is open in the thread or its answer waits for approval.
 func TestFollowUpHeldByAnOpenTurnOrAWaitingApproval(t *testing.T) {
 	f := newBusFixture(t, BusLimits{})

@@ -515,7 +515,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
 - *Follow-ups* (migration 14): a turn can end without answering what it was woken for (a model
   error, a turn that just stops), and the request must not die with it. A direct message from an
   agent (not `group` or `unit:`, not a core notice) is *unanswered* while its recipient has not
-  `msg_ack`ed it and wrote nothing in the thread since. Once its recipient was woken for it or read
+  `msg_ack`ed it and wrote nothing in the thread since, nor to its sender in the thread of another
+  message the same wake brought (one turn answers a batch in the first one's conversation). Once its recipient was woken for it or read
   it, and has been quiet in the thread for 2 min (no turn open in `swarm-bus-<thread>`, no approval
   it asked for there waiting: the activity monitor's `SessionState`), it gets a follow-up wake in
   that session (`Idempotency-Key` …`-f<n>`, input `[AGENT MESSAGE from <sender>] <subject>: a

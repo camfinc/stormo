@@ -620,8 +620,9 @@ const (
 )
 
 // followUp keeps a message from being dropped with a turn. A direct message from an agent whose
-// recipient was woken for it or read it, then wrote nothing in the thread and did not msg_ack it,
-// is unanswered: once the recipient is quiet in the thread (no turn open there, no approval it
+// recipient was woken for it or read it, then did not msg_ack it and wrote nothing in its thread
+// (nor to its sender in the thread of another message the same wake brought: one turn answers a
+// batch in one conversation), is unanswered: once the recipient is quiet in the thread (no turn open there, no approval it
 // asked for there waiting, FollowUpAfter since its last wake or read) it gets a follow-up wake in
 // the thread's session, up to FollowUps; when they ran out, its sender is told in the thread and
 // the recipient gets a bus_unanswered finding. A message past the due time its sender set is
@@ -635,6 +636,9 @@ func (b *Bus) followUp(now time.Time, woken map[string]bool) {
 		WHERE d.acked_at IS NULL AND d.told < ? AND m.audience = d.agent AND m.sender != ?
 		AND (m.created >= ? OR (m.due > 0 AND d.told = 0))
 		AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.thread = m.thread AND r.sender = d.agent AND r.id > m.id)
+		AND NOT EXISTS (SELECT 1 FROM deliveries sib JOIN messages sm ON sm.id = sib.message
+			JOIN messages r ON r.thread = sm.thread AND r.sender = d.agent AND r.audience = m.sender AND r.id > m.id
+			WHERE sib.agent = d.agent AND sib.woken_at = d.woken_at)
 		ORDER BY m.id`, toldGaveUp, CoreSender, window)
 	if err != nil {
 		log.Printf("bus: %v", err)
