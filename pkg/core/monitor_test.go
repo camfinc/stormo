@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/engine/hermes"
 	"github.com/camfinc/stormo/pkg/place"
 )
@@ -283,6 +284,50 @@ func TestLiveExpiresLostCalls(t *testing.T) {
 	}
 	if rows, _ := m.Timeline("atlas", 10, true); len(rows) != 0 {
 		t.Errorf("pruned rows remain: %v", rows)
+	}
+}
+
+// A turn's session is open from its start to its end; an approval it left waiting holds the
+// session until answered, and its answer, which often comes after the turn ended, opens nothing.
+func TestSessionStateTurnsAndApprovals(t *testing.T) {
+	m := NewMonitor(testDB(t), testKeys(t), nil)
+	now := time.Now()
+	n := 0
+	ev := func(kind engine.HookKind, session, approval string) {
+		t.Helper()
+		n++
+		e := &engine.HookEvent{Kind: kind, Name: string(kind), Delivery: fmt.Sprintf("d%d", n), At: now.Add(time.Duration(n) * time.Second),
+			Session: session, ApprovalID: approval}
+		if err := m.Ingest("atlas", e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.SessionState("atlas", "swarm-bus-7"); got != "" {
+		t.Fatalf("an agent with no hooks: %q", got)
+	}
+	ev(engine.SessionStart, "swarm-bus-7", "")
+	if got := m.SessionState("atlas", "swarm-bus-7"); got != SessionTurn {
+		t.Errorf("a turn running: %q", got)
+	}
+	if got := m.SessionState("atlas", "swarm-bus-8"); got != "" {
+		t.Errorf("another session: %q", got)
+	}
+	ev(engine.ApprovalWaiting, "swarm-bus-7", "ap1")
+	ev(engine.SessionEnd, "swarm-bus-7", "")
+	if got := m.SessionState("atlas", "swarm-bus-7"); got != SessionApproval {
+		t.Errorf("the turn ended with an approval waiting: %q", got)
+	}
+	ev(engine.ApprovalAnswered, "swarm-bus-7", "ap1")
+	if got := m.SessionState("atlas", "swarm-bus-7"); got != "" {
+		t.Errorf("answered after the turn: %q", got)
+	}
+	if l := m.Live("atlas"); l.Sessions != 0 || l.Waiting != 0 {
+		t.Errorf("an answer after the turn opened a session: %+v", l)
+	}
+	ev(engine.ApprovalWaiting, "swarm-bus-9", "ap2")
+	m.now = func() time.Time { return now.Add(sessionTimeout + time.Hour) }
+	if got := m.SessionState("atlas", "swarm-bus-9"); got != "" {
+		t.Errorf("an approval whose answer never came stops holding: %q", got)
 	}
 }
 

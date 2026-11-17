@@ -37,6 +37,12 @@ const (
 	maxPreview     = 160
 )
 
+// What holds an agent in a session (Monitor.SessionState).
+const (
+	SessionTurn     = "turn"
+	SessionApproval = "approval"
+)
+
 // LiveCall is a tool call in flight.
 type LiveCall struct {
 	Tool  string `json:"tool"`
@@ -63,9 +69,15 @@ type Live struct {
 type agentLive struct {
 	calls    map[string]*LiveCall
 	sessions map[string]int64
-	waiting  map[string]int64
+	waiting  map[string]waitingApproval
 	last     int64
 	lastTool string
+}
+
+// waitingApproval is an approval asked for in a session and not answered yet.
+type waitingApproval struct {
+	since int64
+	sess  string
 }
 
 // TimelineEntry is one row of an agent's activity. Preview and Session only reach owner reads.
@@ -230,11 +242,13 @@ func (m *Monitor) Ingest(agent string, e *engine.HookEvent) error {
 	m.mu.Lock()
 	l := m.live[agent]
 	if l == nil {
-		l = &agentLive{calls: map[string]*LiveCall{}, sessions: map[string]int64{}, waiting: map[string]int64{}}
+		l = &agentLive{calls: map[string]*LiveCall{}, sessions: map[string]int64{}, waiting: map[string]waitingApproval{}}
 		m.live[agent] = l
 	}
 	l.last = ms
-	if e.Session != "" && e.Kind != engine.SessionEnd {
+	// an approval is answered when its person gets to it, often after the turn that asked ended:
+	// it opens no session
+	if e.Session != "" && e.Kind != engine.SessionEnd && e.Kind != engine.ApprovalWaiting && e.Kind != engine.ApprovalAnswered {
 		l.sessions[e.Session] = ms
 	}
 	switch e.Kind {
@@ -259,7 +273,7 @@ func (m *Monitor) Ingest(agent string, e *engine.HookEvent) error {
 			done = &ToolEvent{Agent: agent, Tool: tool, Path: p, At: ms}
 		}
 	case engine.ApprovalWaiting:
-		l.waiting[e.ApprovalID] = ms
+		l.waiting[e.ApprovalID] = waitingApproval{since: ms, sess: e.Session}
 	case engine.ApprovalAnswered:
 		delete(l.waiting, e.ApprovalID)
 	}
@@ -285,11 +299,32 @@ func (m *Monitor) expire(l *agentLive, now int64) {
 			delete(l.sessions, k)
 		}
 	}
-	for k, t := range l.waiting {
-		if now-t > sessionTimeout.Milliseconds() {
+	for k, w := range l.waiting {
+		if now-w.since > sessionTimeout.Milliseconds() {
 			delete(l.waiting, k)
 		}
 	}
+}
+
+// SessionState is what holds the agent in session: SessionTurn while a turn is open there,
+// SessionApproval while an approval it asked for there waits for its person, else "".
+func (m *Monitor) SessionState(agent, session string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.live[agent]
+	if l == nil {
+		return ""
+	}
+	m.expire(l, m.now().UnixMilli())
+	if _, ok := l.sessions[session]; ok {
+		return SessionTurn
+	}
+	for _, w := range l.waiting {
+		if w.sess == session {
+			return SessionApproval
+		}
+	}
+	return ""
 }
 
 // Live is the agent's live state, nil when it never posted a hook.
