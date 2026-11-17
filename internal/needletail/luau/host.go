@@ -62,6 +62,8 @@ type Runtime struct {
 	// and ingest URLs), which nt.http never dials.
 	Core     CoreCaller
 	CoreURLs []string
+	// Internal is the agent's approvals.marked internal (messaging.MarkedRunMay).
+	Internal bool
 	Memory   *memory.Store
 	// FollowUps are the agent's one-time follow-ups (follow_up, nt.followup; nil: unavailable).
 	FollowUps *followup.Queue
@@ -856,7 +858,7 @@ func coreCall(ctx context.Context, c *Call, in json.RawMessage) (any, error) {
 // core calls one of the core's tools: an object answer as it is, any other text as {result}.
 func (c *Call) core(ctx context.Context, tool string, args map[string]any) (any, error) {
 	why := c.quarantined(ctx)
-	if why != "" && !messaging.MarkedRunCoreTool(tool) {
+	if why != "" && !messaging.MarkedRunMay(tool, c.rt.Internal) {
 		// a tainted run's core write that carries content out: a person approves exactly this
 		// call, or it is refused (a message to another agent carries the run's mark instead)
 		b, _ := json.Marshal(args)

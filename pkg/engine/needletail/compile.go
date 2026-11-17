@@ -322,6 +322,8 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 			return nil, fmt.Errorf("%s: approvals.per_conversation %d must be 1 to 20 (0 or unset: 3)", ConfigFile, a.PerConversation)
 		case a.PerDay < 0 || a.PerDay > 500:
 			return nil, fmt.Errorf("%s: approvals.per_day %d must be 1 to 500 (0 or unset: 20)", ConfigFile, a.PerDay)
+		case a.Marked != "" && a.Marked != wire.MarkedStrict && a.Marked != wire.MarkedInternal:
+			return nil, fmt.Errorf("%s: approvals.marked is %s or %s (unset: %s), not %q", ConfigFile, wire.MarkedStrict, wire.MarkedInternal, wire.MarkedStrict, a.Marked)
 		}
 		for _, r := range a.Commands {
 			if _, err := regexp.Compile(`(?i)` + r.Pattern); err != nil || strings.TrimSpace(r.Pattern) == "" {

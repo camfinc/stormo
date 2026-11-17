@@ -81,6 +81,10 @@ type Options struct {
 	AllowAll     bool
 	// HomeChat is where schedules deliver (TELEGRAM_HOME_CHANNEL).
 	HomeChat string
+	// Internal is the agent's approvals.marked internal (docs/needletail.md §7): a tainted run's
+	// message to the home chat or an allowed user's private chat goes without a person, and so
+	// does a repo job's report.
+	Internal bool
 	Redact   func(string) string
 	Log      func(string)
 	// BusyWait is how long a message waits for a turn slot (default 10 min); RetryEvery how often

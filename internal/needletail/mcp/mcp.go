@@ -73,6 +73,9 @@ type Client struct {
 	Key  string
 	HTTP *http.Client
 	Log  func(string)
+	// Internal is the agent's approvals.marked internal: a marked run also calls
+	// messaging.InternalCoreTool without a person. Set once at boot.
+	Internal bool
 
 	ids         atomic.Int64
 	mu          sync.Mutex
@@ -251,10 +254,10 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (*
 
 // CallMarked runs tool name from a run that holds untrusted input for why ("" when it does not;
 // the caller passes its conversation's mark too, which ctx alone may not carry): a marked run
-// calls only what messaging.MarkedRunCoreTool allows, and a message it sends carries why in the
+// calls only what messaging.MarkedRunMay allows, and a message it sends carries why in the
 // call's _meta, where the core keeps it (docs/core.md, marked messages).
 func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessage, why string) (*Result, error) {
-	if why != "" && !messaging.MarkedRunCoreTool(name) {
+	if why != "" && !messaging.MarkedRunMay(name, c.Internal) {
 		return nil, messaging.Deferred("core tool "+name, why)
 	}
 	if len(bytes.TrimSpace(args)) == 0 {
@@ -305,9 +308,10 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 			Schema:      info.InputSchema,
 			Run: func(ctx context.Context, env *tools.Env, args json.RawMessage) (any, error) {
 				why := tools.UntrustedWhy(ctx, env)
-				if why != "" && !messaging.MarkedRunCoreTool(name) {
+				if why != "" && !messaging.MarkedRunMay(name, c.Internal) {
 					// a tainted run's core write that carries content out (fs_write, cap_run, …):
-					// a person approves it; talk to another agent carries the mark instead
+					// a person approves it; talk to another agent carries the mark instead, and
+					// under approvals.marked internal a capability job or a WhatsApp send goes
 					return nil, messaging.NeedsApproval("core tool "+name, why)
 				}
 				res, err := c.CallMarked(ctx, name, args, why)

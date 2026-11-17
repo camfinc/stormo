@@ -720,6 +720,7 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 		AllowBots:    os.Getenv("SLACK_ALLOW_BOTS"),
 		HomeChannel:  os.Getenv("SLACK_HOME_CHANNEL"),
 		Broadcast:    rt.cfg.Slack != nil && rt.cfg.Slack.Broadcast,
+		Internal:     rt.cfg.Approvals.Internal(),
 		Redact:       rt.red.Redact,
 		Log:          func(s string) { rt.logger.Println(s) },
 		Handlers:     handlers,

@@ -492,7 +492,21 @@ type ApprovalsConfig struct {
 	// Commands are risky-command patterns added to the defaults: a terminal command one matches
 	// needs approval in any conversation and is refused in a scheduled run.
 	Commands []CommandRule `json:"commands,omitempty" yaml:"commands,omitempty"`
+	// Marked is what a run holding untrusted input does without a person (docs/needletail.md §7,
+	// "Marked runs"): MarkedStrict (unset) puts everything that leaves its conversation to the
+	// approvers; MarkedInternal lets what reaches only an audience the owner configured go too.
+	// An image older than it refuses a needletail.yaml that has it.
+	Marked string `json:"marked,omitempty" yaml:"marked,omitempty"`
 }
+
+// The approvals.marked values.
+const (
+	MarkedStrict   = "strict"
+	MarkedInternal = "internal"
+)
+
+// Internal is whether approvals.marked is MarkedInternal (false for a nil config).
+func (c *ApprovalsConfig) Internal() bool { return c != nil && c.Marked == MarkedInternal }
 
 // CommandRule is one risky-command pattern (a Go regular expression, matched case insensitively)
 // and what it means.

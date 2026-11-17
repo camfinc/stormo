@@ -187,6 +187,66 @@ func TestServeInformationFlowTiers(t *testing.T) {
 	}
 }
 
+// approvals.marked internal: in the same tainted thread, a message to the home channel or an
+// allowed user's DM goes with no card; one to another place in a channel, a skill, a home write
+// still asks, and a broadcast is still refused.
+func TestServeMarkedInternal(t *testing.T) {
+	steps := []tierStep{
+		{"home", "send_message", fixed(map[string]any{"target": "slack", "message": "The radar, for the team."}), "allow", ""},
+		{"dm", "send_message", fixed(map[string]any{"target": "slack:" + teammate, "message": "Your summary."}), "allow", ""},
+		{"chan", "send_message", fixed(map[string]any{"target": "slack:" + devChan, "message": "Posted at the top."}), "approval", ""},
+		{"skill", "skill_manage", fixed(map[string]any{"action": "create", "name": "table-skill", "category": "crm", "content": "---\nname: table-skill\ndescription: Do the table.\n---\nDo it.\n"}), "approval", ""},
+		{"homewrite", "write_file", fixed(map[string]any{"path": "notes.md", "content": "a note"}), "approval", ""},
+		{"broadcast", "send_message", fixed(map[string]any{"target": "slack", "message": "@here look", "broadcast": true}), "refuse", ""},
+	}
+	next := func(msgs []scriptMsg) (string, string, any) {
+		user, after := lastUser(msgs)
+		if after != nil {
+			return "Tool said: " + after.text(), "", nil
+		}
+		for _, s := range steps {
+			if strings.HasSuffix(strings.TrimSpace(user), "STEP "+s.name) {
+				return "Doing " + s.name + ".", s.tool, s.args("")
+			}
+		}
+		return "ok", "", nil
+	}
+	r := newApprovalRig(t, "approvals:\n    marked: internal\n    per_conversation: 20\n", next)
+	r.taintedThread()
+	r.start()
+	defer r.srv.stop()
+	for i, s := range steps {
+		before := len(r.fake.Posts())
+		msgTS := fmt.Sprintf("1700000200.%06d", i+1)
+		r.inThread("ev"+msgTS, teammate, "STEP "+s.name, msgTS)
+		var reply string
+		waitFor(t, "the reply to "+s.name, 15*time.Second, func() bool {
+			for _, p := range r.fake.Posts()[before:] {
+				if p.Channel == devChan && strings.HasPrefix(p.Text, "Tool said:") {
+					reply = p.Text
+					return true
+				}
+			}
+			return false
+		})
+		if got := tierOf(reply); got != s.tainted {
+			t.Errorf("internal %s: tier %s, want %s: %s", s.name, got, s.tainted, reply)
+		}
+	}
+	if n := len(r.cards()); n != 3 {
+		t.Errorf("%d approval cards, want 3 (the channel post, the skill, the home write)", n)
+	}
+	posted := map[string]bool{}
+	for _, p := range r.fake.Posts() {
+		posted[p.Text] = true
+	}
+	for _, text := range []string{"The radar, for the team.", "Your summary."} {
+		if !posted[text] {
+			t.Errorf("%q not posted", text)
+		}
+	}
+}
+
 // Taint from data: a record a tainted run saved is marked; a trusted DM that finds it with
 // memory_search is tainted from then on (its next send elsewhere needs approval), until the
 // owner trusts the conversation (POST /v1/sessions/{id}/trust, audited): then it sends again.

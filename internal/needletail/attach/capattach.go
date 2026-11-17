@@ -22,9 +22,10 @@ type Uploader func(ctx context.Context, job int64, name string, body []byte) (js
 var jobName = regexp.MustCompile(`^[A-Za-z0-9]`)
 
 // AttachTool sends an upload to a waiting job. It is a write to the core: a marked upload marks
-// the conversation first, and a tainted run puts the call to a person. consume drops the upload
+// the conversation first, and a tainted run puts the call to a person, unless internal (the
+// agent's approvals.marked internal: the job is the swarm's own worker). consume drops the upload
 // from the store once the core has it.
-func (s *Store) AttachTool(up Uploader) tools.Tool {
+func (s *Store) AttachTool(up Uploader, internal bool) tools.Tool {
 	return tools.Tool{Name: AttachTool,
 		Description: "Send a file you were sent in this conversation (a video, a voice note, an image…) to one of your capability jobs that waits for it " +
 			"(cap_start with files_pending): straight into the job, never into the shared space. consume: true drops it from your files once it went.",
@@ -60,7 +61,7 @@ func (s *Store) AttachTool(up Uploader) tools.Tool {
 					return nil, fmt.Errorf("a marked file cannot be sent: %w", err)
 				}
 			}
-			if why := tools.UntrustedWhy(ctx, env); why != "" {
+			if why := tools.UntrustedWhy(ctx, env); why != "" && !internal {
 				return nil, messaging.NeedsApproval(fmt.Sprintf("sending a file you were sent (%s) to capability job %d", e.Name, a.Job), why)
 			}
 			body, err := s.Read(e)

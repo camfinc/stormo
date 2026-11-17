@@ -78,6 +78,49 @@ func TestQuarantineCoreWritesRefusedBeforeTransport(t *testing.T) {
 	}
 }
 
+// approvals.marked internal: a marked run's capability jobs and WhatsApp sends go as well, carrying
+// no mark of their own; a shared write and a tool not reviewed yet still wait for a person.
+func TestQuarantineInternalCoreWrites(t *testing.T) {
+	var mu sync.Mutex
+	sent := map[string]map[string]any{}
+	client := &Client{URL: "http://core.invalid/mcp", Key: "fake-core-key", initialized: true, Internal: true, HTTP: &http.Client{Transport: quarantineTransport(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		sent[req.Params["name"].(string)] = req.Params
+		mu.Unlock()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"result":{"content":[{"type":"text","text":"{}"}]}}`))}, nil
+	})}}
+	const why = "read a web page (web_extract)"
+	ctx := messaging.WithUntrusted(context.Background(), why)
+	for _, name := range []string{"cap_start", "cap_run", "cap_cancel", "whatsapp_send"} {
+		if _, err := client.Call(ctx, name, nil); err != nil {
+			t.Errorf("internal %s refused: %v", name, err)
+		}
+		if sent[name]["_meta"] != nil {
+			t.Errorf("%s carries a mark: %v", name, sent[name])
+		}
+	}
+	for _, name := range []string{"fs_write", "future_write"} {
+		if _, err := client.Call(ctx, name, nil); err == nil {
+			t.Errorf("internal %s went", name)
+		}
+	}
+	env := &tools.Env{Untrusted: func(context.Context, string) string { return why }}
+	for _, tool := range client.Tools([]ToolInfo{{Name: "fs_write", InputSchema: []byte(`{}`)}, {Name: "whatsapp_send", InputSchema: []byte(`{}`)}}) {
+		_, err := tool.Run(context.Background(), env, json.RawMessage(`{}`))
+		_, asks := messaging.AsApproval(err)
+		if tool.Name == "mcp_core_fs_write" && !asks || tool.Name == "mcp_core_whatsapp_send" && err != nil {
+			t.Errorf("registered %s: %v", tool.Name, err)
+		}
+	}
+	if sent["fs_write"] != nil || sent["future_write"] != nil {
+		t.Errorf("a shared write reached the core: %v", sent)
+	}
+}
+
 // End to end over the core's own bus: a run marked by a web page messages another agent with no
 // person in the loop; the message keeps the mark, the reader's msg_read marks its run (persisted,
 // why says from whom and why), and listing the inbox does not.

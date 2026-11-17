@@ -49,14 +49,16 @@ func connectCore(rt *runtime) *coreLink {
 	// Not the serve context: hooks and notes outlive SIGTERM while running turns drain.
 	ctx, cancel := context.WithCancel(context.Background())
 	client := mcp.New(c.MCPURL, key, logf)
+	client.Internal = rt.cfg.Approvals.Internal()
 	rt.core.Store(client) // a handler's route to another agent (coreForward)
 	if rt.files != nil {
 		// a file someone sent goes to the agent's capability job through the core, never /shared
-		rt.agent.Tools.Add(rt.files.AttachTool(client.Upload))
+		rt.agent.Tools.Add(rt.files.AttachTool(client.Upload, client.Internal))
 	}
 	go client.Register(ctx, rt.agent.Tools, toolsFirstRetry, toolsMaxRetry)
 	if rt.luau != nil {
 		rt.luau.Core = client // nt.core and shared writes from Luau go through the core
+		rt.luau.Internal = client.Internal
 	}
 
 	notes := client.Background(ctx, notesQueue)

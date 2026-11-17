@@ -54,7 +54,9 @@ func (g *Gateway) routeMessage(hctx context.Context, session string, j job, v me
 			why = g.routeTaint(sctx, session, j, v)
 		}
 	}
-	waits := why != "" && agent == "" // a marked route to Slack waits for the owner
+	// a marked route to Slack waits for the owner, unless approvals.marked internal and it goes to
+	// an audience the owner configured
+	waits := why != "" && agent == "" && !g.inside(target)
 	switch {
 	case waits:
 		err = g.routeForApproval(hctx, session, target, canonical, text, why, v)

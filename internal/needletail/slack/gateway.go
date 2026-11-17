@@ -98,8 +98,12 @@ type Options struct {
 	// send_message that asks for it (broadcast: true) keeps @channel, @here, @everyone and user
 	// groups; everywhere else they are escaped.
 	Broadcast bool
-	Redact    func(string) string
-	Log       func(string)
+	// Internal is the agent's approvals.marked internal (docs/needletail.md §7): a tainted run's
+	// message to an audience the owner configured (the home channel, an allowed user's DM) goes
+	// without a person, and so does a repo job's report.
+	Internal bool
+	Redact   func(string) string
+	Log      func(string)
 	// BusyWait is how long a message waits for a turn slot before a busy note (default 10 min);
 	// RetryEvery how often it asks (default 2 s).
 	BusyWait, RetryEvery time.Duration

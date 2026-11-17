@@ -148,3 +148,30 @@ func TestHandlerInitialQuarantineFailureStopsExecution(t *testing.T) {
 		t.Fatalf("a context-carrying reply escaped a failed mark: calls=%d left=%d posts=%v", calls, len(left), r.fake.Posts())
 	}
 }
+
+// approvals.marked internal: a marked run's report goes where its repo job says, or to the home
+// channel or an allowed user's DM; the agent's own job's report to another channel is still held,
+// and without internal a repo job's marked report is held as before.
+func TestInternalMarkedReportsGoInside(t *testing.T) {
+	ctx := messaging.WithUntrusted(context.Background(), "read a web page (web_extract)")
+	r := newRig(t, func(o *Options) { o.Internal = true })
+	for _, d := range []sched.Delivery{
+		{JobID: "repo", Target: sched.Target{Platform: "slack", Channel: dev}, Text: "repo report", Trusted: true},
+		{JobID: "home", Target: sched.Target{Platform: "slack"}, Text: "home report"},
+		{JobID: "dm", Target: sched.Target{Platform: "slack", Channel: dm}, Text: "dm report"},
+	} {
+		if err := r.g.Deliver(ctx, d); err != nil {
+			t.Errorf("internal %s: %v", d.JobID, err)
+		}
+	}
+	if err := r.g.Deliver(ctx, sched.Delivery{JobID: "own", Target: sched.Target{Platform: "slack", Channel: dev}, Text: "own report"}); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("internal, the agent's own job to a channel: not held: %v", err)
+	}
+	if p := r.fake.Posts(); len(p) != 3 || p[0].Channel != dev || p[1].Channel != home || p[2].Channel != dm {
+		t.Errorf("posts %+v", p)
+	}
+	strict := newRig(t, nil)
+	if err := strict.g.Deliver(ctx, sched.Delivery{JobID: "repo", Target: sched.Target{Platform: "slack", Channel: dev}, Text: "repo report", Trusted: true}); !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("strict, a repo job's marked report: not held: %v", err)
+	}
+}

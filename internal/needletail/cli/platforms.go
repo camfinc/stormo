@@ -227,6 +227,7 @@ func startTelegram(rt *runtime, srv *api.Server) *telegram.Gateway {
 		AllowedUsers: envList("TELEGRAM_ALLOWED_USERS"),
 		AllowAll:     strings.EqualFold(os.Getenv("TELEGRAM_ALLOW_ALL_USERS"), "true"),
 		HomeChat:     strings.TrimSpace(os.Getenv("TELEGRAM_HOME_CHANNEL")),
+		Internal:     rt.cfg.Approvals.Internal(),
 		Redact:       rt.red.Redact,
 		Log:          func(s string) { rt.logger.Println(s) },
 		Files:        rt.files,

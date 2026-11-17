@@ -144,3 +144,27 @@ func TestFollowUpBeforeSendTaintMarksDestination(t *testing.T) {
 		t.Fatalf("sent %+v", sent)
 	}
 }
+
+// approvals.marked internal: a marked send to the home chat goes without a person; a marked report
+// goes where its repo job says; a report of the agent's own job to another chat is still held.
+func TestInternalMarkedGoesInside(t *testing.T) {
+	h := markedRewrite(false, "rewritten from marked data")
+	fake, _, g := rig(t, func(o *Options) { o.Handlers = h; o.Internal = true })
+	ctx := messaging.WithSession(context.Background(), "telegram--100555")
+	if _, err := g.Send(ctx, messaging.Request{Target: "telegram", Text: "clean text"}); err != nil {
+		t.Fatalf("a marked send to the home chat: %v", err)
+	}
+	if sent := fake.Sent(); len(sent) != 1 || sent[0].Chat != alice || sent[0].Text != "rewritten from marked data" {
+		t.Fatalf("home chat %+v", sent)
+	}
+	if err := g.Deliver(context.Background(), sched.Delivery{Session: "cron-daily", Target: sched.Target{Platform: Source, Channel: "-100555"}, Text: "clean report", Trusted: true}); err != nil {
+		t.Fatalf("a marked repo report: %v", err)
+	}
+	err := g.Deliver(context.Background(), sched.Delivery{Session: "cron-mine", Target: sched.Target{Platform: Source, Channel: "-100555"}, Text: "clean report"})
+	if !errors.Is(err, messaging.ErrRefused) {
+		t.Errorf("the agent's own job's marked report to a group: not held: %v", err)
+	}
+	if sent := fake.Sent(); len(sent) != 2 || sent[1].Chat != -100555 {
+		t.Fatalf("sent %+v", sent)
+	}
+}

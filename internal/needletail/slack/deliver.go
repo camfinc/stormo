@@ -28,7 +28,7 @@ import (
 // (Hermes' cron.wrap_response: false), and never broadcasts.
 func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	ctx = messaging.WithQuarantine(ctx, nil)
-	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+	if why := g.deliveryQuarantine(ctx, d); why != "" {
 		return messaging.Deferred("scheduled Slack delivery", why)
 	}
 	if d.Target.Platform != "slack" {
@@ -39,10 +39,7 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	}
 	channel, thread := d.Target.Channel, d.Target.Thread
 	// the agent's before_send handlers first; the messaging policy decides after them
-	mt := messaging.Target{Platform: "slack", Channel: channel, Thread: thread}
-	if u := userIDRe.FindStringSubmatch(channel); u != nil {
-		mt = messaging.Target{Platform: "slack", User: u[1]}
-	}
+	mt := deliveryTarget(d.Target)
 	// a failure (or auto-pause) notice is the runtime's: a broken handler does not keep it back
 	text, err := g.beforeSendAs(messaging.WithoutEndorsed(ctx), messaging.Outgoing{Kind: messaging.KindDelivery, Session: d.Session, Text: d.Text}, mt, d.Failure)
 	if err != nil {
@@ -53,7 +50,7 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		// (which never act under the endorsement) would change it
 		return fmt.Errorf("%w: the agent's before_send handlers would change the report the owner approved; it is not delivered altered", messaging.ErrBlocked)
 	}
-	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+	if why := g.deliveryQuarantine(ctx, d); why != "" {
 		return messaging.Deferred("scheduled Slack delivery", why)
 	}
 	if !d.Trusted {
@@ -555,6 +552,9 @@ func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target, b
 	if broadcast {
 		return messaging.Deferred("a broadcast", why)
 	}
+	if g.inside(target) {
+		return nil // approvals.marked internal: an audience the owner configured
+	}
 	elsewhere := messaging.NeedsApproval("send_message to "+target.String()+" (outside this conversation)", why)
 	channel, thread, ok := Origin(g.root(session))
 	if !ok {
@@ -584,15 +584,49 @@ func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target, b
 	return nil
 }
 
-func (g *Gateway) deliveryQuarantine(ctx context.Context, session string) string {
+// inside is whether target reaches only an audience the owner configured, under approvals.marked
+// internal: the home channel (any thread of it) or the DM of a person allowed_users names. A
+// tainted run's message there goes without a person (docs/needletail.md §7, "Marked runs").
+func (g *Gateway) inside(target messaging.Target) bool {
+	if !g.o.Internal {
+		return false
+	}
+	users := g.Policy().AllowedUsers
+	if target.User != "" {
+		return slices.Contains(users, target.User)
+	}
+	switch channel := target.Channel; {
+	case channel == "" || channel == g.o.HomeChannel:
+		return g.o.HomeChannel != ""
+	case strings.HasPrefix(channel, "D"):
+		person, err := g.dmUser(channel)
+		return err == nil && slices.Contains(users, person)
+	}
+	return false
+}
+
+// deliveryTarget is a scheduled delivery's target as the messaging policy reads it: a user id
+// is their DM.
+func deliveryTarget(t sched.Target) messaging.Target {
+	if u := userIDRe.FindStringSubmatch(t.Channel); u != nil {
+		return messaging.Target{Platform: "slack", User: u[1]}
+	}
+	return messaging.Target{Platform: "slack", Channel: t.Channel, Thread: t.Thread}
+}
+
+// deliveryQuarantine is why a scheduled report waits for a person ("" when it goes): its run's
+// mark, unless a person approved it or, under approvals.marked internal, it goes where its repo
+// job says or to an audience the owner configured.
+func (g *Gateway) deliveryQuarantine(ctx context.Context, d sched.Delivery) string {
 	if messaging.Endorsed(ctx) != "" {
 		return "" // a held report a person approved
 	}
-	if why := messaging.UntrustedWhy(ctx); why != "" {
-		return why
+	why := messaging.UntrustedWhy(ctx)
+	if why == "" && g.o.Untrusted != nil && g.o.Untrusted(d.Session) {
+		why = messaging.UntrustedConversation
 	}
-	if g.o.Untrusted != nil && g.o.Untrusted(session) {
-		return messaging.UntrustedConversation
+	if why != "" && g.o.Internal && (d.Trusted || g.inside(deliveryTarget(d.Target))) {
+		return ""
 	}
-	return ""
+	return why
 }

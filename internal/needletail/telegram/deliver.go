@@ -200,6 +200,9 @@ func (g *Gateway) quarantineSend(ctx context.Context, target messaging.Target) e
 	if ok && err == nil && dest == chat && dtopic == topic {
 		return nil
 	}
+	if g.inside(target) {
+		return nil // approvals.marked internal: an audience the owner configured
+	}
 	return messaging.NeedsApproval("send_message to "+target.String()+" (outside this conversation)", why)
 }
 
@@ -370,7 +373,7 @@ func (g *Gateway) CheckTarget(t sched.Target) error {
 // job's targets are the repo's. Never [SILENT], never a broadcast.
 func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	ctx = messaging.WithQuarantine(ctx, nil)
-	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+	if why := g.deliveryQuarantine(ctx, d); why != "" {
 		return messaging.Deferred("scheduled Telegram delivery", why)
 	}
 	if d.Target.Platform != Source {
@@ -388,7 +391,7 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 		return fmt.Errorf("%w: the agent's before_send handlers would change the report the owner approved; it is not delivered altered", messaging.ErrBlocked)
 	}
 	// a handler that read marked data marked the run: the report is held for approval
-	if why := g.deliveryQuarantine(ctx, d.Session); why != "" {
+	if why := g.deliveryQuarantine(ctx, d); why != "" {
 		return messaging.Deferred("scheduled Telegram delivery", why)
 	}
 	if !d.Trusted {
@@ -406,17 +409,38 @@ func (g *Gateway) Deliver(ctx context.Context, d sched.Delivery) error {
 	return err
 }
 
-func (g *Gateway) deliveryQuarantine(ctx context.Context, session string) string {
+// deliveryQuarantine is why a scheduled report waits for a person ("" when it goes): its run's
+// mark, unless a person approved it or, under approvals.marked internal, it goes where its repo
+// job says or to an audience the owner configured.
+func (g *Gateway) deliveryQuarantine(ctx context.Context, d sched.Delivery) string {
 	if messaging.Endorsed(ctx) != "" {
 		return ""
 	}
-	if why := messaging.UntrustedWhy(ctx); why != "" {
-		return why
+	why := messaging.UntrustedWhy(ctx)
+	if why == "" && g.o.Untrusted != nil && g.o.Untrusted(d.Session) {
+		why = messaging.UntrustedConversation
 	}
-	if g.o.Untrusted != nil && g.o.Untrusted(session) {
-		return messaging.UntrustedConversation
+	if why != "" && g.o.Internal && (d.Trusted || g.inside(messaging.Target{Platform: Source, Channel: d.Target.Channel, Thread: d.Target.Thread})) {
+		return ""
 	}
-	return ""
+	return why
+}
+
+// inside is whether target reaches only an audience the owner configured, under approvals.marked
+// internal: the home chat (any topic of it) or the private chat of a person allowed_users names
+// (its chat id is theirs).
+func (g *Gateway) inside(target messaging.Target) bool {
+	if !g.o.Internal {
+		return false
+	}
+	chat := target.Channel
+	if chat == "" {
+		chat = target.User
+	}
+	if chat == "" || chat == g.o.HomeChat {
+		return g.o.HomeChat != ""
+	}
+	return slices.Contains(g.o.AllowedUsers, chat)
 }
 
 // AlertDeliveries keeps the one home notice about kept reports (sched.DeliveryAlerter) in the

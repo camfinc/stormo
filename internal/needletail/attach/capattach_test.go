@@ -31,7 +31,7 @@ func TestCapAttach(t *testing.T) {
 	tool := s.AttachTool(func(_ context.Context, job int64, name string, body []byte) (json.RawMessage, error) {
 		got = append(got, sent{job, name, len(body)})
 		return json.RawMessage(`{"status":"queued"}`), nil
-	})
+	}, false)
 	env := &tools.Env{Session: "convA"}
 	marked := ""
 	ctx := messaging.WithQuarantine(context.Background(), func(why string) error { marked = why; return nil })
@@ -72,5 +72,18 @@ func TestCapAttach(t *testing.T) {
 	// the approved call runs (endorsed)
 	if _, err := call(messaging.WithEndorsed(tainted, "A1"), `{"job":9,"file":"F4"}`); err != nil || len(got) != 2 {
 		t.Errorf("approved: %v %v", err, got)
+	}
+	// approvals.marked internal: a tainted run hands the file to its own job, and a marked upload
+	// still marks the conversation first
+	inside := s.AttachTool(func(_ context.Context, job int64, name string, body []byte) (json.RawMessage, error) {
+		got = append(got, sent{job, name, len(body)})
+		return json.RawMessage(`{"status":"queued"}`), nil
+	}, true)
+	if _, err := inside.Run(tainted, env, json.RawMessage(`{"job":10,"file":"F4"}`)); err != nil || len(got) != 3 {
+		t.Errorf("internal, tainted: %v %v", err, got)
+	}
+	marked = ""
+	if _, err := inside.Run(ctx, env, json.RawMessage(`{"job":11,"file":"F2"}`)); err != nil || marked == "" || len(got) != 4 {
+		t.Errorf("internal, a marked upload: marked %q, %v %v", marked, err, got)
 	}
 }

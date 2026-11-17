@@ -35,3 +35,23 @@ func MarkCarryingCoreTool(name string) bool { return name == "msg_send" }
 func MarkedRunCoreTool(name string) bool {
 	return ReadOnlyCoreTool(name) || CoordinationCoreTool(name) || MarkCarryingCoreTool(name)
 }
+
+// InternalCoreTool is a core write a run holding untrusted input may call without a person when
+// the agent's approvals.marked is internal, because what it carries reaches only an audience the
+// owner configured: a capability job (a worker of the swarm's own, granted in agent.yaml) or a
+// WhatsApp message (the core sends only to the channel's allowed_users and allowed_groups).
+// fs_write is not one: a shared file keeps no mark, so its readers would take it as trusted.
+func InternalCoreTool(name string) bool {
+	switch name {
+	case "cap_start", "cap_run", "cap_cancel", "whatsapp_send":
+		return true
+	default:
+		return false
+	}
+}
+
+// MarkedRunMay is MarkedRunCoreTool with the agent's approvals.marked: internal adds
+// InternalCoreTool.
+func MarkedRunMay(name string, internal bool) bool {
+	return MarkedRunCoreTool(name) || internal && InternalCoreTool(name)
+}
