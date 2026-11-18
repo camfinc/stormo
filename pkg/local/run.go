@@ -256,6 +256,63 @@ func Conversations(inst *instance.Instance, id string) (engine.Conversations, er
 	return rt.Conversations(apiCall(id, fmt.Sprintf("http://127.0.0.1:%d", port), key)), nil
 }
 
+// ChannelTurns is the agent's channel-turn client on its local engine API (engine.ChannelTurner),
+// keyed with its API key and signed with its core key, both from the local secrets. An engine
+// without channel turns answers ErrNoChannelTurns.
+func ChannelTurns(inst *instance.Instance, id string) (engine.ChannelTurns, error) {
+	a, err := load(inst, id)
+	if err != nil {
+		return nil, err
+	}
+	rt, err := engines.Runtime(a.Engine.Kind)
+	if err != nil {
+		return nil, err
+	}
+	ct, ok := rt.(engine.ChannelTurner)
+	if !ok {
+		return nil, ErrNoChannelTurns
+	}
+	file, err := secrets.Load(secrets.Path(inst.Root))
+	if err != nil {
+		return nil, err
+	}
+	values := secrets.Resolve(file, a, manifest.Local).Values
+	key, _ := values.Get(rt.APIKeyName())
+	coreKey, _ := values.Get("SWARM_CORE_KEY")
+	if key == "" || coreKey == "" {
+		return nil, fmt.Errorf("%s: %s or SWARM_CORE_KEY missing in %s", id, rt.APIKeyName(), secrets.Path(inst.Root))
+	}
+	port, err := Port(inst.Root, id)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
+	call := func(ctx context.Context, method, path string, body []byte, header http.Header) (int, []byte, error) {
+		req, err := http.NewRequestWithContext(ctx, method, endpoint+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+		for k, v := range header {
+			req.Header[k] = v
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				return 0, nil, fmt.Errorf("%s: %w (start it first)", id, ErrNotRunning)
+			}
+			return 0, nil, fmt.Errorf("%s: %w", id, err)
+		}
+		defer res.Body.Close()
+		raw, err := io.ReadAll(io.LimitReader(res.Body, 32<<20))
+		return res.StatusCode, raw, err
+	}
+	return ct.ChannelTurns(call, coreKey), nil
+}
+
+// ErrNoChannelTurns is an agent whose engine runs no channel turns.
+var ErrNoChannelTurns = errors.New("this agent's engine runs no channel turns")
+
 // ErrNotRunning is an agent whose engine API does not answer here.
 var ErrNotRunning = errors.New("not running locally")
 

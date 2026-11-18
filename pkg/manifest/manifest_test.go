@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/camfinc/stormo/pkg/engine/hermes/hermestest"
 	"github.com/camfinc/stormo/pkg/instance"
@@ -314,6 +315,43 @@ func TestVoice(t *testing.T) {
 	} {
 		if _, err := parseAs(t, head+body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: want %q, got %v", body, want, err)
+		}
+	}
+}
+
+func TestBusReturns(t *testing.T) {
+	head := atlasHead + "engine: {kind: hermes, version: 1, model: m}\n"
+	for _, off := range []string{"", "bus: {}\n", "bus: {returns: {on: false}}\n"} {
+		a, err := parseAs(t, head+off)
+		if err != nil || a.Returns != nil {
+			t.Errorf("%q: %+v %v", off, a.Returns, err)
+		}
+	}
+	a, err := parseAs(t, head+"bus: {returns: {on: true}}\n")
+	if err != nil || a.Returns == nil || a.Returns.UpdateAfter != DefaultUpdateAfter || a.Returns.EscalateAfter != DefaultEscalateAfter {
+		t.Fatalf("defaults %+v %v", a.Returns, err)
+	}
+	a, err = parseAs(t, head+"bus: {returns: {on: true, update_after: 30m, escalate_after: 3h, hours: \"08:00-19:00 mon-sat\", timezone: America/Panama}}\n")
+	if err != nil || a.Returns.UpdateAfter != 30*time.Minute || a.Returns.EscalateAfter != 3*time.Hour || a.Returns.Hours == "" {
+		t.Fatalf("%+v %v", a.Returns, err)
+	}
+	if s, loc := a.Returns.Schedule(); s == nil || loc.String() != "America/Panama" {
+		t.Errorf("schedule %v %v", s, loc)
+	}
+	for _, bad := range []string{
+		"bus: {other: 1}\n",
+		"bus: {returns: {on: true, extra: 1}}\n",
+		"bus: {returns: {on: yes please}}\n",
+		"bus: {returns: {on: true, update_after: soon}}\n",
+		"bus: {returns: {on: true, update_after: 1m}}\n",
+		"bus: {returns: {on: true, update_after: 2h, escalate_after: 1h}}\n",
+		"bus: {returns: {on: true, escalate_after: 8d}}\n",
+		"bus: {returns: {on: true, timezone: Mars/Olympus}}\n",
+		"bus: {returns: {on: true, hours: \"8 to 7\"}}\n",
+		"bus: {returns: {on: true, hours: \"09:00-09:30 mon\"}}\n",
+	} {
+		if _, err := parseAs(t, head+bad); err == nil {
+			t.Errorf("accepted %q", bad)
 		}
 	}
 }

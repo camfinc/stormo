@@ -261,3 +261,23 @@ func (s *Schedule) String() string {
 	}
 	return s.raw
 }
+
+// WeeklyMinutes is how much working time a week of the schedule holds (a nil schedule: all of it).
+func (s *Schedule) WeeklyMinutes() int {
+	if s == nil {
+		return 7 * 24 * 60
+	}
+	total := 0
+	for _, e := range s.entries {
+		span := e.end - e.start
+		if span <= 0 {
+			span += 24 * 60
+		}
+		for _, on := range e.days {
+			if on {
+				total += span
+			}
+		}
+	}
+	return total
+}

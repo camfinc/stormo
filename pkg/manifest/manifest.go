@@ -285,7 +285,10 @@ type Agent struct {
 	Role    string   `json:"role"`
 	Persona *Persona `json:"persona,omitempty"`
 	// Voice is how the agent speaks and listens (voice:); nil: no voice.
-	Voice           *Voice           `json:"voice,omitempty"`
+	Voice *Voice `json:"voice,omitempty"`
+	// Returns: its requests from a person's conversation come back to that person (bus.returns);
+	// nil: off.
+	Returns         *Returns         `json:"returns,omitempty"`
 	Engine          EngineSpec       `json:"engine"`
 	Channels        []Channel        `json:"channels"`
 	Secrets         []string         `json:"secrets"`
@@ -449,6 +452,7 @@ type raw struct {
 	Learning        map[string]any   `yaml:"learning"`
 	Deploy          map[string]any   `yaml:"deploy"`
 	Voice           map[string]any   `yaml:"voice"`
+	Bus             map[string]any   `yaml:"bus"`
 }
 
 func str(v any) string {
@@ -731,6 +735,10 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	returns, err := returnsOf(m, where)
+	if err != nil {
+		return nil, err
+	}
 	voice, err := voiceOf(m, where)
 	if err != nil {
 		return nil, err
@@ -776,7 +784,7 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 		state = []State{}
 	}
 	return &Agent{
-		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Voice: voice, Engine: engine,
+		ID: mid, Name: str(m.Name), Unit: unit, Role: str(m.Role), Persona: persona, Voice: voice, Returns: returns, Engine: engine,
 		Channels: channels, Secrets: secrets, OptionalSecrets: optional, Actions: actions, Capabilities: capabilities, Env: envs,
 		State: state, Learning: learning, Deploy: deploy, Limits: limits, Schedules: schedules, Format: format, Legacy: legacy,
 	}, nil

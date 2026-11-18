@@ -206,3 +206,61 @@ type LearningRuntime interface {
 	LearningKeyName() string
 	LearningPath(session string) string
 }
+
+// Channel turns (docs/core.md §5, "Returns"): turns the core runs for conversations of its own
+// channels (WhatsApp), admitted once per execution and signed with the agent's core key, so a turn
+// is never run twice and what it did is attributed to the interaction that started it. An optional
+// Runtime capability: an engine without it keeps Conversations.
+
+// RawCall sends one request to an agent's engine API with its key and the extra headers given.
+type RawCall func(ctx context.Context, method, path string, body []byte, header http.Header) (status int, resp []byte, err error)
+
+// ChannelTurner is a Runtime that runs channel turns.
+type ChannelTurner interface {
+	// ChannelTurns is the client, its requests signed with the agent's core key.
+	ChannelTurns(call RawCall, coreKey string) ChannelTurns
+}
+
+// ChannelTurns drives an agent's channel turns.
+type ChannelTurns interface {
+	Capabilities(ctx context.Context) (ChannelCaps, error)
+	// Start admits the turn (a repeat of the same execution answers its status). ErrChannelBusy:
+	// the conversation runs another turn, nothing admitted.
+	Start(ctx context.Context, t ChannelTurn) (ChannelTurnStatus, error)
+	// Status is the turn's, waiting up to wait for it to end.
+	Status(ctx context.Context, exec string, wait time.Duration) (ChannelTurnStatus, error)
+	// Take tells the engine the core kept the result: it forgets it, never the execution.
+	Take(ctx context.Context, exec string) error
+}
+
+// ChannelCaps is what the engine offers: channel turns, and whether the channel's conversations run
+// only so (enforcing).
+type ChannelCaps struct{ Turns, Enforcing bool }
+
+// ChannelTurn is a turn to run: Kind "inbound" (a person's message) or "return" (the outcome of a
+// request sent from it).
+type ChannelTurn struct {
+	Execution, Kind, Session, Title string
+	In                              Input
+}
+
+// ChannelTurnStatus is a channel turn's state (running, ok, failed, interrupted) and, once it
+// ended, its result. Acted: the tool calls it made (one that acted is never run again). Marked:
+// its reply carries content the agent must not obey. Taken: the result was forgotten.
+type ChannelTurnStatus struct {
+	Execution, State, Tip, Text, Error string
+	Audio                              *Audio
+	Acted                              int64
+	Marked, Taken                      bool
+}
+
+// Terminal is whether the turn ended.
+func (s ChannelTurnStatus) Terminal() bool {
+	return s.State == "ok" || s.State == "failed" || s.State == "interrupted"
+}
+
+// Channel turn errors.
+var (
+	ErrChannelBusy    = errors.New("the conversation runs another turn: nothing admitted, try again")
+	ErrChannelUnknown = errors.New("no such channel turn")
+)
