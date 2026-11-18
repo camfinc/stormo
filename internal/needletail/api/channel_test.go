@@ -46,14 +46,22 @@ func (a *channelAgent) Run(ctx context.Context, session, input string, opts loop
 			return nil, ctx.Err()
 		}
 	}
-	if input == "act" && e != nil {
-		e.Act()
+	if (input == "act" || input == "act-block") && e != nil {
+		if err := e.Act(); err != nil {
+			return nil, err
+		}
+	}
+	if input == "act-block" {
+		<-a.release
 	}
 	tip, ok := a.store.Tip(session)
 	if !ok {
 		return nil, loop.ErrNoSession
 	}
-	return &loop.Result{Text: "re: " + input, Session: tip}, nil
+	if input == "mark" {
+		_, _ = a.store.Append(tip, wire.Message{Role: "tool", Content: "a web page", Untrusted: true})
+	}
+	return &loop.Result{Text: "re: " + input + "\n[UPDATE]", Session: tip}, nil
 }
 
 func (a *channelAgent) turns() []string {
@@ -121,7 +129,7 @@ func TestChannelTurnAdmittedOnceAndKept(t *testing.T) {
 	}
 	code, raw = signed(t, srv, coreKey, "GET", "/v1/channel/turns/exec-0001?wait=5", nil, time.Now())
 	st := status(t, raw)
-	if code != http.StatusOK || st.State != wire.ChannelOK || st.Text != "re: hola" || st.Session == "" {
+	if code != http.StatusOK || st.State != wire.ChannelOK || st.Text != "re: hola\n[UPDATE]" || st.Session == "" {
 		t.Fatalf("%d %+v", code, st)
 	}
 	// the same request again (a lost 202, a core restart): the same turn, not a second one
@@ -137,8 +145,17 @@ func TestChannelTurnAdmittedOnceAndKept(t *testing.T) {
 	if code, _ := signed(t, srv, coreKey, "DELETE", "/v1/channel/turns/exec-0001", nil, time.Now()); code != http.StatusOK {
 		t.Fatalf("take: %d", code)
 	}
-	if code, _ := signed(t, srv, coreKey, "GET", "/v1/channel/turns/exec-0001", nil, time.Now()); code != http.StatusNotFound {
-		t.Fatalf("taken, still there: %d", code)
+	// taken: the result is forgotten, the execution never runs again
+	code, raw = signed(t, srv, coreKey, "GET", "/v1/channel/turns/exec-0001", nil, time.Now())
+	if st := status(t, raw); code != http.StatusOK || !st.Taken || st.Text != "" {
+		t.Fatalf("taken: %d %s", code, raw)
+	}
+	code, raw = signed(t, srv, coreKey, "POST", "/v1/channel/turns", turn, time.Now())
+	if code != http.StatusAccepted || !status(t, raw).Taken || len(ag.turns()) != 1 {
+		t.Fatalf("a repeat after it was taken: %d %s %v", code, raw, ag.turns())
+	}
+	if code, _ := signed(t, srv, coreKey, "POST", "/v1/channel/turns", other, time.Now()); code != http.StatusConflict {
+		t.Fatalf("another request after it was taken: %d", code)
 	}
 }
 
@@ -185,8 +202,9 @@ func TestChannelTurnSignatureAndScope(t *testing.T) {
 	}
 }
 
-// A busy conversation admits nothing; a restart interrupts what ran; an unreadable file stops the start.
-func TestChannelTurnBusyRestartAndFile(t *testing.T) {
+// A busy conversation admits nothing; a second runtime on the home is refused; an unreadable file
+// stops the start.
+func TestChannelTurnBusyLockAndFile(t *testing.T) {
 	dir := t.TempDir()
 	s, ag, srv := channelServer(t, dir, false)
 	first := wire.ChannelTurn{Execution: "exec-busy-1", Kind: messaging.ExecInbound, Session: "whatsapp-b1", Message: "block"}
@@ -201,14 +219,9 @@ func TestChannelTurnBusyRestartAndFile(t *testing.T) {
 	if _, ok := s.ChannelTurn("exec-busy-2"); ok {
 		t.Fatal("a refused turn was admitted")
 	}
-	// a restart while exec-busy-1 runs: it is interrupted, never run again
 	store, _ := sessions.Open(filepath.Join(dir, "sessions"), nil)
-	again, err := New(Options{Key: key, ChannelKey: coreKey, Store: store, Agent: ag, StateDir: filepath.Join(dir, "state")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st, ok := again.ChannelTurn("exec-busy-1"); !ok || st.State != wire.ChannelInterrupted {
-		t.Fatalf("after a restart: %+v %v", st, ok)
+	if _, err := New(Options{Key: key, ChannelKey: coreKey, Store: store, Agent: ag, StateDir: filepath.Join(dir, "state")}); err == nil {
+		t.Fatal("a second runtime on the same home admitted channel turns beside the first")
 	}
 	close(ag.release)
 	bad := t.TempDir()
@@ -218,8 +231,78 @@ func TestChannelTurnBusyRestartAndFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bad, "state", channelFile), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(Options{Key: key, Store: store, Agent: ag, StateDir: filepath.Join(bad, "state")}); err == nil {
+	if _, err := New(Options{Key: key, ChannelKey: coreKey, Store: store, Agent: ag, StateDir: filepath.Join(bad, "state")}); err == nil {
 		t.Fatal("an unreadable channel-turns file did not stop the start")
+	}
+}
+
+// A crash during a turn: it is interrupted at the next start, never run again, and what it did
+// (each call recorded before it ran) stays.
+func TestChannelTurnCrashKeepsWhatItDid(t *testing.T) {
+	dir := t.TempDir()
+	s, ag, srv := channelServer(t, dir, false)
+	turn := wire.ChannelTurn{Execution: "exec-crash-1", Kind: messaging.ExecReturn, Session: "whatsapp-c1", Message: "act-block"}
+	if code, _ := signed(t, srv, coreKey, "POST", "/v1/channel/turns", turn, time.Now()); code != http.StatusAccepted {
+		t.Fatalf("%d", code)
+	}
+	waitFor(t, func() bool { st, _ := s.ChannelTurn("exec-crash-1"); return st.Acted == 1 })
+	raw, err := os.ReadFile(filepath.Join(dir, "state", channelFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the file as a crash leaves it: the turn running, its call recorded
+	crashed := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(crashed, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(crashed, "state", channelFile), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := sessions.Open(filepath.Join(crashed, "sessions"), nil)
+	again, err := New(Options{Key: key, ChannelKey: coreKey, Store: store, Agent: ag, StateDir: filepath.Join(crashed, "state")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := again.ChannelTurn("exec-crash-1"); !ok || st.State != wire.ChannelInterrupted || st.Acted != 1 {
+		t.Fatalf("after the crash: %+v %v", st, ok)
+	}
+	close(ag.release)
+}
+
+// A POST's nonce stays refused after a restart, for as long as its signature is valid.
+func TestChannelNonceSurvivesARestart(t *testing.T) {
+	dir := t.TempDir()
+	s, _, srv := channelServer(t, dir, false)
+	turn := wire.ChannelTurn{Execution: "exec-nonce-1", Kind: messaging.ExecInbound, Session: "whatsapp-n1", Message: "hola"}
+	raw, _ := json.Marshal(turn)
+	header := wire.SignChannel(coreKey, "POST", "/v1/channel/turns", raw, time.Now().Unix(), "persisted-nonce")
+	send := func(url string) int {
+		req, _ := http.NewRequest("POST", url+"/v1/channel/turns", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set(wire.ChannelSignatureHeader, header)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if code := send(srv.URL); code != http.StatusAccepted {
+		t.Fatalf("%d", code)
+	}
+	waitFor(t, func() bool { st, _ := s.ChannelTurn("exec-nonce-1"); return st.Terminal() })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	s.Shutdown(ctx)
+	store, _ := sessions.Open(filepath.Join(dir, "sessions"), nil)
+	again, err := New(Options{Key: key, ChannelKey: coreKey, Store: store, Agent: &channelAgent{store: store}, StateDir: filepath.Join(dir, "state")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv2 := httptest.NewServer(again.Handler())
+	defer srv2.Close()
+	if code := send(srv2.URL); code != http.StatusUnauthorized {
+		t.Fatalf("a replayed nonce after a restart: %d", code)
 	}
 }
 
@@ -231,10 +314,18 @@ func TestChannelTurnExecution(t *testing.T) {
 		t.Fatalf("%d", code)
 	}
 	_, raw := signed(t, srv, coreKey, "GET", "/v1/channel/turns/exec-ret-01?wait=5", nil, time.Now())
-	if st := status(t, raw); st.State != wire.ChannelOK || st.Acted != 1 {
+	if st := status(t, raw); st.State != wire.ChannelOK || st.Acted != 1 || st.Marked {
 		t.Fatalf("%+v", st)
 	}
-	if got := ag.turns(); len(got) != 1 || got[0] != "exec-ret-01:return:"+wire.KindReturn+":act" {
+	m := wire.ChannelTurn{Execution: "exec-mark-01", Kind: messaging.ExecReturn, Session: "whatsapp-m1", Message: "mark"}
+	if code, _ := signed(t, srv, coreKey, "POST", "/v1/channel/turns", m, time.Now()); code != http.StatusAccepted {
+		t.Fatalf("%d", code)
+	}
+	_, raw = signed(t, srv, coreKey, "GET", "/v1/channel/turns/exec-mark-01?wait=5", nil, time.Now())
+	if st := status(t, raw); !st.Marked {
+		t.Fatalf("a reply that read marked content is marked: %+v", st)
+	}
+	if got := ag.turns(); len(got) < 1 || got[0] != "exec-ret-01:return:"+wire.KindReturn+":act" {
 		t.Fatalf("the turn saw %v", got)
 	}
 }
@@ -270,6 +361,14 @@ func TestChannelEnforcement(t *testing.T) {
 		// channel turns still run them
 		if code, _ := signed(t, srv, coreKey, "POST", "/v1/channel/turns", wire.ChannelTurn{Execution: "exec-enf-01", Kind: "inbound", Session: "whatsapp-e1", Message: "hola"}, time.Now()); code != http.StatusAccepted {
 			t.Errorf("enforce=%v channel turn: %d", enforce, code)
+		}
+	}
+}
+
+func TestWithoutMarker(t *testing.T) {
+	for in, want := range map[string]string{"Hola\n[DONE]": "Hola", "Hola [UPDATE]  ": "Hola", "[SILENT]": "", "Hola": "Hola", "[DONE] then more": "[DONE] then more"} {
+		if got := withoutMarker(in); got != want {
+			t.Errorf("withoutMarker(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

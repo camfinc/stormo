@@ -200,7 +200,12 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	channel, err := loadChannel(o.StateDir, o.TmpDir, o.Now)
+	// only a runtime that runs channel turns (it has the core key) keeps their store and its lock
+	channelDir := ""
+	if len(o.ChannelKey) >= MinKey {
+		channelDir = o.StateDir
+	}
+	channel, err := loadChannel(channelDir, o.TmpDir, o.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -544,6 +549,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	s.cancel()
+	s.closeChannel()
 }
 
 // ---- routes ----------------------------------------------------------------------------------

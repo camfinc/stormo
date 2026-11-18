@@ -18,8 +18,11 @@ const (
 // interaction that started it, even when the call reaches the core later (the relay's spool).
 type Execution struct {
 	ID, Kind string
-	ops      atomic.Int64
-	acted    atomic.Int64
+	// OnAct records a tool call durably before it runs (the runtime's channel-turn store); an error
+	// stops the call.
+	OnAct func() error
+	ops   atomic.Int64
+	acted atomic.Int64
 }
 
 type executionKey struct{}
@@ -39,7 +42,18 @@ func ExecutionOf(ctx context.Context) *Execution {
 // restart (it ends interrupted), so an execution's numbers are never reused.
 func (e *Execution) NextOp() string { return fmt.Sprintf("%s/%d", e.ID, e.ops.Add(1)) }
 
-// Act counts a tool call the turn made; Acted is how many: a failed return turn that acted is never
-// run again (its side effects would repeat).
-func (e *Execution) Act()         { e.acted.Add(1) }
+// Act records a tool call the turn is about to make, before it runs: a turn that acted is never run
+// again (its side effects would repeat), and a crash after the call still shows it acted. An error
+// (the record could not be kept) means the call must not run.
+func (e *Execution) Act() error {
+	if e.OnAct != nil {
+		if err := e.OnAct(); err != nil {
+			return err
+		}
+	}
+	e.acted.Add(1)
+	return nil
+}
+
+// Acted is how many tool calls the turn made.
 func (e *Execution) Acted() int64 { return e.acted.Load() }

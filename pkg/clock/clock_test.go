@@ -134,3 +134,25 @@ func TestWallMatchesItsRules(t *testing.T) {
 		t.Errorf("repeated, now after the first: %v", second)
 	}
 }
+
+// A 24:00 end is the next day's midnight, and a day is never taken from a clock a change moved.
+func TestMidnightsAndCivilDays(t *testing.T) {
+	scl := mustLoc(t, "America/Santiago")
+	// 2026-04-05 00:00: Santiago's clocks go back from 00:00 to 23:00, so 24:00 on the 4th repeats
+	got := Wall(2026, time.April, 4, 24, 0, 0, scl, time.Time{})
+	if want := Wall(2026, time.April, 5, 0, 0, 0, scl, time.Time{}); !got.Equal(want) {
+		t.Errorf("24:00 = %v, want the next day's midnight %v", got, want)
+	}
+	sp := mustLoc(t, "America/Sao_Paulo")
+	// 2018-11-04: São Paulo's midnight did not exist (00:00 → 01:00); a Sunday overnight span
+	s := mustSchedule(t, "22:00-06:00 sun")
+	mon := time.Date(2018, time.November, 5, 0, 30, 0, 0, sp)
+	if !s.Working(mon, sp) {
+		t.Errorf("Monday 00:30 inside Sunday's overnight span")
+	}
+	end := mustSchedule(t, "08:00-24:00 mon-fri")
+	pty := mustLoc(t, "America/Panama")
+	if got := end.AddWorking(at(t, pty, "2026-11-20 23:00"), 2*time.Hour, pty); !got.Equal(at(t, pty, "2026-11-23 09:00")) {
+		t.Errorf("a 24:00 end on Friday: %v", got.In(pty))
+	}
+}

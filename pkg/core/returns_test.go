@@ -179,7 +179,7 @@ func TestReturnDeadlinesAndEscalation(t *testing.T) {
 	wantKinds(t, OnTick(e, t0.Add(3*time.Hour)))                      // latched
 	wantKinds(t, OnEvent(e, EventAnswered, 1, false, t0), ActEnqueue) // events still reach the person
 	e.LastActivity = t0
-	x := OnTick(e, t0.Add(ReturnExpireAfter))
+	x := OnTick(e, e.EscalatedAt.Add(ReturnExpireAfter)) // seven quiet days after the escalation
 	if x.Next.State != ReturnExpired {
 		t.Fatalf("quiet after escalation: %s", x.Next.State)
 	}
@@ -192,5 +192,54 @@ func TestReturnRouteGone(t *testing.T) {
 	wantKinds(t, s, ActFallback, ActFinding)
 	if s.Next.State != ReturnExpired {
 		t.Fatalf("%s", s.Next.State)
+	}
+}
+
+// An answer that came while the failure update was in flight is still delivered, once.
+func TestReturnAnswerBehindAFailureUpdate(t *testing.T) {
+	s := OnEvent(open(), EventFailure, 1, false, t0)
+	s = OnEvent(s.Next, EventAnswered, 2, false, t0) // while delivery 1 is in flight
+	wantKinds(t, s)
+	s = OnDelivery(s.Next, OutcomePosted, DispositionUpdate, 1, true, t0)
+	wantKinds(t, s, ActSchedule, ActEnqueue)
+	if s.Next.State != ReturnFailed || s.Actions[1].Event != EventAnswered || s.Next.LateUsed != 1 {
+		t.Fatalf("%+v %+v", s.Next, s.Actions)
+	}
+}
+
+// Escalated returns deliver the request's own late answer once, nothing else; quiet is counted from
+// the escalation, never escalated and expired in one tick.
+func TestReturnEscalatedLateAnswerAndExpiry(t *testing.T) {
+	v := open()
+	v.LastActivity = t0.Add(-30 * 24 * time.Hour)
+	s := OnTick(v, t0.Add(2*time.Hour))
+	wantKinds(t, s, ActEscalate)
+	if s.Next.State == ReturnExpired {
+		t.Fatal("escalated and expired in one tick")
+	}
+	e := s.Next
+	wantKinds(t, OnEvent(e, EventProgress, 1, false, t0.Add(3*time.Hour)))
+	a := OnEvent(e, EventAnswered, 1, false, t0.Add(3*time.Hour))
+	wantKinds(t, a, ActEnqueue)
+	a = OnDelivery(a.Next, OutcomePosted, DispositionUpdate, 1, false, t0.Add(3*time.Hour))
+	wantKinds(t, OnEvent(a.Next, EventAnswered, 2, false, t0.Add(4*time.Hour)))
+	if x := OnTick(e, e.EscalatedAt.Add(ReturnExpireAfter-time.Minute)); x.Next.State == ReturnExpired {
+		t.Fatal("expired before seven quiet days after escalation")
+	}
+	if x := OnTick(e, e.EscalatedAt.Add(ReturnExpireAfter)); x.Next.State != ReturnExpired {
+		t.Fatalf("seven quiet days after escalation: %s", x.Next.State)
+	}
+}
+
+// A child's failure never fails the parent; a child's answer posted as an update keeps it waiting.
+func TestReturnChildOutcomesDoNotCloseTheParent(t *testing.T) {
+	s, _ := OnChild(open(), t0)
+	f := OnEvent(s.Next, EventFailure, 1, true, t0)
+	f = OnDelivery(f.Next, OutcomePosted, DispositionUpdate, 1, false, t0) // own failure: false
+	if f.Next.State != ReturnWaitingChild {
+		t.Fatalf("a child's failure: %s", f.Next.State)
+	}
+	if f.Next.AnswerSeq != 0 {
+		t.Fatal("a child's answer counted as the request's")
 	}
 }

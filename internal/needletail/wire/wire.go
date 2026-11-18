@@ -733,9 +733,15 @@ type ChannelTurnStatus struct {
 	Session   string     `json:"session,omitempty"`
 	Text      string     `json:"text,omitempty"`
 	Audio     *ChatAudio `json:"audio,omitempty"`
-	// Acted is how many tool calls the turn made (a failed one that acted is never run again).
-	Acted int64  `json:"acted"`
-	Error string `json:"error,omitempty"`
+	// Acted is how many tool calls the turn made, each recorded before it ran (a failed one that
+	// acted is never run again, a crash included).
+	Acted int64 `json:"acted"`
+	// Marked: the conversation held content the agent must not obey when the turn ended, so its
+	// reply carries that mark.
+	Marked bool   `json:"marked,omitempty"`
+	Error  string `json:"error,omitempty"`
+	// Taken: the core kept the result, which is forgotten; the execution can never run again.
+	Taken bool `json:"taken,omitempty"`
 }
 
 // Terminal is whether the turn has ended.

@@ -16,6 +16,11 @@ import (
 // UTC). Two: the change repeats it, and it is the first, unless the first is not after now and the
 // second is (now zero: the first).
 func Wall(y int, mo time.Month, d, h, m, s int, loc *time.Location, now time.Time) time.Time {
+	// the civil date first, hours past 23 included ("24:00" is the next day's midnight), never
+	// through loc's clock, which a daylight-saving change could move to another day
+	if h >= 24 {
+		d, h = d+h/24, h%24
+	}
 	y, mo, d = time.Date(y, mo, d, 0, 0, 0, 0, time.UTC).Date()
 	t := time.Date(y, mo, d, h, m, s, 0, loc)
 	u := time.Date(y, mo, d, h, m, s, 0, time.UTC) // the wall time as if it were UTC
@@ -134,22 +139,43 @@ func minutes(s string) (int, error) {
 // interval is one entry on one day, as instants.
 type interval struct{ from, to time.Time }
 
-// intervals are the schedule's working intervals that touch the local day of day (an entry running
+// date is a civil date; its arithmetic is UTC's, never a zone's clock.
+type date struct {
+	y int
+	m time.Month
+	d int
+}
+
+func dateOf(t time.Time, loc *time.Location) date {
+	y, m, d := t.In(loc).Date()
+	return date{y, m, d}
+}
+
+func (d date) add(n int) date {
+	y, m, dd := time.Date(d.y, d.m, d.d+n, 12, 0, 0, 0, time.UTC).Date()
+	return date{y, m, dd}
+}
+
+func (d date) weekday() time.Weekday {
+	return time.Date(d.y, d.m, d.d, 12, 0, 0, 0, time.UTC).Weekday()
+}
+
+// intervals are the schedule's working intervals that touch the civil day day (an entry running
 // past midnight from the day before included), merged and in order.
-func (s *Schedule) intervals(day time.Time, loc *time.Location) []interval {
+func (s *Schedule) intervals(day date, loc *time.Location) []interval {
 	var out []interval
 	for back := -1; back <= 0; back++ {
-		d := day.AddDate(0, 0, back)
+		d := day.add(back)
 		for _, e := range s.entries {
-			if !e.days[d.Weekday()] {
+			if !e.days[d.weekday()] {
 				continue
 			}
-			from := Wall(d.Year(), d.Month(), d.Day(), e.start/60, e.start%60, 0, loc, time.Time{})
-			endDay := d.Day()
+			from := Wall(d.y, d.m, d.d, e.start/60, e.start%60, 0, loc, time.Time{})
+			endDay := d.d
 			if e.end <= e.start {
 				endDay++ // past midnight
 			}
-			to := Wall(d.Year(), d.Month(), endDay, e.end/60, e.end%60, 0, loc, time.Time{})
+			to := Wall(d.y, d.m, endDay, e.end/60, e.end%60, 0, loc, time.Time{})
 			if to.After(from) {
 				out = append(out, interval{from, to})
 			}
@@ -169,8 +195,8 @@ func (s *Schedule) intervals(day time.Time, loc *time.Location) []interval {
 	return merged
 }
 
-// maxWalk bounds a walk in days: a parsed schedule has working time every week, so this is only a
-// guard against looping forever on a broken one.
+// maxWalk bounds a walk in days (about 55 years): beyond it AddWorking answers the zero time,
+// which callers read as never (a schedule of minutes a week asked for days of working time).
 const maxWalk = 20000
 
 // AddWorking is t plus d of working time on the schedule in loc. A nil schedule counts every time
@@ -184,8 +210,8 @@ func (s *Schedule) AddWorking(t time.Time, d time.Duration, loc *time.Location) 
 	}
 	left := max(d, 0)
 	cur := t
+	day := dateOf(t, loc)
 	for i := 0; ; i++ {
-		day := cur.In(loc)
 		for _, iv := range s.intervals(day, loc) {
 			if !iv.to.After(cur) {
 				continue
@@ -201,9 +227,9 @@ func (s *Schedule) AddWorking(t time.Time, d time.Duration, loc *time.Location) 
 				cur = iv.to
 			}
 		}
-		// the next local day's midnight, by wall time (a day may be 23 or 25 hours long)
-		next := Wall(day.Year(), day.Month(), day.Day()+1, 0, 0, 0, loc, time.Time{})
-		if next.After(cur) {
+		// the next civil day, from its midnight (a day may be 23 or 25 hours long)
+		day = day.add(1)
+		if next := Wall(day.y, day.m, day.d, 0, 0, 0, loc, time.Time{}); next.After(cur) {
 			cur = next
 		}
 		if i > maxWalk {
@@ -220,7 +246,7 @@ func (s *Schedule) Working(t time.Time, loc *time.Location) bool {
 	if loc == nil {
 		loc = time.UTC
 	}
-	for _, iv := range s.intervals(t.In(loc), loc) {
+	for _, iv := range s.intervals(dateOf(t, loc), loc) {
 		if !t.Before(iv.from) && t.Before(iv.to) {
 			return true
 		}

@@ -58,17 +58,20 @@ const (
 
 // ReturnView is a return as its state machine sees it.
 type ReturnView struct {
-	State                             string
-	Prev                              string // the state an unknown came from (resend returns to it)
-	SeqLast                           int64  // the newest event's sequence
-	SeqSeen                           int64  // the newest event a finished delivery covered
-	Active                            bool   // a delivery is in flight (one at a time)
-	Attempts                          int    // turns the active delivery took
-	Depth                             int    // 0 for a return from a person's conversation, its parent's + 1 for a child
-	Children                          int    // open children
-	Escalated                         bool
-	LateUsed                          int
-	EscalateAt, NextDue, LastActivity time.Time
+	State     string
+	Prev      string // the state an unknown came from (resend returns to it)
+	SeqLast   int64  // the newest event's sequence
+	SeqSeen   int64  // the newest event a finished delivery covered
+	Active    bool   // a delivery is in flight (one at a time)
+	Attempts  int    // turns the active delivery took
+	Depth     int    // 0 for a return from a person's conversation, its parent's + 1 for a child
+	Children  int    // open children
+	Escalated bool
+	LateUsed  int
+	// AnswerSeq is the newest of the request's own answers (a child's never counts): a failed or
+	// escalated return still delivers it, once.
+	AnswerSeq                                      int64
+	EscalateAt, EscalatedAt, NextDue, LastActivity time.Time
 }
 
 // Terminal is whether nothing more is delivered (but a late answer of a failed one).
@@ -122,20 +125,30 @@ func OnEvent(v ReturnView, kind string, seq int64, child bool, now time.Time) St
 	if seq > n.SeqLast {
 		n.SeqLast = seq
 	}
+	if kind == EventAnswered && !child && seq > n.AnswerSeq {
+		n.AnswerSeq = seq
+	}
 	n.LastActivity = now
 	switch {
 	case n.Terminal():
 		return s // closed: recorded, nothing delivered
-	case n.State == ReturnFailed:
-		// the person was told it failed: only its own late answer still goes, once
-		if kind == EventAnswered && !child && n.LateUsed < ReturnLateAnswers {
-			n.LateUsed++
-			s.enqueue(kind)
-		}
+	case n.State == ReturnFailed || n.Escalated:
+		// the person was told it failed, or the owner was told it is overdue: only the request's own
+		// late answer still goes, once
+		s.late()
 		return s
 	}
-	s.enqueue(kind) // escalated returns too: only their due prompts stop. Held (unknown): recorded
+	s.enqueue(kind) // held (unknown): recorded, delivered once resolved
 	return s
+}
+
+// late asks for the request's own answer's delivery, once, when it is not delivered yet.
+func (s *Step) late() {
+	n := &s.Next
+	if n.AnswerSeq > n.SeqSeen && n.LateUsed < ReturnLateAnswers && !n.Active && n.State != ReturnUnknown {
+		n.LateUsed++
+		s.enqueue(EventAnswered)
+	}
 }
 
 // OnTick is the return at now: escalation, the update deadline, expiry.
@@ -146,10 +159,15 @@ func OnTick(v ReturnView, now time.Time) Step {
 		return s
 	}
 	if !n.Escalated && !n.EscalateAt.IsZero() && !now.Before(n.EscalateAt) && n.State != ReturnFailed {
-		n.Escalated = true
+		n.Escalated, n.EscalatedAt = true, now
 		s.do(Action{Kind: ActEscalate})
+		return s // quiet is counted from here: never escalated and expired in one tick
 	}
-	if (n.Escalated || n.State == ReturnFailed) && !n.Active && !n.LastActivity.IsZero() && now.Sub(n.LastActivity) >= ReturnExpireAfter {
+	quiet := n.LastActivity
+	if n.EscalatedAt.After(quiet) {
+		quiet = n.EscalatedAt
+	}
+	if (n.Escalated || n.State == ReturnFailed) && !n.Active && !quiet.IsZero() && now.Sub(quiet) >= ReturnExpireAfter {
 		n.State = ReturnExpired
 		s.do(Action{Kind: ActFinding, Rule: "return_expired"})
 		return s
@@ -162,7 +180,9 @@ func OnTick(v ReturnView, now time.Time) Step {
 }
 
 // OnDelivery is the active delivery's outcome. failure: its covered events include the bus's
-// "Not answered" (it tells the person the request failed); disposition: the continuation's.
+// "Not answered" about the request itself (a child's failure never fails the parent: the caller
+// passes only the request's own); disposition: the continuation's ([DONE] is the agent saying the
+// person has what they asked for, whichever event brought it back).
 func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, failure bool, now time.Time) Step {
 	s := Step{Next: v}
 	n := &s.Next
@@ -218,9 +238,14 @@ func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, fail
 		s.do(Action{Kind: ActFallback, Reason: "the person's chat can no longer be reached"})
 		s.do(Action{Kind: ActFinding, Rule: "return_undelivered"})
 	}
-	// events that came while it was in flight go in the next delivery
-	if !n.Active && !n.Terminal() && n.State != ReturnUnknown && n.State != ReturnFailed && n.SeqLast > n.SeqSeen {
-		s.enqueue(EventProgress)
+	// events that came while it was in flight go in the next delivery; once failed or escalated,
+	// only the request's own late answer
+	if !n.Active && !n.Terminal() && n.State != ReturnUnknown && n.SeqLast > n.SeqSeen {
+		if n.State == ReturnFailed || n.Escalated {
+			s.late()
+		} else {
+			s.enqueue(EventProgress)
+		}
 	}
 	return s
 }

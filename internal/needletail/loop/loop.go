@@ -378,9 +378,6 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		env.Session = res.Session
 		ctx = messaging.WithSession(ctx, res.Session)
 		for callIndex, c := range calls {
-			if e := messaging.ExecutionOf(ctx); e != nil {
-				e.Act() // a channel turn that acted is never run again (its side effects would repeat)
-			}
 			subject := a.outcomeSubject(c)
 			seen := observed(a.Tools, c)
 			obs.ToolStart(res.Session, seen)
@@ -397,7 +394,14 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 				shown = append(shown, shownImage{after: callID, img: llm.Image{Name: name, MIME: mime, Data: data}})
 				return nil
 			}
-			if allowed[c.Name] {
+			var actErr error
+			if e := messaging.ExecutionOf(ctx); e != nil && allowed[c.Name] {
+				// recorded before it runs: a channel turn that acted is never run again
+				actErr = e.Act()
+			}
+			if actErr != nil {
+				out, failed = fmt.Sprintf(`{"error":"the call was not run: it could not be recorded first (%s)"}`, strings.ReplaceAll(actErr.Error(), `"`, "'")), true
+			} else if allowed[c.Name] {
 				// the step's own text is the agent's reason, should a gate put the call to a person
 				out, failed = a.Tools.Call(messaging.WithReason(ctx, resp.Content), &env, c.Name, c.Arguments)
 			} else {

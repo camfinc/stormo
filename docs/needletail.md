@@ -443,7 +443,8 @@ refused. The bearer API key is required too.
   - **Admission:** a turn is admitted once per execution, durably, before it runs. It answers 202
     with its status only after `channel-turns.json` holds it.
   - **Repeats:** a repeat of the same request answers that turn's status and never runs a second
-    one; the same execution with another body is 409.
+    one, even after the core took its result; the same execution with another body is 409.
+    Admission is one critical section.
   - **Busy:** a conversation already running a turn answers 409 and admits nothing.
   - **The session** must be a channel conversation. It is created on first contact, so no separate
     `POST /v1/sessions`.
@@ -453,16 +454,31 @@ refused. The bearer API key is required too.
   - **A `return` turn** (the core bringing back a request's outcome) marks its input row
     `KindReturn`, schedules no follow-up, and answers in text only. An `inbound` one may answer with
     a voice note, as `/chat` does.
-- **`GET /v1/channel/turns/{exec}?wait=<s>`** is the turn's status (`accepted`, `running`, `ok`,
-  `failed`, `interrupted`), waiting up to 60 s for it to end. Once it ended, the result is the reply,
-  the session tip, the voice note and `acted` (the tool calls it made: a failed turn that acted is
-  never run again).
-- **`DELETE /v1/channel/turns/{exec}`** is the core having kept the result: it is forgotten. A
-  running turn stays.
-- **Restart:** a turn running when the runtime stopped is `interrupted` at boot, never run again.
-- **Retention:** untaken results are kept 7 days.
+- **`GET /v1/channel/turns/{exec}?wait=<s>`** is the turn's status (`running`, `ok`, `failed`,
+  `interrupted`), waiting up to 60 s for it to end. Once it ended, the result has:
+  - the reply and the session tip;
+  - the voice note, spoken without a trailing `[DONE]`, `[UPDATE]` or `[SILENT]`;
+  - `marked`: the conversation held content the agent must not obey when the turn ended;
+  - `acted`: the tool calls it made, each recorded on disk before it ran (a call that cannot be
+    recorded does not run), so a failed or crashed turn that acted is never run again.
+
+  A result is published only once it is on disk; until then the turn reads as running.
+- **`DELETE /v1/channel/turns/{exec}`** is the core having kept the result. The result is forgotten,
+  but the execution stays as a tombstone (30 days), so a repeat never runs again. A running turn
+  stays.
+- **Restart:** a turn running when the runtime stopped is `interrupted` at boot, never run again;
+  its `acted` stays.
+- **Nonces:** a POST's nonce is persisted until its signature expires (its time plus the skew), so a
+  captured request is refused after a restart too.
+- **Retention:** untaken results are kept 7 days, then become tombstones.
+- **One owner:** the runtime that holds the core key holds `channel-turns.lock` (an exclusive flock)
+  while it runs; a second one on the home refuses to start.
 - **Corruption:** an unreadable `channel-turns.json` stops `serve` from starting rather than
   forgetting admissions.
+- **Approvals:** a `return` turn cannot ask for an approval: an approved action would run later,
+  outside the turn.
+- **Luau:** Luau `core_call` inside a channel turn carries the turn's execution as the model's calls
+  do.
 
 `GET /v1/capabilities` answers `{channel_turns: "channel-turn/1", enforcing}`. With `needletail.yaml`
 `channel_turns: enforce`, the channel conversations run only this way: `/chat`, `/v1/runs` and
@@ -823,7 +839,8 @@ Each is frozen at the first nap of a needletail agent and covered by golden test
 - `memories/RECORDS.md` v1: entries joined by `\n§\n`; the first is the version line `<!-- needletail-records v1 -->`; when there are tombstones, the second is `<!-- needletail-tombstones {"tombstones":[{"target","hash","at"}]} -->` (`target` memory or user, `hash` 32 hex characters, the first 128 bits of SHA-256 over the normalized text, `at` RFC 3339; read wherever it is, since an older v1 runtime keeps it verbatim as an entry it cannot read, after its records); each record is one header line `<!-- {"id","kind","tags","imp","hot","src","created","updated"[,"expires"][,"pii"][,"scope"]} -->` (keys in this order, strings escaped as `encoding/json` writes them, so `-->` cannot end the comment; keys a runtime does not know are kept, sorted, after its own; `scope` is `agent`, `dm:<person>` or `channel:<channel>`, absent on records saved before it, an older v1 runtime keeping it as an unknown key) followed by the text, in which no line is only `§`; the file ends with a newline. A v2 ships with a migration in the store's load; an older runtime never writes a newer file
 - `.swarm/memory-merge.json` v2, rehydrate's (engine-neutral; its shape in ARCHITECTURE.md, `loop.MemoryMerge`; v2 made `purged` every rejected entry the nap holds, hot or archived, as `{hash, at}`; the runtime still reads v1): read by the memory before it reconciles, under the lock, and deleted once RECORDS.md holds the result; written whole, atomically and 0600, on every boot; no rule claims `.swarm/`, so it is never napped
 - `state/needletail/memory.lock`: the memory's interprocess lock (an exclusive flock held by every runtime process on the home, `serve` and `oneshot`, around each read, reconcile and change); empty
-- `state/needletail/channel-turns.json` v1 (§4.12a): `{"v":1,"turns":{"<execution>":{"execution","state","session","text","audio","acted","error","hash","root","at","updated"}}}`: `hash` the SHA-256 of the admitted request (a repeat with another is refused); `state` accepted, running, ok, failed or interrupted; written whole and atomically by `serve` alone; a file of another version, or unreadable, stops `serve` from starting
+- `state/needletail/channel-turns.json` v1 (§4.12a): `{"v":1,"turns":{"<execution>":{"execution","state","session","text","audio","acted","marked","error","taken","hash","root","at","updated"}},"nonces":{"<nonce>":"<until>"}}`: `hash` the SHA-256 of the admitted request (a repeat with another is refused); `state` running, ok, failed or interrupted; `taken` a tombstone (the result forgotten); `nonces` the POST signatures' nonces until they expire; written whole and atomically, the in-memory state changing only after a write succeeded, by the runtime holding `channel-turns.lock`; a file of another version, or unreadable, stops `serve` from starting
+- `state/needletail/channel-turns.lock`: the channel turns' owner lock (an exclusive flock held by `serve` for its life); empty
 - `state/needletail/followups.lock`: the follow-ups' interprocess lock (an exclusive flock held by every runtime process on the home around each read, change and write of `followups.json`); empty
 - `state/needletail/memory-usage.json` (`{"v":1,"records":{"<id>":{uses,last_used,recalls,last_recalled}}}`)
 - the `skills/.usage.json` shape (Hermes' keys, §4.5)
