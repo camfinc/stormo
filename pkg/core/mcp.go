@@ -36,6 +36,11 @@ type CallMeta struct {
 	// Untrusted is why the calling run holds untrusted input ("" when it does not): its runtime
 	// marks the call, and msg_send keeps the mark on the message (docs/core.md §4).
 	Untrusted string `json:"untrusted,omitempty"`
+	// Exec and Op are a channel turn's execution and the call's operation identity
+	// ("<execution>/<n>"), the runtime's (docs/core.md §5, returns): what the turn did is attributed
+	// to the interaction that started it, and a replayed call returns its first result.
+	Exec string `json:"exec,omitempty"`
+	Op   string `json:"op,omitempty"`
 }
 
 // MCPTool is a tool the core serves.

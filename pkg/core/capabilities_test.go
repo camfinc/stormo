@@ -304,7 +304,7 @@ func TestCapabilityServicesFilesAndNotices(t *testing.T) {
 	if m := inbox[0]; m.From != CoreSender || !strings.Contains(m.Subject, fmt.Sprintf("text.upper job %d done", j.ID)) || len(m.Attach) != 1 || m.Attach[0] != "/shared/group/upper/sub/a.txt" {
 		t.Errorf("notice: %+v", m)
 	}
-	if wakeInput([]string{CoreSender}, "x", 1, 1, false)[:13] != "[CORE NOTICE]" {
+	if wakeInput([]string{CoreSender}, "x", []int64{1}, 1, false)[:13] != "[CORE NOTICE]" {
 		t.Error("core notices wake as notices")
 	}
 

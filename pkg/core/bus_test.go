@@ -125,7 +125,7 @@ func TestAskAndAnswerWithWakeRuns(t *testing.T) {
 	if len(w) != 1 || w[0].agent != "nova" || w[0].session != fmt.Sprintf("swarm-bus-%d", q.Thread) {
 		t.Fatalf("wakes %+v", w)
 	}
-	if !strings.Contains(w[0].input, "[AGENT MESSAGE from atlas] Banner sizes") || !strings.Contains(w[0].input, fmt.Sprintf("msg_send(thread=%d)", q.Thread)) {
+	if !strings.Contains(w[0].input, "[AGENT MESSAGE from atlas] Banner sizes") || !strings.Contains(w[0].input, fmt.Sprintf("msg_send(thread=%d, answers=[%d])", q.Thread, q.ID)) {
 		t.Errorf("wake input %q", w[0].input)
 	}
 	if strings.Contains(w[0].input, "Friday") {
@@ -1191,5 +1191,44 @@ func TestFollowUpSurvivesALongDowntime(t *testing.T) {
 	f.bus.WakeRound()
 	if in, _ := f.bus.Inbox("atlas", true, 0); len(in) != 1 || !strings.HasPrefix(in[0].Subject, "Not answered") {
 		t.Fatalf("notices %+v", in)
+	}
+}
+
+// A replayed operation (the relay's spool, a lost answer) returns its first send; the same key
+// with another request is refused; a replay passes even when a rate limit would now refuse it.
+func TestSendKeyReplaysTheFirstSend(t *testing.T) {
+	f := newBusFixture(t, BusLimits{PairPerHour: 1})
+	req := SendRequest{To: "nova", Subject: "Sizes?", Body: "For the banner.", Op: "exec-1/1", Exec: "exec-1"}
+	first := mustSend(t, f, "atlas", req)
+	again := mustSend(t, f, "atlas", req)
+	if again.ID != first.ID || again.Thread != first.Thread || len(again.Recipients) != 1 {
+		t.Fatalf("replay %+v, first %+v", again, first)
+	}
+	var n int
+	_ = f.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("%d messages after a replay", n)
+	}
+	other := req
+	other.Body = "Something else."
+	if _, err := f.bus.Send("atlas", other); err == nil || !strings.Contains(err.Error(), "already sent another") {
+		t.Fatalf("another request under the same key: %v", err)
+	}
+	if _, err := f.bus.Send("atlas", SendRequest{To: "nova", Subject: "No key", Body: "x"}); err == nil {
+		t.Fatal("the pair limit no longer applies to new sends")
+	}
+}
+
+// An answer edge must reach whoever asked; it is kept.
+func TestAnswersEdgesReachTheAsker(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	q := mustSend(t, f, "atlas", SendRequest{To: "nova", Subject: "Sizes?", Body: "x"})
+	if _, err := f.bus.Send("nova", SendRequest{To: "scout", Subject: "To someone else", Body: "y", Answers: []int64{q.ID}}); err == nil || !strings.Contains(err.Error(), "does not go to atlas") {
+		t.Fatalf("an answer that does not reach the asker: %v", err)
+	}
+	r := mustSend(t, f, "nova", SendRequest{To: "atlas", Subject: "1200x628", Body: "z", Thread: q.ID, Answers: []int64{q.ID}})
+	var answered int64
+	if err := f.db.QueryRow(`SELECT answered FROM answers WHERE message = ?`, r.ID).Scan(&answered); err != nil || answered != q.ID {
+		t.Fatalf("edge %d %v", answered, err)
 	}
 }

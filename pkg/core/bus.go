@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,6 +175,10 @@ type SendRequest struct {
 	// Untrusted is the calling run's mark, from the call's _meta (its runtime), never from the
 	// arguments the model wrote.
 	Untrusted string `json:"-"`
+	// Exec and Op are the calling channel turn's execution and the call's operation identity, from
+	// _meta (its runtime): a replay of the same operation returns the first send.
+	Exec string `json:"-"`
+	Op   string `json:"-"`
 }
 
 // SendResult is what msg_send answers.
@@ -242,17 +249,74 @@ func (b *Bus) Send(sender string, req SendRequest) (*SendResult, error) {
 	return out, err
 }
 
+// sendHash is what a send key stands for: a replay of the key with another request is refused.
+func sendHash(req SendRequest) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%s\x00%d", strings.TrimSpace(req.To), strings.TrimSpace(req.Subject), req.Body, req.Thread, req.Priority, req.DueMinutes)
+	for _, a := range req.Attach {
+		fmt.Fprintf(h, "\x00a:%s", a)
+	}
+	for _, a := range req.Answers {
+		fmt.Fprintf(h, "\x00r:%d", a)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// replay is the first send of sender's operation key, nil when there is none; refused when the key
+// came with another request.
+func (b *Bus) replay(sender, key, hash string) (*SendResult, error) {
+	var id, thread int64
+	var prev string
+	err := b.o.DB.QueryRow(`SELECT id, thread, send_hash FROM messages WHERE sender = ? AND send_key = ?`, sender, key).Scan(&id, &thread, &prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if prev != hash {
+		return nil, toolErr("this operation already sent another message (%d)", id)
+	}
+	out := &SendResult{ID: id, Thread: thread, Recipients: []string{}}
+	fleet := b.roster()
+	rows, err := b.o.DB.Query(`SELECT agent FROM deliveries WHERE message = ? ORDER BY agent`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out.Recipients = append(out.Recipients, a)
+		if r, ok := fleet[a]; !ok || !r.Running {
+			out.Offline = append(out.Offline, a)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 	now := b.o.Now()
+	if req.Priority == "" {
+		req.Priority = "normal"
+	}
+	key, hash := strings.TrimSpace(req.Op), ""
+	if key != "" {
+		// a replayed operation (the relay's spool, a lost answer) returns its first send, before
+		// any check that time or traffic since could change
+		hash = sendHash(req)
+		if out, err := b.replay(sender, key, hash); out != nil || err != nil {
+			return out, err
+		}
+	}
 	req.Subject = strings.TrimSpace(req.Subject)
 	if req.Subject == "" || len([]rune(req.Subject)) > maxSubject {
 		return nil, toolErr("subject is required and at most %d characters", maxSubject)
 	}
 	if strings.TrimSpace(req.Body) == "" || len(req.Body) > maxBody {
 		return nil, toolErr("body is required and at most %d bytes; put long material in the shared space and attach its path", maxBody)
-	}
-	if req.Priority == "" {
-		req.Priority = "normal"
 	}
 	if req.Priority != "normal" && req.Priority != "urgent" {
 		return nil, toolErr(`priority is "normal" or "urgent"`)
@@ -374,8 +438,12 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 	}
 	att, _ := json.Marshal(attach)
-	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(strings.TrimSpace(req.Untrusted), 300), due)
+	var sendKey any
+	if key != "" {
+		sendKey = key
+	}
+	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due, send_key, send_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(strings.TrimSpace(req.Untrusted), 300), due, sendKey, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +455,14 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 	}
 	for _, a := range req.Answers {
+		// the answer must reach whoever asked: an edge its sender could not read answers nothing
+		var asker string
+		if err := tx.QueryRow(`SELECT sender FROM messages WHERE id = ?`, a).Scan(&asker); err != nil {
+			return nil, toolErr("answers: message %d was not sent to you", a)
+		}
+		if !slices.ContainsFunc(recipients, func(r BusAgent) bool { return r.ID == asker }) {
+			return nil, toolErr("answers: message %d is %s's, and this message does not go to %s", a, asker, asker)
+		}
 		res, err := tx.Exec(`UPDATE deliveries SET acked_at = COALESCE(acked_at, ?), read_at = COALESCE(read_at, ?) WHERE message = ? AND agent = ?`,
 			now.UnixMilli(), now.UnixMilli(), a, sender)
 		if err != nil {
@@ -394,6 +470,9 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil, toolErr("answers: message %d was not sent to you", a)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO answers(message, answered) VALUES(?, ?)`, id, a); err != nil {
+			return nil, err
 		}
 	}
 	out := &SendResult{ID: id, Thread: thread, Recipients: []string{}}
@@ -496,7 +575,8 @@ func (b *Bus) Run(stop <-chan struct{}, interval time.Duration) {
 // wakeInput is the turn a woken agent starts with. It names the tools, never the content; a
 // subject only when none of the messages is marked (a marked one's subject is its sender's
 // untrusted words: the agent reads them with msg_read, where its runtime marks the run).
-func wakeInput(from []string, subject string, n int, thread int64, marked bool) string {
+func wakeInput(from []string, subject string, ids []int64, thread int64, marked bool) string {
+	n := len(ids)
 	more := ""
 	if n > 1 {
 		more = fmt.Sprintf(" (and %d more)", n-1)
@@ -512,10 +592,15 @@ func wakeInput(from []string, subject string, n int, thread int64, marked bool) 
 		return fmt.Sprintf("[CORE NOTICE] %s%s. Read it with msg_inbox and msg_read, act on it if it asks for something, and msg_ack it; "+
 			"it needs no reply. This turn has no person watching: post to Slack only if your work calls for it.", subject, more)
 	}
+	named := make([]string, len(ids))
+	for i, id := range ids {
+		named[i] = strconv.FormatInt(id, 10)
+	}
 	return fmt.Sprintf("[AGENT MESSAGE from %s] %s%s. Read your swarm inbox with msg_inbox and msg_read. "+
-		"If it needs an answer, reply with msg_send(thread=%d); acknowledge with msg_ack when you have dealt with it "+
-		"(a reply's answers acks the messages it names). This turn has no person watching: do not post to Slack unless the message asks for it.",
-		strings.Join(from, ", "), subject, more, thread)
+		"When your reply answers a request, send it with msg_send(thread=%d, answers=[%s]) (answers names what it answers, "+
+		"and acks it); a reply without answers is progress, not the answer. If it needs nothing, msg_ack it. "+
+		"This turn has no person watching: do not post to Slack unless the message asks for it.",
+		strings.Join(from, ", "), subject, more, thread, strings.Join(named, ", "))
 }
 
 // followUpInput is the turn of a follow-up wake: the recipient's last turn in the thread ended
@@ -646,7 +731,7 @@ func (b *Bus) wakeUnread(r *round) {
 		}
 		session := fmt.Sprintf("swarm-bus-%d", p.thread)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		err := b.o.Wake(ctx, a, wakeInput(p.from, p.subject, len(p.ids), p.thread, p.marked), session,
+		err := b.o.Wake(ctx, a, wakeInput(p.from, p.subject, p.ids, p.thread, p.marked), session,
 			fmt.Sprintf("swarm-bus-%s-%d", id, p.ids[len(p.ids)-1]))
 		cancel()
 		r.woken[id] = true // tried this round, woken or not
@@ -1179,8 +1264,9 @@ func BusTools(b *Bus) []MCPTool {
 				"(/shared/group/…; a unit's own layer only to agents of that unit), never by pasting contents. Cross-unit messages " +
 				"follow the group rules: no client personal data. Use priority `urgent` only when it cannot wait for the next turn. " +
 				"A direct message its recipient leaves unanswered (no reply in the thread, no msg_ack) is followed up, and if it still " +
-				"goes unanswered you get a core notice in the thread. When you answer messages from another conversation (one turn " +
-				"can bring several), name them in `answers`.",
+				"goes unanswered you get a core notice in the thread. When your message answers a request, name the request's " +
+				"message id in `answers` (in its thread or any other): that marks it answered and acks it; a reply without it " +
+				"is progress.",
 			InputSchema: schema([]string{"to", "subject", "body"}, map[string]any{
 				"to":       str("agent id, unit:<id> or group"),
 				"subject":  str("one line, up to 200 characters"),
@@ -1198,7 +1284,7 @@ func BusTools(b *Bus) []MCPTool {
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
-				req.Untrusted = c.Meta.Untrusted
+				req.Untrusted, req.Exec, req.Op = c.Meta.Untrusted, c.Meta.Exec, c.Meta.Op
 				return b.Send(c.Agent, req)
 			},
 		},

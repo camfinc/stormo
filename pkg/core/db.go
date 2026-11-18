@@ -257,6 +257,113 @@ var migrations = []string{
 	CREATE INDEX wakes_at ON wakes(at);
 	INSERT INTO wakes(agent, at) SELECT DISTINCT agent, woken_at FROM deliveries
 		WHERE woken_at >= (CAST(strftime('%s', 'now') AS INTEGER) - 86400) * 1000;`,
+	// 15: return paths (docs/core.md §5, "Returns"). An origin is a person's message in a channel
+	// the core owns (immutable); an execution a turn the core ran for one; a return a request sent
+	// from it whose outcome must reach that person, with its events, its deliveries and their parts
+	// (a write-ahead journal: a part is "sending" before it is sent). answers are the reply edges
+	// msg_send(answers) makes; deliveries.owner says whether the bus or a return wakes the recipient;
+	// messages.send_key (the runtime's operation identity) makes a replayed send return the first.
+	`CREATE TABLE origins (
+		id                 TEXT PRIMARY KEY,
+		agent              TEXT NOT NULL,
+		platform           TEXT NOT NULL,
+		account_gen        TEXT NOT NULL DEFAULT '',
+		chat               TEXT NOT NULL,
+		requester          TEXT NOT NULL DEFAULT '',
+		requester_verified INTEGER NOT NULL DEFAULT 0,
+		message_id         TEXT NOT NULL DEFAULT '',
+		quote              TEXT NOT NULL DEFAULT '',
+		session            TEXT NOT NULL,
+		created            INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX origins_message ON origins(agent, platform, chat, message_id) WHERE message_id != '';
+	CREATE TABLE returns (
+		id            INTEGER PRIMARY KEY,
+		request       INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+		thread        INTEGER NOT NULL,
+		agent         TEXT NOT NULL,
+		recipient     TEXT NOT NULL,
+		origin        TEXT NOT NULL REFERENCES origins(id),
+		parent        INTEGER REFERENCES returns(id),
+		depth         INTEGER NOT NULL DEFAULT 0,
+		state         TEXT NOT NULL,
+		prev          TEXT NOT NULL DEFAULT '',
+		revision      INTEGER NOT NULL DEFAULT 0,
+		seq_last      INTEGER NOT NULL DEFAULT 0,
+		seq_seen      INTEGER NOT NULL DEFAULT 0,
+		active        INTEGER NOT NULL DEFAULT 0,
+		attempts      INTEGER NOT NULL DEFAULT 0,
+		children      INTEGER NOT NULL DEFAULT 0,
+		escalated     INTEGER NOT NULL DEFAULT 0,
+		late_used     INTEGER NOT NULL DEFAULT 0,
+		escalate_at   INTEGER NOT NULL DEFAULT 0,
+		next_due      INTEGER NOT NULL DEFAULT 0,
+		last_activity INTEGER NOT NULL DEFAULT 0,
+		created       INTEGER NOT NULL,
+		closed_at     INTEGER
+	);
+	CREATE INDEX returns_state ON returns(state);
+	CREATE INDEX returns_thread ON returns(thread);
+	CREATE TABLE executions (
+		id        TEXT PRIMARY KEY,
+		agent     TEXT NOT NULL,
+		kind      TEXT NOT NULL,
+		origin    TEXT NOT NULL REFERENCES origins(id),
+		ret       INTEGER REFERENCES returns(id),
+		session   TEXT NOT NULL,
+		state     TEXT NOT NULL,
+		acted     INTEGER NOT NULL DEFAULT 0,
+		error     TEXT NOT NULL DEFAULT '',
+		created   INTEGER NOT NULL,
+		ended     INTEGER
+	);
+	CREATE TABLE return_events (
+		id      INTEGER PRIMARY KEY,
+		ret     INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+		seq     INTEGER NOT NULL,
+		kind    TEXT NOT NULL,
+		message INTEGER NOT NULL DEFAULT 0,
+		child   INTEGER NOT NULL DEFAULT 0,
+		at      INTEGER NOT NULL,
+		UNIQUE (ret, kind, message)
+	);
+	CREATE TABLE return_deliveries (
+		id            INTEGER PRIMARY KEY,
+		ret           INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+		seq_from      INTEGER NOT NULL,
+		seq_to        INTEGER NOT NULL,
+		event         TEXT NOT NULL,
+		execution     TEXT NOT NULL DEFAULT '',
+		state         TEXT NOT NULL,
+		attempt       INTEGER NOT NULL DEFAULT 0,
+		disposition   TEXT NOT NULL DEFAULT '',
+		prepared      TEXT NOT NULL DEFAULT '',
+		prepared_mark TEXT NOT NULL DEFAULT '',
+		failure       INTEGER NOT NULL DEFAULT 0,
+		error         TEXT NOT NULL DEFAULT '',
+		next_try      INTEGER NOT NULL DEFAULT 0,
+		created       INTEGER NOT NULL,
+		updated       INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX return_deliveries_active ON return_deliveries(ret) WHERE state NOT IN ('done', 'superseded', 'fallback', 'unknown');
+	CREATE TABLE return_parts (
+		delivery INTEGER NOT NULL REFERENCES return_deliveries(id) ON DELETE CASCADE,
+		part     INTEGER NOT NULL,
+		state    TEXT NOT NULL,
+		sent_id  TEXT NOT NULL DEFAULT '',
+		at       INTEGER NOT NULL,
+		PRIMARY KEY (delivery, part)
+	);
+	CREATE TABLE answers (
+		message  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		answered INTEGER NOT NULL,
+		PRIMARY KEY (message, answered)
+	);
+	CREATE INDEX answers_answered ON answers(answered);
+	ALTER TABLE deliveries ADD COLUMN owner TEXT NOT NULL DEFAULT 'bus';
+	ALTER TABLE messages ADD COLUMN send_key TEXT;
+	ALTER TABLE messages ADD COLUMN send_hash TEXT NOT NULL DEFAULT '';
+	CREATE UNIQUE INDEX messages_send_key ON messages(sender, send_key) WHERE send_key IS NOT NULL;`,
 }
 
 // DB is core.db.
