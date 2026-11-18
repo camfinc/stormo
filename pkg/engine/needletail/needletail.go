@@ -91,6 +91,9 @@ func New(inst *instance.Instance) *Needletail {
 			// the pending follow-ups hold what the agent promised to say or do in a conversation:
 			// client data, restored at boot so they survive a restart, never read by the dream
 			{Class: engine.Raw, Glob: "state/needletail/followups.json"},
+			// the channel turns admitted and their results (the replies the core takes): client
+			// data, restored at boot so a result outlives a restart until the core takes it
+			{Class: engine.Raw, Glob: "state/needletail/channel-turns.json"},
 			// Luau's key-value store: unscoped, meant for hashes and counters, but a handler can
 			// keep message text there; restored at boot, never read by the dream
 			{Class: engine.Raw, Glob: "state/needletail/kv.json"},

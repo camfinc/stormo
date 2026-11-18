@@ -270,8 +270,17 @@ func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessa
 		return nil, err
 	}
 	params := map[string]any{"name": name, "arguments": args}
+	meta := map[string]string{}
 	if why != "" && messaging.MarkCarryingCoreTool(name) {
-		params["_meta"] = map[string]string{"untrusted": why}
+		meta["untrusted"] = why
+	}
+	// a channel turn's calls carry its execution and an operation number: the core attributes
+	// them to the interaction that started the turn, even when one reaches it later
+	if e := messaging.ExecutionOf(ctx); e != nil {
+		meta["exec"], meta["op"] = e.ID, e.NextOp()
+	}
+	if len(meta) > 0 {
+		params["_meta"] = meta
 	}
 	raw, err := c.rpc(ctx, "tools/call", params, false)
 	if err != nil {

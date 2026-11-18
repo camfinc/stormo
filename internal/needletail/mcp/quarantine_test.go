@@ -186,3 +186,45 @@ func TestMarkTravelsWithTheMessage(t *testing.T) {
 		t.Errorf("unmarkable read: %v", err)
 	}
 }
+
+// A channel turn's core calls carry its execution and a fresh operation number each.
+func TestChannelTurnCallsCarryTheirExecution(t *testing.T) {
+	var mu sync.Mutex
+	var metas []map[string]any
+	client := &Client{URL: "http://core.invalid/mcp", Key: "fake-core-key", initialized: true, HTTP: &http.Client{Transport: quarantineTransport(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		m, _ := req.Params["_meta"].(map[string]any)
+		metas = append(metas, m)
+		mu.Unlock()
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"result":{"content":[{"type":"text","text":"{}"}]}}`))}, nil
+	})}}
+	if _, err := client.Call(context.Background(), "msg_send", nil); err != nil {
+		t.Fatal(err)
+	}
+	e := &messaging.Execution{ID: "exec-abc123", Kind: messaging.ExecInbound}
+	ctx := messaging.WithExecution(context.Background(), e)
+	for _, name := range []string{"msg_send", "whatsapp_send"} {
+		if _, err := client.Call(ctx, name, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marked := messaging.WithUntrusted(ctx, "a web page")
+	if _, err := client.Call(marked, "msg_send", nil); err != nil {
+		t.Fatal(err)
+	}
+	if metas[0] != nil {
+		t.Errorf("a call outside a channel turn carried %v", metas[0])
+	}
+	for i, want := range []string{"exec-abc123/1", "exec-abc123/2", "exec-abc123/3"} {
+		if m := metas[i+1]; m["exec"] != "exec-abc123" || m["op"] != want {
+			t.Errorf("call %d: %v", i+1, m)
+		}
+	}
+	if metas[3]["untrusted"] != "a web page" {
+		t.Errorf("the mark alongside: %v", metas[3])
+	}
+}

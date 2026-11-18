@@ -124,6 +124,9 @@ type Server struct {
 	neutralise  func(string) string
 	speaker     *voice.Speaker
 	voice       *voice.Replies
+	channel     *channelStore
+	channelKey  string
+	enforce     bool
 
 	base   context.Context
 	cancel context.CancelFunc
@@ -180,6 +183,11 @@ type Options struct {
 	Platforms func() map[string]wire.Platform
 	// Jail is the activity's jail: how the agent's commands are confined.
 	Jail string
+	// ChannelKey is the agent's core key, which signs the core's channel turns (POST
+	// /v1/channel/turns); shorter than MinKey: the routes answer 501. ChannelEnforce reserves the
+	// core's channel conversations for them (refused on /chat, /v1/runs, POST /v1/sessions).
+	ChannelKey     string
+	ChannelEnforce bool
 	// Trust is the owner's endorsement of a conversation (POST /v1/sessions/{id}/trust): its
 	// marked rows no longer taint it, recorded with an audit entry (docs/needletail.md §7). nil:
 	// the route answers 501.
@@ -192,9 +200,14 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	channel, err := loadChannel(o.StateDir, o.TmpDir, o.Now)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
 		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}, stops: map[string]context.CancelFunc{},
-		files: o.Files, stt: o.STT, sees: o.Sees, neutralise: o.Neutralise, speaker: o.Speaker, voice: o.Voice}
+		files: o.Files, stt: o.STT, sees: o.Sees, neutralise: o.Neutralise, speaker: o.Speaker, voice: o.Voice,
+		channel: channel, channelKey: o.ChannelKey, enforce: o.ChannelEnforce}
 	if s.maxTurns <= 0 {
 		s.maxTurns = defaultMaxTurns
 	}
@@ -236,6 +249,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/sessions/{id}/chat", s.auth(s.chat))
 	mux.Handle("DELETE /v1/sessions/{id}", s.auth(s.remove))
 	mux.Handle("POST /v1/sessions/{id}/trust", s.auth(s.trustConversation))
+	mux.Handle("GET /v1/capabilities", s.auth(s.capabilities))
+	mux.Handle("POST /v1/channel/turns", s.auth(s.channelStart))
+	mux.Handle("GET /v1/channel/turns/{exec}", s.auth(s.channelGet))
+	mux.Handle("DELETE /v1/channel/turns/{exec}", s.auth(s.channelTake))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("%s %s is not served", r.Method, r.URL.Path))
 	})
@@ -586,7 +603,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, sessions.ErrBadID.Error())
 		return
 	}
-	if Reserved(s.store, session) {
+	if s.reserved(session) {
 		writeError(w, http.StatusForbidden, ErrReserved.Error())
 		return
 	}
@@ -624,7 +641,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body is not a session")
 		return
 	}
-	if Reserved(s.store, req.ID) {
+	if s.reserved(req.ID) {
 		writeError(w, http.StatusForbidden, ErrReserved.Error())
 		return
 	}
@@ -686,7 +703,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "audio_format is mp3 or opus")
 		return
 	}
-	if Reserved(s.store, id) {
+	if s.reserved(id) {
 		writeError(w, http.StatusForbidden, ErrReserved.Error())
 		return
 	}

@@ -152,6 +152,9 @@ func Load(home string, getenv func(string) string) (*Config, error) {
 	if _, err := c.SlackCommandNames(); err != nil {
 		return nil, fmt.Errorf("%s: slack.commands: %w", File, err)
 	}
+	if c.ChannelTurns != "" && c.ChannelTurns != "enforce" {
+		return nil, fmt.Errorf("%s: channel_turns %q is \"enforce\" or left out", File, c.ChannelTurns)
+	}
 	if c.Limits.ChatTurns < 0 || c.Limits.ChatTurns > MaxChatTurns {
 		return nil, fmt.Errorf("%s: limits.chat_turns %d must be 1 to %d", File, c.Limits.ChatTurns, MaxChatTurns)
 	}

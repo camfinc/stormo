@@ -5,9 +5,16 @@
 package wire
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -203,6 +210,11 @@ type Message struct {
 // for the assistant row a delivered follow-up text leaves.
 const KindFollowUp = "follow_up"
 
+// KindReturn marks a return continuation's input row: the core bringing the agent back into a
+// conversation of its channel with the outcome of a request sent from it (docs/needletail.md,
+// channel turns). No one wrote it.
+const KindReturn = "return"
+
 // KindApproval is a Message's Kind for the runtime's note of an approval's outcome (a user row no
 // one wrote, docs/needletail.md §7).
 const KindApproval = "approval"
@@ -357,6 +369,10 @@ type Config struct {
 	// waits, the caps and the risky commands (docs/needletail.md §7). Absent: the defaults (the
 	// first allowed user decides). An image older than it refuses a needletail.yaml that has it.
 	Approvals *ApprovalsConfig `json:"approvals,omitempty" yaml:"approvals,omitempty"`
+	// ChannelTurns "enforce": the core's channel conversations (ChannelPrefixes) run only as signed
+	// channel turns, refused on /chat, /v1/runs and POST /v1/sessions (set once the core runs them
+	// so; "" lets those routes serve them, as before).
+	ChannelTurns string `json:"channel_turns,omitempty" yaml:"channel_turns,omitempty"`
 	// Files is engine/needletail/config.yaml's files: how long people's uploads are kept and
 	// whether images reach the model. Absent: 14 days, vision auto. An image older than it
 	// refuses a needletail.yaml that has it.
@@ -678,3 +694,98 @@ const (
 	// work/<conversation>/ (the jail grants no other), and no trusted command reaches any.
 	WorkGID = 10002
 )
+
+// Channel turns (docs/needletail.md, channel turns): turns the core runs for conversations of its
+// own channel (WhatsApp), admitted once per execution and kept until the core takes the result.
+const (
+	// ChannelTurnsV1 is the capability GET /v1/capabilities names.
+	ChannelTurnsV1 = "channel-turn/1"
+	// ChannelSignatureHeader carries the core's signature: "t=<unix>,n=<nonce>,v1=<hex>".
+	ChannelSignatureHeader = "X-Stormo-Signature"
+	// ChannelSkew is how far a signature's time may be from the runtime's.
+	ChannelSkew = 10 * time.Minute
+)
+
+// Channel turn states.
+const (
+	ChannelAccepted    = "accepted"
+	ChannelRunning     = "running"
+	ChannelOK          = "ok"
+	ChannelFailed      = "failed"
+	ChannelInterrupted = "interrupted"
+)
+
+// ChannelTurn is POST /v1/channel/turns.
+type ChannelTurn struct {
+	Execution   string     `json:"execution"`
+	Kind        string     `json:"kind"`
+	Session     string     `json:"session"`
+	Title       string     `json:"title,omitempty"`
+	Message     string     `json:"message"`
+	AudioFormat string     `json:"audio_format,omitempty"`
+	Files       []ChatFile `json:"files,omitempty"`
+}
+
+// ChannelTurnStatus is a channel turn's state and, once it ended, its result.
+type ChannelTurnStatus struct {
+	Execution string     `json:"execution"`
+	State     string     `json:"state"`
+	Session   string     `json:"session,omitempty"`
+	Text      string     `json:"text,omitempty"`
+	Audio     *ChatAudio `json:"audio,omitempty"`
+	// Acted is how many tool calls the turn made (a failed one that acted is never run again).
+	Acted int64  `json:"acted"`
+	Error string `json:"error,omitempty"`
+}
+
+// Terminal is whether the turn has ended.
+func (s ChannelTurnStatus) Terminal() bool {
+	return s.State == ChannelOK || s.State == ChannelFailed || s.State == ChannelInterrupted
+}
+
+// Capabilities is GET /v1/capabilities: what this runtime offers the core.
+type Capabilities struct {
+	ChannelTurns string `json:"channel_turns,omitempty"`
+	// Enforcing: conversations of the core's channels run only as signed channel turns.
+	Enforcing bool `json:"enforcing"`
+}
+
+// ChannelPrefixes are the core's channel conversations (pkg/whatsapp names its sessions so).
+var ChannelPrefixes = []string{"whatsapp-"}
+
+// SignChannel is the core's signature of a channel-turn request: HMAC-SHA256 with the agent's core
+// key over the method, the path, the time, a nonce and the body's SHA-256.
+func SignChannel(key, method, path string, body []byte, ts int64, nonce string) string {
+	sum := sha256.Sum256(body)
+	mac := hmac.New(sha256.New, []byte(key))
+	fmt.Fprintf(mac, "%s\n%s\n%d\n%s\n%s", method, path, ts, nonce, hex.EncodeToString(sum[:]))
+	return fmt.Sprintf("t=%d,n=%s,v1=%s", ts, nonce, hex.EncodeToString(mac.Sum(nil)))
+}
+
+// VerifyChannel checks a signature header against the request: its nonce and time on success.
+func VerifyChannel(key, header, method, path string, body []byte, now time.Time) (nonce string, err error) {
+	var ts int64
+	var sig string
+	for _, part := range strings.Split(header, ",") {
+		k, v, _ := strings.Cut(strings.TrimSpace(part), "=")
+		switch k {
+		case "t":
+			ts, _ = strconv.ParseInt(v, 10, 64)
+		case "n":
+			nonce = v
+		case "v1":
+			sig = v
+		}
+	}
+	if key == "" || ts == 0 || nonce == "" || len(nonce) > 64 || sig == "" {
+		return "", errors.New("missing or malformed channel signature")
+	}
+	if d := now.Sub(time.Unix(ts, 0)); d > ChannelSkew || d < -ChannelSkew {
+		return "", errors.New("channel signature outside the allowed time")
+	}
+	want := SignChannel(key, method, path, body, ts, nonce)
+	if subtle.ConstantTimeCompare([]byte(want), []byte(fmt.Sprintf("t=%d,n=%s,v1=%s", ts, nonce, sig))) != 1 {
+		return "", errors.New("wrong channel signature")
+	}
+	return nonce, nil
+}

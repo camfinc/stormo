@@ -889,3 +889,17 @@ func TestCreateTelegram(t *testing.T) {
 		t.Errorf("a topic's audience key %q", got)
 	}
 }
+
+// A return turn (the core bringing back a request's outcome) schedules no follow-up: the core keeps
+// its deadline. A person's channel turn still may.
+func TestReturnTurnSchedulesNoFollowUp(t *testing.T) {
+	q, _ := newQueue(t)
+	ret := messaging.WithExecution(context.Background(), &messaging.Execution{ID: "exec-ret-0001", Kind: messaging.ExecReturn})
+	if _, err := q.Create(ret, "chat-1", Spec{In: "1d", Text: "hi"}); err == nil || !strings.Contains(err.Error(), "outcome of a request") {
+		t.Fatalf("a return turn made a follow-up: %v", err)
+	}
+	in := messaging.WithExecution(context.Background(), &messaging.Execution{ID: "exec-in-0001", Kind: messaging.ExecInbound})
+	if _, err := q.Create(in, "chat-1", Spec{In: "1d", Text: "hi"}); err != nil {
+		t.Fatalf("a person's channel turn: %v", err)
+	}
+}

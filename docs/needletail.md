@@ -429,6 +429,45 @@ A follow-up is something the agent does once, later: "say hola in 10 seconds", "
 - **Observed.** Creating is a tool call (`tool_start`, `tool_done`, metadata only); each firing and its outcome is a log line with the id, kind, target, conversation, attempt and lateness, never the text.
 - **File.** `state/needletail/followups.json` (v1, §8), 0600, the runtime's (the agent's commands cannot read it), written whole and atomically through `.needletail-tmp/` after every change and read again when it changed since (a `oneshot` beside `serve`). Every change (create, cancel, a firing's outcome, a prompt's kept reply, the boot's late marks) holds `state/needletail/followups.lock` (an exclusive flock, as the memory's lock) from reading the file again to writing it back, so a process saving from a stale read can never bring back a follow-up another delivered or cancelled. Napped as Raw (what it says is client data), so a pending follow-up survives a restart and the dream never reads it (§6).
 
+### 4.12a Channel turns (the core's channel conversations)
+
+The core runs the turns of its own channel's conversations (WhatsApp, `pkg/whatsapp`; sessions
+`whatsapp-…`, `wire.ChannelPrefixes`) through three routes, signed with the agent's core key
+(`SWARM_CORE_KEY`): `X-Stormo-Signature: t=<unix>,n=<nonce>,v1=<hex>`, HMAC-SHA256 over the method,
+the request URI (its query included), the time, the nonce and the body's SHA-256
+(`wire.SignChannel`). A signature more than 10 minutes off, or a nonce seen in that window, is
+refused. The bearer API key is required too.
+
+- **`POST /v1/channel/turns`** `{execution, kind: inbound|return, session, title?, message,
+  audio_format?, files?}`.
+  - **Admission:** a turn is admitted once per execution, durably, before it runs. It answers 202
+    with its status only after `channel-turns.json` holds it.
+  - **Repeats:** a repeat of the same request answers that turn's status and never runs a second
+    one; the same execution with another body is 409.
+  - **Busy:** a conversation already running a turn answers 409 and admits nothing.
+  - **The session** must be a channel conversation. It is created on first contact, so no separate
+    `POST /v1/sessions`.
+  - **The turn** runs with its execution on the context: every core tool call in it carries
+    `_meta.exec` and `_meta.op` (`<execution>/<n>`), so the core attributes what the turn did to the
+    interaction that started it, even through the relay's spool.
+  - **A `return` turn** (the core bringing back a request's outcome) marks its input row
+    `KindReturn`, schedules no follow-up, and answers in text only. An `inbound` one may answer with
+    a voice note, as `/chat` does.
+- **`GET /v1/channel/turns/{exec}?wait=<s>`** is the turn's status (`accepted`, `running`, `ok`,
+  `failed`, `interrupted`), waiting up to 60 s for it to end. Once it ended, the result is the reply,
+  the session tip, the voice note and `acted` (the tool calls it made: a failed turn that acted is
+  never run again).
+- **`DELETE /v1/channel/turns/{exec}`** is the core having kept the result: it is forgotten. A
+  running turn stays.
+- **Restart:** a turn running when the runtime stopped is `interrupted` at boot, never run again.
+- **Retention:** untaken results are kept 7 days.
+- **Corruption:** an unreadable `channel-turns.json` stops `serve` from starting rather than
+  forgetting admissions.
+
+`GET /v1/capabilities` answers `{channel_turns: "channel-turn/1", enforcing}`. With `needletail.yaml`
+`channel_turns: enforce`, the channel conversations run only this way: `/chat`, `/v1/runs` and
+`POST /v1/sessions` refuse them (403), as they refuse Slack's.
+
 ### 4.13 Outcome evidence and selective reflection
 
 Outcome collection is metadata-only and separate from usage counts. Explicitly attributed skill commands and views record the exact skill revision; execution success does not imply task success. Confirmed results require owner feedback through a separate credential. See [the implementation and rollout plan](needletail-learning-improvements.md) and [deterministic recall measurements](needletail-recall-evaluation.md).
@@ -680,7 +719,7 @@ The runtime's files come last, so an inode linked from the workspace ends up the
 | Class | Paths |
 |---|---|
 | Learning | `memories/MEMORY.md`, `memories/USER.md`, `skills/.usage.json`, `skills/[!.]*/**` (including `tools/*.luau` and `handlers/*.luau`), `cron/jobs.json`, `scripts/**` (subdirectories included; `__pycache__`, `*.pyc`, `node_modules` and dotfiles left out, as the build leaves them out: Hermes' rule, `Layout.ScriptsDir`), `needletail.yaml` (napped but rebuilt from the baseline on every boot, as Hermes' `config.yaml`: a changed manifest or grant reaches the agent, and nothing the agent writes into it survives a restart) |
-| Raw (PII) | `sessions/**`, `files/**` (people's uploads and each conversation's `.files-v1.json`), `memories/RECORDS.md` (the memory archive: client data; restored verbatim at rehydrate and never read by the dream, which learns from the hot files alone, so the ledger, scrub and promotion invariants hold unchanged), `logs/audit/**`, `state/needletail/jobs/**` (schedule run records) and `state/needletail/monitor/**` (monitor outputs): what jobs fetched and replied is client data; `state/needletail/followups.json` (the pending and failed follow-ups, §4.12: what the agent promised to say or do in a conversation; restored at boot, so they survive a restart), `state/needletail/kv.json` (Luau's key-value store, §5.3: meant for hashes and counters, but a handler can keep message text there), `state/needletail/deliveries-v1.json` (kept reports), `state/needletail/approvals-v1.json` (pending and recent approval requests, with their payloads) |
+| Raw (PII) | `sessions/**`, `files/**` (people's uploads and each conversation's `.files-v1.json`), `memories/RECORDS.md` (the memory archive: client data; restored verbatim at rehydrate and never read by the dream, which learns from the hot files alone, so the ledger, scrub and promotion invariants hold unchanged), `logs/audit/**`, `state/needletail/jobs/**` (schedule run records) and `state/needletail/monitor/**` (monitor outputs): what jobs fetched and replied is client data; `state/needletail/followups.json` (the pending and failed follow-ups, §4.12: what the agent promised to say or do in a conversation; restored at boot, so they survive a restart), `state/needletail/kv.json` (Luau's key-value store, §5.3: meant for hashes and counters, but a handler can keep message text there), `state/needletail/deliveries-v1.json` (kept reports), `state/needletail/approvals-v1.json` (pending and recent approval requests, with their payloads), `state/needletail/channel-turns.json` (the channel turns admitted and their results, §4.12a) |
 | State | `<StateRoot>/**/*.{db,sqlite}` (the skill scripts' SQLite databases, copied with `VACUUM INTO` as on Hermes; the runtime itself keeps none), `<StateRoot>/**`, `state/needletail/**` (idempotency keys, Slack state, `memory-usage.json`: the records' counters, ids and numbers only; the lock files; `approvals-audit.jsonl`: ids, hashes, decisions, approver ids and times, never a payload) |
 
 `SOUL.md` is rebuilt from the baseline. `scripts/` is rebuilt from the baseline too, and then a script the agent wrote or edited there (any version its instance did not boot with: `booted.json` `scripts`) comes back from the nap until a reviewer decides, unless the repo changed that script since; the dream proposes it with the schedules (ARCHITECTURE.md, learning loop), so an agent-made job never outlives the script it runs. `.needletail-tmp/` is claimed by no rule, and `serve` empties it at boot before anything writes through it (`oneshot`, which may run beside a serving runtime, does not): `skill_manage` and the usage counts write their temporary files there before renaming them into `skills/`, and so do the session header and `sessions/index.json` rewrites, `state/needletail/idem.json` and the scheduler's files (`cron/jobs.json`, monitor snapshots, run outputs) (a temporary file beside a skill file would be claimed by `skills/[!.]*/**`, so a nap taken mid-write, or a crash before the rename, would keep it as part of the skill). A deleted skill is moved there in one rename before its files are removed (`os.RemoveAll`, which never follows a symlink), so a nap never keeps half of it. What resists removal (a directory a command made read-only, or the commands' own under the uid split, which the runtime may not change) stays there as it is: the runtime never changes a mode by path in what the agent's commands can reach, since a symlink a command races in where a directory was would redirect it (to the home's root, say, or `/shared/group`). The boot sweep removes it after `privsep.Prepare` has given the whole of `.needletail-tmp/` to the runtime: by descriptor, a symlink removed as itself, a read-only directory made writable through the descriptor it was opened by (`fsx.Sweep`).
@@ -784,6 +823,7 @@ Each is frozen at the first nap of a needletail agent and covered by golden test
 - `memories/RECORDS.md` v1: entries joined by `\n§\n`; the first is the version line `<!-- needletail-records v1 -->`; when there are tombstones, the second is `<!-- needletail-tombstones {"tombstones":[{"target","hash","at"}]} -->` (`target` memory or user, `hash` 32 hex characters, the first 128 bits of SHA-256 over the normalized text, `at` RFC 3339; read wherever it is, since an older v1 runtime keeps it verbatim as an entry it cannot read, after its records); each record is one header line `<!-- {"id","kind","tags","imp","hot","src","created","updated"[,"expires"][,"pii"][,"scope"]} -->` (keys in this order, strings escaped as `encoding/json` writes them, so `-->` cannot end the comment; keys a runtime does not know are kept, sorted, after its own; `scope` is `agent`, `dm:<person>` or `channel:<channel>`, absent on records saved before it, an older v1 runtime keeping it as an unknown key) followed by the text, in which no line is only `§`; the file ends with a newline. A v2 ships with a migration in the store's load; an older runtime never writes a newer file
 - `.swarm/memory-merge.json` v2, rehydrate's (engine-neutral; its shape in ARCHITECTURE.md, `loop.MemoryMerge`; v2 made `purged` every rejected entry the nap holds, hot or archived, as `{hash, at}`; the runtime still reads v1): read by the memory before it reconciles, under the lock, and deleted once RECORDS.md holds the result; written whole, atomically and 0600, on every boot; no rule claims `.swarm/`, so it is never napped
 - `state/needletail/memory.lock`: the memory's interprocess lock (an exclusive flock held by every runtime process on the home, `serve` and `oneshot`, around each read, reconcile and change); empty
+- `state/needletail/channel-turns.json` v1 (§4.12a): `{"v":1,"turns":{"<execution>":{"execution","state","session","text","audio","acted","error","hash","root","at","updated"}}}`: `hash` the SHA-256 of the admitted request (a repeat with another is refused); `state` accepted, running, ok, failed or interrupted; written whole and atomically by `serve` alone; a file of another version, or unreadable, stops `serve` from starting
 - `state/needletail/followups.lock`: the follow-ups' interprocess lock (an exclusive flock held by every runtime process on the home around each read, change and write of `followups.json`); empty
 - `state/needletail/memory-usage.json` (`{"v":1,"records":{"<id>":{uses,last_used,recalls,last_recalled}}}`)
 - the `skills/.usage.json` shape (Hermes' keys, §4.5)

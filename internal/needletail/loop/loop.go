@@ -378,6 +378,9 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		env.Session = res.Session
 		ctx = messaging.WithSession(ctx, res.Session)
 		for callIndex, c := range calls {
+			if e := messaging.ExecutionOf(ctx); e != nil {
+				e.Act() // a channel turn that acted is never run again (its side effects would repeat)
+			}
 			subject := a.outcomeSubject(c)
 			seen := observed(a.Tools, c)
 			obs.ToolStart(res.Session, seen)

@@ -152,6 +152,11 @@
    "glob": "state/needletail/followups.json"
   },
   {
+   "path": "state/needletail/channel-turns.json",
+   "class": "raw",
+   "glob": "state/needletail/channel-turns.json"
+  },
+  {
    "path": "state/needletail/followups.lock",
    "class": "state",
    "glob": "state/needletail/**"
