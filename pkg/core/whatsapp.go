@@ -69,11 +69,25 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 		return reply, err
 	})
 	if err == nil {
+		// Each accepted message is recorded first, so what the agent asks others while answering it
+		// can come back to that person (the return paths, when the agent's channel turns run there).
+		conn.UseOrigins(func(ctx context.Context, e whatsapp.OriginEvent) (string, error) {
+			if c.Returns == nil {
+				return "", nil
+			}
+			return c.Returns.RegisterOrigin(id, e)
+		})
 		// Through the runtime's Exchanger when it has one: a person's voice note goes to the agent
 		// to transcribe, and its voice reply comes back as a voice note (Ogg Opus).
 		conn.UseExchange(func(ctx context.Context, session string, t whatsapp.Turn) (whatsapp.Answer, error) {
 			if !c.whatsappPolicy(id).Enabled {
 				return whatsapp.Answer{}, fmt.Errorf("channel disabled")
+			}
+			if c.Returns != nil {
+				// a recorded message runs as a channel turn: once, attributed, its result kept
+				if ans, err := c.Returns.InboundTurn(ctx, id, session, t); !errors.Is(err, ErrNoReturns) {
+					return ans, err
+				}
 			}
 			conversations, err := local.Conversations(c.inst, id)
 			if err != nil {
@@ -257,7 +271,13 @@ func WhatsAppTools(core func() *Core) []MCPTool {
 			if err := decodeArgs(call, &req); err != nil {
 				return nil, err
 			}
-			return core().whatsappSend(call.Agent, req.Chat, req.Text, req.Image)
+			c := core()
+			if c.Returns != nil {
+				if err := c.Returns.sideDoor(call.Agent, call.Meta.Exec, req.Chat); err != nil {
+					return nil, err
+				}
+			}
+			return c.whatsappSend(call.Agent, req.Chat, req.Text, req.Image)
 		},
 	}}
 }

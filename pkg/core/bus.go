@@ -79,6 +79,9 @@ type Bus struct {
 	o    BusOptions
 	kick chan struct{}
 	mu   sync.Mutex // one wake round at a time
+	// returns are the return paths (NewReturns sets them): requests from a person's conversation
+	// whose outcome must reach that person. nil: none.
+	returns *Returns
 }
 
 // RetainMessages is how long a thread is kept after its last message (open decision 6).
@@ -425,6 +428,13 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 		thread = root
 	}
+	origin, parent := "", int64(0)
+	if b.returns != nil && req.Exec != "" {
+		var err error
+		if origin, parent, err = b.returns.sendOrigin(tx, sender, req.Exec, thread); err != nil {
+			return nil, err
+		}
+	}
 	hour := now.Add(-time.Hour).UnixMilli()
 	for _, r := range recipients {
 		var n int
@@ -483,6 +493,18 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		out.Recipients = append(out.Recipients, r.ID)
 		if !r.Running {
 			out.Offline = append(out.Offline, r.ID)
+		}
+	}
+	if b.returns != nil {
+		// what it answers or tells about a return, and a return of its own when it is a request
+		// from a person's conversation
+		inThread := int64(0)
+		if req.Thread != 0 {
+			inThread = thread // a reply in an existing thread (its root): progress may be about a request there
+		}
+		b.returns.onSend(tx, id, sender, recipients, inThread, req.Answers)
+		if origin != "" && len(recipients) == 1 && to == recipients[0].ID {
+			b.returns.open(tx, sender, origin, parent, id, thread, recipients[0].ID)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -667,7 +689,7 @@ func (b *Bus) woke(r *round, agent string) {
 // wakeUnread wakes each running, idle agent with unread messages it was not yet woken for.
 func (b *Bus) wakeUnread(r *round) {
 	rows, err := b.o.DB.Query(`SELECT d.agent, m.id, m.thread, m.sender, m.subject, m.untrusted != '' FROM deliveries d JOIN messages m ON m.id = d.message
-		WHERE d.read_at IS NULL AND d.woken_at IS NULL AND d.wake_tries < ? ORDER BY m.id`, b.o.Limits.WakeTries)
+		WHERE d.read_at IS NULL AND d.woken_at IS NULL AND d.wake_tries < ? AND d.owner = 'bus' ORDER BY m.id`, b.o.Limits.WakeTries)
 	if err != nil {
 		log.Printf("bus: %v", err)
 		return
@@ -709,7 +731,7 @@ func (b *Bus) wakeUnread(r *round) {
 		// some: the batch is what is left, its first message giving the thread, the subject and the session
 		items := slices.DeleteFunc(byAgent[id], func(u unread) bool {
 			var n int
-			_ = b.o.DB.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE message = ? AND agent = ? AND read_at IS NULL AND acked_at IS NULL`, u.id, id).Scan(&n)
+			_ = b.o.DB.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE message = ? AND agent = ? AND read_at IS NULL AND acked_at IS NULL AND owner = 'bus'`, u.id, id).Scan(&n)
 			return n == 0
 		})
 		if len(items) == 0 {
@@ -791,7 +813,7 @@ func (b *Bus) followUp(r *round) {
 			d.followups, d.told, d.session, d.wake_error, COALESCE(d.woken_at, 0), COALESCE(d.read_at, 0), COALESCE(d.followed_at, 0),
 			(SELECT created FROM messages WHERE id = m.thread), (SELECT MAX(hop) FROM messages WHERE thread = m.thread)
 		FROM deliveries d JOIN messages m ON m.id = d.message
-		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND `+unanswered+`
+		WHERE d.told < ? AND m.audience = d.agent AND m.sender != ? AND d.owner = 'bus' AND `+unanswered+`
 		ORDER BY m.id`, toldDone, CoreSender)
 	if err != nil {
 		log.Printf("bus: %v", err)
@@ -983,6 +1005,9 @@ func (b *Bus) tell(o openDelivery, told int, quietSince int64, subject, body str
 			log.Printf("bus: %v", err)
 			return false
 		}
+		if b.returns != nil {
+			b.returns.onNotice(tx, o.id, nid, o.sender, told)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		log.Printf("bus: %v", err)
@@ -1030,14 +1055,25 @@ const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.prio
 
 // Inbox is the agent's received messages, newest first, with a short body preview.
 func (b *Bus) Inbox(agent string, unreadOnly bool, limit int) ([]Message, error) {
+	return b.InboxIn(agent, unreadOnly, limit, "")
+}
+
+// returnOwnedNotIn is the condition a delivery d is the return paths' and not exec's own return's
+// (exec "" matches none): what an ordinary turn never takes up itself, since the core brings it to
+// the person's chat.
+const returnOwnedNotIn = `d.owner = 'return' AND d.message NOT IN (SELECT e.message FROM return_events e JOIN executions x ON x.ret = e.ret WHERE x.id = ?)`
+
+// InboxIn is Inbox as a turn of execution exec sees it: a message the return paths bring to a
+// person's chat is listed only in that return's own turn.
+func (b *Bus) InboxIn(agent string, unreadOnly bool, limit int, exec string) ([]Message, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	q := `SELECT ` + msgCols + `, d.read_at, d.acked_at FROM deliveries d JOIN messages m ON m.id = d.message WHERE d.agent = ?`
+	q := `SELECT ` + msgCols + `, d.read_at, d.acked_at FROM deliveries d JOIN messages m ON m.id = d.message WHERE d.agent = ? AND NOT (` + returnOwnedNotIn + `)`
 	if unreadOnly {
 		q += ` AND d.read_at IS NULL`
 	}
-	rows, err := b.o.DB.Query(q+` ORDER BY m.id DESC LIMIT ?`, agent, limit)
+	rows, err := b.o.DB.Query(q+` ORDER BY m.id DESC LIMIT ?`, agent, exec, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1110,11 +1146,18 @@ func (b *Bus) Ack(agent string, id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return toolErr("message %d was not sent to you", id)
 	}
+	if b.returns != nil {
+		b.returns.onAck(id, agent)
+	}
 	return nil
 }
 
 // Thread is every message of the thread of id that the agent sent or received, oldest first.
-func (b *Bus) Thread(agent string, id int64) ([]Message, error) {
+func (b *Bus) Thread(agent string, id int64) ([]Message, error) { return b.ThreadIn(agent, id, "") }
+
+// ThreadIn is Thread as a turn of execution exec sees it: the words of a message the return paths
+// bring to a person's chat are withheld from any other turn.
+func (b *Bus) ThreadIn(agent string, id int64, exec string) ([]Message, error) {
 	var root int64
 	if err := b.o.DB.QueryRow(`SELECT thread FROM messages WHERE id = ?`, id).Scan(&root); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1133,6 +1176,23 @@ func (b *Bus) Thread(agent string, id int64) ([]Message, error) {
 	}
 	if len(ms) == 0 {
 		return nil, toolErr("thread %d is not one you are part of", root)
+	}
+	held := map[int64]bool{}
+	hrows, err := b.o.DB.Query(`SELECT d.message FROM deliveries d JOIN messages m ON m.id = d.message WHERE d.agent = ? AND m.thread = ? AND `+returnOwnedNotIn, agent, root, exec)
+	if err != nil {
+		return nil, err
+	}
+	for hrows.Next() {
+		var mid int64
+		if hrows.Scan(&mid) == nil {
+			held[mid] = true
+		}
+	}
+	hrows.Close()
+	for i := range ms {
+		if held[ms[i].ID] {
+			ms[i].Subject, ms[i].Body = "(an update the core brings to the person's chat: not yours to send)", ""
+		}
 	}
 	return ms, nil
 }
@@ -1304,7 +1364,7 @@ func BusTools(b *Bus) []MCPTool {
 					return nil, err
 				}
 				unread := args.UnreadOnly == nil || *args.UnreadOnly
-				ms, err := b.Inbox(c.Agent, unread, args.Limit)
+				ms, err := b.InboxIn(c.Agent, unread, args.Limit, c.Meta.Exec)
 				if err != nil {
 					return nil, err
 				}
@@ -1353,7 +1413,7 @@ func BusTools(b *Bus) []MCPTool {
 				if err := decodeArgs(c, &args); err != nil {
 					return nil, err
 				}
-				ms, err := b.Thread(c.Agent, args.ID)
+				ms, err := b.ThreadIn(c.Agent, args.ID, c.Meta.Exec)
 				if err != nil {
 					return nil, err
 				}

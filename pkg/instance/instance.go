@@ -154,6 +154,9 @@ type Instance struct {
 	// The core serves its browser pages (office, review) only when true (stormo.yaml core.web_ui);
 	// the macOS app is the default face and uses the core's API either way.
 	CoreWebUI bool `json:"coreWebUI"`
+	// The return paths' switch (stormo.yaml core.returns, docs/core.md §5): on (the default), drain
+	// (no new returns; queued updates fall back to the bus) or stop (no further post).
+	CoreReturns string `json:"coreReturns"`
 	// The core's port as stormo.yaml pins it (core.port); 0 lets CorePort pick and keep one.
 	CorePortSetting int `json:"corePortSetting,omitempty"`
 	// Requests that reach the core's loopback listener directly may read the fleet's open views
@@ -223,9 +226,10 @@ type rawFile struct {
 		Units  map[string]OfficeUnit `yaml:"units"`
 	} `yaml:"office"`
 	Core struct {
-		WebUI         bool  `yaml:"web_ui"`
-		Port          int   `yaml:"port"`
-		LoopbackTrust *bool `yaml:"loopback_trust"`
+		WebUI         bool   `yaml:"web_ui"`
+		Returns       string `yaml:"returns"`
+		Port          int    `yaml:"port"`
+		LoopbackTrust *bool  `yaml:"loopback_trust"`
 		Devices       struct {
 			IdleDays *int `yaml:"idle_days"`
 		} `yaml:"devices"`
@@ -355,6 +359,9 @@ func Parse(root string, body []byte) (*Instance, error) {
 		}
 		idleDays = *d
 	}
+	if r := raw.Core.Returns; r != "" && r != "on" && r != "drain" && r != "stop" {
+		return nil, fmt.Errorf("%s: core.returns %q is on, drain or stop", File, r)
+	}
 	coreTLS, err := parseCoreTLS(&raw.Core.TLS, raw.Core.Listen)
 	if err != nil {
 		return nil, &Error{fmt.Sprintf("%s: %v", path, err)}
@@ -475,6 +482,7 @@ func Parse(root string, body []byte) (*Instance, error) {
 		OfficeUnits:         orUnits(raw.Office.Units),
 		CoreLearning:        learning,
 		CoreWebUI:           raw.Core.WebUI,
+		CoreReturns:         orReturns(raw.Core.Returns),
 		CorePortSetting:     raw.Core.Port,
 		CoreLoopbackTrust:   raw.Core.LoopbackTrust == nil || *raw.Core.LoopbackTrust,
 		CoreDevicesIdleDays: idleDays,
@@ -581,4 +589,12 @@ func Must() *Instance {
 		os.Exit(2)
 	}
 	return i
+}
+
+// orReturns is core.returns with its default.
+func orReturns(v string) string {
+	if v == "" {
+		return "on"
+	}
+	return v
 }

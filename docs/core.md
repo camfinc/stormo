@@ -542,6 +542,46 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   Every wake run is a row of `wakes`, which the hourly cap counts. Deliveries from before migration
   14 are left as they were (`told` 2). Recipients show their `followUps`, a message its `due`.
   `BusLimits.FollowUps < 0` turns follow-ups and their notices off (a due time still tells).
+- *Returns* (migration 15; `pkg/core/returns.go`, `returnsvc.go`, `returnworker.go`). A request an
+  agent sends from a person's conversation brings its outcome back to that person.
+  - **Scope (v1):** WhatsApp, the core's own channel, for an agent with `bus.returns` on in its
+    agent.yaml (`update_after`, `escalate_after`, `hours`, `timezone`) whose engine runs channel
+    turns (`engine.ChannelTurner`) and enforces them.
+  - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
+    connector claims it. Its turn runs as a channel turn, an *execution* the engine admits once. A
+    `msg_send` from that turn (`_meta.exec`, the runtime's) to one agent opens a *return*, after two
+    refusals:
+    - an execution of another agent;
+    - a thread that already carries another person's request.
+  - **Events.** The recipient naming the request in `answers` is `answered`; another message from
+    it in the request's thread is `progress`, unless the thread could be about two people's requests
+    (a `return_ambiguous` finding, never routed); an ack without an answer is `acked`; the bus's
+    "Not answered", "Still open" and "Past its due time" notices are `failure` and `status`; and
+    `update_after` of working time with no post is `due`.
+  - **Ownership.** Such a message's delivery to the requester belongs to the return
+    (`deliveries.owner`). The wake loop and follow-ups leave it alone, and an ordinary turn neither
+    lists it (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turn does.
+  - **Deliveries.** The state machine allows one delivery at a time, covering what came meanwhile.
+    It runs a `return` channel turn in the origin's conversation, with an id-only input naming what
+    happened and what to read (never the words, which `msg_read` marks as any read does). The turn
+    ends its reply `[DONE]`, `[UPDATE]` or `[SILENT]` (absent: update).
+  - **The journal.** The kept reply (`prepared`, with its mark) is posted to the origin's chat,
+    quoting the person's message in a group, part by part: each part is `sending` before it goes and
+    `sent` with its WhatsApp id after.
+  - **Outcomes:**
+    - a part that may have gone (a crash, a timeout) is `unknown`, held for a person and never sent
+      again on its own (`return_unknown`);
+    - a turn that failed with no tool call runs again (3 tries); one that acted never does;
+    - a chat no longer reachable, or exhausted posts, fall back: the requester is woken once in the
+      bus thread with `[RETURN FALLBACK]`, and the event deliveries become the bus's
+      (`return_undelivered`);
+    - escalation (`escalate_after`) raises `return_escalated`, after which only the request's own
+      late answer still goes.
+  - **Completion:** a return closes on `[DONE]` posted, or on a posted failure.
+  - **Guards:**
+    - a return turn cannot `whatsapp_send` to its own origin's chat;
+    - `stormo.yaml` `core.returns: drain` opens no new returns and gives queued updates back to the
+      bus; `stop` posts nothing more.
 - *Loop guards* (each breach is refused, and recorded as a finding): 20 messages an hour from one
   agent to another (`bus_rate`), 12 messages per thread (`bus_hops`), no new message in a thread
   older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet, follow-ups included

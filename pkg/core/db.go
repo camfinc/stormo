@@ -295,6 +295,7 @@ var migrations = []string{
 		attempts      INTEGER NOT NULL DEFAULT 0,
 		children      INTEGER NOT NULL DEFAULT 0,
 		escalated     INTEGER NOT NULL DEFAULT 0,
+		escalated_at  INTEGER NOT NULL DEFAULT 0,
 		late_used     INTEGER NOT NULL DEFAULT 0,
 		escalate_at   INTEGER NOT NULL DEFAULT 0,
 		next_due      INTEGER NOT NULL DEFAULT 0,
@@ -324,6 +325,7 @@ var migrations = []string{
 		kind    TEXT NOT NULL,
 		message INTEGER NOT NULL DEFAULT 0,
 		child   INTEGER NOT NULL DEFAULT 0,
+		applied INTEGER NOT NULL DEFAULT 0,
 		at      INTEGER NOT NULL,
 		UNIQUE (ret, kind, message)
 	);

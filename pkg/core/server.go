@@ -186,6 +186,7 @@ type Core struct {
 	DB       *DB
 	Monitor  *Monitor
 	Bus      *Bus
+	Returns  *Returns
 	Workdir  *Workdir
 	Learner  *Learner
 	MCP      *MCP
@@ -495,7 +496,27 @@ func StartCore(o CoreOptions) (*Core, error) {
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps, Gateways: gateway})
 	c = &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
 		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{}), ingress: ingress, conversations: o.Conversations}
+	// the return paths: a request from a person's conversation brings its outcome back there
+	c.Returns = NewReturns(ReturnsOptions{DB: db, Bus: bus,
+		Settings: func(agent string) *manifest.Returns {
+			a, err := manifest.Load(inst.Root, agent, inst.Names.Secret)
+			if err != nil {
+				return nil
+			}
+			return a.Returns
+		},
+		Mode:    func() string { return inst.CoreReturns },
+		Channel: func(agent string) (engine.ChannelTurns, error) { return local.ChannelTurns(inst, agent) },
+		Poster: func(agent string) (ReturnPoster, error) {
+			c.whatsapp.Lock()
+			defer c.whatsapp.Unlock()
+			if conn := c.whatsapp.clients[agent]; conn != nil {
+				return conn, nil
+			}
+			return nil, fmt.Errorf("%s has no WhatsApp connection on this core", agent)
+		}})
 	go bus.Run(c.stop, 5*time.Second)
+	go c.Returns.Run(c.stop, 5*time.Second)
 	go workdir.Run(c.stop, 5*time.Second)
 	if inst.CoreStorage != "" && o.WorkdirRoot == "" {
 		m := &Mirror{Dir: wroot, URI: inst.CoreStorage, Region: inst.Aws.Region, CLI: aws.Exec}
