@@ -602,3 +602,75 @@ func (r *Returns) outcomeWith(delivery int64, outcome, disp, why string) {
 		return OnDelivery(v, outcome, disp, to, failure, r.o.Now()), nil
 	})
 }
+
+// ReturnRow is a return as the owner's diagnostics list it: states, counts and times, never a
+// requester or a word of what was said.
+type ReturnRow struct {
+	ID        int64  `json:"id"`
+	Agent     string `json:"agent"`
+	Recipient string `json:"recipient"`
+	State     string `json:"state"`
+	Request   int64  `json:"request"`
+	Thread    int64  `json:"thread"`
+	Escalated bool   `json:"escalated"`
+	Created   string `json:"created"`
+	Closed    string `json:"closed,omitempty"`
+	Updates   int    `json:"updates"` // deliveries posted
+	Unknown   int    `json:"unknown"` // parts that may or may not have gone
+}
+
+// List is the returns, newest first (agent "" all), at most limit.
+func (r *Returns) List(agent string, limit int) ([]ReturnRow, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.o.DB.Query(`SELECT x.id, x.agent, x.recipient, x.state, COALESCE(x.request, 0), x.thread, x.escalated, x.created, COALESCE(x.closed_at, 0),
+		(SELECT COUNT(*) FROM return_deliveries d WHERE d.ret = x.id AND d.state = 'done' AND d.disposition != 'silent' AND d.prepared != ''),
+		(SELECT COUNT(*) FROM return_parts p JOIN return_deliveries d ON d.id = p.delivery WHERE d.ret = x.id AND p.state = 'unknown')
+		FROM returns x WHERE (? = '' OR x.agent = ?) ORDER BY x.id DESC LIMIT ?`, agent, agent, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ReturnRow{}
+	for rows.Next() {
+		var v ReturnRow
+		var created, closed int64
+		if err := rows.Scan(&v.ID, &v.Agent, &v.Recipient, &v.State, &v.Request, &v.Thread, &v.Escalated, &created, &closed, &v.Updates, &v.Unknown); err != nil {
+			return nil, err
+		}
+		v.Created = isoMs(created)
+		if closed > 0 {
+			v.Closed = isoMs(closed)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// Resolve is a person settling a held (unknown) return: sent (the parts that may have gone did:
+// the update's own outcome applies) or resend (they go again).
+func (r *Returns) Resolve(id int64, sent bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var d, to int64
+	var failure bool
+	var disp string
+	if err := r.o.DB.QueryRow(`SELECT id, seq_to, failure, disposition FROM return_deliveries WHERE ret = ? AND state = 'unknown' ORDER BY id DESC LIMIT 1`, id).
+		Scan(&d, &to, &failure, &disp); err != nil {
+		return toolErr("return %d has no update held as unknown", id)
+	}
+	r.inTx(id, func(tx *sql.Tx, v ReturnView) (Step, error) {
+		if sent {
+			if _, err := tx.Exec(`UPDATE return_parts SET state = 'sent' WHERE delivery = ? AND state = 'unknown'`, d); err != nil {
+				return Step{}, err
+			}
+			if _, err := tx.Exec(`UPDATE return_deliveries SET state = 'done', updated = ? WHERE id = ?`, r.o.Now().UnixMilli(), d); err != nil {
+				return Step{}, err
+			}
+		}
+		return OnResolve(v, sent, disp, to, failure, r.o.Now()), nil
+	})
+	r.Kick()
+	return nil
+}

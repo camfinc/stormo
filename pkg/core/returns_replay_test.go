@@ -306,3 +306,38 @@ func TestReturnOnePersonPerThread(t *testing.T) {
 		t.Fatalf("another person's request in the thread: %v", err)
 	}
 }
+
+// A person resolves a held update: resend posts it once, sent closes it as it was.
+func TestReturnResolveAHeldUpdate(t *testing.T) {
+	for _, sent := range []bool{false, true} {
+		rp := newReplay(t, func(engine.ChannelTurn) string { return "Here they are.\n[DONE]" })
+		req, _ := rp.request(t)
+		rp.poster.sendErr = context.DeadlineExceeded
+		mustSend(t, rp.f, "nova", SendRequest{To: "atlas", Subject: "Promos", Body: "x", Thread: req, Answers: []int64{req}})
+		rp.rounds(4)
+		if s := rp.state(t); s != ReturnUnknown {
+			t.Fatalf("sent=%v: state %s", sent, s)
+		}
+		rp.poster.sendErr = nil
+		var id int64
+		_ = rp.f.db.QueryRow(`SELECT id FROM returns WHERE agent = 'atlas'`).Scan(&id)
+		if err := rp.r.Resolve(id, sent); err != nil {
+			t.Fatal(err)
+		}
+		rp.rounds(4)
+		want := 1
+		if sent {
+			want = 0 // it reached them already: nothing goes again
+		}
+		if got := len(rp.poster.sent()); got != want || rp.state(t) != ReturnDone {
+			t.Fatalf("sent=%v: %d posts, state %s", sent, got, rp.state(t))
+		}
+		if err := rp.r.Resolve(id, sent); err == nil {
+			t.Fatalf("sent=%v: resolved twice", sent)
+		}
+		rows, _ := rp.r.List("atlas", 0)
+		if len(rows) != 1 || rows[0].State != ReturnDone || rows[0].Unknown != 0 {
+			t.Fatalf("sent=%v: listed %+v", sent, rows)
+		}
+	}
+}

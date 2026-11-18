@@ -578,6 +578,11 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     - escalation (`escalate_after`) raises `return_escalated`, after which only the request's own
       late answer still goes.
   - **Completion:** a return closes on `[DONE]` posted, or on a posted failure.
+  - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists states,
+    posted updates and unknown parts, never a requester or a word said. `POST
+    /api/returns/{id}/resolve {"as": "sent"|"resend"}` (`stormo core returns resolve <id>
+    sent|resend`) settles a held update: `sent` (it reached them, so its own outcome applies) or
+    `resend` (its unsent parts go again).
   - **Guards:**
     - a return turn cannot `whatsapp_send` to its own origin's chat;
     - `stormo.yaml` `core.returns: drain` opens no new returns and gives queued updates back to the

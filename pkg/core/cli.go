@@ -591,6 +591,8 @@ func Command(inst *instance.Instance, sub string, args []string, opts CommandOpt
 		return messages(inst, args, o)
 	case "findings":
 		return findings(inst, args, o)
+	case "returns":
+		return returnsCmd(inst, args, o)
 	case "workdir":
 		return workdirCmd(inst, args, o)
 	case "learn":
@@ -788,6 +790,45 @@ func auditCmd(inst *instance.Instance, args []string, o *out.Writer) error {
 		for i := len(r.Entries) - 1; i >= 0; i-- {
 			e := r.Entries[i]
 			fmt.Fprintf(w, "%s  %-14s %-16s %-14s %s\n", time.UnixMilli(e.At).Format("2006-01-02 15:04"), e.Actor, e.Action, e.Target, e.Detail)
+		}
+	})
+	return nil
+}
+
+// returnsCmd is `core returns [agent]` (the return paths: states and counts, docs/core.md §5) and
+// `core returns resolve <id> sent|resend` (settle an update held as unknown).
+func returnsCmd(inst *instance.Instance, args []string, o *out.Writer) error {
+	if len(args) > 0 && args[0] == "resolve" {
+		if len(args) != 3 || args[2] != "sent" && args[2] != "resend" {
+			return fmt.Errorf("usage: core returns resolve <id> sent|resend")
+		}
+		var res map[string]any
+		if err := ownerJSON(inst.Root, http.MethodPost, "/api/returns/"+args[1]+"/resolve", strings.NewReader(`{"as":"`+args[2]+`"}`), &res); err != nil {
+			return err
+		}
+		o.Result(res, func(w io.Writer) { fmt.Fprintf(w, "return %s resolved: %s\n", args[1], args[2]) })
+		return nil
+	}
+	q := "/api/returns"
+	if len(args) > 0 {
+		q += "?agent=" + args[0]
+	}
+	var r struct {
+		Returns []ReturnRow `json:"returns"`
+	}
+	if err := ownerJSON(inst.Root, http.MethodGet, q, nil, &r); err != nil {
+		return err
+	}
+	o.Result(r, func(w io.Writer) {
+		if len(r.Returns) == 0 {
+			fmt.Fprintln(w, "no returns")
+		}
+		for _, x := range r.Returns {
+			esc := ""
+			if x.Escalated {
+				esc = " escalated"
+			}
+			fmt.Fprintf(w, "%-5d %-10s → %-10s %-13s request %-5d updates %d unknown %d%s  (since %s)\n", x.ID, x.Agent, x.Recipient, x.State, x.Request, x.Updates, x.Unknown, esc, x.Created)
 		}
 	})
 	return nil
