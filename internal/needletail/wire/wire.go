@@ -768,12 +768,18 @@ func SignChannel(key, method, path string, body []byte, ts int64, nonce string) 
 	return fmt.Sprintf("t=%d,n=%s,v1=%s", ts, nonce, hex.EncodeToString(mac.Sum(nil)))
 }
 
-// VerifyChannel checks a signature header against the request: its nonce and time on success.
-func VerifyChannel(key, header, method, path string, body []byte, now time.Time) (nonce string, err error) {
+// VerifyChannel checks a signature header against the request: on success its nonce and the time
+// it verified (the one its nonce lives by). A header with a field twice, or another, is refused.
+func VerifyChannel(key, header, method, path string, body []byte, now time.Time) (nonce string, signed time.Time, err error) {
 	var ts int64
 	var sig string
+	seen := map[string]bool{}
 	for _, part := range strings.Split(header, ",") {
 		k, v, _ := strings.Cut(strings.TrimSpace(part), "=")
+		if seen[k] {
+			return "", time.Time{}, errors.New("malformed channel signature (a field twice)")
+		}
+		seen[k] = true
 		switch k {
 		case "t":
 			ts, _ = strconv.ParseInt(v, 10, 64)
@@ -781,17 +787,19 @@ func VerifyChannel(key, header, method, path string, body []byte, now time.Time)
 			nonce = v
 		case "v1":
 			sig = v
+		default:
+			return "", time.Time{}, errors.New("malformed channel signature (an unknown field)")
 		}
 	}
 	if key == "" || ts == 0 || nonce == "" || len(nonce) > 64 || sig == "" {
-		return "", errors.New("missing or malformed channel signature")
+		return "", time.Time{}, errors.New("missing or malformed channel signature")
 	}
 	if d := now.Sub(time.Unix(ts, 0)); d > ChannelSkew || d < -ChannelSkew {
-		return "", errors.New("channel signature outside the allowed time")
+		return "", time.Time{}, errors.New("channel signature outside the allowed time")
 	}
 	want := SignChannel(key, method, path, body, ts, nonce)
 	if subtle.ConstantTimeCompare([]byte(want), []byte(fmt.Sprintf("t=%d,n=%s,v1=%s", ts, nonce, sig))) != 1 {
-		return "", errors.New("wrong channel signature")
+		return "", time.Time{}, errors.New("wrong channel signature")
 	}
-	return nonce, nil
+	return nonce, time.Unix(ts, 0), nil
 }

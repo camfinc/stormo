@@ -372,3 +372,24 @@ func TestWithoutMarker(t *testing.T) {
 		}
 	}
 }
+
+// A signature header with a field twice is refused (a prepended t= must not shorten its nonce).
+func TestChannelSignatureFieldsOnce(t *testing.T) {
+	_, _, srv := channelServer(t, t.TempDir(), false)
+	turn := wire.ChannelTurn{Execution: "exec-dup-0001", Kind: messaging.ExecInbound, Session: "whatsapp-d1", Message: "hola"}
+	raw, _ := json.Marshal(turn)
+	good := wire.SignChannel(coreKey, "POST", "/v1/channel/turns", raw, time.Now().Unix(), "dup-nonce-1")
+	for _, h := range []string{"t=1," + good, good + ",x=1"} {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/channel/turns", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set(wire.ChannelSignatureHeader, h)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("header %q: %d", h, res.StatusCode)
+		}
+	}
+}

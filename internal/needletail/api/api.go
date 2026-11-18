@@ -533,6 +533,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
+	stopped := true
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -542,6 +543,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		select {
 		case <-done:
 		case <-t.C:
+			stopped = false
 			s.mu.Lock()
 			n := s.active
 			s.mu.Unlock()
@@ -549,7 +551,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	s.cancel()
-	s.closeChannel()
+	if stopped {
+		// every turn stopped: no channel turn can write any more. Otherwise the lock stays held
+		// until the process exits, so no other runtime takes the store while one still might
+		s.closeChannel()
+	}
 }
 
 // ---- routes ----------------------------------------------------------------------------------

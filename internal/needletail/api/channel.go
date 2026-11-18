@@ -43,10 +43,9 @@ const (
 	channelTombstone = 30 * 24 * time.Hour
 	// maxChannelWait is the longest a GET waits for a turn to end, in seconds.
 	maxChannelWait = 60
-	// channelSaveTries and channelSaveGap: a result that could not be written is tried again, and
-	// stays unpublished (running) until it is on disk.
-	channelSaveTries = 30
-	channelSaveGap   = 2 * time.Second
+	// channelSaveGap: a result that could not be written is tried again this often (doubling, at
+	// most 30 s), the conversation held and the turn unpublished (running) until it is on disk.
+	channelSaveGap = 2 * time.Second
 )
 
 var execIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
@@ -160,12 +159,12 @@ func (s *channelStore) prune() {
 		}
 	}
 	for n, until := range s.nonces {
-		if !until.After(now) {
+		if now.After(until) {
 			delete(s.nonces, n)
 		}
 	}
 	for n, until := range s.seen {
-		if !until.After(now) {
+		if now.After(until) {
 			delete(s.seen, n)
 		}
 	}
@@ -259,11 +258,12 @@ func (s *Server) signed(r *http.Request) (body []byte, nonce string, until time.
 		return nil, "", time.Time{}, http.StatusBadRequest, "unreadable body"
 	}
 	// the path signed is the request URI: the query (a GET's wait) is part of what was signed
-	nonce, err = wire.VerifyChannel(s.channelKey, r.Header.Get(wire.ChannelSignatureHeader), r.Method, r.URL.RequestURI(), body, s.now())
+	nonce, at, err := wire.VerifyChannel(s.channelKey, r.Header.Get(wire.ChannelSignatureHeader), r.Method, r.URL.RequestURI(), body, s.now())
 	if err != nil {
 		return nil, "", time.Time{}, http.StatusUnauthorized, err.Error()
 	}
-	until = signedAt(r.Header.Get(wire.ChannelSignatureHeader)).Add(wire.ChannelSkew)
+	// kept a second past the window the signature is valid in: never replayable at its edge
+	until = at.Add(wire.ChannelSkew + time.Second)
 	c := s.channel
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -278,17 +278,6 @@ func (s *Server) signed(r *http.Request) (body []byte, nonce string, until time.
 		c.seen[nonce] = until
 	}
 	return body, nonce, until, 0, ""
-}
-
-// signedAt is a signature header's time.
-func signedAt(header string) time.Time {
-	for _, part := range strings.Split(header, ",") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(part), "t="); ok {
-			n, _ := strconv.ParseInt(v, 10, 64)
-			return time.Unix(n, 0)
-		}
-	}
-	return time.Time{}
 }
 
 // channelStart admits a channel turn and starts it: 202 with its status. Admission is one critical
@@ -407,6 +396,7 @@ func (s *Server) channelRun(req wire.ChannelTurn, root string) {
 			out.Audio = s.speak(spoken, req.AudioFormat, q)
 		}
 	}
+	gap := channelSaveGap
 	for try := 1; ; try++ {
 		c.mu.Lock()
 		e := c.turns[req.Execution]
@@ -416,16 +406,15 @@ func (s *Server) channelRun(req wire.ChannelTurn, root string) {
 		if err == nil {
 			return
 		}
-		// unpublished (still running) until it is on disk; never run again
+		// unpublished (still running) until it is on disk; never run again. Only a shutdown stops
+		// trying: the next start reads it as interrupted, with what it did
 		s.logf("channel turn %s: its result could not be kept (try %d): %v", req.Execution, try, err)
-		if try >= channelSaveTries {
-			return
-		}
 		select {
 		case <-s.base.Done():
 			return
-		case <-time.After(channelSaveGap):
+		case <-time.After(gap):
 		}
+		gap = min(2*gap, 30*time.Second)
 	}
 }
 
@@ -515,5 +504,6 @@ func (s *Server) ChannelTurn(exec string) (wire.ChannelTurnStatus, bool) {
 	return e.ChannelTurnStatus, true
 }
 
-// closeChannel releases the channel-turns lock (Shutdown).
+// closeChannel releases the channel-turns lock: only once no turn is left to write (Shutdown,
+// when every turn stopped; otherwise the process's exit releases it).
 func (s *Server) closeChannel() { s.channel.mu.Lock(); s.channel.close(); s.channel.mu.Unlock() }
