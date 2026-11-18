@@ -54,7 +54,8 @@ func (r *Returns) view(q querier, id int64) (ReturnView, error) {
 // save writes v back to return id; a closed state closes it (closed_at, once). The deliveries of its
 // events that will never reach the person go back to the bus, to wake the agent as any message
 // does: every one when it closed; once failed or escalated with nothing in flight, all but an
-// answer the late allowance still delivers.
+// answer the late allowance still delivers. Nothing goes back while an update is held as unknown:
+// it may have reached them already.
 func (r *Returns) save(q querier, id int64, v ReturnView) error {
 	if _, err := q.Exec(`UPDATE returns SET state = ?, prev = ?, seq_last = ?, seq_seen = ?, active = ?, attempts = ?, escalated = ?,
 		escalated_at = ?, late_used = ?, next_due = ?, last_activity = ?, revision = revision + 1,
@@ -63,7 +64,7 @@ func (r *Returns) save(q querier, id int64, v ReturnView) error {
 		unms(v.NextDue), unms(v.LastActivity), btoi(v.Terminal()), unms(r.o.Now()), id); err != nil {
 		return err
 	}
-	if !(v.Terminal() || (v.State == ReturnFailed || v.Escalated) && !v.Active) {
+	if v.State == ReturnUnknown || !(v.Terminal() || (v.State == ReturnFailed || v.Escalated) && !v.Active) {
 		return nil
 	}
 	answers := v.Terminal() || v.LateUsed >= ReturnLateAnswers
@@ -97,8 +98,10 @@ func (r *Returns) Run(stop <-chan struct{}, interval time.Duration) {
 }
 
 // recover settles what a stopped core left: a part being sent may or may not have gone (unknown,
-// held for a person).
+// held for a person); a person's turn the connector was waiting for has no one waiting now, so the
+// worker takes it up like one it stopped waiting for.
 func (r *Returns) recover() {
+	_, _ = r.o.DB.Exec(`UPDATE executions SET state = 'detached' WHERE kind = 'inbound' AND state = 'running' AND ended IS NULL AND created < ?`, unms(r.started))
 	rows, err := r.o.DB.Query(`SELECT DISTINCT delivery FROM return_parts WHERE state = 'sending'`)
 	if err != nil {
 		return
@@ -123,7 +126,7 @@ func (r *Returns) Round() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, agent := range r.agents() {
-		r.refresh(agent)
+		r.negotiated(agent) // asked again once its answer is a TTL old: a request opens on a fresh one
 	}
 	r.applyEvents()
 	r.tick()
@@ -135,10 +138,10 @@ func (r *Returns) Round() {
 	}
 }
 
-// agents are those with a return not closed or a person's turn still to answer.
+// agents are those with a return not closed or a turn not ended.
 func (r *Returns) agents() []string {
 	rows, err := r.o.DB.Query(`SELECT agent FROM returns WHERE state NOT IN ('done', 'expired')
-		UNION SELECT agent FROM executions WHERE kind = 'inbound' AND state = 'detached'`)
+		UNION SELECT agent FROM executions WHERE ended IS NULL`)
 	if err != nil {
 		return nil
 	}
@@ -542,8 +545,8 @@ func disposition(text string) (string, string) {
 			continue
 		}
 		for m := range markers {
-			if strings.HasSuffix(t, m) { // a marker run into the text: dropped, it decides nothing
-				l = strings.TrimRight(strings.TrimSuffix(strings.TrimRight(l, " \t\r"), m), " \t")
+			if strings.Contains(l, m) { // a marker run into the text: dropped, it decides nothing
+				l = strings.TrimRight(strings.ReplaceAll(strings.ReplaceAll(l, " "+m, ""), m, ""), " \t\r")
 				seen["inline"] = true
 			}
 		}
@@ -705,11 +708,15 @@ func (r *Returns) post(d delivery) {
 	}
 }
 
-// fence is the journal's check before part goes: the switch is not stop, the delivery still
-// posting, its return not closed, and the part still planned; then it is marked sending.
+// fence is the journal's check before part goes: the switch is not stop, an update none of which
+// went is not draining, the delivery still posting, its return not closed, and the part still
+// planned; then it is marked sending.
 func (r *Returns) fence(d delivery, part int, at int64) error {
 	if r.o.Mode() == "stop" {
 		return errFenced
+	}
+	if d.ret != 0 && r.sentParts(d.id) == 0 && r.draining(d.agent) != "" {
+		return errFenced // nothing of it went yet: the next round gives it back to the bus
 	}
 	var state string
 	if r.o.DB.QueryRow(`SELECT state FROM return_deliveries WHERE id = ?`, d.id).Scan(&state) != nil || state != "posting" {
@@ -780,7 +787,11 @@ func (r *Returns) outcomeWith(delivery int64, outcome, disp, why string) {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return errMovedOn
 		}
-		return nil
+		if exec != "" && state != "" {
+			// a turn admitted (or maybe admitted) and never polled to its end is over for the core
+			_, err = q.Exec(`UPDATE executions SET state = 'failed', error = ?, ended = ? WHERE id = ? AND ended IS NULL`, clip(why, 300), now, exec)
+		}
+		return err
 	}
 	if ret == 0 {
 		tx, err := r.o.DB.Begin()

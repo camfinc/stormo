@@ -24,6 +24,7 @@ type fakeChannel struct {
 	enforce bool
 	capsErr bool
 	lose    int
+	busy    int
 	hold    bool
 	script  func(t engine.ChannelTurn) (string, error)
 	turns   []engine.ChannelTurn
@@ -49,6 +50,11 @@ func (c *fakeChannel) Start(_ context.Context, t engine.ChannelTurn) (engine.Cha
 	if _, ok := c.held[t.Execution]; ok {
 		c.mu.Unlock()
 		return engine.ChannelTurnStatus{Execution: t.Execution, State: "running"}, nil
+	}
+	if c.busy > 0 {
+		c.busy--
+		c.mu.Unlock()
+		return engine.ChannelTurnStatus{}, engine.ErrChannelBusy
 	}
 	c.turns = append(c.turns, t)
 	c.mu.Unlock()
@@ -643,5 +649,139 @@ func TestReturnSideDoor(t *testing.T) {
 	}
 	if err := rp.r.sideDoor("nova", group); err != nil {
 		t.Errorf("another agent: %v", err)
+	}
+}
+
+// An update held as unknown on an escalated return keeps its events: it may have reached the
+// person, so nothing about it goes to the bus to be answered a second way.
+func TestReturnUnknownKeepsItsEventsWhenEscalated(t *testing.T) {
+	rp := newReplay(t, func(engine.ChannelTurn) string { return "Still on it.\n[UPDATE]" })
+	req, _ := rp.request(t)
+	// progress (no answer yet): what a failed or escalated return gives back once nothing is in flight
+	answer := mustSend(t, rp.f, "nova", SendRequest{To: "atlas", Subject: "Working on it", Body: "Two agencies so far.", Thread: req})
+	rp.r.applyEvents()
+	rp.r.drive() // the update's turn starts
+	rp.f.now = rp.f.now.Add(3 * time.Hour)
+	rp.r.tick() // escalated while it is in flight
+	rp.poster.uncertainAt = 0
+	rp.r.drive() // its reply is kept
+	rp.r.drive() // the send may or may not have gone
+	if s := rp.state(t); s != ReturnUnknown {
+		t.Fatalf("state %s", s)
+	}
+	var owner string
+	_ = rp.f.db.QueryRow(`SELECT owner FROM deliveries WHERE message = ? AND agent = 'atlas'`, answer.ID).Scan(&owner)
+	if owner != "return" {
+		t.Fatalf("the held update's progress went to the bus: %s", owner)
+	}
+	rp.f.bus.WakeRound()
+	if w := rp.wokenAtlas(); len(w) != 0 {
+		t.Fatalf("woken for a held update: %+v", w)
+	}
+}
+
+// A delivery drained after its turn was persisted (the runtime busy) ends that turn: the side door
+// lets the agent tell the person itself.
+func TestReturnDrainEndsAPersistedTurn(t *testing.T) {
+	rp := newReplay(t, func(engine.ChannelTurn) string { return "Here.\n[DONE]" })
+	req, _ := rp.request(t)
+	rp.ch.mu.Lock()
+	rp.ch.busy = 1
+	rp.ch.mu.Unlock()
+	rp.answer(t, req)
+	rp.rounds(1)
+	var running int
+	_ = rp.f.db.QueryRow(`SELECT COUNT(*) FROM executions WHERE kind = 'return' AND ended IS NULL`).Scan(&running)
+	if running != 1 {
+		t.Fatalf("%d return turns persisted", running)
+	}
+	rp.optIn = false
+	rp.f.now = rp.f.now.Add(16 * time.Second)
+	rp.rounds(2)
+	_ = rp.f.db.QueryRow(`SELECT COUNT(*) FROM executions WHERE kind = 'return' AND ended IS NULL`).Scan(&running)
+	group, _ := types.ParseJID(sellersGroup)
+	if running != 0 || rp.r.sideDoor("atlas", group) != nil || rp.state(t) != ReturnExpired || rp.runs["return"] != 0 {
+		t.Fatalf("running %d, side door %v, state %s, runs %v", running, rp.r.sideDoor("atlas", group), rp.state(t), rp.runs)
+	}
+}
+
+// A person's turn running when the core stopped is taken up by the worker; one started since is
+// the connector's.
+func TestReturnRecoverDetachesAStoppedCoresTurn(t *testing.T) {
+	rp := newReplay(t, func(engine.ChannelTurn) string { return "[SILENT]" })
+	old := rp.execution(t, rp.origin) // created 0: before this core started
+	fresh := newID()
+	if _, err := rp.f.db.Exec(`INSERT INTO executions(id, agent, kind, origin, token, session, state, created) VALUES(?,?,?,?,?,?,?,?)`,
+		fresh, "atlas", "inbound", rp.origin, newToken(), "whatsapp-x", "running", rp.f.now.Add(time.Second).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	rp.r.recover()
+	var a, b string
+	_ = rp.f.db.QueryRow(`SELECT state FROM executions WHERE id = ?`, old.Execution).Scan(&a)
+	_ = rp.f.db.QueryRow(`SELECT state FROM executions WHERE id = ?`, fresh).Scan(&b)
+	if a != "detached" || b != "running" {
+		t.Fatalf("old %s, fresh %s", a, b)
+	}
+}
+
+// A turn that delegates long after its negotiation is still opened a return: the worker keeps the
+// negotiation of an agent with a turn running fresh.
+func TestReturnLongTurnStillOpensAReturn(t *testing.T) {
+	rp := newReplay(t, func(engine.ChannelTurn) string { return "Done.\n[DONE]" })
+	req, _ := rp.request(t)
+	rp.answer(t, req)
+	rp.rounds(4)
+	if rp.state(t) != ReturnDone {
+		t.Fatalf("state %s", rp.state(t))
+	}
+	turn := rp.execution(t, rp.origin)
+	rp.f.now = rp.f.now.Add(3 * capsTTL)
+	rp.rounds(1)
+	if err := asked(rp.f, turn); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = rp.f.db.QueryRow(`SELECT COUNT(*) FROM returns`).Scan(&n)
+	if n != 2 {
+		t.Fatalf("%d returns: the late request opened none", n)
+	}
+}
+
+// An answer in a thread of its own is kept while its return is open.
+func TestReturnPrunePinsTheAnswersThread(t *testing.T) {
+	rp := newReplay(t, func(engine.ChannelTurn) string { return "[SILENT]" })
+	req, _ := rp.request(t)
+	answer := mustSend(t, rp.f, "nova", SendRequest{To: "atlas", Subject: "Promos", Body: "x", Answers: []int64{req}})
+	if answer.Thread == req {
+		t.Fatal("the answer is in the request's thread")
+	}
+	rp.f.now = rp.f.now.Add(100 * 24 * time.Hour)
+	if err := rp.f.bus.Prune(30 * 24 * time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = rp.f.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id IN (?, ?)`, req, answer.ID).Scan(&n)
+	if n != 2 {
+		t.Fatalf("%d of the request and its answer kept", n)
+	}
+}
+
+// The control line decides; a marker anywhere else decides nothing and is never posted.
+func TestReturnDisposition(t *testing.T) {
+	for _, c := range []struct{ in, disp, text string }{
+		{"Here they are.\n[DONE]", DispositionDone, "Here they are."},
+		{"Here they are.\n[DONE]\n\n", DispositionDone, "Here they are."},
+		{"Progress.\n[UPDATE]", DispositionUpdate, "Progress."},
+		{"Nothing yet.\n[SILENT]", DispositionSilent, ""},
+		{"[SILENT]", DispositionSilent, ""},
+		{"No marker at all.", DispositionUpdate, "No marker at all."},
+		{"Still investigating [DONE]", DispositionUpdate, "Still investigating"},
+		{"Still [UPDATE] investigating.\n[DONE]", DispositionUpdate, "Still investigating."},
+		{"Still investigating\n[UPDATE]\n[DONE]", DispositionUpdate, "Still investigating"},
+		{"[DONE]", DispositionSilent, ""},
+	} {
+		if d, text := disposition(c.in); d != c.disp || text != c.text {
+			t.Errorf("%q: %s %q, want %s %q", c.in, d, text, c.disp, c.text)
+		}
 	}
 }

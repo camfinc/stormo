@@ -51,6 +51,7 @@ type Returns struct {
 	mu       sync.Mutex // one round at a time
 	caps     sync.Map   // agent → capsEntry
 	scrubbed time.Time  // the last retention pass (under mu)
+	started  time.Time  // when this core's return paths began: turns older are a stopped core's
 }
 
 // capsEntry is an agent's negotiation: the last answer its engine gave (ok: when; zero, never) and
@@ -73,7 +74,7 @@ func NewReturns(o ReturnsOptions) *Returns {
 	if o.Mode == nil {
 		o.Mode = func() string { return "on" }
 	}
-	r := &Returns{o: o, kick: make(chan struct{}, 1)}
+	r := &Returns{o: o, kick: make(chan struct{}, 1), started: o.Now()}
 	if o.Bus != nil {
 		o.Bus.returns = r
 	}

@@ -1323,13 +1323,16 @@ func (b *Bus) Counts() (map[string]BusCounts, error) {
 }
 
 // Prune deletes threads with no message newer than retain, but a thread a return still open is
-// about: its request and what came back stay readable until it closes.
+// about: its request and what came back (an answer may be in a thread of its own) stay readable
+// until it closes.
 func (b *Bus) Prune(retain time.Duration) error {
 	if _, err := b.o.DB.Exec(`DELETE FROM wakes WHERE at < ?`, b.o.Now().Add(-24*time.Hour).UnixMilli()); err != nil {
 		return err
 	}
 	_, err := b.o.DB.Exec(`DELETE FROM messages WHERE thread IN (SELECT thread FROM messages GROUP BY thread HAVING MAX(created) < ?)
-		AND thread NOT IN (SELECT thread FROM returns WHERE closed_at IS NULL)`, b.o.Now().Add(-retain).UnixMilli())
+		AND thread NOT IN (SELECT thread FROM returns WHERE closed_at IS NULL)
+		AND thread NOT IN (SELECT m.thread FROM return_events e JOIN returns x ON x.id = e.ret JOIN messages m ON m.id = e.message WHERE x.closed_at IS NULL)`,
+		b.o.Now().Add(-retain).UnixMilli())
 	return err
 }
 

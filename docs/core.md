@@ -578,7 +578,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     (`deliveries.owner`). The wake loop and follow-ups leave it alone, and an ordinary turn neither
     lists it (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turn does
     (proven by its token). What will never reach the person goes back to the bus: every event once
-    the return closes, and once it failed or escalated, all but a still-deliverable answer.
+    the return closes, and once it failed or escalated, all but a still-deliverable answer. Nothing
+    goes back while an update is held as unknown, since it may have reached them already.
   - **Deliveries.** The state machine allows one delivery at a time, covering what came meanwhile.
     - It runs a `return` channel turn in the origin's conversation, with an id-only input naming
       what happened and what to read (never the words, which `msg_read` marks as any read does).
@@ -590,8 +591,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   - **The journal.** The kept reply (`prepared`, with its mark) is posted to the origin's chat,
     quoting the person's message in a group, part by part. Before each part, under the posting lane:
     - the connector checks the account is the origin's and the chat still admitted;
-    - the core checks the switch is not `stop`, the delivery still posting and the return not
-      closed;
+    - the core checks the switch is not `stop`, an update none of which went is not draining, the
+      delivery is still posting and the return not closed;
     - the part is marked `sending`, and after it goes, `sent` with its WhatsApp id.
   - **Outcomes:**
     - a part that may have gone (a timeout, a cancelled wait, any send error whatsmeow does not
@@ -610,9 +611,11 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     - escalation (`escalate_after`) raises `return_escalated`, after which only the request's own
       late answer still goes.
   - **Completion:** a return closes on `[DONE]` with every part posted, or on a posted failure.
-  - **Late replies.** A person's turn the connector stopped waiting for is detached. The worker asks
-    the runtime about it with the same execution and, once it ends, posts its reply through the same
-    journal as a delivery with no return (`reply_undelivered` when it cannot).
+  - **Late replies.** A person's turn the connector stopped waiting for is detached, as is one still
+    running when the core stopped. The worker asks the runtime about it with the same execution and,
+    once it ends, posts its reply through the same journal as a delivery with no return
+    (`reply_undelivered` when it cannot). A delivery closed for any reason ends its execution, so the
+    side door opens again.
   - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists states,
     posted and fallen-back updates, unknown parts and a held update's parts in order (sent, unknown,
     planned), never a requester or a word said. `POST /api/returns/{id}/resolve {"as":
@@ -626,7 +629,10 @@ subprocesses of one Hermes install, which does not fit one container per agent.
       bus, as does the agent opting out or its engine answering it no longer enforces (an engine that
       does not answer keeps its last answer); `stop` starts and posts nothing more, holding everything
       as it is until `on` or `drain`.
-  - **Retention.** The bus does not prune a thread an open return is about. After 30 days, a closed
+  - **Retention.** The bus does not prune a thread an open return is about: the request's, and that
+    of anything recorded as one of its events (an answer may be in a thread of its own). The worker
+    keeps the negotiation of an agent with any turn running fresh, so a request made late in a long
+    turn still opens its return. After 30 days, a closed
     delivery's words and parts and an origin's quote and requester are cleared; states and ids stay,
     so a thread stays bound to its person. Tokens are cleared a week after their execution ended (a
     call that late is refused).
