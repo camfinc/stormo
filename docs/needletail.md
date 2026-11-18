@@ -449,8 +449,10 @@ refused. The bearer API key is required too.
   - **The session** must be a channel conversation. It is created on first contact, so no separate
     `POST /v1/sessions`.
   - **The turn** runs with its execution on the context: every core tool call in it carries
-    `_meta.exec` and `_meta.op` (`<execution>/<n>`), so the core attributes what the turn did to the
-    interaction that started it, even through the relay's spool.
+    `_meta.exec`, `_meta.op` (`<execution>/<n>`) and `_meta.exec_token`, so the core attributes what
+    the turn did to the interaction that started it, even through the relay's spool. The token is
+    the request's `token`, the core's secret for the execution. The runtime keeps it in memory only:
+    the store keeps the request's hash, and a terminal command has no way to it.
   - **A `return` turn** (the core bringing back a request's outcome) marks its input row
     `KindReturn`, schedules no follow-up, and answers in text only. An `inbound` one may answer with
     a voice note, as `/chat` does.

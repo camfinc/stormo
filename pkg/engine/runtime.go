@@ -225,7 +225,9 @@ type ChannelTurner interface {
 type ChannelTurns interface {
 	Capabilities(ctx context.Context) (ChannelCaps, error)
 	// Start admits the turn (a repeat of the same execution answers its status). ErrChannelBusy:
-	// the conversation runs another turn, nothing admitted.
+	// the conversation runs another turn, nothing admitted; ErrChannelRefused: the runtime answered
+	// that it will not run it, nothing admitted. Any other error may have admitted it: the caller
+	// asks again with the same execution and the same request.
 	Start(ctx context.Context, t ChannelTurn) (ChannelTurnStatus, error)
 	// Status is the turn's, waiting up to wait for it to end.
 	Status(ctx context.Context, exec string, wait time.Duration) (ChannelTurnStatus, error)
@@ -241,7 +243,10 @@ type ChannelCaps struct{ Turns, Enforcing bool }
 // request sent from it).
 type ChannelTurn struct {
 	Execution, Kind, Session, Title string
-	In                              Input
+	// Token is the execution's secret, the core's: the runtime keeps it in memory only and sends it
+	// with every core call the turn makes, which is how the core knows the call is that turn's.
+	Token string
+	In    Input
 }
 
 // ChannelTurnStatus is a channel turn's state (running, ok, failed, interrupted) and, once it
@@ -262,5 +267,6 @@ func (s ChannelTurnStatus) Terminal() bool {
 // Channel turn errors.
 var (
 	ErrChannelBusy    = errors.New("the conversation runs another turn: nothing admitted, try again")
+	ErrChannelRefused = errors.New("the runtime refused the channel turn: nothing admitted")
 	ErrChannelUnknown = errors.New("no such channel turn")
 )

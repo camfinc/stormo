@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"strings"
 	"time"
 
 	"github.com/camfinc/stormo/pkg/clock"
@@ -82,6 +83,12 @@ func returnsOf(m raw, where string) (*Returns, error) {
 		return nil, nil
 	}
 	r := &Returns{UpdateAfter: DefaultUpdateAfter, EscalateAfter: DefaultEscalateAfter, Hours: str(j["hours"]), Timezone: str(j["timezone"])}
+	// leaving hours out is every hour; writing it empty is a mistake, never read as every hour
+	if v, present := j["hours"]; present {
+		if err := req(v != nil && strings.TrimSpace(r.Hours) != "", "%s: bus.returns.hours is a schedule (08:00-19:00 mon-sat); leave it out for every hour", where); err != nil {
+			return nil, err
+		}
+	}
 	for key, dst := range map[string]*time.Duration{"update_after": &r.UpdateAfter, "escalate_after": &r.EscalateAfter} {
 		v, present := j[key]
 		if !present || v == nil {

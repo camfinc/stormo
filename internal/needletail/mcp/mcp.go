@@ -277,7 +277,7 @@ func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessa
 	// a channel turn's calls carry its execution and an operation number: the core attributes
 	// them to the interaction that started the turn, even when one reaches it later
 	if e := messaging.ExecutionOf(ctx); e != nil {
-		meta["exec"], meta["op"] = e.ID, e.NextOp()
+		meta["exec"], meta["op"], meta["exec_token"] = e.ID, e.NextOp(), e.Token
 	}
 	if len(meta) > 0 {
 		params["_meta"] = meta

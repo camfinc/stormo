@@ -806,7 +806,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		quote, _ := proto.Marshal(e.Message)
 		var err error
 		origin, err = register(ctx, OriginEvent{Session: session, Chat: e.Info.Chat.String(), MessageID: e.Info.ID, Participant: e.Info.Sender.ToNonAD().String(),
-			Number: in.Number, Name: in.Name, Group: in.Group, Verified: in.Verified, Quote: quote})
+			Number: in.Number, Name: in.Name, Group: in.Group, Verified: in.Verified, Quote: quote, Account: c.account()})
 		if err != nil {
 			origin = "" // the turn still runs, without a way back for its requests
 		}

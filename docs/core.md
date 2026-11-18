@@ -546,47 +546,96 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   agent sends from a person's conversation brings its outcome back to that person.
   - **Scope (v1):** WhatsApp, the core's own channel, for an agent with `bus.returns` on in its
     agent.yaml (`update_after`, `escalate_after`, `hours`, `timezone`) whose engine runs channel
-    turns (`engine.ChannelTurner`) and enforces them.
+    turns (`engine.ChannelTurner`) and enforces them. An agent's WhatsApp turns run as channel turns
+    when its engine runs them and either enforces them or the agent opted in; any other agent keeps
+    the engine's usual chat, whatever its image offers.
   - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
-    connector claims it. Its turn runs as a channel turn, an *execution* the engine admits once. A
-    `msg_send` from that turn (`_meta.exec`, the runtime's) to one agent opens a *return*, after two
-    refusals:
-    - an execution of another agent;
-    - a thread that already carries another person's request.
-  - **Events.** The recipient naming the request in `answers` is `answered`; another message from
-    it in the request's thread is `progress`, unless the thread could be about two people's requests
-    (a `return_ambiguous` finding, never routed); an ack without an answer is `acked`; the bus's
-    "Not answered", "Still open" and "Past its due time" notices are `failure` and `status`; and
-    `update_after` of working time with no post is `due`.
-  - **Ownership.** Such a message's delivery to the requester belongs to the return
+    connector claims it with the linked account that received it. Its turn runs as a channel turn,
+    an *execution* the engine admits once, with a secret *token* the core issues and the runtime keeps
+    in memory only (the runtime's store keeps the request's hash). Every core call of the turn carries
+    `_meta.exec`, `op` and `exec_token`.
+  - **Opening a return.** A `msg_send` from that turn to one agent opens a *return*. It is refused
+    when:
+    - it names an execution the core did not start, another agent's, or one without its token;
+    - its thread ever carried another person's request (a thread is bound to one person for its
+      life).
+
+    A send from an update's turn opens a sibling return on the same origin, one deeper, with the same
+    escalation time. When the person's request is closed, held, overdue or the chain is
+    `ReturnChildDepth` deep, it goes as an ordinary message, and its result says so (`note`).
+  - **Events.**
+    - `answered`: the recipient names the request in `answers`. A message whose answers name
+      requests made for different people is refused.
+    - `progress`: another message from the recipient in the request's thread, unless the thread could
+      be about two people's requests (a `return_ambiguous` finding, never routed).
+    - `acked`: an ack without an answer, in the ack's transaction.
+    - `failure` and `status`: the bus's "Not answered", "Still open" and "Past its due time" notices.
+    - `due`: `update_after` of working time with no post.
+
+    An event is recorded only while it can still reach the person (`Eligible`): not once the return
+    closed; once it failed or escalated, only an answer while the late allowance lasts.
+  - **Ownership.** A recorded event's delivery to the requester belongs to the return
     (`deliveries.owner`). The wake loop and follow-ups leave it alone, and an ordinary turn neither
-    lists it (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turn does.
+    lists it (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turn does
+    (proven by its token). What will never reach the person goes back to the bus: every event once
+    the return closes, and once it failed or escalated, all but a still-deliverable answer.
   - **Deliveries.** The state machine allows one delivery at a time, covering what came meanwhile.
-    It runs a `return` channel turn in the origin's conversation, with an id-only input naming what
-    happened and what to read (never the words, which `msg_read` marks as any read does). The turn
-    ends its reply `[DONE]`, `[UPDATE]` or `[SILENT]` (absent: update).
+    - It runs a `return` channel turn in the origin's conversation, with an id-only input naming
+      what happened and what to read (never the words, which `msg_read` marks as any read does).
+    - The execution, token and input are kept before the runtime is asked. An answer that never came
+      is asked again with the same request (admitted once); one unconfirmed for 30 minutes is given
+      up as having maybe run.
+    - The turn's reply ends with a control line alone: `[DONE]`, `[UPDATE]` or `[SILENT]`. A missing,
+      inline or conflicting marker is an update, and markers are never posted.
   - **The journal.** The kept reply (`prepared`, with its mark) is posted to the origin's chat,
-    quoting the person's message in a group, part by part: each part is `sending` before it goes and
-    `sent` with its WhatsApp id after.
+    quoting the person's message in a group, part by part. Before each part, under the posting lane:
+    - the connector checks the account is the origin's and the chat still admitted;
+    - the core checks the switch is not `stop`, the delivery still posting and the return not
+      closed;
+    - the part is marked `sending`, and after it goes, `sent` with its WhatsApp id.
   - **Outcomes:**
-    - a part that may have gone (a crash, a timeout) is `unknown`, held for a person and never sent
-      again on its own (`return_unknown`);
-    - a turn that failed with no tool call runs again (3 tries); one that acted never does;
-    - a chat no longer reachable, or exhausted posts, fall back: the requester is woken once in the
-      bus thread with `[RETURN FALLBACK]`, and the event deliveries become the bus's
-      (`return_undelivered`);
+    - a part that may have gone (a timeout, a cancelled wait, any send error whatsmeow does not
+      answer before writing, a crash) is `unknown`: held for a person and never sent again on its own
+      (`return_unknown`);
+    - a part that provably did not go (not connected, refused by the server) goes again, up to 6
+      tries;
+    - a part that went but could not be journaled is recorded, never resent;
+    - a turn that failed with no tool call runs again with a new execution (3 tries); one that acted,
+      or that the runtime no longer knows, never does;
+    - a chat no longer reachable, exhausted posts, or a turn that may have acted fall back: the
+      events that delivery covered go back to the bus, and the requester gets a core notice in the
+      request's thread ("Tell the person yourself"). The wake loop delivers the notice durably, with
+      the events' own deliveries marked woken, so it is woken once (`return_undelivered`). Newer
+      events stay the return's;
     - escalation (`escalate_after`) raises `return_escalated`, after which only the request's own
       late answer still goes.
-  - **Completion:** a return closes on `[DONE]` posted, or on a posted failure.
+  - **Completion:** a return closes on `[DONE]` with every part posted, or on a posted failure.
+  - **Late replies.** A person's turn the connector stopped waiting for is detached. The worker asks
+    the runtime about it with the same execution and, once it ends, posts its reply through the same
+    journal as a delivery with no return (`reply_undelivered` when it cannot).
   - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists states,
-    posted updates and unknown parts, never a requester or a word said. `POST
-    /api/returns/{id}/resolve {"as": "sent"|"resend"}` (`stormo core returns resolve <id>
-    sent|resend`) settles a held update: `sent` (it reached them, so its own outcome applies) or
-    `resend` (its unsent parts go again).
+    posted and fallen-back updates, unknown parts and a held update's parts in order (sent, unknown,
+    planned), never a requester or a word said. `POST /api/returns/{id}/resolve {"as":
+    "sent"|"resend"}` (`stormo core returns resolve <id> sent|resend`) settles a held update's unknown
+    part: `sent` (it reached them) or `resend` (it goes again). Posting resumes from the first part
+    not sent, and the update's own outcome applies once every part is sent.
   - **Guards:**
-    - a return turn cannot `whatsapp_send` to its own origin's chat;
+    - while an update's turn runs for a chat, `whatsapp_send` to that chat is refused, whatever the
+      call claims of itself;
     - `stormo.yaml` `core.returns: drain` opens no new returns and gives queued updates back to the
-      bus; `stop` posts nothing more.
+      bus, as does the agent opting out or its engine answering it no longer enforces (an engine that
+      does not answer keeps its last answer); `stop` starts and posts nothing more, holding everything
+      as it is until `on` or `drain`.
+  - **Retention.** The bus does not prune a thread an open return is about. After 30 days, a closed
+    delivery's words and parts and an origin's quote and requester are cleared; states and ids stay,
+    so a thread stays bound to its person. Tokens are cleared a week after their execution ended (a
+    call that late is refused).
+  - **Not in v1:**
+    - the person's input is not marked structurally: as on the chat path, an unverified sender's
+      voice note is a marked file and their text carries a prose warning;
+    - a crash after the connector claims a message and before its execution starts loses that turn,
+      as on the chat path;
+    - the posting log's lines carry no mark.
 - *Loop guards* (each breach is refused, and recorded as a finding): 20 messages an hour from one
   agent to another (`bus_rate`), 12 messages per thread (`bus_hops`), no new message in a thread
   older than 24 h (`bus_thread_ttl`), 30 wake runs an hour across the fleet, follow-ups included

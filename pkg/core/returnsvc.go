@@ -3,11 +3,11 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +15,7 @@ import (
 	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/manifest"
 	"github.com/camfinc/stormo/pkg/whatsapp"
+	"go.mau.fi/whatsmeow/types"
 )
 
 // The core's return paths (docs/core.md §5, "Returns"): a person's WhatsApp message is an origin;
@@ -45,15 +46,20 @@ type ReturnsOptions struct {
 
 // Returns is the core's return paths; safe for concurrent use.
 type Returns struct {
-	o    ReturnsOptions
-	kick chan struct{}
-	mu   sync.Mutex // one round at a time
-	caps sync.Map   // agent → capsEntry
+	o        ReturnsOptions
+	kick     chan struct{}
+	mu       sync.Mutex // one round at a time
+	caps     sync.Map   // agent → capsEntry
+	scrubbed time.Time  // the last retention pass (under mu)
 }
 
+// capsEntry is an agent's negotiation: the last answer its engine gave (ok: when; zero, never) and
+// when it was last asked. An engine that cannot be reached keeps its last answer: a restart must not
+// read as the engine no longer running channel turns.
 type capsEntry struct {
-	caps engine.ChannelCaps
-	at   time.Time
+	caps   engine.ChannelCaps
+	asked  time.Time
+	answer time.Time
 }
 
 // capsTTL is how long a negotiation is trusted before it is asked again.
@@ -80,6 +86,13 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// newToken is an execution's secret.
+func newToken() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // Kick asks the worker for a round now.
 func (r *Returns) Kick() {
 	select {
@@ -88,65 +101,105 @@ func (r *Returns) Kick() {
 	}
 }
 
-// negotiated is what agent's engine offers now (asked again after capsTTL; an engine that cannot
-// say offers nothing). Never called inside a transaction: it may ask the engine (cached reads it).
+// negotiated is what agent's engine offers (asked again after capsTTL; its last answer while it
+// cannot be reached). Never called inside a transaction: it may ask the engine.
 func (r *Returns) negotiated(agent string) engine.ChannelCaps {
 	if v, ok := r.caps.Load(agent); ok {
-		if e := v.(capsEntry); r.o.Now().Sub(e.at) < capsTTL {
+		if e := v.(capsEntry); r.o.Now().Sub(e.asked) < capsTTL {
 			return e.caps
 		}
 	}
 	return r.refresh(agent)
 }
 
-// cached is the last negotiation (stale up to two TTLs, else nothing): for the bus's transactions,
-// which must not wait on an engine.
+// cached is the last answer if it is recent (two TTLs), else nothing: for the bus's transactions,
+// which must not wait on an engine, and which open a return only on a fresh negotiation.
 func (r *Returns) cached(agent string) engine.ChannelCaps {
 	if v, ok := r.caps.Load(agent); ok {
-		if e := v.(capsEntry); r.o.Now().Sub(e.at) < 2*capsTTL {
+		if e := v.(capsEntry); !e.answer.IsZero() && r.o.Now().Sub(e.answer) < 2*capsTTL {
 			return e.caps
 		}
 	}
 	return engine.ChannelCaps{}
 }
 
-// refresh asks agent's engine what it offers.
+// known is the engine's last answer, however old, and whether it ever gave one.
+func (r *Returns) known(agent string) (engine.ChannelCaps, bool) {
+	if v, ok := r.caps.Load(agent); ok {
+		if e := v.(capsEntry); !e.answer.IsZero() {
+			return e.caps, true
+		}
+	}
+	return engine.ChannelCaps{}, false
+}
+
+// refresh asks agent's engine what it offers; an engine that does not answer keeps its last answer.
 func (r *Returns) refresh(agent string) engine.ChannelCaps {
-	var caps engine.ChannelCaps
+	now := r.o.Now()
+	var prev capsEntry
+	if v, ok := r.caps.Load(agent); ok {
+		prev = v.(capsEntry)
+	}
+	next := capsEntry{caps: prev.caps, asked: now, answer: prev.answer}
 	if r.o.Channel != nil {
 		if ct, err := r.o.Channel(agent); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			caps, _ = ct.Capabilities(ctx)
+			if caps, err := ct.Capabilities(ctx); err == nil {
+				next.caps, next.answer = caps, now
+			}
 			cancel()
 		}
 	}
-	r.caps.Store(agent, capsEntry{caps: caps, at: r.o.Now()})
-	return caps
+	r.caps.Store(agent, next)
+	return next.caps
 }
 
-// on is whether agent's channel turns run through the return paths: it opted in, the instance's
-// switch is not stop, and its engine runs channel turns.
-func (r *Returns) on(agent string) bool {
-	return r.o.Settings != nil && r.o.Settings(agent) != nil && r.o.Mode() != "stop" && r.negotiated(agent).Turns
+// optedIn is whether agent has bus.returns on.
+func (r *Returns) optedIn(agent string) bool {
+	return r.o.Settings != nil && r.o.Settings(agent) != nil
+}
+
+// channel is whether agent's WhatsApp turns run as channel turns: its engine runs them, and either
+// enforces them (its WhatsApp conversations run no other way) or the agent opted in to the returns.
+// An agent that did neither keeps the engine's usual chat, whatever its image offers.
+func (r *Returns) channel(agent string) bool {
+	c := r.negotiated(agent)
+	return c.Turns && (c.Enforcing || r.optedIn(agent))
 }
 
 // opens is whether a request may open a return now (inside the bus's transaction: the cached
-// negotiation): the agent opted in, not draining, and its engine runs channel turns and enforces
-// them (its channel's conversations run only so, so every request is attributed).
+// negotiation): the agent opted in, the instance's switch is on, and its engine runs channel turns
+// and enforces them (so every request from its WhatsApp conversations is attributed).
 func (r *Returns) opens(agent string) bool {
 	c := r.cached(agent)
-	return r.o.Settings != nil && r.o.Settings(agent) != nil && r.o.Mode() == "on" && c.Turns && c.Enforcing
+	return r.optedIn(agent) && r.o.Mode() == "on" && c.Turns && c.Enforcing
+}
+
+// draining is why agent's returns give their work back to the bus ("" when they do not): the agent
+// opted out, the instance drains, or its engine answered it no longer enforces channel turns.
+func (r *Returns) draining(agent string) string {
+	switch {
+	case !r.optedIn(agent):
+		return "the agent's returns are off"
+	case r.o.Mode() == "drain":
+		return "the return paths are draining"
+	}
+	if c, ok := r.known(agent); ok && !(c.Turns && c.Enforcing) {
+		return "the agent's engine no longer enforces channel turns"
+	}
+	return ""
 }
 
 // RegisterOrigin records an accepted WhatsApp message (idempotent on its id): its origin id, ""
-// when the agent's channel turns do not run through the return paths.
+// when the agent's WhatsApp turns do not run as channel turns.
 func (r *Returns) RegisterOrigin(agent string, e whatsapp.OriginEvent) (string, error) {
-	if !r.on(agent) {
+	if !r.channel(agent) {
 		return "", nil
 	}
 	id := newID()
-	_, err := r.o.DB.Exec(`INSERT OR IGNORE INTO origins(id, agent, platform, chat, requester, requester_verified, message_id, quote, session, created)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`, id, agent, "whatsapp", e.Chat, e.Number+"\x00"+e.Name+"\x00"+e.Participant, e.Verified, e.MessageID, hex.EncodeToString(e.Quote), e.Session, r.o.Now().UnixMilli())
+	_, err := r.o.DB.Exec(`INSERT OR IGNORE INTO origins(id, agent, platform, account, chat, requester, requester_verified, message_id, quote, session, created)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, agent, "whatsapp", e.Account, e.Chat, e.Number+"\x00"+e.Name+"\x00"+e.Participant, e.Verified, e.MessageID,
+		hex.EncodeToString(e.Quote), e.Session, r.o.Now().UnixMilli())
 	if err != nil {
 		return "", err
 	}
@@ -157,9 +210,10 @@ func (r *Returns) RegisterOrigin(agent string, e whatsapp.OriginEvent) (string, 
 
 // originOf is a recorded origin as the connector posts to it, and the requester's name.
 func (r *Returns) originOf(id string) (whatsapp.Origin, string, error) {
-	var chat, requester, msgID, quote string
+	var chat, account, requester, msgID, quote string
 	var group bool
-	err := r.o.DB.QueryRow(`SELECT chat, requester, message_id, quote, chat LIKE '%@g.us' FROM origins WHERE id = ?`, id).Scan(&chat, &requester, &msgID, &quote, &group)
+	err := r.o.DB.QueryRow(`SELECT chat, account, requester, message_id, quote, chat LIKE '%@g.us' FROM origins WHERE id = ?`, id).
+		Scan(&chat, &account, &requester, &msgID, &quote, &group)
 	if err != nil {
 		return whatsapp.Origin{}, "", err
 	}
@@ -168,44 +222,46 @@ func (r *Returns) originOf(id string) (whatsapp.Origin, string, error) {
 		parts = append(parts, "")
 	}
 	q, _ := hex.DecodeString(quote)
-	return whatsapp.Origin{Chat: chat, MessageID: msgID, Participant: parts[2], Number: parts[0], Group: group, Quote: q}, parts[1], nil
+	return whatsapp.Origin{Chat: chat, MessageID: msgID, Participant: parts[2], Number: parts[0], Account: account, Group: group, Quote: q}, parts[1], nil
 }
 
-// ErrNoReturns is a turn that does not run through the return paths (the caller's usual path).
+// ErrNoReturns is a turn that does not run as a channel turn (the caller's usual path).
 var ErrNoReturns = errors.New("returns: not for this turn")
 
 // InboundTurn runs a person's message as a channel turn (its origin, so what the agent sends while
 // answering it can come back): its answer; ErrNoReturns when the turn is not one (no origin);
-// whatsapp.ErrPending when ctx ended first (the reply is posted when the turn ends).
+// whatsapp.ErrPending when ctx ended first (the worker posts its reply when it ends).
 func (r *Returns) InboundTurn(ctx context.Context, agent, session string, t whatsapp.Turn) (whatsapp.Answer, error) {
-	if t.Origin == "" || !r.on(agent) {
+	if t.Origin == "" || !r.channel(agent) {
 		return whatsapp.Answer{}, ErrNoReturns
 	}
 	ct, err := r.o.Channel(agent)
 	if err != nil {
 		return whatsapp.Answer{}, ErrNoReturns
 	}
-	exec := newID()
-	if _, err := r.o.DB.Exec(`INSERT INTO executions(id, agent, kind, origin, session, state, created) VALUES(?,?,?,?,?,?,?)`,
-		exec, agent, "inbound", t.Origin, session, "running", r.o.Now().UnixMilli()); err != nil {
+	exec, token := newID(), newToken()
+	if _, err := r.o.DB.Exec(`INSERT INTO executions(id, agent, kind, origin, token, session, state, created) VALUES(?,?,?,?,?,?,?,?)`,
+		exec, agent, "inbound", t.Origin, token, session, "running", r.o.Now().UnixMilli()); err != nil {
 		return whatsapp.Answer{}, err
 	}
 	in := engine.Input{Text: t.Text, AudioFormat: "opus"}
 	if a := t.Audio; a != nil {
 		in.Files = []engine.File{{Name: "voice-note.ogg", MIME: a.MIME, Data: a.Data, Marked: a.Marked}}
 	}
-	turn := engine.ChannelTurn{Execution: exec, Kind: "inbound", Session: session, In: in}
-	st, err := r.start(ctx, ct, turn)
-	if err != nil {
-		r.endExecution(exec, "failed", 0, err.Error())
-		return whatsapp.Answer{}, err
+	turn := engine.ChannelTurn{Execution: exec, Token: token, Kind: "inbound", Session: session, In: in}
+	st, err := r.admit(ctx, ct, turn)
+	if err == nil {
+		st, err = r.await(ctx, ct, exec, st)
 	}
-	st, err = r.await(ctx, ct, exec, st)
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		go r.finishInbound(agent, t.Origin, ct, exec)
+	switch {
+	case ctx.Err() != nil:
+		// the connector stopped waiting: the worker asks about it (with the same execution) and posts
+		// its reply through the journal when it ends
+		_, _ = r.o.DB.Exec(`UPDATE executions SET state = 'detached' WHERE id = ? AND ended IS NULL`, exec)
+		r.Kick()
 		return whatsapp.Answer{}, whatsapp.ErrPending
-	}
-	if err != nil {
+	case err != nil:
+		r.endExecution(exec, "failed", 0, err.Error())
 		return whatsapp.Answer{}, err
 	}
 	r.endExecution(exec, st.State, st.Acted, st.Error)
@@ -220,59 +276,51 @@ func (r *Returns) InboundTurn(ctx context.Context, agent, session string, t what
 	return ans, nil
 }
 
-// start admits a channel turn, waiting while its conversation runs another.
-func (r *Returns) start(ctx context.Context, ct engine.ChannelTurns, t engine.ChannelTurn) (engine.ChannelTurnStatus, error) {
+// admit starts a channel turn: while its conversation runs another it waits; an answer it did not
+// get (a lost response, a runtime restarting) is asked again with the same execution and request,
+// which the runtime answers with the turn it admitted, if it did. Only ctx ending, or the runtime
+// refusing it, stops it.
+func (r *Returns) admit(ctx context.Context, ct engine.ChannelTurns, t engine.ChannelTurn) (engine.ChannelTurnStatus, error) {
 	for {
 		st, err := ct.Start(ctx, t)
-		if !errors.Is(err, engine.ErrChannelBusy) {
+		if err == nil || errors.Is(err, engine.ErrChannelRefused) {
 			return st, err
+		}
+		gap := 3 * time.Second
+		if errors.Is(err, engine.ErrChannelBusy) {
+			gap = 2 * time.Second
 		}
 		select {
 		case <-ctx.Done():
 			return engine.ChannelTurnStatus{}, ctx.Err()
+		case <-time.After(gap):
+		}
+	}
+}
+
+// await polls a channel turn until it ends, the runtime does not know it, or ctx ends.
+func (r *Returns) await(ctx context.Context, ct engine.ChannelTurns, exec string, st engine.ChannelTurnStatus) (engine.ChannelTurnStatus, error) {
+	for !st.Terminal() {
+		if err := ctx.Err(); err != nil {
+			return st, err
+		}
+		next, err := ct.Status(ctx, exec, 30*time.Second)
+		switch {
+		case err == nil:
+			st = next
+			continue
+		case errors.Is(err, engine.ErrChannelUnknown):
+			return st, err
+		case ctx.Err() != nil:
+			return st, ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return st, ctx.Err()
 		case <-time.After(2 * time.Second):
 		}
 	}
-}
-
-// await polls a channel turn until it ends or ctx does.
-func (r *Returns) await(ctx context.Context, ct engine.ChannelTurns, exec string, st engine.ChannelTurnStatus) (engine.ChannelTurnStatus, error) {
-	for !st.Terminal() {
-		var err error
-		if st, err = ct.Status(ctx, exec, 30*time.Second); err != nil {
-			if ctx.Err() != nil {
-				return st, ctx.Err()
-			}
-			select {
-			case <-ctx.Done():
-				return st, ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
-		}
-	}
 	return st, nil
-}
-
-// finishInbound waits for a person's turn the connector stopped waiting for, and posts its reply.
-func (r *Returns) finishInbound(agent, origin string, ct engine.ChannelTurns, exec string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
-	defer cancel()
-	st, err := r.await(ctx, ct, exec, engine.ChannelTurnStatus{})
-	if err != nil {
-		return
-	}
-	r.endExecution(exec, st.State, st.Acted, st.Error)
-	text := withoutSilence(st.Text)
-	if st.State != "ok" || strings.TrimSpace(text) == "" {
-		_ = ct.Take(context.Background(), exec)
-		return
-	}
-	o, _, err := r.originOf(origin)
-	p, perr := r.o.Poster(agent)
-	if err == nil && perr == nil && p.AllowedReply(o) == nil {
-		_ = p.PostOrigin(ctx, o, whatsapp.Parts(text), 0, func(int, string, string) error { return nil })
-	}
-	_ = ct.Take(context.Background(), exec)
 }
 
 // withoutSilence is a reply without a [SILENT] answer.
@@ -288,130 +336,179 @@ func (r *Returns) endExecution(exec, state string, acted int64, errText string) 
 		state, acted, clip(errText, 300), r.o.Now().UnixMilli(), exec)
 }
 
-// ---- the bus's side (all in its transactions) ------------------------------------------------
-
-// sendOrigin is a channel turn's request as the bus is about to store it: the origin and parent
-// return its execution gives, or why it is refused. A send from no execution has none.
-func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec string, thread int64) (origin string, parent int64, err error) {
-	if exec == "" {
-		return "", 0, nil
+// Verified is exec when the call carries its token and it is agent's, else "": what a call claims
+// of a turn is believed only with the secret only that turn's runtime holds.
+func (r *Returns) Verified(agent, exec, token string) string {
+	if exec == "" || token == "" {
+		return ""
 	}
-	var agent, kind string
-	var ret sql.NullInt64
-	if err := tx.QueryRow(`SELECT agent, kind, origin, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &kind, &origin, &ret); err != nil {
-		return "", 0, nil // an execution the core does not know (another core's, a test's): no return
+	var tok string
+	if r.o.DB.QueryRow(`SELECT token FROM executions WHERE id = ? AND agent = ?`, exec, agent).Scan(&tok) != nil || tok == "" ||
+		subtle.ConstantTimeCompare([]byte(tok), []byte(token)) != 1 {
+		return ""
 	}
-	if agent != sender {
-		return "", 0, toolErr("this turn's execution is not yours")
-	}
-	if thread != 0 {
-		// one person's conversation per bus thread: an update must never go to someone else's chat
-		var other int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM returns WHERE thread = ? AND origin != ? AND closed_at IS NULL`, thread, origin).Scan(&other); err != nil {
-			return "", 0, err
-		}
-		if other > 0 {
-			return "", 0, toolErr("this thread already carries a request for another conversation: start a new one (leave out thread)")
-		}
-	}
-	return origin, ret.Int64, nil
+	return exec
 }
 
-// open makes a return of request msg (sent by sender to recipient in thread) when its origin is
-// given and the agent's returns are open.
-func (r *Returns) open(tx *sql.Tx, sender, origin string, parent, msg, thread int64, recipient string) {
-	if origin == "" || !r.opens(sender) {
-		return
+// ---- the bus's side (all in its transactions) ------------------------------------------------
+
+// sendFrom is what a send's execution gives the request: the person's conversation it is for
+// (origin, "" none), and when it comes from an update's turn, that return (parent) with its depth
+// and escalation time. note tells the agent the request is not followed for the person, and why.
+type sendFrom struct {
+	origin     string
+	parent     int64
+	depth      int
+	escalateAt time.Time
+	note       string
+}
+
+// sendOrigin is a channel turn's request as the bus is about to store it, or why it is refused: a
+// call naming an execution the core did not start, another agent's, or without its token; a thread
+// that ever carried another person's request. A send from no execution has none.
+func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec, token string, thread int64) (sendFrom, error) {
+	var f sendFrom
+	if exec == "" {
+		return f, nil
+	}
+	var agent, tok string
+	var ret sql.NullInt64
+	err := tx.QueryRow(`SELECT agent, origin, token, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &f.origin, &tok, &ret)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return f, toolErr("this call names a turn the core did not start")
+	case err != nil:
+		return f, err
+	case agent != sender:
+		return f, toolErr("this turn's execution is not yours")
+	case tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(token)) != 1:
+		return f, toolErr("this call does not carry its turn's token")
+	}
+	if thread != 0 {
+		// one person's conversation per bus thread, for its whole life: an update must never reach
+		// someone else's chat
+		var other int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM returns WHERE thread = ? AND origin != ?`, thread, f.origin).Scan(&other); err != nil {
+			return f, err
+		}
+		if other > 0 {
+			return f, toolErr("this thread carries a request for another person's conversation: start a new one (leave out thread)")
+		}
+	}
+	if ret.Valid {
+		v, err := r.view(tx, ret.Int64)
+		if err != nil {
+			return f, err
+		}
+		if why := MayDelegate(v, r.o.Now()); why != "" {
+			f.origin, f.note = "", "not followed for the person ("+why+"): their outcome will not come back to their chat on its own"
+			return f, nil
+		}
+		f.parent, f.depth, f.escalateAt = ret.Int64, v.Depth+1, v.EscalateAt
+	}
+	return f, nil
+}
+
+// open makes a return of request msg (sent by sender to recipient in thread) when it is for a
+// person's conversation and the agent's returns are open. A request from an update's turn keeps
+// that return's escalation time.
+func (r *Returns) open(tx *sql.Tx, sender string, f sendFrom, msg, thread int64, recipient string) error {
+	if f.origin == "" || !r.opens(sender) {
+		return nil
 	}
 	set := r.o.Settings(sender)
 	sched, loc := set.Schedule()
 	now := r.o.Now()
-	depth := 0
-	if parent != 0 {
-		v, err := r.view(tx, parent)
-		if err != nil {
-			return
-		}
-		step, ok := OnChild(v, now)
-		if !ok {
-			return // the chain is too deep, or its root closed: no return
-		}
-		if err := r.save(tx, parent, step.Next); err != nil {
-			return
-		}
-		depth = v.Depth + 1
+	escalate := sched.AddWorking(now, set.EscalateAfter, loc)
+	if f.parent != 0 && !f.escalateAt.IsZero() {
+		escalate = f.escalateAt
 	}
 	_, err := tx.Exec(`INSERT INTO returns(request, thread, agent, recipient, origin, parent, depth, state, escalate_at, next_due, last_activity, created)
-		VALUES(?,?,?,?,?,NULLIF(?,0),?,?,?,?,?,?)`, msg, thread, sender, recipient, origin, parent, depth, ReturnOpen,
-		sched.AddWorking(now, set.EscalateAfter, loc).UnixMilli(), sched.AddWorking(now, set.UpdateAfter, loc).UnixMilli(), now.UnixMilli(), now.UnixMilli())
+		VALUES(?,?,?,?,?,NULLIF(?,0),?,?,?,?,?,?)`, msg, thread, sender, recipient, f.origin, f.parent, f.depth, ReturnOpen,
+		unms(escalate), unms(sched.AddWorking(now, set.UpdateAfter, loc)), now.UnixMilli(), now.UnixMilli())
+	return err
+}
+
+// event records an event of return ret when it can still reach the person (Eligible), and takes its
+// message's delivery to the return's agent (deliveryAgent) from the bus: the return wakes the agent
+// for it. One that cannot stays the bus's, unrecorded.
+func (r *Returns) event(tx *sql.Tx, ret int64, kind string, message int64, deliveryAgent string) error {
+	v, err := r.view(tx, ret)
 	if err != nil {
-		log.Printf("returns: open: %v", err)
+		return err
 	}
-}
-
-// root is the return events of ret are delivered through: itself, or its topmost parent.
-func (r *Returns) root(tx *sql.Tx, ret int64) (int64, bool) {
-	child := false
-	for i := 0; i < ReturnChildDepth+1; i++ {
-		var parent sql.NullInt64
-		if err := tx.QueryRow(`SELECT parent FROM returns WHERE id = ?`, ret).Scan(&parent); err != nil || !parent.Valid {
-			return ret, child
-		}
-		ret, child = parent.Int64, true
+	if !Eligible(v, kind) {
+		return nil
 	}
-	return ret, child
-}
-
-// event records an event of return ret (its root's, child-marked, when ret is a child); its
-// delivery to the return's agent (deliveryOf, 0 for none) is then the return's to wake.
-func (r *Returns) event(tx *sql.Tx, ret int64, kind string, message int64, deliveryAgent string) {
-	root, child := r.root(tx, ret)
 	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM return_events WHERE ret = ?`, root).Scan(&seq); err != nil {
-		return
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM return_events WHERE ret = ?`, ret).Scan(&seq); err != nil {
+		return err
 	}
-	res, err := tx.Exec(`INSERT OR IGNORE INTO return_events(ret, seq, kind, message, child, at) VALUES(?,?,?,?,?,?)`,
-		root, seq, kind, message, child, r.o.Now().UnixMilli())
+	res, err := tx.Exec(`INSERT OR IGNORE INTO return_events(ret, seq, kind, message, at) VALUES(?,?,?,?,?)`, ret, seq, kind, message, r.o.Now().UnixMilli())
 	if err != nil {
-		log.Printf("returns: event: %v", err)
-		return
+		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return // the same event again
+		return nil // the same event again
 	}
 	if message != 0 && deliveryAgent != "" {
-		_, _ = tx.Exec(`UPDATE deliveries SET owner = 'return' WHERE message = ? AND agent = ?`, message, deliveryAgent)
+		if _, err := tx.Exec(`UPDATE deliveries SET owner = 'return' WHERE message = ? AND agent = ?`, message, deliveryAgent); err != nil {
+			return err
+		}
 	}
 	r.Kick()
+	return nil
 }
 
-// onSend records the events a stored message brings: an answer to the requests it names, progress
-// on a request in its thread (when one person's requests are the only ones it could be about).
-func (r *Returns) onSend(tx *sql.Tx, msg int64, sender string, recipients []BusAgent, thread int64, answers []int64) {
+// onSend records the events a stored message brings: an answer to the requests it names (refused
+// when they were made for different people), progress on a request in its thread (when one
+// person's requests are the only ones it could be about).
+func (r *Returns) onSend(tx *sql.Tx, msg int64, sender string, recipients []BusAgent, thread int64, answers []int64) error {
+	type hit struct {
+		ret   int64
+		agent string
+	}
+	var hits []hit
+	people := map[string]bool{}
 	for _, a := range answers {
-		var ret int64
-		var agent string
-		if tx.QueryRow(`SELECT id, agent FROM returns WHERE request = ? AND recipient = ?`, a, sender).Scan(&ret, &agent) == nil {
-			r.event(tx, ret, EventAnswered, msg, agent)
+		var h hit
+		var origin string
+		err := tx.QueryRow(`SELECT id, agent, origin FROM returns WHERE request = ? AND recipient = ?`, a, sender).Scan(&h.ret, &h.agent, &origin)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		hits, people[origin] = append(hits, h), true
+	}
+	if len(people) > 1 {
+		return toolErr("this message answers requests made for different people: answer each in a message of its own")
+	}
+	for _, h := range hits {
+		if err := r.event(tx, h.ret, EventAnswered, msg, h.agent); err != nil {
+			return err
 		}
 	}
 	if len(answers) > 0 || thread == 0 || len(recipients) != 1 {
-		return
+		return nil
 	}
 	rows, err := tx.Query(`SELECT id, origin FROM returns WHERE thread = ? AND recipient = ? AND agent = ? AND closed_at IS NULL ORDER BY id DESC`,
 		thread, sender, recipients[0].ID)
 	if err != nil {
-		return
+		return err
 	}
 	var ids []int64
 	origins := map[string]bool{}
 	for rows.Next() {
 		var id int64
 		var o string
-		if rows.Scan(&id, &o) == nil {
-			ids = append(ids, id)
-			origins[o] = true
+		if err := rows.Scan(&id, &o); err != nil {
+			rows.Close()
+			return err
 		}
+		ids = append(ids, id)
+		origins[o] = true
 	}
 	rows.Close()
 	switch {
@@ -420,42 +517,47 @@ func (r *Returns) onSend(tx *sql.Tx, msg int64, sender string, recipients []BusA
 		// it could be about more than one person's request: it stays the bus's, never routed
 		raiseFindingTx(tx, sender, "return_ambiguous", "medium", fmt.Sprintf("message %d", msg), r.o.Now().UnixMilli())
 	default:
-		r.event(tx, ids[0], EventProgress, msg, recipients[0].ID)
+		return r.event(tx, ids[0], EventProgress, msg, recipients[0].ID)
 	}
+	return nil
 }
 
 // onNotice records the bus's own notice about request id to its sender as the return's event.
-func (r *Returns) onNotice(tx *sql.Tx, request, notice int64, sender string, told int) {
+func (r *Returns) onNotice(tx *sql.Tx, request, notice int64, sender string, told int) error {
 	var ret int64
-	if tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND agent = ?`, request, sender).Scan(&ret) != nil {
-		return
+	err := tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND agent = ?`, request, sender).Scan(&ret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	kind := EventStatus
 	if told == toldDone {
 		kind = EventFailure
 	}
-	r.event(tx, ret, kind, notice, sender)
+	return r.event(tx, ret, kind, notice, sender)
 }
 
-// onAck records the recipient acking the request without an answer.
-func (r *Returns) onAck(request int64, acker string) {
-	tx, err := r.o.DB.Begin()
-	if err != nil {
-		return
-	}
-	defer tx.Rollback()
+// onAck records the recipient acking the request without an answer (in the ack's transaction).
+func (r *Returns) onAck(tx *sql.Tx, request int64, acker string) error {
 	var ret int64
-	var answered int
-	if tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND recipient = ?`, request, acker).Scan(&ret) != nil {
-		return
+	err := tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND recipient = ?`, request, acker).Scan(&ret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	// an ack an answer made (msg_send answers) is the answer's event already
-	_ = tx.QueryRow(`SELECT COUNT(*) FROM answers a JOIN messages m ON m.id = a.message WHERE a.answered = ? AND m.sender = ?`, request, acker).Scan(&answered)
-	if answered > 0 {
-		return
+	var answered int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM answers a JOIN messages m ON m.id = a.message WHERE a.answered = ? AND m.sender = ?`, request, acker).Scan(&answered); err != nil {
+		return err
 	}
-	r.event(tx, ret, EventAcked, 0, "")
-	_ = tx.Commit()
+	if answered > 0 {
+		return nil
+	}
+	return r.event(tx, ret, EventAcked, 0, "")
 }
 
 // raiseFindingTx is DB.RaiseFinding inside a transaction (core.db has one connection).
@@ -465,28 +567,34 @@ func raiseFindingTx(tx *sql.Tx, agent, rule, severity, evidence string, at int64
 		status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END`, agent, rule, severity, evidence, at, at)
 }
 
-// sideDoor refuses a return turn's whatsapp_send to its own origin's chat: an update to the person
-// goes through the journal (the turn's reply), never around it. The chat is compared as the person
-// it is (a group's id; a direct chat's number, whichever address the origin carried).
-func (r *Returns) sideDoor(agent, exec, chat string) error {
-	if exec == "" {
-		return nil
-	}
-	var kind, origin string
-	if r.o.DB.QueryRow(`SELECT kind, origin FROM executions WHERE id = ? AND agent = ?`, exec, agent).Scan(&kind, &origin) != nil || kind != "return" {
-		return nil
-	}
-	o, _, err := r.originOf(origin)
+// sideDoor refuses agent's whatsapp_send to a chat one of its update turns is running for, whatever
+// the call claims of itself: an update to the person goes through the journal (the turn's reply),
+// never around it. A chat is the person it is: a group's id, or a direct chat's number however the
+// origin addressed it (a group's requester written to directly is another chat).
+func (r *Returns) sideDoor(agent string, jid types.JID) error {
+	rows, err := r.o.DB.Query(`SELECT o.chat, o.requester FROM executions x JOIN origins o ON o.id = x.origin
+		WHERE x.agent = ? AND x.kind = 'return' AND x.state = 'running'`, agent)
 	if err != nil {
-		return nil
+		return err
 	}
-	target := strings.TrimSpace(chat)
-	same := target == o.Chat
-	if !o.Group && o.Number != "" {
-		same = same || strings.TrimPrefix(target, "+") == o.Number
+	defer rows.Close()
+	target := jid.ToNonAD()
+	for rows.Next() {
+		var chat, requester string
+		if err := rows.Scan(&chat, &requester); err != nil {
+			return err
+		}
+		number, _, _ := strings.Cut(requester, "\x00")
+		same := chat == target.String()
+		if o, err := types.ParseJID(chat); err == nil && o.ToNonAD() == target {
+			same = true
+		}
+		if !strings.HasSuffix(chat, "@g.us") && target.Server == types.DefaultUserServer && number != "" && target.User == strings.TrimPrefix(number, "+") {
+			same = true
+		}
+		if same {
+			return toolErr("an update for this chat is being prepared: it goes as that turn's reply, not through whatsapp_send")
+		}
 	}
-	if same {
-		return toolErr("this turn's update to the person goes as your reply here, not through whatsapp_send")
-	}
-	return nil
+	return rows.Err()
 }

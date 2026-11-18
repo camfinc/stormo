@@ -348,6 +348,8 @@ func TestBusReturns(t *testing.T) {
 		"bus: {returns: {on: true, escalate_after: 8d}}\n",
 		"bus: {returns: {on: true, timezone: Mars/Olympus}}\n",
 		"bus: {returns: {on: true, hours: \"8 to 7\"}}\n",
+		"bus: {returns: {on: true, hours: \"\"}}\n",
+		"bus: {returns: {on: true, hours: null}}\n",
 		"bus: {returns: {on: true, hours: \"09:00-09:30 mon\"}}\n",
 	} {
 		if _, err := parseAs(t, head+bad); err == nil {

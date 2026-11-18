@@ -11,16 +11,15 @@ import "time"
 
 // Return states.
 const (
-	ReturnOpen         = "open"          // no update reached the person since the request
-	ReturnUpdated      = "updated"       // an update reached them; not what they asked for yet
-	ReturnWaitingChild = "waiting_child" // the agent asked someone else on the person's behalf
-	ReturnDone         = "done"          // the person got what they asked for
-	ReturnFailed       = "failed"        // the person was told it failed (a late answer still goes)
-	ReturnExpired      = "expired"       // closed with nothing more to do
-	ReturnUnknown      = "unknown"       // a send could not be proven: held for a person
+	ReturnOpen    = "open"    // no update reached the person since the request
+	ReturnUpdated = "updated" // an update reached them; not what they asked for yet
+	ReturnDone    = "done"    // the person got what they asked for
+	ReturnFailed  = "failed"  // the person was told it failed (a late answer still goes)
+	ReturnExpired = "expired" // closed with nothing more to do
+	ReturnUnknown = "unknown" // a send could not be proven: held for a person
 )
 
-// Return event kinds (of the request, or of a child request).
+// Return event kinds.
 const (
 	EventAnswered = "answered" // the recipient named the request in answers
 	EventProgress = "progress" // another message from the recipient in the request's thread
@@ -51,7 +50,7 @@ const (
 // Limits of a return.
 const (
 	ReturnTurnTries   = 3                  // turns a delivery may take that failed with no side effect
-	ReturnChildDepth  = 3                  // children deep a return's chain may go
+	ReturnChildDepth  = 3                  // returns deep a chain may go (a request sent from an update's turn is one deeper)
 	ReturnExpireAfter = 7 * 24 * time.Hour // escalated and quiet this long: expired
 	ReturnLateAnswers = 1                  // late answers a failed or escalated return delivers
 )
@@ -64,12 +63,11 @@ type ReturnView struct {
 	SeqSeen   int64  // the newest event a finished delivery covered
 	Active    bool   // a delivery is in flight (one at a time)
 	Attempts  int    // turns the active delivery took
-	Depth     int    // 0 for a return from a person's conversation, its parent's + 1 for a child
-	Children  int    // open children
+	Depth     int    // 0 for a request from a person's message, its parent's + 1 from an update's turn
 	Escalated bool
 	LateUsed  int
-	// AnswerSeq is the newest of the request's own answers (a child's never counts): a failed or
-	// escalated return still delivers it, once.
+	// AnswerSeq is the newest of the request's answers: a failed or escalated return still delivers
+	// it, once.
 	AnswerSeq                                      int64
 	EscalateAt, EscalatedAt, NextDue, LastActivity time.Time
 }
@@ -83,7 +81,7 @@ func (v ReturnView) Terminal() bool {
 const (
 	ActEnqueue  = "enqueue"  // a delivery covering events From..To (Kind: the newest event's, or due)
 	ActRetry    = "retry"    // run the active delivery's turn again
-	ActFallback = "fallback" // wake the agent in the bus thread instead (Reason)
+	ActFallback = "fallback" // the events From..To go back to the bus, the agent told there (Reason)
 	ActEscalate = "escalate" // a finding and the owner told; no more due prompts
 	ActFinding  = "finding"  // a finding (Rule)
 	ActResend   = "resend"   // send the held delivery's unsent parts again
@@ -118,14 +116,27 @@ func (s *Step) enqueue(kind string) {
 	s.do(Action{Kind: ActEnqueue, From: v.SeqSeen + 1, To: v.SeqLast, Event: kind})
 }
 
-// OnEvent is a new event of the return (child: an event of one of its children's requests).
-func OnEvent(v ReturnView, kind string, seq int64, child bool, now time.Time) Step {
+// Eligible is whether an event of kind can still reach the person through the return: never once
+// it is closed; once failed or escalated, only an answer while the late allowance lasts. An event
+// that is not stays the bus's (it is not recorded, its delivery not taken).
+func Eligible(v ReturnView, kind string) bool {
+	switch {
+	case v.Terminal():
+		return false
+	case v.State == ReturnFailed || v.Escalated:
+		return kind == EventAnswered && v.LateUsed < ReturnLateAnswers
+	}
+	return true
+}
+
+// OnEvent is a new event of the return.
+func OnEvent(v ReturnView, kind string, seq int64, now time.Time) Step {
 	s := Step{Next: v}
 	n := &s.Next
 	if seq > n.SeqLast {
 		n.SeqLast = seq
 	}
-	if kind == EventAnswered && !child && seq > n.AnswerSeq {
+	if kind == EventAnswered && seq > n.AnswerSeq {
 		n.AnswerSeq = seq
 	}
 	n.LastActivity = now
@@ -180,13 +191,14 @@ func OnTick(v ReturnView, now time.Time) Step {
 }
 
 // OnDelivery is the active delivery's outcome. failure: its covered events include the bus's
-// "Not answered" about the request itself (a child's failure never fails the parent: the caller
-// passes only the request's own); disposition: the continuation's ([DONE] is the agent saying the
+// "Not answered" about the request; disposition: the continuation's ([DONE] is the agent saying the
 // person has what they asked for, whichever event brought it back).
 func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, failure bool, now time.Time) Step {
 	s := Step{Next: v}
 	n := &s.Next
 	n.LastActivity = now
+	from := v.SeqSeen + 1 // what a fallback gives back: the events this delivery covered
+	fallback := func(reason string) { s.do(Action{Kind: ActFallback, From: from, To: coveredTo, Reason: reason}) }
 	finished := func() {
 		n.Active, n.Attempts = false, 0
 		if coveredTo > n.SeqSeen {
@@ -202,8 +214,6 @@ func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, fail
 			return s
 		case failure:
 			n.State = ReturnFailed
-		case n.Children > 0:
-			n.State = ReturnWaitingChild
 		case n.State != ReturnFailed:
 			n.State = ReturnUpdated
 		}
@@ -218,15 +228,15 @@ func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, fail
 			return s
 		}
 		finished()
-		s.do(Action{Kind: ActFallback, Reason: "the update's turn failed"})
+		fallback("the update's turn failed")
 		s.do(Action{Kind: ActSchedule})
 	case OutcomeSideEffects:
 		finished()
-		s.do(Action{Kind: ActFallback, Reason: "the update's turn stopped after it had acted"})
+		fallback("the update's turn may have acted and is never run again")
 		s.do(Action{Kind: ActSchedule})
 	case OutcomePartial:
 		finished()
-		s.do(Action{Kind: ActFallback, Reason: "only part of the update reached them"})
+		fallback("only part of the update reached them")
 		s.do(Action{Kind: ActSchedule})
 	case OutcomeUnknown:
 		n.Active = false
@@ -235,7 +245,7 @@ func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, fail
 	case OutcomeRouteGone:
 		finished()
 		n.State = ReturnExpired
-		s.do(Action{Kind: ActFallback, Reason: "the person's chat can no longer be reached"})
+		fallback("the person's chat can no longer be reached")
 		s.do(Action{Kind: ActFinding, Rule: "return_undelivered"})
 	}
 	// events that came while it was in flight go in the next delivery; once failed or escalated,
@@ -250,9 +260,10 @@ func OnDelivery(v ReturnView, outcome, disposition string, coveredTo int64, fail
 	return s
 }
 
-// OnResolve is a person resolving a held (unknown) return's delivery: sent (it reached them: the
-// delivery's own outcome applies) or resend (its unsent parts go again).
-func OnResolve(v ReturnView, sent bool, disposition string, coveredTo int64, failure bool, now time.Time) Step {
+// OnResolve is a person resolving a held (unknown) return's delivery, once its unknown parts are
+// marked sent or planned again: complete (every part is sent: the delivery's own outcome applies) or
+// not (its unsent parts go: posting resumes, the delivery still active).
+func OnResolve(v ReturnView, complete bool, disposition string, coveredTo int64, failure bool, now time.Time) Step {
 	if v.State != ReturnUnknown {
 		return Step{Next: v}
 	}
@@ -262,41 +273,28 @@ func OnResolve(v ReturnView, sent bool, disposition string, coveredTo int64, fai
 		back.State = ReturnOpen
 	}
 	back.Prev = ""
-	if sent {
-		back.Active = true
+	back.Active = true
+	if complete {
 		return OnDelivery(back, OutcomePosted, disposition, coveredTo, failure, now)
 	}
 	s := Step{Next: back}
-	s.Next.Active = true
 	s.do(Action{Kind: ActResend})
 	return s
 }
 
-// OnChild is the agent asking someone else from the return's continuation: refused (false) when the
-// return is closed, held, escalated or its chain is too deep.
-func OnChild(v ReturnView, now time.Time) (Step, bool) {
-	s := Step{Next: v}
-	n := &s.Next
-	if n.Terminal() || n.State == ReturnFailed || n.State == ReturnUnknown || n.Escalated || n.Depth+1 >= ReturnChildDepth ||
-		!n.EscalateAt.IsZero() && !now.Before(n.EscalateAt) {
-		return s, false
+// MayDelegate is why a request sent from one of the return's update turns may not open a return of
+// its own ("" when it may): the return closed, failed, held or escalated, or the chain too deep. A
+// return it opens is a sibling on the same conversation, one deeper, with the same escalation time.
+func MayDelegate(v ReturnView, now time.Time) string {
+	switch {
+	case v.Terminal() || v.State == ReturnFailed:
+		return "the person's request is closed"
+	case v.State == ReturnUnknown:
+		return "an update to the person is held for review"
+	case v.Escalated || !v.EscalateAt.IsZero() && !now.Before(v.EscalateAt):
+		return "the person's request is overdue and with the owner"
+	case v.Depth+1 >= ReturnChildDepth:
+		return "the chain of requests for this person is too deep"
 	}
-	n.Children++
-	if !n.Active {
-		n.State = ReturnWaitingChild
-	}
-	return s, true
-}
-
-// OnChildClosed is one of the return's children closing.
-func OnChildClosed(v ReturnView) Step {
-	s := Step{Next: v}
-	n := &s.Next
-	if n.Children > 0 {
-		n.Children--
-	}
-	if n.Children == 0 && n.State == ReturnWaitingChild {
-		n.State = ReturnUpdated
-	}
-	return s
+	return ""
 }

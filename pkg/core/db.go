@@ -260,14 +260,15 @@ var migrations = []string{
 	// 15: return paths (docs/core.md §5, "Returns"). An origin is a person's message in a channel
 	// the core owns (immutable); an execution a turn the core ran for one; a return a request sent
 	// from it whose outcome must reach that person, with its events, its deliveries and their parts
-	// (a write-ahead journal: a part is "sending" before it is sent). answers are the reply edges
+	// (a write-ahead journal: a part is "sending" before it is sent). A delivery with no return is a
+	// person's own turn's reply that came after the connector stopped waiting (its execution's). answers are the reply edges
 	// msg_send(answers) makes; deliveries.owner says whether the bus or a return wakes the recipient;
 	// messages.send_key (the runtime's operation identity) makes a replayed send return the first.
 	`CREATE TABLE origins (
 		id                 TEXT PRIMARY KEY,
 		agent              TEXT NOT NULL,
 		platform           TEXT NOT NULL,
-		account_gen        TEXT NOT NULL DEFAULT '',
+		account            TEXT NOT NULL DEFAULT '',
 		chat               TEXT NOT NULL,
 		requester          TEXT NOT NULL DEFAULT '',
 		requester_verified INTEGER NOT NULL DEFAULT 0,
@@ -293,7 +294,6 @@ var migrations = []string{
 		seq_seen      INTEGER NOT NULL DEFAULT 0,
 		active        INTEGER NOT NULL DEFAULT 0,
 		attempts      INTEGER NOT NULL DEFAULT 0,
-		children      INTEGER NOT NULL DEFAULT 0,
 		escalated     INTEGER NOT NULL DEFAULT 0,
 		escalated_at  INTEGER NOT NULL DEFAULT 0,
 		late_used     INTEGER NOT NULL DEFAULT 0,
@@ -310,6 +310,7 @@ var migrations = []string{
 		agent     TEXT NOT NULL,
 		kind      TEXT NOT NULL,
 		origin    TEXT NOT NULL REFERENCES origins(id),
+		token     TEXT NOT NULL DEFAULT '',
 		ret       INTEGER REFERENCES returns(id),
 		session   TEXT NOT NULL,
 		state     TEXT NOT NULL,
@@ -324,19 +325,21 @@ var migrations = []string{
 		seq     INTEGER NOT NULL,
 		kind    TEXT NOT NULL,
 		message INTEGER NOT NULL DEFAULT 0,
-		child   INTEGER NOT NULL DEFAULT 0,
 		applied INTEGER NOT NULL DEFAULT 0,
 		at      INTEGER NOT NULL,
 		UNIQUE (ret, kind, message)
 	);
 	CREATE TABLE return_deliveries (
 		id            INTEGER PRIMARY KEY,
-		ret           INTEGER NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+		ret           INTEGER REFERENCES returns(id) ON DELETE CASCADE,
 		seq_from      INTEGER NOT NULL,
 		seq_to        INTEGER NOT NULL,
 		event         TEXT NOT NULL,
 		execution     TEXT NOT NULL DEFAULT '',
+		input         TEXT NOT NULL DEFAULT '',
+		started       INTEGER NOT NULL DEFAULT 0,
 		state         TEXT NOT NULL,
+		outcome       TEXT NOT NULL DEFAULT '',
 		attempt       INTEGER NOT NULL DEFAULT 0,
 		disposition   TEXT NOT NULL DEFAULT '',
 		prepared      TEXT NOT NULL DEFAULT '',
@@ -347,7 +350,7 @@ var migrations = []string{
 		created       INTEGER NOT NULL,
 		updated       INTEGER NOT NULL
 	);
-	CREATE UNIQUE INDEX return_deliveries_active ON return_deliveries(ret) WHERE state NOT IN ('done', 'superseded', 'fallback', 'unknown');
+	CREATE UNIQUE INDEX return_deliveries_active ON return_deliveries(ret) WHERE state NOT IN ('done', 'superseded', 'fallback');
 	CREATE TABLE return_parts (
 		delivery INTEGER NOT NULL REFERENCES return_deliveries(id) ON DELETE CASCADE,
 		part     INTEGER NOT NULL,

@@ -364,7 +364,7 @@ func (s *Server) channelStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) channelRun(req wire.ChannelTurn, root string) {
 	defer s.release(root, false)
 	c := s.channel
-	exec := &messaging.Execution{ID: req.Execution, Kind: req.Kind}
+	exec := &messaging.Execution{ID: req.Execution, Kind: req.Kind, Token: req.Token}
 	exec.OnAct = func() error {
 		c.mu.Lock()
 		defer c.mu.Unlock()

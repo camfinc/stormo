@@ -205,7 +205,7 @@ func TestChannelTurnCallsCarryTheirExecution(t *testing.T) {
 	if _, err := client.Call(context.Background(), "msg_send", nil); err != nil {
 		t.Fatal(err)
 	}
-	e := &messaging.Execution{ID: "exec-abc123", Kind: messaging.ExecInbound}
+	e := &messaging.Execution{ID: "exec-abc123", Kind: messaging.ExecInbound, Token: "tok-1"}
 	ctx := messaging.WithExecution(context.Background(), e)
 	for _, name := range []string{"msg_send", "whatsapp_send"} {
 		if _, err := client.Call(ctx, name, nil); err != nil {
@@ -220,7 +220,7 @@ func TestChannelTurnCallsCarryTheirExecution(t *testing.T) {
 		t.Errorf("a call outside a channel turn carried %v", metas[0])
 	}
 	for i, want := range []string{"exec-abc123/1", "exec-abc123/2", "exec-abc123/3"} {
-		if m := metas[i+1]; m["exec"] != "exec-abc123" || m["op"] != want {
+		if m := metas[i+1]; m["exec"] != "exec-abc123" || m["op"] != want || m["exec_token"] != "tok-1" {
 			t.Errorf("call %d: %v", i+1, m)
 		}
 	}

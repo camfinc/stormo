@@ -41,6 +41,9 @@ type CallMeta struct {
 	// to the interaction that started it, and a replayed call returns its first result.
 	Exec string `json:"exec,omitempty"`
 	Op   string `json:"op,omitempty"`
+	// ExecToken is the execution's secret the core gave its runtime: a call naming an execution
+	// without it is refused, so a turn's attribution cannot be claimed from outside it.
+	ExecToken string `json:"exec_token,omitempty"`
 }
 
 // MCPTool is a tool the core serves.

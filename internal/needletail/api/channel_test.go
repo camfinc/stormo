@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ type channelAgent struct {
 	release chan struct{}
 	mu      sync.Mutex
 	seen    []string
+	tokens  []string
 }
 
 func (a *channelAgent) Run(ctx context.Context, session, input string, opts loop.Options) (*loop.Result, error) {
@@ -35,6 +37,7 @@ func (a *channelAgent) Run(ctx context.Context, session, input string, opts loop
 	a.mu.Lock()
 	if e != nil {
 		a.seen = append(a.seen, fmt.Sprintf("%s:%s:%s:%s", e.ID, e.Kind, opts.InputKind, input))
+		a.tokens = append(a.tokens, e.Token)
 	} else {
 		a.seen = append(a.seen, "no execution:"+input)
 	}
@@ -330,8 +333,9 @@ func TestChannelNonceSurvivesARestart(t *testing.T) {
 
 // The turn runs with its execution; a return is marked so; what it did is counted.
 func TestChannelTurnExecution(t *testing.T) {
-	_, ag, srv := channelServer(t, t.TempDir(), false)
-	turn := wire.ChannelTurn{Execution: "exec-ret-01", Kind: messaging.ExecReturn, Session: "whatsapp-r1", Message: "act"}
+	dir := t.TempDir()
+	_, ag, srv := channelServer(t, dir, false)
+	turn := wire.ChannelTurn{Execution: "exec-ret-01", Token: "tok-9f8e7d6c5b4a", Kind: messaging.ExecReturn, Session: "whatsapp-r1", Message: "act"}
 	if code, _ := signed(t, srv, coreKey, "POST", "/v1/channel/turns", turn, time.Now()); code != http.StatusAccepted {
 		t.Fatalf("%d", code)
 	}
@@ -349,6 +353,14 @@ func TestChannelTurnExecution(t *testing.T) {
 	}
 	if got := ag.turns(); len(got) < 1 || got[0] != "exec-ret-01:return:"+wire.KindReturn+":act" {
 		t.Fatalf("the turn saw %v", got)
+	}
+	// the execution's token reaches the turn, in memory, and never the store on disk
+	ag.mu.Lock()
+	tok := ag.tokens[0]
+	ag.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(dir, "state", channelFile))
+	if tok != turn.Token || err != nil || strings.Contains(string(raw), turn.Token) {
+		t.Fatalf("token %q, store %v (has it: %v)", tok, err, strings.Contains(string(raw), turn.Token))
 	}
 }
 

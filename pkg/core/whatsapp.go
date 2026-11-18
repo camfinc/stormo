@@ -271,13 +271,7 @@ func WhatsAppTools(core func() *Core) []MCPTool {
 			if err := decodeArgs(call, &req); err != nil {
 				return nil, err
 			}
-			c := core()
-			if c.Returns != nil {
-				if err := c.Returns.sideDoor(call.Agent, call.Meta.Exec, req.Chat); err != nil {
-					return nil, err
-				}
-			}
-			return c.whatsappSend(call.Agent, req.Chat, req.Text, req.Image)
+			return core().whatsappSend(call.Agent, req.Chat, req.Text, req.Image)
 		},
 	}}
 }
@@ -296,6 +290,12 @@ func (c *Core) whatsappSend(agent, chat, text, image string) (any, error) {
 	jid, err := whatsapp.AllowedChat(p, chat)
 	if err != nil {
 		return nil, toolErr("%v", err)
+	}
+	if c.Returns != nil {
+		// whatever the call claims of itself: an update being prepared for that chat goes as its reply
+		if err := c.Returns.sideDoor(agent, jid); err != nil {
+			return nil, err
+		}
 	}
 	var data []byte
 	if image != "" {

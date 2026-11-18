@@ -182,6 +182,8 @@ type SendRequest struct {
 	// _meta (its runtime): a replay of the same operation returns the first send.
 	Exec string `json:"-"`
 	Op   string `json:"-"`
+	// ExecToken is the execution's secret, from _meta: without it Exec is refused.
+	ExecToken string `json:"-"`
 }
 
 // SendResult is what msg_send answers.
@@ -191,6 +193,8 @@ type SendResult struct {
 	Recipients []string `json:"recipients"`
 	// Recipients that are not running: they get it when they next read their inbox.
 	Offline []string `json:"offline,omitempty"`
+	// Note is what the sender should know of how it goes (a request not followed for a person).
+	Note string `json:"note,omitempty"`
 }
 
 func (b *Bus) roster() map[string]BusAgent {
@@ -428,10 +432,10 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 		thread = root
 	}
-	origin, parent := "", int64(0)
+	var via sendFrom // the person's conversation the request is for
 	if b.returns != nil && req.Exec != "" {
 		var err error
-		if origin, parent, err = b.returns.sendOrigin(tx, sender, req.Exec, thread); err != nil {
+		if via, err = b.returns.sendOrigin(tx, sender, req.Exec, req.ExecToken, thread); err != nil {
 			return nil, err
 		}
 	}
@@ -485,7 +489,7 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 			return nil, err
 		}
 	}
-	out := &SendResult{ID: id, Thread: thread, Recipients: []string{}}
+	out := &SendResult{ID: id, Thread: thread, Recipients: []string{}, Note: via.note}
 	for _, r := range recipients {
 		if _, err := tx.Exec(`INSERT INTO deliveries(message, agent) VALUES(?, ?)`, id, r.ID); err != nil {
 			return nil, err
@@ -502,9 +506,13 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		if req.Thread != 0 {
 			inThread = thread // a reply in an existing thread (its root): progress may be about a request there
 		}
-		b.returns.onSend(tx, id, sender, recipients, inThread, req.Answers)
-		if origin != "" && len(recipients) == 1 && to == recipients[0].ID {
-			b.returns.open(tx, sender, origin, parent, id, thread, recipients[0].ID)
+		if err := b.returns.onSend(tx, id, sender, recipients, inThread, req.Answers); err != nil {
+			return nil, err
+		}
+		if via.origin != "" && len(recipients) == 1 && to == recipients[0].ID {
+			if err := b.returns.open(tx, sender, via, id, thread, recipients[0].ID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1006,7 +1014,10 @@ func (b *Bus) tell(o openDelivery, told int, quietSince int64, subject, body str
 			return false
 		}
 		if b.returns != nil {
-			b.returns.onNotice(tx, o.id, nid, o.sender, told)
+			if err := b.returns.onNotice(tx, o.id, nid, o.sender, told); err != nil {
+				log.Printf("bus: %v", err)
+				return false
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1139,7 +1150,12 @@ func (b *Bus) Read(agent string, id int64) (*Message, error) {
 // Ack marks a received message dealt with (and read). Acks wake no one.
 func (b *Bus) Ack(agent string, id int64) error {
 	now := b.o.Now().UnixMilli()
-	res, err := b.o.DB.Exec(`UPDATE deliveries SET acked_at = COALESCE(acked_at, ?), read_at = COALESCE(read_at, ?) WHERE message = ? AND agent = ?`, now, now, id, agent)
+	tx, err := b.o.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE deliveries SET acked_at = COALESCE(acked_at, ?), read_at = COALESCE(read_at, ?) WHERE message = ? AND agent = ?`, now, now, id, agent)
 	if err != nil {
 		return err
 	}
@@ -1147,9 +1163,12 @@ func (b *Bus) Ack(agent string, id int64) error {
 		return toolErr("message %d was not sent to you", id)
 	}
 	if b.returns != nil {
-		b.returns.onAck(id, agent)
+		// the ack and what it tells a return are one: both, or neither
+		if err := b.returns.onAck(tx, id, agent); err != nil {
+			return err
+		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // Thread is every message of the thread of id that the agent sent or received, oldest first.
@@ -1303,13 +1322,14 @@ func (b *Bus) Counts() (map[string]BusCounts, error) {
 	return out, rows.Err()
 }
 
-// Prune deletes threads with no message newer than retain.
+// Prune deletes threads with no message newer than retain, but a thread a return still open is
+// about: its request and what came back stay readable until it closes.
 func (b *Bus) Prune(retain time.Duration) error {
 	if _, err := b.o.DB.Exec(`DELETE FROM wakes WHERE at < ?`, b.o.Now().Add(-24*time.Hour).UnixMilli()); err != nil {
 		return err
 	}
-	_, err := b.o.DB.Exec(`DELETE FROM messages WHERE thread IN (SELECT thread FROM messages GROUP BY thread HAVING MAX(created) < ?)`,
-		b.o.Now().Add(-retain).UnixMilli())
+	_, err := b.o.DB.Exec(`DELETE FROM messages WHERE thread IN (SELECT thread FROM messages GROUP BY thread HAVING MAX(created) < ?)
+		AND thread NOT IN (SELECT thread FROM returns WHERE closed_at IS NULL)`, b.o.Now().Add(-retain).UnixMilli())
 	return err
 }
 
@@ -1344,7 +1364,7 @@ func BusTools(b *Bus) []MCPTool {
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
-				req.Untrusted, req.Exec, req.Op = c.Meta.Untrusted, c.Meta.Exec, c.Meta.Op
+				req.Untrusted, req.Exec, req.Op, req.ExecToken = c.Meta.Untrusted, c.Meta.Exec, c.Meta.Op, c.Meta.ExecToken
 				return b.Send(c.Agent, req)
 			},
 		},
@@ -1364,7 +1384,7 @@ func BusTools(b *Bus) []MCPTool {
 					return nil, err
 				}
 				unread := args.UnreadOnly == nil || *args.UnreadOnly
-				ms, err := b.InboxIn(c.Agent, unread, args.Limit, c.Meta.Exec)
+				ms, err := b.InboxIn(c.Agent, unread, args.Limit, b.verified(c))
 				if err != nil {
 					return nil, err
 				}
@@ -1413,7 +1433,7 @@ func BusTools(b *Bus) []MCPTool {
 				if err := decodeArgs(c, &args); err != nil {
 					return nil, err
 				}
-				ms, err := b.ThreadIn(c.Agent, args.ID, c.Meta.Exec)
+				ms, err := b.ThreadIn(c.Agent, args.ID, b.verified(c))
 				if err != nil {
 					return nil, err
 				}
@@ -1421,4 +1441,12 @@ func BusTools(b *Bus) []MCPTool {
 			},
 		},
 	}
+}
+
+// verified is the call's execution when it proves it is that turn's (its token), else "".
+func (b *Bus) verified(c ToolCall) string {
+	if b.returns == nil {
+		return ""
+	}
+	return b.returns.Verified(c.Agent, c.Meta.Exec, c.Meta.ExecToken)
 }

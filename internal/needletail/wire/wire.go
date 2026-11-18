@@ -717,7 +717,10 @@ const (
 
 // ChannelTurn is POST /v1/channel/turns.
 type ChannelTurn struct {
-	Execution   string     `json:"execution"`
+	Execution string `json:"execution"`
+	// Token is the execution's secret: kept in memory, never on disk (the store keeps the request's
+	// hash), and sent as _meta.exec_token with each core call the turn makes.
+	Token       string     `json:"token,omitempty"`
 	Kind        string     `json:"kind"`
 	Session     string     `json:"session"`
 	Title       string     `json:"title,omitempty"`

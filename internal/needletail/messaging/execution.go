@@ -18,6 +18,9 @@ const (
 // interaction that started it, even when the call reaches the core later (the relay's spool).
 type Execution struct {
 	ID, Kind string
+	// Token is the core's secret for this execution (in memory only): the core accepts a call as the
+	// turn's only with it.
+	Token string
 	// OnAct records a tool call durably before it runs (the runtime's channel-turn store); an error
 	// stops the call.
 	OnAct func() error

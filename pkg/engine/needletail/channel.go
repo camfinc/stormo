@@ -78,7 +78,7 @@ func status(s wire.ChannelTurnStatus) engine.ChannelTurnStatus {
 }
 
 func (c channelTurns) Start(ctx context.Context, t engine.ChannelTurn) (engine.ChannelTurnStatus, error) {
-	req := wire.ChannelTurn{Execution: t.Execution, Kind: t.Kind, Session: t.Session, Title: t.Title, Message: t.In.Text, AudioFormat: t.In.AudioFormat}
+	req := wire.ChannelTurn{Execution: t.Execution, Token: t.Token, Kind: t.Kind, Session: t.Session, Title: t.Title, Message: t.In.Text, AudioFormat: t.In.AudioFormat}
 	for _, f := range t.In.Files {
 		req.Files = append(req.Files, wire.ChatFile{Name: f.Name, MIME: f.MIME, Data: f.Data, Marked: f.Marked})
 	}
@@ -88,6 +88,9 @@ func (c channelTurns) Start(ctx context.Context, t engine.ChannelTurn) (engine.C
 	case code == http.StatusConflict && err != nil && strings.Contains(err.Error(), "already running a turn"),
 		code == http.StatusTooManyRequests, code == http.StatusServiceUnavailable:
 		return engine.ChannelTurnStatus{}, fmt.Errorf("%w (%v)", engine.ErrChannelBusy, err)
+	case code >= 400 && code < 500 && code != http.StatusRequestTimeout:
+		// the runtime answered it will not run this request (a bad, forbidden or conflicting one)
+		return engine.ChannelTurnStatus{}, fmt.Errorf("%w (%v)", engine.ErrChannelRefused, err)
 	case err != nil:
 		return engine.ChannelTurnStatus{}, err
 	}
