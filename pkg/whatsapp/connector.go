@@ -136,6 +136,8 @@ type Reply func(context.Context, string, string) (string, error)
 type Turn struct {
 	Text  string
 	Audio *Audio
+	// Origin is the core's record of the message the turn answers ("" none; UseOrigins).
+	Origin string
 }
 
 // Audio is a voice note someone sent: its bytes and MIME type; Marked when its sender may not
@@ -164,10 +166,14 @@ const (
 )
 
 type Connector struct {
-	send      func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
-	upload    func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
-	download  func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
-	exchange  Exchange
+	send     func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
+	upload   func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
+	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	exchange Exchange
+	register func(context.Context, OriginEvent) (string, error)
+	// lane serialises every post on the account (a turn's reply, whatsapp_send, a request's outcome),
+	// taken only around the sending itself: a turn waiting for the agent never holds it
+	lane      sync.Mutex
 	connected func() bool
 	me        func() Me
 	names     map[types.JID]string // group names, cached
@@ -788,6 +794,23 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if !ok {
 		return
 	}
+	hash := sha256.Sum256([]byte(e.Info.Chat.ToNonAD().String()))
+	session := fmt.Sprintf("whatsapp-%x", hash[:16])
+	// Recorded before it is claimed (idempotent on its id): a crash between the two leaves the
+	// record for the redelivered message, never a claimed message with none.
+	c.mu.Lock()
+	register := c.register
+	c.mu.Unlock()
+	origin := ""
+	if register != nil && in.Reaction == "" {
+		quote, _ := proto.Marshal(e.Message)
+		var err error
+		origin, err = register(ctx, OriginEvent{Session: session, Chat: e.Info.Chat.String(), MessageID: e.Info.ID, Participant: e.Info.Sender.ToNonAD().String(),
+			Number: in.Number, Name: in.Name, Group: in.Group, Verified: in.Verified, Quote: quote})
+		if err != nil {
+			origin = "" // the turn still runs, without a way back for its requests
+		}
+	}
 	// Claim before invoking tools: reconnect delivery must not execute a task twice.
 	key := e.Info.Chat.String() + ":" + e.Info.ID
 	result, err := c.db.ExecContext(ctx, `INSERT OR IGNORE INTO stormo_received(id,at) VALUES (?,?)`, key, time.Now().Unix())
@@ -798,7 +821,6 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if n == 0 {
 		return
 	}
-	hash := sha256.Sum256([]byte(e.Info.Chat.ToNonAD().String()))
 	turn, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	message := in.Reaction == "" // a reaction gets no reaction of its own
@@ -828,13 +850,13 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		// a reaction's turn is given no context: it waits for the next message
 		history, upto = c.chatContext(turn, in.Chat, e.Info.ID, in.Group)
 	}
-	session, input := fmt.Sprintf("whatsapp-%x", hash[:16]), history+Input(in, group)
+	input := history + Input(in, group)
 	c.mu.Lock()
 	exchange := c.exchange
 	c.mu.Unlock()
 	var ans Answer
 	if exchange != nil {
-		t := Turn{Text: input}
+		t := Turn{Text: input, Origin: origin}
 		if in.Voice {
 			audio := e.Message.GetAudioMessage()
 			if data, derr := c.download(turn, audio); derr != nil || len(data) > maxVoiceBytes {
@@ -846,6 +868,9 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		ans, err = exchange(turn, session, t)
 	} else {
 		ans.Text, err = c.reply(turn, session, input)
+	}
+	if errors.Is(err, ErrPending) {
+		return // still running: the core posts its reply when it ends
 	}
 	reply := ans.Text
 	done := ""
@@ -865,6 +890,8 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if in.Group && message {
 		quote = &waE2E.ContextInfo{StanzaID: proto.String(e.Info.ID), Participant: proto.String(e.Info.Sender.ToNonAD().String()), QuotedMessage: e.Message}
 	}
+	c.lane.Lock()
+	defer c.lane.Unlock()
 	if len(ans.Voice) > 0 {
 		// the agent answered with a voice note: it goes first, its text after it when asked; a
 		// note that cannot be sent leaves the text to go alone
@@ -894,6 +921,8 @@ func (c *Connector) Send(ctx context.Context, chat types.JID, text string) ([]ty
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("whatsapp: empty message")
 	}
+	c.lane.Lock()
+	defer c.lane.Unlock()
 	return c.post(ctx, chat, text, nil, true)
 }
 
@@ -910,6 +939,8 @@ func (c *Connector) SendImage(ctx context.Context, chat types.JID, data []byte, 
 	if mime != "image/png" && mime != "image/jpeg" {
 		return nil, fmt.Errorf("whatsapp: the file is %s; send a PNG or JPEG image", mime)
 	}
+	c.lane.Lock()
+	defer c.lane.Unlock()
 	caption = strings.TrimSpace(caption)
 	rest := ""
 	if len([]rune(caption)) > maxCaption {
