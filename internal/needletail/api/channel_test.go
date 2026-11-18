@@ -83,6 +83,25 @@ func channelServer(t *testing.T, state string, enforce bool) (*Server, *channelA
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
+	// before the test's directory goes (cleanups run last first): every turn ended and written
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			s.mu.Lock()
+			active := s.active
+			s.mu.Unlock()
+			s.channel.mu.Lock()
+			running := false
+			for _, e := range s.channel.turns {
+				running = running || !e.Terminal()
+			}
+			s.channel.mu.Unlock()
+			if active == 0 && !running {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 	return s, ag, srv
 }
 
@@ -224,6 +243,8 @@ func TestChannelTurnBusyLockAndFile(t *testing.T) {
 		t.Fatal("a second runtime on the same home admitted channel turns beside the first")
 	}
 	close(ag.release)
+	// the turn ends and writes its result before the test's directory goes
+	waitFor(t, func() bool { st, _ := s.ChannelTurn("exec-busy-1"); return st.Terminal() })
 	bad := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(bad, "state"), 0o700); err != nil {
 		t.Fatal(err)
@@ -267,6 +288,7 @@ func TestChannelTurnCrashKeepsWhatItDid(t *testing.T) {
 		t.Fatalf("after the crash: %+v %v", st, ok)
 	}
 	close(ag.release)
+	waitFor(t, func() bool { st, _ := s.ChannelTurn("exec-crash-1"); return st.Terminal() })
 }
 
 // A POST's nonce stays refused after a restart, for as long as its signature is valid.
