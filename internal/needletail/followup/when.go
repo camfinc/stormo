@@ -3,10 +3,11 @@ package followup
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	wallclock "github.com/camfinc/stormo/pkg/clock"
 )
 
 // ParseIn reads a delay as follow_up's `in` takes it: one or more <number><unit> parts ("10s",
@@ -119,35 +120,10 @@ func ParseAt(s string, now time.Time, loc *time.Location) (time.Time, error) {
 	return t, nil
 }
 
-// wall is a wall-clock time in loc (the date normalised, as time.Date does: the 32nd is the next
-// month's 1st). The instants that read as it are those its zone's offsets around it give (an
-// offset 6 hours before, at and 6 hours after time.Date's answer: one change at most in that
-// span). None: a daylight-saving change skips it, and it moves forward by the change, whichever
-// side of UTC the zone is (time.Date leaves the choice unspecified, and moves it backward west of
-// UTC). Two: the change repeats it, and it is the first, unless the first is not after now and the
-// second is (now zero: the first).
+// wall is wallclock.Wall (pkg/clock): a wall time a daylight-saving change skips moves forward, one it repeats is
+// the first unless now is between the two.
 func wall(y int, mo time.Month, d, h, m, s int, loc *time.Location, now time.Time) time.Time {
-	y, mo, d = time.Date(y, mo, d, 0, 0, 0, 0, time.UTC).Date()
-	t := time.Date(y, mo, d, h, m, s, 0, loc)
-	u := time.Date(y, mo, d, h, m, s, 0, time.UTC) // the wall time as if it were UTC
-	var found []time.Time
-	for _, probe := range []time.Time{t.Add(-6 * time.Hour), t, t.Add(6 * time.Hour)} {
-		_, off := probe.Zone()
-		c := u.Add(-time.Duration(off) * time.Second).In(loc)
-		cy, cmo, cd := c.Date()
-		if cy == y && cmo == mo && cd == d && c.Hour() == h && c.Minute() == m && c.Second() == s && !slices.ContainsFunc(found, c.Equal) {
-			found = append(found, c)
-		}
-	}
-	slices.SortFunc(found, func(a, b time.Time) int { return a.Compare(b) })
-	switch {
-	case len(found) == 0: // skipped: the offset from before the change, which reads it later by the change
-		_, before := t.Add(-6 * time.Hour).Zone()
-		return u.Add(-time.Duration(before) * time.Second).In(loc)
-	case len(found) > 1 && !now.IsZero() && !found[0].After(now) && found[1].After(now):
-		return found[1]
-	}
-	return found[0]
+	return wallclock.Wall(y, mo, d, h, m, s, loc, now)
 }
 
 func atError(s string) error {
