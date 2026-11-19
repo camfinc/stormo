@@ -550,8 +550,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     when its engine runs them and either enforces them or the agent opted in; any other agent keeps
     the engine's usual chat, whatever its image offers.
   - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
-    connector claims it with the linked device that received it (an unlink or relink, even of the
-    same number, is another device). Its turn runs as a channel turn, an *execution* the engine admits
+    connector claims it with the link that received it: a random id the WhatsApp session keeps, made
+    anew at every pairing and unlink, so a relink, even of the same number, is another link. Its turn runs as a channel turn, an *execution* the engine admits
     once, with a secret *token* the core issues and the runtime keeps in memory only. Every core call
     of the turn carries `_meta.exec`, `op` and `exec_token`.
   - **Opening a return.** A `msg_send` from that turn to one agent opens a *return*. It is refused
@@ -568,7 +568,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     the requester becomes the return's for good (`deliveries.owner`, `return_id`); nothing is handed
     back to the bus. The captured events:
     - `answered`: the recipient names the request in `answers`. A message whose answers name requests
-      of more than one open return is refused.
+      made for different people (open or closed: a closed return still says whose a request was), or
+      of more than one open return, is refused.
     - `progress`: another message from the recipient in the request's thread. When the thread holds
       more than one open return it stays the bus's (a `return_ambiguous` finding).
     - `failure`: the bus's "Not answered" notice.
@@ -598,7 +599,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     - Under the posting lane the connector checks the device is the origin's and the chat still
       admitted. The core's fence checks the switch is not `stop`, the agent's returns do not drain,
       and the delivery is still prepared. Then it is `sending`; once WhatsApp's server acknowledges
-      it, it is `settled` as confirmed with its id.
+      it, it is `settled` as confirmed with its id. A delivery found `sending` outside a post (a
+      stopped core, a settlement that could not be written) settles as confirmed if this core saw it
+      go, else unconfirmed; it is never sent again.
   - **Outcomes** (each settles the delivery's range):
     - **confirmed**: the return is `updated`. A confirmed `[DONE]` closes it as `done`, but only when
       it was not cut short and covered every captured event; otherwise what came meanwhile goes next.
@@ -616,7 +619,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
         refuses a verified recovery execution's other calls. Its reply goes through the same outbox.
         A recovery that fails settles as failed;
       - a turn the runtime no longer knows, or one it never confirmed admitting in 30 minutes, may
-        have run and cannot be shown to have stopped: failed, never rerun or recovered.
+        have run and cannot be shown to have stopped: failed, never rerun or recovered;
+      - a turn whose result the runtime forgot (taken, or pruned while the core was away) lost what
+        it said: failed, never read as `[SILENT]`.
     - **closed**: the return closed before it went.
   - **Closing.** A return closes as `expired`, with a reason and a high `return_closed` finding, when:
     - the person's chat can no longer be reached (no longer allowed, another device linked, the
@@ -625,8 +630,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     - `stormo.yaml` `core.returns: drain` is set;
     - its engine answers it no longer enforces (one that does not answer keeps its last answer).
 
-    Everything captured is settled, a turn of it ended, and nothing is re-woken; a send in flight
-    settles first. It also expires, with a medium finding, once escalated, caught up, idle and quiet
+    Everything captured is settled and nothing is re-woken; a send in flight settles first. A turn
+    of it still running is *retired*, not ended: the side door stays shut for its chat until the
+    runtime says it ended, then its result is taken (a failed take is tried again each round). It also expires, with a medium finding, once escalated, caught up, idle and quiet
     for seven days. `core.returns: stop` starts and posts nothing more, holding everything as it is
     until `on` or `drain`.
   - **Escalation** (`escalate_after`) raises a high `return_escalated` finding and stops the due
@@ -634,7 +640,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   - **The guards:** while an update's turn runs for a chat, `whatsapp_send` to that chat is refused,
     whatever the call claims of itself.
   - **A person's own turn** that outlives the connector's wait (10 minutes) is abandoned: the
-    connector tells them it could not complete, on a context of its own. The worker follows the turn
+    connector tells them it could not complete, on a context of its own, and only if they are still
+    admitted (every reply is checked again under the posting lane). The worker follows the turn
     to its end, records what it did and posts nothing; a request it made still comes back. So is one
     running when the core stopped (only turns older than the core's start).
   - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists each

@@ -294,6 +294,7 @@ var migrations = []string{
 		active        INTEGER NOT NULL DEFAULT 0,
 		active_from   INTEGER NOT NULL DEFAULT 0,
 		active_to     INTEGER NOT NULL DEFAULT 0,
+		active_gen    INTEGER NOT NULL DEFAULT 0,
 		escalated     INTEGER NOT NULL DEFAULT 0,
 		escalated_at  INTEGER NOT NULL DEFAULT 0,
 		no_due        INTEGER NOT NULL DEFAULT 0,
@@ -317,6 +318,7 @@ var migrations = []string{
 		state     TEXT NOT NULL,
 		acted     INTEGER NOT NULL DEFAULT 0,
 		error     TEXT NOT NULL DEFAULT '',
+		taken     INTEGER NOT NULL DEFAULT 0,
 		created   INTEGER NOT NULL,
 		ended     INTEGER
 	);
@@ -336,6 +338,7 @@ var migrations = []string{
 		seq_from      INTEGER NOT NULL,
 		seq_to        INTEGER NOT NULL,
 		event         TEXT NOT NULL,
+		gen           INTEGER NOT NULL DEFAULT 0,
 		kind          TEXT NOT NULL DEFAULT 'update',
 		execution     TEXT NOT NULL DEFAULT '',
 		input         TEXT NOT NULL DEFAULT '',

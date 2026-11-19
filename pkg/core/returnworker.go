@@ -50,9 +50,9 @@ func (r *Returns) view(q querier, id int64) (ReturnView, error) {
 	var v ReturnView
 	var active, escalated, noDue int
 	var escAt, escalatedAt, nextDue, last int64
-	err := q.QueryRow(`SELECT state, seq_last, seq_settled, active, active_from, active_to, depth, escalated, no_due,
+	err := q.QueryRow(`SELECT state, seq_last, seq_settled, active, active_from, active_to, active_gen, depth, escalated, no_due,
 		escalate_at, escalated_at, next_due, last_activity, close_reason FROM returns WHERE id = ?`, id).Scan(&v.State, &v.SeqLast, &v.SeqSettled,
-		&active, &v.ActiveFrom, &v.ActiveTo, &v.Depth, &escalated, &noDue, &escAt, &escalatedAt, &nextDue, &last, &v.CloseReason)
+		&active, &v.ActiveFrom, &v.ActiveTo, &v.ActiveGen, &v.Depth, &escalated, &noDue, &escAt, &escalatedAt, &nextDue, &last, &v.CloseReason)
 	v.Active, v.Escalated, v.NoDue = active != 0, escalated != 0, noDue != 0
 	v.EscalateAt, v.EscalatedAt, v.NextDue, v.LastActivity = ms(escAt), ms(escalatedAt), ms(nextDue), ms(last)
 	return v, err
@@ -60,10 +60,10 @@ func (r *Returns) view(q querier, id int64) (ReturnView, error) {
 
 // save writes v back to return id; a closed state closes it (closed_at, once).
 func (r *Returns) save(q querier, id int64, v ReturnView) error {
-	_, err := q.Exec(`UPDATE returns SET state = ?, seq_last = ?, seq_settled = ?, active = ?, active_from = ?, active_to = ?, escalated = ?,
-		escalated_at = ?, no_due = ?, next_due = ?, last_activity = ?, close_reason = ?,
+	_, err := q.Exec(`UPDATE returns SET state = ?, seq_last = ?, seq_settled = ?, active = ?, active_from = ?, active_to = ?, active_gen = ?,
+		escalated = ?, escalated_at = ?, no_due = ?, next_due = ?, last_activity = ?, close_reason = ?,
 		closed_at = CASE WHEN ? = 1 THEN COALESCE(closed_at, ?) ELSE NULL END WHERE id = ?`,
-		v.State, v.SeqLast, v.SeqSettled, v.Active, v.ActiveFrom, v.ActiveTo, v.Escalated, unms(v.EscalatedAt), v.NoDue,
+		v.State, v.SeqLast, v.SeqSettled, v.Active, v.ActiveFrom, v.ActiveTo, v.ActiveGen, v.Escalated, unms(v.EscalatedAt), v.NoDue,
 		unms(v.NextDue), unms(v.LastActivity), v.CloseReason, btoi(v.Terminal()), unms(r.o.Now()), id)
 	return err
 }
@@ -113,8 +113,8 @@ func (r *Returns) act(tx *sql.Tx, id int64, a Action) error {
 	}
 	switch a.Kind {
 	case ActEnqueue:
-		_, err := tx.Exec(`INSERT INTO return_deliveries(ret, seq_from, seq_to, event, kind, state, created, updated) VALUES(?,?,?,?,'update','queued',?,?)`,
-			id, a.From, a.To, a.Event, now.UnixMilli(), now.UnixMilli())
+		_, err := tx.Exec(`INSERT INTO return_deliveries(ret, seq_from, seq_to, gen, event, kind, state, created, updated) VALUES(?,?,?,?,?,'update','queued',?,?)`,
+			id, a.From, a.To, a.Gen, a.Event, now.UnixMilli(), now.UnixMilli())
 		return err
 	case ActSchedule:
 		if set := r.o.Settings(agent); set != nil {
@@ -143,11 +143,18 @@ func (r *Returns) act(tx *sql.Tx, id int64, a Action) error {
 			return err
 		}
 		if exec != "" {
-			_, err := tx.Exec(`UPDATE executions SET state = 'failed', error = 'the return closed', ended = ? WHERE id = ? AND ended IS NULL`, now.UnixMilli(), exec)
-			return err
+			return retire(tx, exec, "the return closed")
 		}
 	}
 	return nil
+}
+
+// retire takes exec's delivery from it: the core no longer waits on it, but it is not ended until its
+// runtime says it ended (reconcile), so while it may still run, the side door stays shut for its
+// chat and its result is still collected.
+func retire(q querier, exec, why string) error {
+	_, err := q.Exec(`UPDATE executions SET state = 'retired', error = ? WHERE id = ? AND ended IS NULL`, clip(why, 300), exec)
+	return err
 }
 
 // Run is the worker: a round every interval and on every Kick, until stop closes.
@@ -172,8 +179,20 @@ func (r *Returns) Run(stop <-chan struct{}, interval time.Duration) {
 // live connector's are its own.
 func (r *Returns) recover() {
 	_, _ = r.o.DB.Exec(`UPDATE executions SET state = 'abandoned' WHERE kind = 'inbound' AND state = 'running' AND ended IS NULL AND created < ?`, unms(r.started))
+	r.stranded()
+}
+
+// stranded settles the deliveries left sending outside a post (a stopped core, or a settlement that
+// could not be written): confirmed when this core saw the send go, else unconfirmed. Never sent again.
+func (r *Returns) stranded() {
 	for _, d := range r.deliveries(`d.state = 'sending'`) {
-		_ = r.settle(d, "sending", OutcomeUnconfirmed, "", "the core stopped while it was being sent")
+		if id, ok := r.sentIDs[d.id]; ok {
+			if r.settle(d, "sending", OutcomeConfirmed, id, "") == nil {
+				delete(r.sentIDs, d.id)
+			}
+			continue
+		}
+		_ = r.settle(d, "sending", OutcomeUnconfirmed, "", "it may or may not have gone: the core lost track of the send")
 	}
 }
 
@@ -186,7 +205,7 @@ func (r *Returns) Round() {
 		r.negotiated(agent) // asked again once its answer is a TTL old: a request opens on a fresh one
 	}
 	r.tick()
-	r.abandoned()
+	r.reconcile()
 	r.drive()
 	if now := r.o.Now(); now.Sub(r.scrubbed) >= time.Hour {
 		r.scrubbed = now
@@ -249,62 +268,79 @@ func (r *Returns) closeReturn(id int64, reason string) {
 	_ = r.inTx(id, func(tx *sql.Tx, v ReturnView) (Step, error) { return Close(v, reason, r.o.Now()), nil })
 }
 
-// abandoned follows the person's turns the connector stopped waiting for to their end: what they
-// did is recorded and their result taken from the runtime; nothing is posted (the person was told
-// it could not complete).
-func (r *Returns) abandoned() {
-	rows, err := r.o.DB.Query(`SELECT id, agent FROM executions WHERE kind = 'inbound' AND state = 'abandoned' AND ended IS NULL`)
+// reconcile follows the turns the core stopped waiting on (a person's turn the connector gave up on,
+// an update's turn retired by its return closing) to their end: what they did is recorded, then
+// their result taken from the runtime (again each round until it is). Nothing is posted.
+func (r *Returns) reconcile() {
+	rows, err := r.o.DB.Query(`SELECT id, agent, ended IS NULL FROM executions WHERE state IN ('abandoned', 'retired') AND (ended IS NULL OR taken = 0)`)
 	if err != nil {
 		return
 	}
-	type ex struct{ id, agent string }
+	type ex struct {
+		id, agent string
+		running   bool
+	}
 	var xs []ex
 	for rows.Next() {
 		var x ex
-		if rows.Scan(&x.id, &x.agent) == nil {
+		if rows.Scan(&x.id, &x.agent, &x.running) == nil {
 			xs = append(xs, x)
 		}
 	}
 	rows.Close()
+	now := r.o.Now().UnixMilli()
 	for _, x := range xs {
 		ct, err := r.o.Channel(x.agent)
 		if err != nil {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		st, err := ct.Status(ctx, x.id, 0)
-		switch {
-		case errors.Is(err, engine.ErrChannelUnknown):
-			r.endExecution(x.id, "failed", 0, "abandoned; the engine lost the turn")
-		case err == nil && st.Terminal():
-			r.endExecution(x.id, st.State, st.Acted, "abandoned: the person was told it could not complete")
-			_ = ct.Take(ctx, x.id)
+		if x.running {
+			st, err := ct.Status(ctx, x.id, 0)
+			switch {
+			case errors.Is(err, engine.ErrChannelUnknown):
+				_, _ = r.o.DB.Exec(`UPDATE executions SET ended = ?, taken = 1, error = error || '; the engine does not know it' WHERE id = ? AND ended IS NULL`, now, x.id)
+				cancel()
+				continue
+			case err != nil || !st.Terminal():
+				cancel()
+				continue
+			}
+			_, _ = r.o.DB.Exec(`UPDATE executions SET ended = ?, acted = ?, error = error || '; it ended ' || ? WHERE id = ? AND ended IS NULL`, now, st.Acted, st.State, x.id)
 		}
+		r.take(ctx, ct, x.id)
 		cancel()
+	}
+}
+
+// take has the runtime forget exec's result, recording that it did.
+func (r *Returns) take(ctx context.Context, ct engine.ChannelTurns, exec string) {
+	if ct.Take(ctx, exec) == nil {
+		_, _ = r.o.DB.Exec(`UPDATE executions SET taken = 1 WHERE id = ?`, exec)
 	}
 }
 
 // ---- deliveries ----------------------------------------------------------------------------
 
 type delivery struct {
-	id, ret, from, to     int64
-	event, kind, state    string
-	execution, input      string
-	started               int64
-	turns                 int
-	acted                 int64
-	disposition, prepared string
-	truncated             bool
-	postTries             int
-	nextTry               int64
-	agent, origin         string
-	request, thread       int64
-	recipient             string
+	id, ret, from, to, gen int64
+	event, kind, state     string
+	execution, input       string
+	started                int64
+	turns                  int
+	acted                  int64
+	disposition, prepared  string
+	truncated              bool
+	postTries              int
+	nextTry                int64
+	agent, origin          string
+	request, thread        int64
+	recipient              string
 }
 
 // deliveries are those matching where (on d, the delivery), with their return's.
 func (r *Returns) deliveries(where string) []delivery {
-	rows, err := r.o.DB.Query(`SELECT d.id, d.ret, d.seq_from, d.seq_to, d.event, d.kind, d.state, d.execution, d.input, d.started, d.turns, d.acted,
+	rows, err := r.o.DB.Query(`SELECT d.id, d.ret, d.seq_from, d.seq_to, d.gen, d.event, d.kind, d.state, d.execution, d.input, d.started, d.turns, d.acted,
 		d.disposition, d.prepared, d.truncated, d.post_tries, d.next_try, x.agent, x.origin, COALESCE(x.request, 0), x.thread, x.recipient
 		FROM return_deliveries d JOIN returns x ON x.id = d.ret WHERE ` + where + ` ORDER BY d.id`)
 	if err != nil {
@@ -314,7 +350,7 @@ func (r *Returns) deliveries(where string) []delivery {
 	var ds []delivery
 	for rows.Next() {
 		var d delivery
-		if rows.Scan(&d.id, &d.ret, &d.from, &d.to, &d.event, &d.kind, &d.state, &d.execution, &d.input, &d.started, &d.turns, &d.acted,
+		if rows.Scan(&d.id, &d.ret, &d.from, &d.to, &d.gen, &d.event, &d.kind, &d.state, &d.execution, &d.input, &d.started, &d.turns, &d.acted,
 			&d.disposition, &d.prepared, &d.truncated, &d.postTries, &d.nextTry, &d.agent, &d.origin, &d.request, &d.thread, &d.recipient) == nil {
 			ds = append(ds, d)
 		}
@@ -346,14 +382,7 @@ func (r *Returns) drive() {
 			r.post(d)
 		}
 	}
-	for id, sentID := range r.sentIDs {
-		// a send that went but whose settlement could not be written: written again, never resent
-		for _, d := range r.deliveries(fmt.Sprintf(`d.id = %d AND d.state = 'sending'`, id)) {
-			if r.settle(d, "sending", OutcomeConfirmed, sentID, "") == nil {
-				delete(r.sentIDs, id)
-			}
-		}
-	}
+	r.stranded() // a settlement that could not be written is written again, never the send
 }
 
 // maxUpdate is the most runes an update holds: one WhatsApp message, cut short past it.
@@ -474,8 +503,8 @@ func (r *Returns) startDelivery(d delivery) {
 		r.endExecution(d.execution, "failed", 0, err.Error())
 		r.turnFailed(d, 0, err.Error())
 	case now.Sub(ms(d.started)) >= startPatience:
-		// never confirmed either way: it may have run, and it cannot be shown to have stopped
-		r.endExecution(d.execution, "failed", 0, "never confirmed: "+err.Error())
+		// never confirmed either way: it may have run, and it cannot be shown to have stopped (its
+		// turn is retired, followed by reconcile)
 		_ = r.settle(d, "queued", OutcomeFailed, "", "the agent's engine never confirmed the update's turn")
 	default:
 		_, _ = r.o.DB.Exec(`UPDATE return_deliveries SET next_try = ?, error = ? WHERE id = ?`, now.Add(30*time.Second).UnixMilli(), clip(err.Error(), 300), d.id)
@@ -577,14 +606,20 @@ func (r *Returns) pollDelivery(d delivery) {
 		return
 	}
 	r.endExecution(d.execution, st.State, st.Acted, st.Error)
+	if st.Taken {
+		// the runtime forgot its result (taken, or pruned while the core was away): what it said is
+		// lost, which is never read as silence
+		_ = r.settle(d, "running", OutcomeFailed, "", "the agent's engine no longer has the update's reply")
+		return
+	}
 	if st.State != "ok" {
-		_ = ct.Take(ctx, d.execution)
+		r.take(ctx, ct, d.execution)
 		r.turnFailed(d, st.Acted, st.Error)
 		return
 	}
 	disp, text := disposition(st.Text)
 	if disp == DispositionSilent {
-		_ = ct.Take(ctx, d.execution)
+		r.take(ctx, ct, d.execution)
 		d.disposition = DispositionSilent
 		_ = r.settle(d, "running", OutcomeSilent, "", "")
 		return
@@ -597,7 +632,7 @@ func (r *Returns) pollDelivery(d delivery) {
 	res, err := r.o.DB.Exec(`UPDATE return_deliveries SET state = 'prepared', disposition = ?, full_text = ?, prepared = ?, truncated = ?, prepared_mark = ?,
 		post_tries = 0, next_try = 0, updated = ? WHERE id = ? AND state = 'running'`, disp, text, msg, truncated, mark, r.o.Now().UnixMilli(), d.id)
 	if n, _ := rowsOf(res); err == nil && n > 0 {
-		_ = ct.Take(ctx, d.execution) // kept here now: the engine may forget it
+		r.take(ctx, ct, d.execution) // kept here now: the engine may forget it
 	}
 }
 
@@ -702,12 +737,12 @@ func (r *Returns) settle(d delivery, from, outcome, sentID, reason string) error
 			return Step{}, errMovedOn
 		}
 		if d.execution != "" {
-			if _, err := tx.Exec(`UPDATE executions SET state = CASE WHEN state = 'running' THEN 'failed' ELSE state END, ended = ? WHERE id = ? AND ended IS NULL`,
-				now, d.execution); err != nil {
+			if err := retire(tx, d.execution, "its delivery settled "+outcome); err != nil {
 				return Step{}, err
 			}
 		}
-		return Finish(v, DeliveryResult{From: d.from, To: d.to, Outcome: outcome, Disposition: d.disposition, Truncated: d.truncated, Reason: reason}, r.o.Now()), nil
+		return Finish(v, DeliveryResult{Gen: d.gen, From: d.from, To: d.to, Outcome: outcome, Disposition: d.disposition, Truncated: d.truncated,
+			Reason: reason}, r.o.Now()), nil
 	})
 }
 

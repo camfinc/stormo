@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestOriginRecordedBeforeTheClaim(t *testing.T) {
 	}
 	e := events[0]
 	if !e.Group || e.Chat != group.String() || e.MessageID != "in-2" || e.Participant != member.String() || len(e.Quote) == 0 || !strings.HasPrefix(e.Session, "whatsapp-") ||
-		e.Account != me.PN.String() {
+		e.Account != c.account() {
 		t.Errorf("recorded %+v", e)
 	}
 	c.handle(context.Background(), reaction(inGroup("", nil), "sent-120363012345678901", "👍"))
@@ -92,7 +93,7 @@ func TestPostOrigin(t *testing.T) {
 		return plain(ctx, chat, m)
 	}
 	asked, _ := proto.Marshal(&waE2E.Message{Conversation: proto.String("sizes?")})
-	o := Origin{Chat: group.String(), Group: true, MessageID: "in-2", Participant: member.String(), Quote: asked, Account: me.PN.String()}
+	o := Origin{Chat: group.String(), Group: true, MessageID: "in-2", Participant: member.String(), Quote: asked, Account: c.account()}
 	var journal []string
 	note := func(state, id string) error {
 		journal = append(journal, state+":"+id)
@@ -125,7 +126,7 @@ func TestPostOriginErrorClasses(t *testing.T) {
 	c := open(t, p, nil)
 	c.policy = func() Policy { return p } // changed by the test below
 	c.connected = func() bool { return true }
-	o := Origin{Chat: group.String(), Group: true, MessageID: "in-2", Participant: member.String(), Account: me.PN.String()}
+	o := Origin{Chat: group.String(), Group: true, MessageID: "in-2", Participant: member.String(), Account: c.account()}
 	ok := func(string, string) error { return nil }
 	for _, tc := range []struct {
 		err    error
@@ -165,10 +166,57 @@ func TestPostOriginErrorClasses(t *testing.T) {
 		t.Errorf("revoked: %v, sent %v", err, sent)
 	}
 	p.Groups = []string{group.String()}
-	relinked := o
-	relinked.Account = types.JID{User: me.PN.User, Device: 7, Server: types.DefaultUserServer}.String()
-	if err := c.PostOrigin(context.Background(), relinked, "a", ok); !errors.As(err, &pe) || !pe.Unsent || len(sent) != 0 {
-		t.Errorf("another device of the same number: %v, sent %v", err, sent)
+	if err := c.PostOrigin(context.Background(), o, "a", ok); err != nil || len(sent) != 1 {
+		t.Fatalf("allowed again: %v, sent %v", err, sent)
+	}
+	// unlinked and paired again (the same number, whatever device address it gets): another link
+	c.relink()
+	sent = nil
+	if err := c.PostOrigin(context.Background(), o, "a", ok); !errors.As(err, &pe) || !pe.Unsent || len(sent) != 0 {
+		t.Errorf("after a relink: %v, sent %v", err, sent)
+	}
+}
+
+// The link id is the session's: the same across a restart, another after a relink.
+func TestLinkSurvivesARestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.db")
+	none := func() Policy { return Policy{} }
+	a, err := Open(path, none, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := a.account()
+	a.Close()
+	b, err := Open(path, none, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if id == "" || b.account() != id {
+		t.Fatalf("restart: %q then %q", id, b.account())
+	}
+	b.relink()
+	if b.account() == id {
+		t.Fatal("a relink kept the link id")
+	}
+}
+
+// A person no longer admitted while their turn ran gets nothing, not even the failure reply.
+func TestRevokedWhileTheTurnRan(t *testing.T) {
+	p := Policy{Enabled: true, Users: []string{"393331234567"}}
+	c := open(t, p, nil)
+	c.policy = func() Policy { return p }
+	var got sends
+	got.record(c)
+	c.UseExchange(func(context.Context, string, Turn) (Answer, error) {
+		p.Users = nil // removed from allowed_users meanwhile
+		return Answer{Text: "here you go"}, nil
+	})
+	c.handle(context.Background(), direct("hola"))
+	for _, s := range got {
+		if !strings.HasPrefix(s, "react:") || s != "react:"+working {
+			t.Fatalf("posted to someone no longer admitted: %q", got)
+		}
 	}
 }
 
@@ -176,19 +224,19 @@ func TestAllowedReply(t *testing.T) {
 	p := Policy{Enabled: true, Users: []string{"+393331234567"}, Groups: []string{group.String()}}
 	c := open(t, p, nil)
 	c.connected = func() bool { return true }
-	for _, ok := range []Origin{{Chat: group.String(), Group: true, Account: me.PN.String()}, {Chat: owner.String(), Number: "393331234567", Account: me.PN.String()}} {
+	for _, ok := range []Origin{{Chat: group.String(), Group: true, Account: c.account()}, {Chat: owner.String(), Number: "393331234567", Account: c.account()}} {
 		if err := c.AllowedReply(ok); err != nil {
 			t.Errorf("%+v: %v", ok, err)
 		}
 	}
-	for _, bad := range []Origin{{Chat: "1203630999@g.us", Group: true, Account: me.PN.String()}, {Chat: member.String(), Number: "393339999999", Account: me.PN.String()},
-		{Chat: group.String(), Group: true}, {Chat: group.String(), Group: true, Account: "393339999999@s.whatsapp.net"}} {
+	for _, bad := range []Origin{{Chat: "1203630999@g.us", Group: true, Account: c.account()}, {Chat: member.String(), Number: "393339999999", Account: c.account()},
+		{Chat: group.String(), Group: true}, {Chat: group.String(), Group: true, Account: "another-link"}} {
 		if err := c.AllowedReply(bad); err == nil {
 			t.Errorf("%+v allowed", bad)
 		}
 	}
 	c.connected = func() bool { return false }
-	if err := c.AllowedReply(Origin{Chat: group.String(), Group: true, Account: me.PN.String()}); !errors.Is(err, ErrNotConnected) {
+	if err := c.AllowedReply(Origin{Chat: group.String(), Group: true, Account: c.account()}); !errors.Is(err, ErrNotConnected) {
 		t.Errorf("not connected: %v", err)
 	}
 }

@@ -470,27 +470,37 @@ func (r *Returns) capture(tx *sql.Tx, ret int64, kind string, message int64, del
 	return nil
 }
 
-// onSend captures what a stored message brings: an answer to the request it names (refused when it
-// names requests of more than one open return), or progress on the one request of its thread.
+// onSend captures what a stored message brings: an answer to the request it names, or progress on
+// the one request of its thread. An answer naming requests made for different people (closed or
+// open: a closed return still says whose a request was) or for more than one open return is refused.
 func (r *Returns) onSend(tx *sql.Tx, msg int64, sender string, recipients []BusAgent, thread int64, answers []int64) error {
 	type hit struct {
 		ret   int64
 		agent string
 	}
 	seen := map[int64]hit{}
+	people := map[string]bool{}
 	for _, a := range answers {
 		var h hit
-		err := tx.QueryRow(`SELECT id, agent FROM returns WHERE request = ? AND recipient = ? AND closed_at IS NULL`, a, sender).Scan(&h.ret, &h.agent)
+		var origin string
+		var closed sql.NullInt64
+		err := tx.QueryRow(`SELECT id, agent, origin, closed_at FROM returns WHERE request = ? AND recipient = ?`, a, sender).Scan(&h.ret, &h.agent, &origin, &closed)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		seen[h.ret] = h
+		people[origin] = true
+		if !closed.Valid {
+			seen[h.ret] = h
+		}
+	}
+	if len(people) > 1 {
+		return toolErr("this message answers requests made for different people: answer each in a message of its own")
 	}
 	if len(seen) > 1 {
-		return toolErr("this message answers requests the core follows separately for people: answer each in a message of its own")
+		return toolErr("this message answers requests the core follows separately: answer each in a message of its own")
 	}
 	for _, h := range seen {
 		return r.capture(tx, h.ret, EventAnswered, msg, h.agent)

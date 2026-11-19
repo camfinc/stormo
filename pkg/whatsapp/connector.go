@@ -171,6 +171,8 @@ type Connector struct {
 	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	exchange Exchange
 	register func(context.Context, OriginEvent) (string, error)
+	// link is the link's id (origins.go), under mu.
+	link string
 	// turnTimeout bounds a person's turn (10 minutes); the reply after it goes on its own context.
 	turnTimeout time.Duration
 	// lane serialises every post on the account (a turn's reply, whatsapp_send, a request's outcome),
@@ -220,6 +222,10 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 		return fail(err)
 	}
 	// The agent's own messages, so a reaction or a reply to one is known as addressed to it.
+	// stormo_meta keeps the link id (origins.go): made anew at each pairing and unlink.
+	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS stormo_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`); err != nil {
+		return fail(err)
+	}
 	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS stormo_sent (id TEXT PRIMARY KEY, chat TEXT NOT NULL, excerpt TEXT NOT NULL, at INTEGER NOT NULL)`); err != nil {
 		return fail(err)
 	}
@@ -248,6 +254,9 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	c.download = c.client.Download
 	c.connected = func() bool { return c.Paired() && c.client.IsConnected() }
 	c.me = func() Me { return Me{PN: c.client.Store.GetJID(), LID: c.client.Store.GetLID()} }
+	if db.QueryRow(`SELECT v FROM stormo_meta WHERE k = 'link'`).Scan(&c.link) != nil || c.link == "" {
+		c.relink()
+	}
 	c.client.AddEventHandler(func(event any) {
 		switch e := event.(type) {
 		case *events.Connected:
@@ -255,7 +264,10 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 		case *events.Disconnected:
 			c.set(Status{State: "disconnected"})
 		case *events.LoggedOut:
+			c.relink()
 			c.set(Status{State: "unlinked"})
+		case *events.PairSuccess:
+			c.relink()
 		case *events.GroupInfo:
 			if e.Name != nil {
 				c.mu.Lock()
@@ -331,6 +343,7 @@ func (c *Connector) Logout(ctx context.Context) error {
 			return err
 		}
 	}
+	c.relink()
 	c.set(Status{State: "unlinked"})
 	return nil
 }
@@ -899,6 +912,11 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	}
 	c.lane.Lock()
 	defer c.lane.Unlock()
+	// still admitted, checked again under the lane: a group removed, or a person no longer allowed,
+	// while the turn ran gets nothing, not even the failure reply
+	if _, ok := c.accept(post, e); !ok {
+		return
+	}
 	if len(ans.Voice) > 0 {
 		// the agent answered with a voice note: it goes first, its text after it when asked; a
 		// note that cannot be sent leaves the text to go alone

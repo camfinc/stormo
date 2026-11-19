@@ -2,6 +2,8 @@ package whatsapp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -18,8 +20,8 @@ import (
 // claims it, so the outcome of a request the agent sends while answering it can come back to that
 // person, in that chat, quoting what they asked.
 
-// OriginEvent is an accepted message as the core records it. Account is the linked device that
-// received it: an origin is answered only from that device (unlinking or relinking makes another).
+// OriginEvent is an accepted message as the core records it. Account is the link that received it:
+// an origin is answered only from that link (pairing or unlinking makes another).
 type OriginEvent struct {
 	Session, Chat, MessageID, Participant, Number, Name, Account string
 	Group, Verified                                              bool
@@ -61,16 +63,24 @@ func unsent(err error) bool {
 	return false
 }
 
-// account is the linked device's own address, device included ("" when not linked): a relink,
-// even of the same number, is another device.
+// account is the link's identity: a random id the session keeps, made anew whenever the account is
+// paired or unlinked (a relink, even of the same number on a device of the same address, is another
+// link), so an origin is answered only from the link that received it.
 func (c *Connector) account() string {
-	if c.me == nil {
-		return ""
-	}
-	if pn := c.me().PN; !pn.IsEmpty() {
-		return pn.String()
-	}
-	return ""
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.link
+}
+
+// relink makes the session a new link id: every origin recorded before is refused from now on.
+func (c *Connector) relink() {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+	_, _ = c.db.Exec(`INSERT OR REPLACE INTO stormo_meta(k, v) VALUES ('link', ?)`, id)
+	c.mu.Lock()
+	c.link = id
+	c.mu.Unlock()
 }
 
 // UseOrigins has the connector record each accepted message (a reaction is not one) through
@@ -89,7 +99,7 @@ func (c *Connector) AllowedReply(o Origin) error {
 		return ErrNotConnected
 	}
 	if acct := c.account(); o.Account == "" || acct != o.Account {
-		return errors.New("whatsapp: the linked device is not the one the person wrote to")
+		return errors.New("whatsapp: the account was relinked since the person wrote")
 	}
 	p := c.policy()
 	switch {

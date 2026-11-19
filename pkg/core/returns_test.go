@@ -33,7 +33,7 @@ func open() ReturnView {
 }
 
 func result(v ReturnView, outcome, disp string) DeliveryResult {
-	return DeliveryResult{From: v.ActiveFrom, To: v.ActiveTo, Outcome: outcome, Disposition: disp}
+	return DeliveryResult{Gen: v.ActiveGen, From: v.ActiveFrom, To: v.ActiveTo, Outcome: outcome, Disposition: disp}
 }
 
 // An event asks for one delivery; events while it is in flight wait for the next, which covers them.
@@ -129,7 +129,30 @@ func TestReturnFinishIsOnce(t *testing.T) {
 	if again.Next != s.Next {
 		t.Fatalf("a repeat changed it: %+v", again.Next)
 	}
-	wantKinds(t, Finish(a, DeliveryResult{From: 5, To: 6, Outcome: OutcomeConfirmed}, t0))
+	wantKinds(t, Finish(a, DeliveryResult{Gen: a.ActiveGen, From: 5, To: 6, Outcome: OutcomeConfirmed}, t0))
+	// two due prompts cover the same empty range: the first's result never settles the second
+	first := Tick(open(), t0.Add(46*time.Minute)).Next
+	f := Finish(first, result(first, OutcomeSilent, DispositionSilent), t0.Add(47*time.Minute))
+	f.Next.NextDue = t0.Add(90 * time.Minute)
+	second := Tick(f.Next, t0.Add(91*time.Minute)).Next
+	if !second.Active || second.ActiveFrom != first.ActiveFrom || second.ActiveTo != first.ActiveTo {
+		t.Fatalf("not the same range: %+v %+v", first, second)
+	}
+	wantKinds(t, Finish(second, result(first, OutcomeSilent, DispositionSilent), t0))
+	if Finish(second, result(first, OutcomeSilent, DispositionSilent), t0).Next != second {
+		t.Fatal("a stale result settled the newer delivery")
+	}
+}
+
+// An older unconfirmed [DONE] does not turn off the reminders for news it never saw.
+func TestReturnUnconfirmedDoneKeepsNewerReminders(t *testing.T) {
+	a := Capture(open(), EventProgress, 1, t0).Next
+	b := Capture(a, EventAnswered, 2, t0).Next // captured while delivery 1 runs
+	s := Finish(b, result(b, OutcomeUnconfirmed, DispositionDone), t0)
+	if s.Next.NoDue {
+		t.Fatal("an older [DONE] turned off the reminders for newer news")
+	}
+	wantKinds(t, s, ActFinding, ActSchedule, ActEnqueue)
 }
 
 // The deadline asks for an update; escalation latches once, stops the reminders but not the news;

@@ -33,6 +33,9 @@ type fakeChannel struct {
 	lose    int
 	busy    int
 	down    bool // every Start fails in transport, nothing admitted
+	holdAll bool // every turn, not only inbound ones, runs until released
+	takes   int  // Takes that succeeded
+	takeErr int  // Takes that fail first
 	hold    bool
 	script  func(t engine.ChannelTurn) turnResult
 	turns   []engine.ChannelTurn
@@ -77,7 +80,7 @@ func (c *fakeChannel) Start(_ context.Context, t engine.ChannelTurn) (engine.Cha
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hold && t.Kind == "inbound" {
+	if c.hold && t.Kind == "inbound" || c.holdAll {
 		c.held[t.Execution] = st
 	} else {
 		c.status[t.Execution] = st
@@ -102,7 +105,16 @@ func (c *fakeChannel) Status(_ context.Context, exec string, _ time.Duration) (e
 	return st, nil
 }
 
-func (c *fakeChannel) Take(context.Context, string) error { return nil }
+func (c *fakeChannel) Take(context.Context, string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.takeErr > 0 {
+		c.takeErr--
+		return errors.New("DELETE /v1/channel/turns: connection reset by peer")
+	}
+	c.takes++
+	return nil
+}
 
 func (c *fakeChannel) release() {
 	c.mu.Lock()
@@ -678,13 +690,18 @@ func TestReturnOriginAuthorization(t *testing.T) {
 	var second int64
 	_ = rp.f.db.QueryRow(`SELECT request FROM returns ORDER BY id DESC LIMIT 1`).Scan(&second)
 	if _, err := rp.f.bus.Send("nova", SendRequest{To: "atlas", Subject: "Both", Body: "z", Answers: []int64{req, second}}); err == nil ||
-		!strings.Contains(err.Error(), "separately") {
-		t.Fatalf("one answer for two returns: %v", err)
+		!strings.Contains(err.Error(), "different people") {
+		t.Fatalf("one answer for two people: %v", err)
 	}
 	rp.answer(t, req)
 	rp.rounds(3)
 	if rp.state(t) != ReturnDone {
 		t.Fatalf("state %s", rp.state(t))
+	}
+	// the first person's request closed: it still says whose it was
+	if _, err := rp.f.bus.Send("nova", SendRequest{To: "atlas", Subject: "Both again", Body: "z", Answers: []int64{req, second}}); err == nil ||
+		!strings.Contains(err.Error(), "different people") {
+		t.Fatalf("a closed and an open request of two people: %v", err)
 	}
 	if _, err := rp.f.bus.Send("atlas", SendRequest{To: "nova", Subject: "Also", Body: "y", Thread: req, Exec: other.Execution, ExecToken: other.Token}); err == nil ||
 		!strings.Contains(err.Error(), "another person's conversation") {
@@ -845,9 +862,10 @@ func TestReturnInboundTimeout(t *testing.T) {
 	}
 	rp.ch.release()
 	rp.rounds(2)
-	_ = rp.f.db.QueryRow(`SELECT state FROM executions WHERE origin = ? AND kind = 'inbound'`, o).Scan(&state)
-	if state != "ok" || len(rp.poster.sent()) != 0 {
-		t.Fatalf("after it ended: state %s, posts %v", state, rp.poster.sent())
+	var ended, taken int
+	_ = rp.f.db.QueryRow(`SELECT ended IS NOT NULL, taken FROM executions WHERE origin = ? AND kind = 'inbound'`, o).Scan(&ended, &taken)
+	if ended != 1 || taken != 1 || len(rp.poster.sent()) != 0 {
+		t.Fatalf("after it ended: ended %d taken %d, posts %v", ended, taken, rp.poster.sent())
 	}
 	var second int64
 	_ = rp.f.db.QueryRow(`SELECT request FROM returns WHERE origin = ?`, o).Scan(&second)
@@ -917,5 +935,108 @@ func TestReturnDisposition(t *testing.T) {
 		if d, text := disposition(c.in); d != c.disp || text != c.text {
 			t.Errorf("%q: %s %q, want %s %q", c.in, d, text, c.disp, c.text)
 		}
+	}
+}
+
+// Closing a return while its update's turn is still running retires the turn without ending it:
+// the side door stays shut for that chat until the runtime says it ended, then its result is taken.
+// Nothing is posted.
+func TestReturnCloseWhileTheTurnRuns(t *testing.T) {
+	rp := newReplay(t, reply("Here.\n[DONE]"))
+	req, _ := rp.request(t)
+	rp.ch.set(func(c *fakeChannel) { c.holdAll = true })
+	rp.answer(t, req)
+	rp.rounds(1) // its turn starts and keeps running
+	rp.setOptIn(false)
+	rp.rounds(2) // the return closes
+	group, _ := types.ParseJID(sellersGroup)
+	if rp.state(t) != ReturnExpired {
+		t.Fatalf("state %s", rp.state(t))
+	}
+	if rp.r.sideDoor("atlas", group) == nil {
+		t.Fatal("the side door opened while the retired turn still runs")
+	}
+	rp.ch.set(func(c *fakeChannel) { c.takeErr = 1 }) // its first cleanup fails
+	rp.ch.release()
+	rp.rounds(1)
+	if rp.r.sideDoor("atlas", group) != nil {
+		t.Fatal("the side door stayed shut after the turn ended")
+	}
+	var taken int
+	_ = rp.f.db.QueryRow(`SELECT taken FROM executions WHERE kind = 'return'`).Scan(&taken)
+	if taken != 0 {
+		t.Fatal("taken although the runtime refused")
+	}
+	rp.rounds(1)
+	_ = rp.f.db.QueryRow(`SELECT taken FROM executions WHERE kind = 'return'`).Scan(&taken)
+	if taken != 1 || len(rp.poster.sent()) != 0 {
+		t.Fatalf("taken %d, posts %v", taken, rp.poster.sent())
+	}
+}
+
+// A reply the runtime forgot (taken, or pruned while the core was away) is lost, never silence.
+func TestReturnForgottenReplyIsNotSilence(t *testing.T) {
+	rp := newReplay(t, reply("Here.\n[DONE]"))
+	req, _ := rp.request(t)
+	rp.answer(t, req)
+	rp.r.drive() // started
+	rp.ch.set(func(c *fakeChannel) {
+		for id, st := range c.status {
+			if st.State == "ok" && strings.Contains(st.Text, "Here.") {
+				c.status[id] = engine.ChannelTurnStatus{Execution: id, State: "ok", Taken: true}
+			}
+		}
+	})
+	rp.rounds(2)
+	if rp.outcomes(t) != OutcomeFailed || !hasFinding(t, rp.f.db, "return_undelivered") || len(rp.poster.sent()) != 0 {
+		t.Fatalf("outcomes %s, posts %v", rp.outcomes(t), rp.poster.sent())
+	}
+}
+
+// 5. An old update that fails does not take newer news down with it: its range fails, the answer
+// that came meanwhile still reaches the person, and nothing is woken in the bus.
+func TestReturnOldFailureNewerAnswer(t *testing.T) {
+	calls := 0
+	var mu sync.Mutex
+	rp := newReplay(t, func(engine.ChannelTurn) turnResult {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls <= 2 { // the progress update's turn and its recovery
+			return turnResult{err: errors.New("model error"), acted: 1}
+		}
+		return turnResult{text: "They have it: Alpha 10%.\n[DONE]"}
+	})
+	req, _ := rp.request(t)
+	progress := mustSend(t, rp.f, "nova", SendRequest{To: "atlas", Subject: "Working on it", Body: "Two agencies so far.", Thread: req})
+	rp.r.drive() // the progress update's turn starts and fails
+	answer := rp.answer(t, req)
+	rp.pass(8, 11*time.Second)
+	if rp.outcomes(t) != OutcomeFailed+","+OutcomeConfirmed || len(rp.poster.sent()) != 1 || rp.state(t) != ReturnDone {
+		t.Fatalf("outcomes %s, posts %v, state %s", rp.outcomes(t), rp.poster.sent(), rp.state(t))
+	}
+	for _, m := range []int64{progress.ID, answer.ID} {
+		if o := rp.owner(t, m); o != "return" {
+			t.Fatalf("message %d went to the %s", m, o)
+		}
+	}
+	rp.f.bus.WakeRound()
+	if w := rp.wokenAtlas(); len(w) != 0 {
+		t.Fatalf("woken in the bus: %+v", w)
+	}
+}
+
+// A send whose settlement could not be written is found sending outside a post: settled (as
+// unconfirmed when the core did not see it go), never sent again.
+func TestReturnStrandedSendSettles(t *testing.T) {
+	rp := newReplay(t, reply("Here they are.\n[UPDATE]"))
+	req, _ := rp.request(t)
+	rp.answer(t, req)
+	rp.r.drive()
+	rp.r.drive() // prepared
+	_, _ = rp.f.db.Exec(`UPDATE return_deliveries SET state = 'sending' WHERE state = 'prepared'`)
+	rp.rounds(1)
+	if rp.outcomes(t) != OutcomeUnconfirmed || len(rp.poster.sent()) != 0 || !hasFinding(t, rp.f.db, "return_unconfirmed") {
+		t.Fatalf("outcomes %s, posts %v", rp.outcomes(t), rp.poster.sent())
 	}
 }
