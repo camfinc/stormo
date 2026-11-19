@@ -172,8 +172,10 @@ type Connector struct {
 	exchange Exchange
 	register func(context.Context, OriginEvent) (string, error)
 	// link is the link's id (origins.go), under mu; relinking while a new one is not on disk yet.
+	// rotating serialises rotations (taken before mu, never under it).
 	link      string
 	relinking bool
+	rotating  sync.Mutex
 	// turnTimeout bounds a person's turn (10 minutes); the reply after it goes on its own context.
 	turnTimeout time.Duration
 	// lane serialises every post on the account (a turn's reply, whatsapp_send, a request's outcome),
@@ -813,6 +815,12 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	hash := sha256.Sum256([]byte(e.Info.Chat.ToNonAD().String()))
 	session := fmt.Sprintf("whatsapp-%x", hash[:16])
 	link := c.account() // the link that received it: its reply goes only from that link
+	if link == "" {
+		// no link on disk (a rotation the session could not keep): nothing is taken in under none,
+		// so nothing can be answered under none
+		c.set(Status{State: "delivery_error", Error: "The WhatsApp session could not keep its link. Check the agent's storage."})
+		return
+	}
 	// Recorded before it is claimed (idempotent on its id): a crash between the two leaves the
 	// record for the redelivered message, never a claimed message with none.
 	c.mu.Lock()
@@ -917,7 +925,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	// still admitted, and still the link that received it, checked again under the lane: a group
 	// removed, a person no longer allowed, or a relink while the turn ran gets nothing, not even the
 	// failure reply
-	if _, ok := c.accept(post, e); !ok || c.account() != link {
+	if _, ok := c.accept(post, e); !ok || link == "" || c.account() != link {
 		return
 	}
 	if len(ans.Voice) > 0 {

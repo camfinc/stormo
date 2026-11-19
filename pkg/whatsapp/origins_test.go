@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -300,5 +301,63 @@ func TestLinkOfAnotherDevice(t *testing.T) {
 	defer b.Close()
 	if b.account() == "abc" || b.account() == "" {
 		t.Fatalf("link %q", b.account())
+	}
+}
+
+// No link on disk: nothing is taken in (no origin, no turn, no claim), so nothing is answered under
+// none.
+func TestNoLinkTakesNothingIn(t *testing.T) {
+	c := open(t, Policy{Enabled: true, Users: []string{"393331234567"}}, nil)
+	var got sends
+	got.record(c)
+	if _, err := c.db.Exec(`CREATE TRIGGER refuse_link BEFORE INSERT ON stormo_meta BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.relink(); err == nil {
+		t.Fatal("the rotation was kept")
+	}
+	registered, ran := 0, 0
+	c.UseOrigins(func(context.Context, OriginEvent) (string, error) { registered++; return "o", nil })
+	c.UseExchange(func(context.Context, string, Turn) (Answer, error) { ran++; return Answer{Text: "hi"}, nil })
+	c.handle(context.Background(), direct("hola"))
+	var claimed int
+	_ = c.db.QueryRow(`SELECT count(*) FROM stormo_received`).Scan(&claimed)
+	if registered+ran+claimed+len(got) != 0 {
+		t.Fatalf("registered %d, ran %d, claimed %d, posted %v", registered, ran, claimed, got)
+	}
+}
+
+// Callers that find a rotation pending at once repair it once: one new link, the one on disk.
+func TestLinkRepairIsOnce(t *testing.T) {
+	c := open(t, Policy{}, nil)
+	if _, err := c.db.Exec(`CREATE TRIGGER refuse_link BEFORE INSERT ON stormo_meta BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.relink()
+	_, _ = c.db.Exec(`DROP TRIGGER refuse_link`)
+	// every caller finds the rotation pending before any repair runs: they queue on the rotation
+	var wg, started sync.WaitGroup
+	got := make([]string, 16)
+	c.rotating.Lock()
+	for i := range got {
+		wg.Add(1)
+		started.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			started.Done()
+			got[i] = c.account()
+		}(i)
+	}
+	started.Wait()
+	time.Sleep(20 * time.Millisecond) // they are blocked on the rotation by now
+	c.rotating.Unlock()
+	wg.Wait()
+	var disk string
+	_ = c.db.QueryRow(`SELECT v FROM stormo_meta WHERE k = 'link'`).Scan(&disk)
+	id, _, _ := strings.Cut(disk, "|")
+	for _, g := range got {
+		if g == "" || g != id {
+			t.Fatalf("callers saw %q, disk has %q", got, id)
+		}
 	}
 }

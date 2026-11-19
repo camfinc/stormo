@@ -272,7 +272,11 @@ func (r *Returns) closeReturn(id int64, reason string) {
 // an update's turn retired by its return closing) to their end: what they did is recorded, then
 // their result taken from the runtime (again each round until it is). Nothing is posted.
 func (r *Returns) reconcile() {
-	rows, err := r.o.DB.Query(`SELECT id, agent, ended IS NULL FROM executions WHERE state IN ('abandoned', 'retired') AND (ended IS NULL OR taken = 0)`)
+	// and the ended turns whose result was decided but not taken (a stop between the two): never one
+	// whose delivery still runs, which reads that result first
+	rows, err := r.o.DB.Query(`SELECT id, agent, ended IS NULL FROM executions WHERE state IN ('abandoned', 'retired') AND (ended IS NULL OR taken = 0)
+		UNION SELECT id, agent, 0 FROM executions WHERE kind IN ('return', 'recovery') AND ended IS NOT NULL AND taken = 0
+			AND state NOT IN ('abandoned', 'retired') AND id NOT IN (SELECT execution FROM return_deliveries WHERE state = 'running')`)
 	if err != nil {
 		return
 	}

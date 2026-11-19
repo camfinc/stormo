@@ -1135,3 +1135,24 @@ func TestReturnSettlementFailures(t *testing.T) {
 		}
 	}
 }
+
+// A result decided but not taken (the take failed, or the core stopped between the two) is taken
+// later; one whose delivery still reads it never is.
+func TestReturnDecidedResultsAreTaken(t *testing.T) {
+	rp := newReplay(t, reply("Here they are.\n[UPDATE]"))
+	req, _ := rp.request(t)
+	rp.answer(t, req)
+	rp.r.drive() // started
+	rp.ch.set(func(c *fakeChannel) { c.takeErr = 1 })
+	rp.r.drive() // prepared; its take fails
+	var taken int
+	_ = rp.f.db.QueryRow(`SELECT taken FROM executions WHERE kind = 'return'`).Scan(&taken)
+	if taken != 0 {
+		t.Fatal("taken although the runtime refused")
+	}
+	rp.rounds(2)
+	_ = rp.f.db.QueryRow(`SELECT taken FROM executions WHERE kind = 'return'`).Scan(&taken)
+	if taken != 1 || len(rp.poster.sent()) != 1 {
+		t.Fatalf("taken %d, posts %v", taken, rp.poster.sent())
+	}
+}

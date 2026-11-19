@@ -70,14 +70,27 @@ func unsent(err error) bool {
 // be kept: nothing is recorded or posted under a link that is not on disk (it is tried again here).
 func (c *Connector) account() string {
 	c.mu.Lock()
-	pending, link := c.relinking, c.link
+	pending := c.relinking
 	c.mu.Unlock()
-	if pending && c.relink() == nil {
-		c.mu.Lock()
-		link = c.link
-		c.mu.Unlock()
+	if pending {
+		c.repair()
 	}
-	return link
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.link
+}
+
+// repair makes the new link id a failed rotation could not keep, once: callers that saw it pending
+// at the same time find it done (the rotations are serialised, and it is checked again inside).
+func (c *Connector) repair() {
+	c.rotating.Lock()
+	defer c.rotating.Unlock()
+	c.mu.Lock()
+	pending := c.relinking
+	c.mu.Unlock()
+	if pending {
+		_ = c.rotate()
+	}
 }
 
 // device is the linked device's own address ("" unlinked): kept beside the link id, so a session
@@ -91,7 +104,15 @@ func (c *Connector) device() string {
 
 // relink makes the session a new link id: every origin recorded before is refused from now on. The
 // old id is dropped first and the new one used only once it is on disk; until then there is none.
+// Rotations are serialised: what is in memory is always what was last written.
 func (c *Connector) relink() error {
+	c.rotating.Lock()
+	defer c.rotating.Unlock()
+	return c.rotate()
+}
+
+// rotate is relink's work, under rotating.
+func (c *Connector) rotate() error {
 	c.mu.Lock()
 	c.link, c.relinking = "", true
 	c.mu.Unlock()

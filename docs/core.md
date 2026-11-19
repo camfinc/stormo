@@ -552,8 +552,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
     connector claims it with the link that received it: a random id the WhatsApp session keeps, made
     anew at every pairing and unlink (and at open when the session finds itself on another device),
-    so a relink, even of the same number, is another link. A new id is used only once it is on disk;
-    until then there is none, and nothing is recorded or posted under one. Its turn runs as a channel turn, an *execution* the engine admits
+    so a relink, even of the same number, is another link. A new id is used only once it is on disk,
+    and rotations are serialised, so memory always holds what was last written. Until a new id is
+    kept there is none: no message is taken in (no origin, no turn, no claim) and nothing is posted. Its turn runs as a channel turn, an *execution* the engine admits
     once, with a secret *token* the core issues and the runtime keeps in memory only. Every core call
     of the turn carries `_meta.exec`, `op` and `exec_token`.
   - **Opening a return.** A `msg_send` from that turn to one agent opens a *return*. It is refused
@@ -637,7 +638,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
 
     Everything captured is settled and nothing is re-woken; a send in flight settles first. A turn
     of it still running is *retired*, not ended: the side door stays shut for its chat until the
-    runtime says it ended, then its result is taken (a failed take is tried again each round). It also expires, with a medium finding, once escalated, caught up, idle and quiet
+    runtime says it ended, then its result is taken (a failed take is tried again each round, as for
+    any result decided but not yet taken). It also expires, with a medium finding, once escalated, caught up, idle and quiet
     for seven days. `core.returns: stop` starts and posts nothing more, holding everything as it is
     until `on` or `drain`.
   - **Escalation** (`escalate_after`) raises a high `return_escalated` finding and stops the due
