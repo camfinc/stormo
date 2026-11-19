@@ -240,3 +240,65 @@ func TestAllowedReply(t *testing.T) {
 		t.Errorf("not connected: %v", err)
 	}
 }
+
+// A relink while the turn ran: its reply does not go from the new link.
+func TestRelinkWhileTheTurnRan(t *testing.T) {
+	c := open(t, Policy{Enabled: true, Users: []string{"393331234567"}}, nil)
+	var got sends
+	got.record(c)
+	c.UseExchange(func(context.Context, string, Turn) (Answer, error) {
+		if err := c.relink(); err != nil {
+			t.Fatal(err)
+		}
+		return Answer{Text: "here you go"}, nil
+	})
+	c.handle(context.Background(), direct("hola"))
+	for _, s := range got {
+		if s != "react:"+working {
+			t.Fatalf("posted across a relink: %q", got)
+		}
+	}
+}
+
+// A new link id that cannot be kept is never used: no link until it is on disk, then a new one.
+func TestRelinkThatCannotBeKept(t *testing.T) {
+	c := open(t, Policy{Enabled: true, Groups: []string{group.String()}}, nil)
+	c.connected = func() bool { return true }
+	old := c.account()
+	if _, err := c.db.Exec(`CREATE TRIGGER refuse_link BEFORE INSERT ON stormo_meta BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.relink(); err == nil {
+		t.Fatal("a relink the database refused succeeded")
+	}
+	o := Origin{Chat: group.String(), Group: true, Account: old}
+	if c.account() != "" || c.AllowedReply(o) == nil {
+		t.Fatalf("link %q after a refused relink", c.account())
+	}
+	_, _ = c.db.Exec(`DROP TRIGGER refuse_link`)
+	if now := c.account(); now == "" || now == old || c.AllowedReply(o) == nil {
+		t.Fatalf("after the database took it: %q (old %q)", now, old)
+	}
+}
+
+// A session found on another device than its link id was made for gets a new one at open.
+func TestLinkOfAnotherDevice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.db")
+	none := func() Policy { return Policy{} }
+	a, err := Open(path, none, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE stormo_meta SET v = 'abc|50760009999:4@s.whatsapp.net' WHERE k = 'link'`); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	b, err := Open(path, none, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if b.account() == "abc" || b.account() == "" {
+		t.Fatalf("link %q", b.account())
+	}
+}

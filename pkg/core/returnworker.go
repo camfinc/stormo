@@ -605,23 +605,27 @@ func (r *Returns) pollDelivery(d delivery) {
 	if err != nil || !st.Terminal() {
 		return
 	}
+	// what a result decides is recorded before the result is taken from the runtime: a core that
+	// stops between the two finds the decision, never a result it can no longer read
 	r.endExecution(d.execution, st.State, st.Acted, st.Error)
+	if st.State != "ok" {
+		// a failure's evidence (its state, what it did) outlives its take: it decides the same
+		r.turnFailed(d, st.Acted, st.Error)
+		r.take(ctx, ct, d.execution)
+		return
+	}
 	if st.Taken {
-		// the runtime forgot its result (taken, or pruned while the core was away): what it said is
+		// the runtime forgot a reply (taken, or pruned while the core was away): what it said is
 		// lost, which is never read as silence
 		_ = r.settle(d, "running", OutcomeFailed, "", "the agent's engine no longer has the update's reply")
 		return
 	}
-	if st.State != "ok" {
-		r.take(ctx, ct, d.execution)
-		r.turnFailed(d, st.Acted, st.Error)
-		return
-	}
 	disp, text := disposition(st.Text)
 	if disp == DispositionSilent {
-		r.take(ctx, ct, d.execution)
 		d.disposition = DispositionSilent
-		_ = r.settle(d, "running", OutcomeSilent, "", "")
+		if r.settle(d, "running", OutcomeSilent, "", "") == nil {
+			r.take(ctx, ct, d.execution)
+		}
 		return
 	}
 	msg, truncated := fit(text)

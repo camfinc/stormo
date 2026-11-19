@@ -1040,3 +1040,98 @@ func TestReturnStrandedSendSettles(t *testing.T) {
 		t.Fatalf("outcomes %s, posts %v", rp.outcomes(t), rp.poster.sent())
 	}
 }
+
+// A retired update turn (given up while it may still run) opens no path to the person: a request
+// it sends with its own valid token goes as an ordinary message, with a note.
+func TestReturnRetiredTurnOpensNothing(t *testing.T) {
+	rp := newReplay(t, reply("x\n[DONE]"))
+	req, _ := rp.request(t)
+	rp.ch.set(func(c *fakeChannel) { c.down = true })
+	rp.answer(t, req)
+	rp.rounds(1)
+	rp.f.now = rp.f.now.Add(startPatience + time.Minute)
+	rp.rounds(1) // never confirmed: failed, its turn retired
+	var exec, token, state string
+	if err := rp.f.db.QueryRow(`SELECT id, token, state FROM executions WHERE kind = 'return'`).Scan(&exec, &token, &state); err != nil || state != "retired" {
+		t.Fatalf("execution %s %v", state, err)
+	}
+	res, err := rp.f.bus.Send("atlas", SendRequest{To: "nova", Subject: "More", Body: "y", Exec: exec, ExecToken: token})
+	if err != nil || res.Note == "" {
+		t.Fatalf("send %+v %v", res, err)
+	}
+	var n int
+	_ = rp.f.db.QueryRow(`SELECT COUNT(*) FROM returns`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("%d returns: the retired turn opened one", n)
+	}
+}
+
+// A failed turn whose result was taken before the core recorded what it decides still decides the
+// same (its tombstone keeps its state and what it did): one recovery turn runs.
+func TestReturnFailedTombstoneStillRecovers(t *testing.T) {
+	rp := newReplay(t, func(t engine.ChannelTurn) turnResult {
+		if t.Kind == "recovery" {
+			return turnResult{text: "Here is where it stands.\n[UPDATE]"}
+		}
+		return turnResult{err: errors.New("model error"), acted: 1}
+	})
+	req, _ := rp.request(t)
+	rp.answer(t, req)
+	rp.r.drive() // started; it failed
+	rp.ch.set(func(c *fakeChannel) {
+		for id, st := range c.status {
+			if st.State == "failed" {
+				c.status[id] = engine.ChannelTurnStatus{Execution: id, State: "failed", Acted: st.Acted, Taken: true}
+			}
+		}
+	})
+	rp.pass(4, 11*time.Second)
+	if got := strings.Join(rp.ch.kinds()[1:], ","); got != "return,recovery" || len(rp.poster.sent()) != 1 {
+		t.Fatalf("turns %s, posts %v", got, rp.poster.sent())
+	}
+}
+
+// 2. Real settlement failures (the database refusing the write): a send that went is recorded once
+// the database takes it, never sent again; one that may have gone settles unconfirmed; a core
+// restarted meanwhile settles what it did not see go as unconfirmed.
+func TestReturnSettlementFailures(t *testing.T) {
+	refuse := `CREATE TRIGGER refuse_settle BEFORE UPDATE OF state ON return_deliveries WHEN NEW.state = 'settled' BEGIN SELECT RAISE(ABORT, 'injected'); END`
+	for _, c := range []struct {
+		name    string
+		set     func(p *fakePoster)
+		restart bool
+		posts   int
+		outcome string
+	}{
+		{"went", func(*fakePoster) {}, false, 1, OutcomeConfirmed},
+		{"maybe", func(p *fakePoster) { p.uncertain = true }, false, 0, OutcomeUnconfirmed},
+		{"went, then a restart", func(*fakePoster) {}, true, 1, OutcomeUnconfirmed},
+	} {
+		rp := newReplay(t, reply("Here they are.\n[UPDATE]"))
+		req, _ := rp.request(t)
+		rp.poster.set(c.set)
+		rp.answer(t, req)
+		rp.r.drive()
+		rp.r.drive() // prepared
+		if _, err := rp.f.db.Exec(refuse); err != nil {
+			t.Fatal(err)
+		}
+		rp.rounds(3) // the post, and settlements the database refuses
+		var state string
+		_ = rp.f.db.QueryRow(`SELECT state FROM return_deliveries`).Scan(&state)
+		if state != "sending" {
+			t.Fatalf("%s: state %s", c.name, state)
+		}
+		_, _ = rp.f.db.Exec(`DROP TRIGGER refuse_settle`)
+		w := rp.r
+		if c.restart {
+			w = NewReturns(rp.r.o)
+			w.recover()
+		}
+		w.Round()
+		w.Round()
+		if got := len(rp.poster.sent()); got != c.posts || rp.outcomes(t) != c.outcome {
+			t.Fatalf("%s: %d posts, outcomes %s", c.name, got, rp.outcomes(t))
+		}
+	}
+}

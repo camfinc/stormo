@@ -171,8 +171,9 @@ type Connector struct {
 	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	exchange Exchange
 	register func(context.Context, OriginEvent) (string, error)
-	// link is the link's id (origins.go), under mu.
-	link string
+	// link is the link's id (origins.go), under mu; relinking while a new one is not on disk yet.
+	link      string
+	relinking bool
 	// turnTimeout bounds a person's turn (10 minutes); the reply after it goes on its own context.
 	turnTimeout time.Duration
 	// lane serialises every post on the account (a turn's reply, whatsapp_send, a request's outcome),
@@ -254,8 +255,8 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	c.download = c.client.Download
 	c.connected = func() bool { return c.Paired() && c.client.IsConnected() }
 	c.me = func() Me { return Me{PN: c.client.Store.GetJID(), LID: c.client.Store.GetLID()} }
-	if db.QueryRow(`SELECT v FROM stormo_meta WHERE k = 'link'`).Scan(&c.link) != nil || c.link == "" {
-		c.relink()
+	if err := c.loadLink(); err != nil {
+		return fail(err)
 	}
 	c.client.AddEventHandler(func(event any) {
 		switch e := event.(type) {
@@ -264,10 +265,10 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 		case *events.Disconnected:
 			c.set(Status{State: "disconnected"})
 		case *events.LoggedOut:
-			c.relink()
+			_ = c.relink() // a failure leaves no link until it is kept (account tries again)
 			c.set(Status{State: "unlinked"})
 		case *events.PairSuccess:
-			c.relink()
+			_ = c.relink()
 		case *events.GroupInfo:
 			if e.Name != nil {
 				c.mu.Lock()
@@ -343,7 +344,7 @@ func (c *Connector) Logout(ctx context.Context) error {
 			return err
 		}
 	}
-	c.relink()
+	_ = c.relink()
 	c.set(Status{State: "unlinked"})
 	return nil
 }
@@ -811,6 +812,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	}
 	hash := sha256.Sum256([]byte(e.Info.Chat.ToNonAD().String()))
 	session := fmt.Sprintf("whatsapp-%x", hash[:16])
+	link := c.account() // the link that received it: its reply goes only from that link
 	// Recorded before it is claimed (idempotent on its id): a crash between the two leaves the
 	// record for the redelivered message, never a claimed message with none.
 	c.mu.Lock()
@@ -821,7 +823,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		quote, _ := proto.Marshal(e.Message)
 		var err error
 		origin, err = register(ctx, OriginEvent{Session: session, Chat: e.Info.Chat.String(), MessageID: e.Info.ID, Participant: e.Info.Sender.ToNonAD().String(),
-			Number: in.Number, Name: in.Name, Group: in.Group, Verified: in.Verified, Quote: quote, Account: c.account()})
+			Number: in.Number, Name: in.Name, Group: in.Group, Verified: in.Verified, Quote: quote, Account: link})
 		if err != nil {
 			origin = "" // the turn still runs, without a way back for its requests
 		}
@@ -912,9 +914,10 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	}
 	c.lane.Lock()
 	defer c.lane.Unlock()
-	// still admitted, checked again under the lane: a group removed, or a person no longer allowed,
-	// while the turn ran gets nothing, not even the failure reply
-	if _, ok := c.accept(post, e); !ok {
+	// still admitted, and still the link that received it, checked again under the lane: a group
+	// removed, a person no longer allowed, or a relink while the turn ran gets nothing, not even the
+	// failure reply
+	if _, ok := c.accept(post, e); !ok || c.account() != link {
 		return
 	}
 	if len(ans.Voice) > 0 {

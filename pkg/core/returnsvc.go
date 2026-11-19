@@ -385,9 +385,9 @@ func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec, token string, thread int6
 	if exec == "" {
 		return f, nil
 	}
-	var agent, kind, tok string
+	var agent, kind, state, tok string
 	var ret sql.NullInt64
-	err := tx.QueryRow(`SELECT agent, kind, origin, token, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &kind, &f.origin, &tok, &ret)
+	err := tx.QueryRow(`SELECT agent, kind, state, origin, token, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &kind, &state, &f.origin, &tok, &ret)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return f, toolErr("this call names a turn the core did not start")
@@ -416,7 +416,11 @@ func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec, token string, thread int6
 		if err != nil {
 			return f, err
 		}
-		if why := MayDelegate(v, r.o.Now()); why != "" {
+		why := MayDelegate(v, r.o.Now())
+		if state == "retired" {
+			why = "the update's turn it comes from was given up" // still running, it opens no path to the person
+		}
+		if why != "" {
 			f.origin, f.note = "", "not followed for the person ("+why+"): their outcome will not come back to their chat on its own"
 			return f, nil
 		}

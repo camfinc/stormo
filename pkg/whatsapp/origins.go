@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -65,22 +66,66 @@ func unsent(err error) bool {
 
 // account is the link's identity: a random id the session keeps, made anew whenever the account is
 // paired or unlinked (a relink, even of the same number on a device of the same address, is another
-// link), so an origin is answered only from the link that received it.
+// link), so an origin is answered only from the link that received it. "" while a new one could not
+// be kept: nothing is recorded or posted under a link that is not on disk (it is tried again here).
 func (c *Connector) account() string {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.link
+	pending, link := c.relinking, c.link
+	c.mu.Unlock()
+	if pending && c.relink() == nil {
+		c.mu.Lock()
+		link = c.link
+		c.mu.Unlock()
+	}
+	return link
 }
 
-// relink makes the session a new link id: every origin recorded before is refused from now on.
-func (c *Connector) relink() {
+// device is the linked device's own address ("" unlinked): kept beside the link id, so a session
+// found on another device than its id was made for is relinked even if that rotation was lost.
+func (c *Connector) device() string {
+	if c.me == nil {
+		return ""
+	}
+	return c.me().PN.String()
+}
+
+// relink makes the session a new link id: every origin recorded before is refused from now on. The
+// old id is dropped first and the new one used only once it is on disk; until then there is none.
+func (c *Connector) relink() error {
+	c.mu.Lock()
+	c.link, c.relinking = "", true
+	c.mu.Unlock()
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	id := hex.EncodeToString(b)
-	_, _ = c.db.Exec(`INSERT OR REPLACE INTO stormo_meta(k, v) VALUES ('link', ?)`, id)
+	if _, err := c.db.Exec(`INSERT OR REPLACE INTO stormo_meta(k, v) VALUES ('link', ?)`, id+"|"+c.device()); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.link, c.relinking = id, false
+	c.mu.Unlock()
+	return nil
+}
+
+// loadLink reads the session's link id at open: a new one when there is none, or when the device it
+// was made for is no longer the linked one.
+func (c *Connector) loadLink() error {
+	var v string
+	err := c.db.QueryRow(`SELECT v FROM stormo_meta WHERE k = 'link'`).Scan(&v)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return c.relink()
+	case err != nil:
+		return err
+	}
+	id, dev, _ := strings.Cut(v, "|")
+	if id == "" || dev != c.device() {
+		return c.relink()
+	}
 	c.mu.Lock()
 	c.link = id
 	c.mu.Unlock()
+	return nil
 }
 
 // UseOrigins has the connector record each accepted message (a reaction is not one) through

@@ -551,7 +551,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     the engine's usual chat, whatever its image offers.
   - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
     connector claims it with the link that received it: a random id the WhatsApp session keeps, made
-    anew at every pairing and unlink, so a relink, even of the same number, is another link. Its turn runs as a channel turn, an *execution* the engine admits
+    anew at every pairing and unlink (and at open when the session finds itself on another device),
+    so a relink, even of the same number, is another link. A new id is used only once it is on disk;
+    until then there is none, and nothing is recorded or posted under one. Its turn runs as a channel turn, an *execution* the engine admits
     once, with a secret *token* the core issues and the runtime keeps in memory only. Every core call
     of the turn carries `_meta.exec`, `op` and `exec_token`.
   - **Opening a return.** A `msg_send` from that turn to one agent opens a *return*. It is refused
@@ -562,8 +564,9 @@ subprocesses of one Hermes install, which does not fit one container per agent.
       life).
 
     A send from an update's turn opens a sibling return on the same origin, one deeper, with the same
-    escalation time. When the person's request is closed or overdue, or the chain is
-    `ReturnChildDepth` deep, it goes as an ordinary message, and its result says so (`note`).
+    escalation time. When the person's request is closed or overdue, the chain is `ReturnChildDepth`
+    deep, or the turn was retired (given up while it may still run), it goes as an ordinary message,
+    and its result says so (`note`).
   - **Capture.** What comes back is captured in the transaction that creates it, and its delivery to
     the requester becomes the return's for good (`deliveries.owner`, `return_id`); nothing is handed
     back to the bus. The captured events:
@@ -620,8 +623,10 @@ subprocesses of one Hermes install, which does not fit one container per agent.
         A recovery that fails settles as failed;
       - a turn the runtime no longer knows, or one it never confirmed admitting in 30 minutes, may
         have run and cannot be shown to have stopped: failed, never rerun or recovered;
-      - a turn whose result the runtime forgot (taken, or pruned while the core was away) lost what
-        it said: failed, never read as `[SILENT]`.
+      - a turn whose reply the runtime forgot (taken, or pruned while the core was away) lost what
+        it said: failed, never read as `[SILENT]`. What a result decides is recorded before it is
+        taken from the runtime, and a failure's tombstone keeps its state and what it did, so a core
+        that stops between the two still decides the same (a recovery turn included).
     - **closed**: the return closed before it went.
   - **Closing.** A return closes as `expired`, with a reason and a high `return_closed` finding, when:
     - the person's chat can no longer be reached (no longer allowed, another device linked, the
@@ -641,7 +646,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     whatever the call claims of itself.
   - **A person's own turn** that outlives the connector's wait (10 minutes) is abandoned: the
     connector tells them it could not complete, on a context of its own, and only if they are still
-    admitted (every reply is checked again under the posting lane). The worker follows the turn
+    admitted from the same link (every reply is checked again under the posting lane: admission, and
+    the link that received the message). The worker follows the turn
     to its end, records what it did and posts nothing; a request it made still comes back. So is one
     running when the core stopped (only turns older than the core's start).
   - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists each
