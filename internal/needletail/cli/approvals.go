@@ -198,7 +198,7 @@ func (rt *runtime) approve(ctx context.Context, env *tools.Env, tool string, arg
 	if messaging.Scheduled(ctx) {
 		return nil, fmt.Errorf("%v; a scheduled run has no person to approve it, so it is refused", need)
 	}
-	if e := messaging.ExecutionOf(ctx); e != nil && e.Kind == messaging.ExecReturn {
+	if e := messaging.ExecutionOf(ctx); e != nil && messaging.BringsBack(e.Kind) {
 		// an approved action would run later, outside this turn: never attributed to it
 		return nil, fmt.Errorf("%v; a turn bringing back a request's outcome cannot wait for an approval, so it is refused: tell the person where it stands instead", need)
 	}

@@ -30,6 +30,7 @@ type channelAgent struct {
 	mu      sync.Mutex
 	seen    []string
 	tokens  []string
+	offered []string // each turn's opts.Tools, joined ("" all)
 }
 
 func (a *channelAgent) Run(ctx context.Context, session, input string, opts loop.Options) (*loop.Result, error) {
@@ -38,6 +39,7 @@ func (a *channelAgent) Run(ctx context.Context, session, input string, opts loop
 	if e != nil {
 		a.seen = append(a.seen, fmt.Sprintf("%s:%s:%s:%s", e.ID, e.Kind, opts.InputKind, input))
 		a.tokens = append(a.tokens, e.Token)
+		a.offered = append(a.offered, strings.Join(opts.Tools, ","))
 	} else {
 		a.seen = append(a.seen, "no execution:"+input)
 	}
@@ -425,5 +427,27 @@ func TestChannelSignatureFieldsOnce(t *testing.T) {
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Errorf("header %q: %d", h, res.StatusCode)
 		}
+	}
+}
+
+// A recovery turn is offered the core's reads and nothing else; the others are offered everything.
+func TestChannelRecoveryOnlyReads(t *testing.T) {
+	_, ag, srv := channelServer(t, t.TempDir(), false)
+	for _, turn := range []wire.ChannelTurn{
+		{Execution: "exec-rec-01", Kind: messaging.ExecRecovery, Session: "whatsapp-r9", Message: "what happened?"},
+		{Execution: "exec-ret-02", Kind: messaging.ExecReturn, Session: "whatsapp-r8", Message: "news"},
+	} {
+		if code, raw := signed(t, srv, coreKey, "POST", "/v1/channel/turns", turn, time.Now()); code != http.StatusAccepted {
+			t.Fatalf("%s: %d %s", turn.Kind, code, raw)
+		}
+		signed(t, srv, coreKey, "GET", "/v1/channel/turns/"+turn.Execution+"?wait=5", nil, time.Now())
+	}
+	ag.mu.Lock()
+	defer ag.mu.Unlock()
+	if len(ag.offered) != 2 || ag.offered[0] != "mcp_core_msg_inbox,mcp_core_msg_read,mcp_core_msg_thread" || ag.offered[1] != "" {
+		t.Fatalf("offered %q", ag.offered)
+	}
+	if !strings.Contains(ag.seen[0], ":recovery:"+wire.KindReturn+":") {
+		t.Fatalf("seen %q", ag.seen)
 	}
 }

@@ -18,8 +18,8 @@ import (
 // claims it, so the outcome of a request the agent sends while answering it can come back to that
 // person, in that chat, quoting what they asked.
 
-// OriginEvent is an accepted message as the core records it. Account is the linked account's own
-// number when it came: an origin is answered only from that account.
+// OriginEvent is an accepted message as the core records it. Account is the linked device that
+// received it: an origin is answered only from that device (unlinking or relinking makes another).
 type OriginEvent struct {
 	Session, Chat, MessageID, Participant, Number, Name, Account string
 	Group, Verified                                              bool
@@ -34,18 +34,17 @@ type Origin struct {
 	Quote                                         []byte
 }
 
-// PostError is why PostOrigin stopped at Part. Unsent: that part provably did not go (the account
-// was not connected, the server refused it, the post was no longer allowed or the journal refused
-// it): it may go again. Sent: it went (ID) but the journal could not record it. Neither: it may or
-// may not have gone, and must never be sent again on its own.
+// PostError is why PostOrigin stopped. Unsent: the message provably did not go (the account was
+// not connected, the server refused it, the post was no longer allowed or the journal refused it):
+// it may go again. Sent: it went (ID) but the journal could not record it. Neither: it may or may
+// not have gone, and must never be sent again on its own.
 type PostError struct {
-	Part         int
 	Unsent, Sent bool
 	ID           string
 	Err          error
 }
 
-func (e *PostError) Error() string { return fmt.Sprintf("whatsapp: part %d: %v", e.Part+1, e.Err) }
+func (e *PostError) Error() string { return "whatsapp: " + e.Err.Error() }
 func (e *PostError) Unwrap() error { return e.Err }
 
 // unsent is whether a send error proves the message did not go: whatsmeow answered it before
@@ -62,17 +61,17 @@ func unsent(err error) bool {
 	return false
 }
 
-// account is the linked account's own number ("" when not linked).
+// account is the linked device's own address, device included ("" when not linked): a relink,
+// even of the same number, is another device.
 func (c *Connector) account() string {
 	if c.me == nil {
 		return ""
 	}
-	return c.me().PN.User
+	if pn := c.me().PN; !pn.IsEmpty() {
+		return pn.String()
+	}
+	return ""
 }
-
-// ErrPending is an Exchange's answer for a turn still running when the connector stopped waiting:
-// nothing is posted now; its reply comes later, from the core.
-var ErrPending = errors.New("whatsapp: the turn is still running, its reply comes later")
 
 // UseOrigins has the connector record each accepted message (a reaction is not one) through
 // register before it claims it; the origin id register answers goes with the turn ("" none).
@@ -82,30 +81,15 @@ func (c *Connector) UseOrigins(register func(ctx context.Context, e OriginEvent)
 	c.mu.Unlock()
 }
 
-// maxPart is the most runes one message part holds.
-const maxPart = 3500
-
-// Parts is text as the connector posts it: parts of at most 3500 runes, always split the same way.
-func Parts(text string) []string {
-	var out []string
-	r := []rune(text)
-	for len(r) > 0 {
-		n := min(len(r), maxPart)
-		out = append(out, string(r[:n]))
-		r = r[n:]
-	}
-	return out
-}
-
-// AllowedReply is whether the connector may post to o now: the account that received it linked and
-// connected, its group still allowed, or its person still admitted (allowed_users, or anyone when the
-// agent takes messages from anyone). It is a reply to that person, not an unprompted post.
+// AllowedReply is whether the connector may post to o now: the device that received it linked and
+// connected, its group still allowed, or its person still admitted (allowed_users, or anyone when
+// the agent takes messages from anyone). It is a reply to that person, not an unprompted post.
 func (c *Connector) AllowedReply(o Origin) error {
 	if !c.connected() {
 		return ErrNotConnected
 	}
 	if acct := c.account(); o.Account == "" || acct != o.Account {
-		return errors.New("whatsapp: the linked account is not the one the person wrote to")
+		return errors.New("whatsapp: the linked device is not the one the person wrote to")
 	}
 	p := c.policy()
 	switch {
@@ -122,47 +106,42 @@ func (c *Connector) AllowedReply(o Origin) error {
 	return nil
 }
 
-// PostOrigin posts parts[from:] to o's chat through the posting lane, the first part quoting the
-// person's message in a group when from is 0. Before each part, under the lane, the post is checked
-// to be still allowed (AllowedReply) and journal is told it ("sending"; its error stops the post with
-// the part unsent); after it, journal is told its id ("sent"). Any stop is a *PostError.
-func (c *Connector) PostOrigin(ctx context.Context, o Origin, parts []string, from int, journal func(part int, state, id string) error) error {
+// PostOrigin posts text to o's chat as one message, through the posting lane, quoting the person's
+// message in a group. Under the lane the post is checked to be still allowed (AllowedReply) and the
+// journal is told before it goes ("sending"; its error stops it, unsent) and after ("sent", with
+// its id). Any stop is a *PostError.
+func (c *Connector) PostOrigin(ctx context.Context, o Origin, text string, journal func(state, id string) error) error {
 	chat, err := types.ParseJID(o.Chat)
 	if err != nil {
-		return fmt.Errorf("whatsapp: chat %q: %w", o.Chat, err)
+		return &PostError{Unsent: true, Err: fmt.Errorf("chat %q: %w", o.Chat, err)}
 	}
-	var quote *waE2E.ContextInfo
-	if o.Group && from == 0 && o.MessageID != "" {
-		quote = &waE2E.ContextInfo{StanzaID: proto.String(o.MessageID), Participant: proto.String(o.Participant)}
+	m := &waE2E.Message{Conversation: proto.String(text)}
+	if o.Group && o.MessageID != "" {
+		quote := &waE2E.ContextInfo{StanzaID: proto.String(o.MessageID), Participant: proto.String(o.Participant)}
 		if len(o.Quote) > 0 {
-			var m waE2E.Message
-			if proto.Unmarshal(o.Quote, &m) == nil {
-				quote.QuotedMessage = &m
+			var q waE2E.Message
+			if proto.Unmarshal(o.Quote, &q) == nil {
+				quote.QuotedMessage = &q
 			}
 		}
+		m = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text), ContextInfo: quote}}
 	}
 	c.lane.Lock()
 	defer c.lane.Unlock()
-	for i := from; i < len(parts); i++ {
-		if err := c.AllowedReply(o); err != nil {
-			return &PostError{Part: i, Unsent: true, Err: err}
-		}
-		if err := journal(i, "sending", ""); err != nil {
-			return &PostError{Part: i, Unsent: true, Err: err}
-		}
-		m := &waE2E.Message{Conversation: proto.String(parts[i])}
-		if quote != nil {
-			m, quote = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(parts[i]), ContextInfo: quote}}, nil
-		}
-		id, err := c.send(ctx, chat, m)
-		if err != nil {
-			return &PostError{Part: i, Unsent: unsent(err), Err: err}
-		}
-		_, _ = c.db.ExecContext(context.WithoutCancel(ctx), `INSERT OR REPLACE INTO stormo_sent(id,chat,excerpt,at) VALUES (?,?,?,?)`, id, chat.ToNonAD().String(), clean(parts[i], 200), time.Now().Unix())
-		c.log(context.WithoutCancel(ctx), logKey(chat), Line{ID: string(id), At: time.Now(), Mine: true, Text: parts[i]})
-		if err := journal(i, "sent", string(id)); err != nil {
-			return &PostError{Part: i, Sent: true, ID: string(id), Err: err}
-		}
+	if err := c.AllowedReply(o); err != nil {
+		return &PostError{Unsent: true, Err: err}
+	}
+	if err := journal("sending", ""); err != nil {
+		return &PostError{Unsent: true, Err: err}
+	}
+	id, err := c.send(ctx, chat, m)
+	if err != nil {
+		return &PostError{Unsent: unsent(err), Err: err}
+	}
+	_, _ = c.db.ExecContext(context.WithoutCancel(ctx), `INSERT OR REPLACE INTO stormo_sent(id,chat,excerpt,at) VALUES (?,?,?,?)`, id, chat.ToNonAD().String(), clean(text, 200), time.Now().Unix())
+	c.log(context.WithoutCancel(ctx), logKey(chat), Line{ID: string(id), At: time.Now(), Mine: true, Text: text})
+	if err := journal("sent", string(id)); err != nil {
+		return &PostError{Sent: true, ID: string(id), Err: err}
 	}
 	return nil
 }

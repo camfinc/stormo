@@ -795,20 +795,9 @@ func auditCmd(inst *instance.Instance, args []string, o *out.Writer) error {
 	return nil
 }
 
-// returnsCmd is `core returns [agent]` (the return paths: states and counts, docs/core.md §5) and
-// `core returns resolve <id> sent|resend` (settle an update held as unknown).
+// returnsCmd is `core returns [agent]`: the return paths' returns, their states and their
+// updates by outcome (docs/core.md §5).
 func returnsCmd(inst *instance.Instance, args []string, o *out.Writer) error {
-	if len(args) > 0 && args[0] == "resolve" {
-		if len(args) != 3 || args[2] != "sent" && args[2] != "resend" {
-			return fmt.Errorf("usage: core returns resolve <id> sent|resend")
-		}
-		var res map[string]any
-		if err := ownerJSON(inst.Root, http.MethodPost, "/api/returns/"+args[1]+"/resolve", strings.NewReader(`{"as":"`+args[2]+`"}`), &res); err != nil {
-			return err
-		}
-		o.Result(res, func(w io.Writer) { fmt.Fprintf(w, "return %s resolved: %s\n", args[1], args[2]) })
-		return nil
-	}
 	q := "/api/returns"
 	if len(args) > 0 {
 		q += "?agent=" + args[0]
@@ -824,11 +813,15 @@ func returnsCmd(inst *instance.Instance, args []string, o *out.Writer) error {
 			fmt.Fprintln(w, "no returns")
 		}
 		for _, x := range r.Returns {
-			esc := ""
-			if x.Escalated {
-				esc = " escalated"
+			state := x.State
+			if x.CloseReason != "" {
+				state += " (" + x.CloseReason + ")"
 			}
-			fmt.Fprintf(w, "%-5d %-10s → %-10s %-13s request %-5d updates %d unknown %d%s  (since %s)\n", x.ID, x.Agent, x.Recipient, x.State, x.Request, x.Updates, x.Unknown, esc, x.Created)
+			if x.Escalated {
+				state += ", escalated"
+			}
+			fmt.Fprintf(w, "%-5d %-10s → %-10s request %-5d confirmed %d unconfirmed %d silent %d failed %d  %s  (since %s)\n",
+				x.ID, x.Agent, x.Recipient, x.Request, x.Confirmed, x.Unconfirmed, x.Silent, x.Failed, state, x.Created)
 		}
 	})
 	return nil

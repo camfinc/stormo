@@ -171,6 +171,8 @@ type Connector struct {
 	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	exchange Exchange
 	register func(context.Context, OriginEvent) (string, error)
+	// turnTimeout bounds a person's turn (10 minutes); the reply after it goes on its own context.
+	turnTimeout time.Duration
 	// lane serialises every post on the account (a turn's reply, whatsapp_send, a request's outcome),
 	// taken only around the sending itself: a turn waiting for the agent never holds it
 	lane      sync.Mutex
@@ -237,7 +239,7 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	if err != nil {
 		return fail(err)
 	}
-	c := &Connector{ctx: ctx, client: whatsmeow.NewClient(device, nil), store: store, db: db, cancel: cancel, policy: policy, reply: reply, queue: make(chan *events.Message, 32), done: make(chan struct{}), status: Status{State: "disconnected"}, names: map[types.JID]string{}}
+	c := &Connector{ctx: ctx, client: whatsmeow.NewClient(device, nil), store: store, db: db, cancel: cancel, policy: policy, reply: reply, queue: make(chan *events.Message, 32), done: make(chan struct{}), status: Status{State: "disconnected"}, names: map[types.JID]string{}, turnTimeout: 10 * time.Minute}
 	c.send = func(ctx context.Context, chat types.JID, m *waE2E.Message) (types.MessageID, error) {
 		resp, err := c.client.SendMessage(ctx, chat, m)
 		return resp.ID, err
@@ -821,7 +823,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if n == 0 {
 		return
 	}
-	turn, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	turn, cancel := context.WithTimeout(ctx, c.turnTimeout)
 	defer cancel()
 	message := in.Reaction == "" // a reaction gets no reaction of its own
 	if message {
@@ -869,8 +871,13 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	} else {
 		ans.Text, err = c.reply(turn, session, input)
 	}
-	if errors.Is(err, ErrPending) {
-		return // still running: the core posts its reply when it ends
+	// what is posted now is posted on a context of its own: a turn that ran out of time still tells
+	// the person it could not complete
+	post := turn
+	if turn.Err() != nil {
+		var cancelPost context.CancelFunc
+		post, cancelPost = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancelPost()
 	}
 	reply := ans.Text
 	done := ""
@@ -879,7 +886,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	} else {
 		reply = withoutSilence(reply)
 		if upto > 0 {
-			c.seen(turn, in.Chat, upto)
+			c.seen(post, in.Chat, upto)
 		}
 	}
 	if !c.policy().Enabled {
@@ -895,19 +902,19 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if len(ans.Voice) > 0 {
 		// the agent answered with a voice note: it goes first, its text after it when asked; a
 		// note that cannot be sent leaves the text to go alone
-		if _, verr := c.postVoice(turn, e.Info.Chat, ans.Voice, reply, quote); verr == nil {
+		if _, verr := c.postVoice(post, e.Info.Chat, ans.Voice, reply, quote); verr == nil {
 			quote = nil
 			if !ans.WithText {
 				reply = ""
 			}
 		}
 	}
-	if _, err := c.post(turn, e.Info.Chat, reply, quote, false); err != nil {
+	if _, err := c.post(post, e.Info.Chat, reply, quote, false); err != nil {
 		c.set(Status{State: "delivery_error", Error: "A reply could not be delivered. Check the agent conversation before retrying."})
 		done = failed
 	}
 	if message {
-		c.react(turn, e, done)
+		c.react(post, e, done)
 	}
 }
 

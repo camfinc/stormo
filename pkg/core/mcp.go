@@ -59,6 +59,9 @@ type MCP struct {
 	keys  *AgentKeys
 	tools map[string]MCPTool
 	order []string
+	// Guard, when set, may refuse a call before its tool runs (the return paths: a recovery turn
+	// only reads).
+	Guard func(tool string, call ToolCall) error
 }
 
 // NewMCP serves tools to agents holding a core key.
@@ -178,7 +181,15 @@ func (m *MCP) Handle(w http.ResponseWriter, r *http.Request) {
 		if len(p.Arguments) == 0 || string(p.Arguments) == "null" {
 			p.Arguments = json.RawMessage("{}")
 		}
-		out, err := t.Run(ToolCall{Agent: agent, Args: p.Arguments, Meta: p.Meta})
+		call := ToolCall{Agent: agent, Args: p.Arguments, Meta: p.Meta}
+		var out any
+		var err error
+		if m.Guard != nil {
+			err = m.Guard(p.Name, call)
+		}
+		if err == nil {
+			out, err = t.Run(call)
+		}
 		if err != nil {
 			msg := err.Error()
 			if _, ok := err.(ToolError); !ok {

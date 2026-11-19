@@ -9,9 +9,18 @@ import (
 // Execution kinds: a turn the core runs for a conversation of its own channel (docs/needletail.md,
 // channel turns): a person's message (inbound) or the outcome of a request sent from it (return).
 const (
-	ExecInbound = "inbound"
-	ExecReturn  = "return"
+	ExecInbound  = "inbound"
+	ExecReturn   = "return"
+	ExecRecovery = "recovery" // an update's turn failed: this one only reads and reports
 )
+
+// RecoveryCoreTools are the core tools a recovery turn is offered, by their core names: it reads
+// what happened, and its reply is all it does.
+var RecoveryCoreTools = []string{"msg_inbox", "msg_read", "msg_thread"}
+
+// BringsBack is whether kind's turn brings back a request's outcome (a return, or its recovery):
+// it schedules no follow-up and waits for no approval.
+func BringsBack(kind string) bool { return kind == ExecReturn || kind == ExecRecovery }
 
 // Execution is a channel turn's identity, the core's: every core tool call made in it carries its id
 // and an operation number (_meta.exec, _meta.op), so the core attributes what the turn did to the

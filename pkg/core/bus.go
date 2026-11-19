@@ -996,7 +996,10 @@ func (b *Bus) tell(o openDelivery, told int, quietSince int64, subject, body str
 	if n, _ := res.RowsAffected(); n == 0 {
 		return false
 	}
-	if _, ok := b.roster()[o.sender]; ok {
+	// a status notice about a request a return follows is not sent: the return's own due prompts
+	// tell the person, and a second instruction to tell them would be a second path to their chat
+	statusFollowed := told != toldDone && b.returns != nil && b.returns.followed(tx, o.id, o.sender)
+	if _, ok := b.roster()[o.sender]; ok && !statusFollowed {
 		var hop int
 		if err := tx.QueryRow(`SELECT COALESCE(MAX(hop), 1) FROM messages WHERE thread = ?`, o.thread).Scan(&hop); err != nil {
 			log.Printf("bus: %v", err)
@@ -1013,8 +1016,8 @@ func (b *Bus) tell(o openDelivery, told int, quietSince int64, subject, body str
 			log.Printf("bus: %v", err)
 			return false
 		}
-		if b.returns != nil {
-			if err := b.returns.onNotice(tx, o.id, nid, o.sender, told); err != nil {
+		if b.returns != nil && told == toldDone {
+			if err := b.returns.onFailure(tx, o.id, nid, o.sender); err != nil {
 				log.Printf("bus: %v", err)
 				return false
 			}
@@ -1069,10 +1072,11 @@ func (b *Bus) Inbox(agent string, unreadOnly bool, limit int) ([]Message, error)
 	return b.InboxIn(agent, unreadOnly, limit, "")
 }
 
-// returnOwnedNotIn is the condition a delivery d is the return paths' and not exec's own return's
-// (exec "" matches none): what an ordinary turn never takes up itself, since the core brings it to
-// the person's chat.
-const returnOwnedNotIn = `d.owner = 'return' AND d.message NOT IN (SELECT e.message FROM return_events e JOIN executions x ON x.ret = e.ret WHERE x.id = ?)`
+// returnOwnedNotIn is the condition a delivery d belongs to an open return other than exec's (exec
+// "" matches none): what an ordinary turn never takes up itself while the core brings it to the
+// person's chat. Once the return closes it is readable (never woken: it stays the return's).
+const returnOwnedNotIn = `d.owner = 'return' AND d.return_id IN (SELECT id FROM returns WHERE closed_at IS NULL)
+	AND d.return_id NOT IN (SELECT ret FROM executions WHERE id = ? AND ret IS NOT NULL)`
 
 // InboxIn is Inbox as a turn of execution exec sees it: a message the return paths bring to a
 // person's chat is listed only in that return's own turn.
@@ -1161,12 +1165,6 @@ func (b *Bus) Ack(agent string, id int64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return toolErr("message %d was not sent to you", id)
-	}
-	if b.returns != nil {
-		// the ack and what it tells a return are one: both, or neither
-		if err := b.returns.onAck(tx, id, agent); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

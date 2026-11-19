@@ -20,15 +20,16 @@ import (
 
 // The core's return paths (docs/core.md §5, "Returns"): a person's WhatsApp message is an origin;
 // the turn the core runs for it is an execution; a request the agent sends over the bus during it
-// is a return, whose events (an answer, progress, an ack, the bus's notices, a deadline) bring the
-// agent back into that chat through a delivery: a channel turn whose reply the core posts there,
-// part by part through a write-ahead journal. The state machine is returns.go; this is its
-// database, its turns and its posting.
+// is a return. What comes back about it is captured, in the transaction that creates it, as the
+// return's event, and brings the agent back into that chat through a delivery: a channel turn whose
+// reply the core posts there as one message through a journaled outbox. The state machine is
+// returns.go; this is its database and the bus's side; the worker (returnworker.go) drives the
+// deliveries.
 
 // ReturnPoster is the agent's channel as the returns post to it (the WhatsApp connector).
 type ReturnPoster interface {
 	AllowedReply(o whatsapp.Origin) error
-	PostOrigin(ctx context.Context, o whatsapp.Origin, parts []string, from int, journal func(part int, state, id string) error) error
+	PostOrigin(ctx context.Context, o whatsapp.Origin, text string, journal func(state, id string) error) error
 }
 
 // ReturnsOptions configure the return paths.
@@ -52,11 +53,14 @@ type Returns struct {
 	caps     sync.Map   // agent → capsEntry
 	scrubbed time.Time  // the last retention pass (under mu)
 	started  time.Time  // when this core's return paths began: turns older are a stopped core's
+	// sentIDs are sends that went but whose settlement could not be written (under mu): written
+	// again each round, never sent again.
+	sentIDs map[int64]string
 }
 
-// capsEntry is an agent's negotiation: the last answer its engine gave (ok: when; zero, never) and
-// when it was last asked. An engine that cannot be reached keeps its last answer: a restart must not
-// read as the engine no longer running channel turns.
+// capsEntry is an agent's negotiation: the last answer its engine gave (answer: when; zero, never)
+// and when it was last asked. An engine that cannot be reached keeps its last answer: a restart
+// must not read as the engine no longer running channel turns.
 type capsEntry struct {
 	caps   engine.ChannelCaps
 	asked  time.Time
@@ -74,7 +78,7 @@ func NewReturns(o ReturnsOptions) *Returns {
 	if o.Mode == nil {
 		o.Mode = func() string { return "on" }
 	}
-	r := &Returns{o: o, kick: make(chan struct{}, 1), started: o.Now()}
+	r := &Returns{o: o, kick: make(chan struct{}, 1), started: o.Now(), sentIDs: map[int64]string{}}
 	if o.Bus != nil {
 		o.Bus.returns = r
 	}
@@ -176,8 +180,8 @@ func (r *Returns) opens(agent string) bool {
 	return r.optedIn(agent) && r.o.Mode() == "on" && c.Turns && c.Enforcing
 }
 
-// draining is why agent's returns give their work back to the bus ("" when they do not): the agent
-// opted out, the instance drains, or its engine answered it no longer enforces channel turns.
+// draining is why agent's returns close ("" when they do not): the agent opted out, the instance
+// drains, or its engine answered it no longer enforces channel turns.
 func (r *Returns) draining(agent string) string {
 	switch {
 	case !r.optedIn(agent):
@@ -230,8 +234,9 @@ func (r *Returns) originOf(id string) (whatsapp.Origin, string, error) {
 var ErrNoReturns = errors.New("returns: not for this turn")
 
 // InboundTurn runs a person's message as a channel turn (its origin, so what the agent sends while
-// answering it can come back): its answer; ErrNoReturns when the turn is not one (no origin);
-// whatsapp.ErrPending when ctx ended first (the worker posts its reply when it ends).
+// answering it can come back): its answer; ErrNoReturns when the turn is not one (no origin). When
+// ctx ends first the turn is abandoned: the connector tells the person it could not complete, and
+// the worker follows the turn to its end so nothing it did is forgotten, but posts nothing.
 func (r *Returns) InboundTurn(ctx context.Context, agent, session string, t whatsapp.Turn) (whatsapp.Answer, error) {
 	if t.Origin == "" || !r.channel(agent) {
 		return whatsapp.Answer{}, ErrNoReturns
@@ -256,11 +261,9 @@ func (r *Returns) InboundTurn(ctx context.Context, agent, session string, t what
 	}
 	switch {
 	case ctx.Err() != nil:
-		// the connector stopped waiting: the worker asks about it (with the same execution) and posts
-		// its reply through the journal when it ends
-		_, _ = r.o.DB.Exec(`UPDATE executions SET state = 'detached' WHERE id = ? AND ended IS NULL`, exec)
+		_, _ = r.o.DB.Exec(`UPDATE executions SET state = 'abandoned' WHERE id = ? AND ended IS NULL`, exec)
 		r.Kick()
-		return whatsapp.Answer{}, whatsapp.ErrPending
+		return whatsapp.Answer{}, fmt.Errorf("the turn did not end in time: %w", ctx.Err())
 	case err != nil:
 		r.endExecution(exec, "failed", 0, err.Error())
 		return whatsapp.Answer{}, err
@@ -324,14 +327,6 @@ func (r *Returns) await(ctx context.Context, ct engine.ChannelTurns, exec string
 	return st, nil
 }
 
-// withoutSilence is a reply without a [SILENT] answer.
-func withoutSilence(s string) string {
-	if strings.TrimSpace(s) == "[SILENT]" {
-		return ""
-	}
-	return s
-}
-
 func (r *Returns) endExecution(exec, state string, acted int64, errText string) {
 	_, _ = r.o.DB.Exec(`UPDATE executions SET state = ?, acted = ?, error = ?, ended = ? WHERE id = ? AND ended IS NULL`,
 		state, acted, clip(errText, 300), r.o.Now().UnixMilli(), exec)
@@ -351,6 +346,23 @@ func (r *Returns) Verified(agent, exec, token string) string {
 	return exec
 }
 
+// recoveryReads are the core tools an update's recovery turn may call: it reads and reports.
+var recoveryReads = map[string]bool{"msg_inbox": true, "msg_read": true, "msg_thread": true}
+
+// guard refuses a recovery turn's call to anything but a read (its runtime offers it nothing
+// else; this holds even when the runtime does not).
+func (r *Returns) guard(tool string, call ToolCall) error {
+	exec := r.Verified(call.Agent, call.Meta.Exec, call.Meta.ExecToken)
+	if exec == "" || recoveryReads[tool] {
+		return nil
+	}
+	var kind string
+	if r.o.DB.QueryRow(`SELECT kind FROM executions WHERE id = ?`, exec).Scan(&kind) == nil && kind == "recovery" {
+		return toolErr("this turn only reads and reports: %s is not available in it", tool)
+	}
+	return nil
+}
+
 // ---- the bus's side (all in its transactions) ------------------------------------------------
 
 // sendFrom is what a send's execution gives the request: the person's conversation it is for
@@ -365,16 +377,17 @@ type sendFrom struct {
 }
 
 // sendOrigin is a channel turn's request as the bus is about to store it, or why it is refused: a
-// call naming an execution the core did not start, another agent's, or without its token; a thread
-// that ever carried another person's request. A send from no execution has none.
+// call naming an execution the core did not start, another agent's, one without its token, or a
+// recovery turn's; a thread that ever carried another person's request. A send from no execution
+// has none.
 func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec, token string, thread int64) (sendFrom, error) {
 	var f sendFrom
 	if exec == "" {
 		return f, nil
 	}
-	var agent, tok string
+	var agent, kind, tok string
 	var ret sql.NullInt64
-	err := tx.QueryRow(`SELECT agent, origin, token, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &f.origin, &tok, &ret)
+	err := tx.QueryRow(`SELECT agent, kind, origin, token, ret FROM executions WHERE id = ?`, exec).Scan(&agent, &kind, &f.origin, &tok, &ret)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return f, toolErr("this call names a turn the core did not start")
@@ -384,6 +397,8 @@ func (r *Returns) sendOrigin(tx *sql.Tx, sender, exec, token string, thread int6
 		return f, toolErr("this turn's execution is not yours")
 	case tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(token)) != 1:
 		return f, toolErr("this call does not carry its turn's token")
+	case kind == "recovery":
+		return f, toolErr("this turn only reads and reports: it sends no messages")
 	}
 	if thread != 0 {
 		// one person's conversation per bus thread, for its whole life: an update must never reach
@@ -430,151 +445,118 @@ func (r *Returns) open(tx *sql.Tx, sender string, f sendFrom, msg, thread int64,
 	return err
 }
 
-// event records an event of return ret when it can still reach the person (Eligible), and takes its
-// message's delivery to the return's agent (deliveryAgent) from the bus: the return wakes the agent
-// for it. One that cannot stays the bus's, unrecorded.
-func (r *Returns) event(tx *sql.Tx, ret int64, kind string, message int64, deliveryAgent string) error {
+// capture records message's arrival as an event of return ret, in the transaction that created it,
+// and takes the message's delivery to the return's agent (deliveryAgent) from the bus, for good: the
+// return brings it to the person. A closed return captures nothing: the message stays the bus's.
+func (r *Returns) capture(tx *sql.Tx, ret int64, kind string, message int64, deliveryAgent string) error {
 	v, err := r.view(tx, ret)
-	if err != nil {
+	if err != nil || v.Terminal() {
 		return err
 	}
-	if !Eligible(v, kind) {
-		return nil
-	}
-	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM return_events WHERE ret = ?`, ret).Scan(&seq); err != nil {
+	seq := v.SeqLast + 1
+	if _, err := tx.Exec(`INSERT INTO return_events(ret, seq, kind, message, at) VALUES(?,?,?,?,?)`, ret, seq, kind, message, r.o.Now().UnixMilli()); err != nil {
 		return err
-	}
-	res, err := tx.Exec(`INSERT OR IGNORE INTO return_events(ret, seq, kind, message, at) VALUES(?,?,?,?,?)`, ret, seq, kind, message, r.o.Now().UnixMilli())
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // the same event again
 	}
 	if message != 0 && deliveryAgent != "" {
-		if _, err := tx.Exec(`UPDATE deliveries SET owner = 'return' WHERE message = ? AND agent = ?`, message, deliveryAgent); err != nil {
+		if _, err := tx.Exec(`UPDATE deliveries SET owner = 'return', return_id = ? WHERE message = ? AND agent = ? AND owner = 'bus'`,
+			ret, message, deliveryAgent); err != nil {
 			return err
 		}
+	}
+	if err := r.apply(tx, ret, Capture(v, kind, seq, r.o.Now())); err != nil {
+		return err
 	}
 	r.Kick()
 	return nil
 }
 
-// onSend records the events a stored message brings: an answer to the requests it names (refused
-// when they were made for different people), progress on a request in its thread (when one
-// person's requests are the only ones it could be about).
+// onSend captures what a stored message brings: an answer to the request it names (refused when it
+// names requests of more than one open return), or progress on the one request of its thread.
 func (r *Returns) onSend(tx *sql.Tx, msg int64, sender string, recipients []BusAgent, thread int64, answers []int64) error {
 	type hit struct {
 		ret   int64
 		agent string
 	}
-	var hits []hit
-	people := map[string]bool{}
+	seen := map[int64]hit{}
 	for _, a := range answers {
 		var h hit
-		var origin string
-		err := tx.QueryRow(`SELECT id, agent, origin FROM returns WHERE request = ? AND recipient = ?`, a, sender).Scan(&h.ret, &h.agent, &origin)
+		err := tx.QueryRow(`SELECT id, agent FROM returns WHERE request = ? AND recipient = ? AND closed_at IS NULL`, a, sender).Scan(&h.ret, &h.agent)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		hits, people[origin] = append(hits, h), true
+		seen[h.ret] = h
 	}
-	if len(people) > 1 {
-		return toolErr("this message answers requests made for different people: answer each in a message of its own")
+	if len(seen) > 1 {
+		return toolErr("this message answers requests the core follows separately for people: answer each in a message of its own")
 	}
-	for _, h := range hits {
-		if err := r.event(tx, h.ret, EventAnswered, msg, h.agent); err != nil {
-			return err
-		}
+	for _, h := range seen {
+		return r.capture(tx, h.ret, EventAnswered, msg, h.agent)
 	}
 	if len(answers) > 0 || thread == 0 || len(recipients) != 1 {
 		return nil
 	}
-	rows, err := tx.Query(`SELECT id, origin FROM returns WHERE thread = ? AND recipient = ? AND agent = ? AND closed_at IS NULL ORDER BY id DESC`,
-		thread, sender, recipients[0].ID)
+	rows, err := tx.Query(`SELECT id FROM returns WHERE thread = ? AND recipient = ? AND agent = ? AND closed_at IS NULL`, thread, sender, recipients[0].ID)
 	if err != nil {
 		return err
 	}
 	var ids []int64
-	origins := map[string]bool{}
 	for rows.Next() {
 		var id int64
-		var o string
-		if err := rows.Scan(&id, &o); err != nil {
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return err
 		}
 		ids = append(ids, id)
-		origins[o] = true
 	}
 	rows.Close()
-	switch {
-	case len(ids) == 0:
-	case len(origins) > 1:
-		// it could be about more than one person's request: it stays the bus's, never routed
-		raiseFindingTx(tx, sender, "return_ambiguous", "medium", fmt.Sprintf("message %d", msg), r.o.Now().UnixMilli())
+	switch len(ids) {
+	case 0:
+	case 1:
+		return r.capture(tx, ids[0], EventProgress, msg, recipients[0].ID)
 	default:
-		return r.event(tx, ids[0], EventProgress, msg, recipients[0].ID)
+		// it could be about more than one request: it stays the bus's, never routed
+		raiseFindingTx(tx, sender, "return_ambiguous", "medium", fmt.Sprintf("message %d", msg), r.o.Now().UnixMilli())
 	}
 	return nil
 }
 
-// onNotice records the bus's own notice about request id to its sender as the return's event.
-func (r *Returns) onNotice(tx *sql.Tx, request, notice int64, sender string, told int) error {
-	var ret int64
-	err := tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND agent = ?`, request, sender).Scan(&ret)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	kind := EventStatus
-	if told == toldDone {
-		kind = EventFailure
-	}
-	return r.event(tx, ret, kind, notice, sender)
+// followed is whether request (sent by sender) has an open return: the bus's own "still open" and
+// "past its due time" notices are not sent for it (the return's due prompts tell the person).
+func (r *Returns) followed(tx *sql.Tx, request int64, sender string) bool {
+	var n int
+	return tx.QueryRow(`SELECT COUNT(*) FROM returns WHERE request = ? AND agent = ? AND closed_at IS NULL`, request, sender).Scan(&n) == nil && n > 0
 }
 
-// onAck records the recipient acking the request without an answer (in the ack's transaction).
-func (r *Returns) onAck(tx *sql.Tx, request int64, acker string) error {
+// onFailure captures the bus's "Not answered" notice about request as its return's failure event.
+func (r *Returns) onFailure(tx *sql.Tx, request, notice int64, sender string) error {
 	var ret int64
-	err := tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND recipient = ?`, request, acker).Scan(&ret)
+	err := tx.QueryRow(`SELECT id FROM returns WHERE request = ? AND agent = ? AND closed_at IS NULL`, request, sender).Scan(&ret)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	// an ack an answer made (msg_send answers) is the answer's event already
-	var answered int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM answers a JOIN messages m ON m.id = a.message WHERE a.answered = ? AND m.sender = ?`, request, acker).Scan(&answered); err != nil {
-		return err
-	}
-	if answered > 0 {
-		return nil
-	}
-	return r.event(tx, ret, EventAcked, 0, "")
+	return r.capture(tx, ret, EventFailure, notice, sender)
 }
 
 // raiseFindingTx is DB.RaiseFinding inside a transaction (core.db has one connection).
-func raiseFindingTx(tx *sql.Tx, agent, rule, severity, evidence string, at int64) {
+func raiseFindingTx(tx querier, agent, rule, severity, evidence string, at int64) {
 	_, _ = tx.Exec(`INSERT INTO findings(agent, rule, severity, evidence, first_seen, last_seen) VALUES(?,?,?,?,?,?)
 		ON CONFLICT(agent, rule, evidence) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1, severity = excluded.severity,
 		status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END`, agent, rule, severity, evidence, at, at)
 }
 
 // sideDoor refuses agent's whatsapp_send to a chat one of its update turns is running for, whatever
-// the call claims of itself: an update to the person goes through the journal (the turn's reply),
+// the call claims of itself: an update to the person goes through the outbox (the turn's reply),
 // never around it. A chat is the person it is: a group's id, or a direct chat's number however the
 // origin addressed it (a group's requester written to directly is another chat).
 func (r *Returns) sideDoor(agent string, jid types.JID) error {
 	rows, err := r.o.DB.Query(`SELECT o.chat, o.requester FROM executions x JOIN origins o ON o.id = x.origin
-		WHERE x.agent = ? AND x.kind = 'return' AND x.state = 'running'`, agent)
+		WHERE x.agent = ? AND x.kind IN ('return', 'recovery') AND x.ended IS NULL`, agent)
 	if err != nil {
 		return err
 	}

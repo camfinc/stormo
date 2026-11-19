@@ -550,92 +550,103 @@ subprocesses of one Hermes install, which does not fit one container per agent.
     when its engine runs them and either enforces them or the agent opted in; any other agent keeps
     the engine's usual chat, whatever its image offers.
   - **Origins and executions.** Each accepted WhatsApp message is an *origin*, recorded before the
-    connector claims it with the linked account that received it. Its turn runs as a channel turn,
-    an *execution* the engine admits once, with a secret *token* the core issues and the runtime keeps
-    in memory only (the runtime's store keeps the request's hash). Every core call of the turn carries
-    `_meta.exec`, `op` and `exec_token`.
+    connector claims it with the linked device that received it (an unlink or relink, even of the
+    same number, is another device). Its turn runs as a channel turn, an *execution* the engine admits
+    once, with a secret *token* the core issues and the runtime keeps in memory only. Every core call
+    of the turn carries `_meta.exec`, `op` and `exec_token`.
   - **Opening a return.** A `msg_send` from that turn to one agent opens a *return*. It is refused
     when:
-    - it names an execution the core did not start, another agent's, or one without its token;
+    - it names an execution the core did not start, another agent's, one without its token, or a
+      recovery turn's;
     - its thread ever carried another person's request (a thread is bound to one person for its
       life).
 
     A send from an update's turn opens a sibling return on the same origin, one deeper, with the same
-    escalation time. When the person's request is closed, held, overdue or the chain is
+    escalation time. When the person's request is closed or overdue, or the chain is
     `ReturnChildDepth` deep, it goes as an ordinary message, and its result says so (`note`).
-  - **Events.**
-    - `answered`: the recipient names the request in `answers`. A message whose answers name
-      requests made for different people is refused.
-    - `progress`: another message from the recipient in the request's thread, unless the thread could
-      be about two people's requests (a `return_ambiguous` finding, never routed).
-    - `acked`: an ack without an answer, in the ack's transaction.
-    - `failure` and `status`: the bus's "Not answered", "Still open" and "Past its due time" notices.
-    - `due`: `update_after` of working time with no post.
+  - **Capture.** What comes back is captured in the transaction that creates it, and its delivery to
+    the requester becomes the return's for good (`deliveries.owner`, `return_id`); nothing is handed
+    back to the bus. The captured events:
+    - `answered`: the recipient names the request in `answers`. A message whose answers name requests
+      of more than one open return is refused.
+    - `progress`: another message from the recipient in the request's thread. When the thread holds
+      more than one open return it stays the bus's (a `return_ambiguous` finding).
+    - `failure`: the bus's "Not answered" notice.
+    - `due`: `update_after` of working time with no confirmed update (no message).
 
-    An event is recorded only while it can still reach the person (`Eligible`): not once the return
-    closed; once it failed or escalated, only an answer while the late allowance lasts.
-  - **Ownership.** A recorded event's delivery to the requester belongs to the return
-    (`deliveries.owner`). The wake loop and follow-ups leave it alone, and an ordinary turn neither
-    lists it (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turn does
-    (proven by its token). What will never reach the person goes back to the bus: every event once
-    the return closes, and once it failed or escalated, all but a still-deliverable answer. Nothing
-    goes back while an update is held as unknown, since it may have reached them already.
-  - **Deliveries.** The state machine allows one delivery at a time, covering what came meanwhile.
+    Acks and the bus's "Still open" and "Past its due time" notices are not events. The bus sends no
+    such notice about a request a return follows, so the agent never gets a second instruction to
+    tell the person. A closed return captures nothing: later messages stay the bus's.
+  - **Visibility.** While its return is open, an ordinary turn neither lists a captured message
+    (`msg_inbox`) nor reads its words (`msg_thread`): only the return's own turns do (proven by their
+    token). Once the return closes it is readable, but never woken.
+  - **The state machine** (`returns.go`, pure). States `open`, `updated`, `done` and `expired`;
+    escalation is a latch. `Capture`, `Tick`, `Finish` and `Close` each answer the next view and
+    actions. Every captured event is settled exactly once: by a delivery's outcome, or by the return
+    closing. One delivery runs at a time and covers what is not settled yet; what comes while it runs
+    goes in the next.
+  - **Deliveries (the outbox).** A delivery moves through `queued`, `running`, `prepared`, `sending`
+    and `settled`.
     - It runs a `return` channel turn in the origin's conversation, with an id-only input naming
-      what happened and what to read (never the words, which `msg_read` marks as any read does).
-    - The execution, token and input are kept before the runtime is asked. An answer that never came
-      is asked again with the same request (admitted once); one unconfirmed for 30 minutes is given
-      up as having maybe run.
-    - The turn's reply ends with a control line alone: `[DONE]`, `[UPDATE]` or `[SILENT]`. A missing,
+      what happened and what to read (never the words, which `msg_read` marks as any read does). The
+      execution, token and input are kept before the runtime is asked. An answer that never came is
+      asked again with the same request (admitted once).
+    - The reply ends with a control line alone: `[DONE]`, `[UPDATE]` or `[SILENT]`. A missing,
       inline or conflicting marker is an update, and markers are never posted.
-  - **The journal.** The kept reply (`prepared`, with its mark) is posted to the origin's chat,
-    quoting the person's message in a group, part by part. Before each part, under the posting lane:
-    - the connector checks the account is the origin's and the chat still admitted;
-    - the core checks the switch is not `stop`, an update none of which went is not draining, the
-      delivery is still posting and the return not closed;
-    - the part is marked `sending`, and after it goes, `sent` with its WhatsApp id.
-  - **Outcomes:**
-    - a part that may have gone (a timeout, a cancelled wait, any send error whatsmeow does not
-      answer before writing, a crash) is `unknown`: held for a person and never sent again on its own
-      (`return_unknown`);
-    - a part that provably did not go (not connected, refused by the server) goes again, up to 6
-      tries;
-    - a part that went but could not be journaled is recorded, never resent;
-    - a turn that failed with no tool call runs again with a new execution (3 tries); one that acted,
-      or that the runtime no longer knows, never does;
-    - a chat no longer reachable, exhausted posts, or a turn that may have acted fall back: the
-      events that delivery covered go back to the bus, and the requester gets a core notice in the
-      request's thread ("Tell the person yourself"). The wake loop delivers the notice durably, with
-      the events' own deliveries marked woken, so it is woken once (`return_undelivered`). Newer
-      events stay the return's;
-    - escalation (`escalate_after`) raises `return_escalated`, after which only the request's own
-      late answer still goes.
-  - **Completion:** a return closes on `[DONE]` with every part posted, or on a posted failure.
-  - **Late replies.** A person's turn the connector stopped waiting for is detached, as is one still
-    running when the core stopped. The worker asks the runtime about it with the same execution and,
-    once it ends, posts its reply through the same journal as a delivery with no return
-    (`reply_undelivered` when it cannot). A delivery closed for any reason ends its execution, so the
-    side door opens again.
-  - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists states,
-    posted and fallen-back updates, unknown parts and a held update's parts in order (sent, unknown,
-    planned), never a requester or a word said. `POST /api/returns/{id}/resolve {"as":
-    "sent"|"resend"}` (`stormo core returns resolve <id> sent|resend`) settles a held update's unknown
-    part: `sent` (it reached them) or `resend` (it goes again). Posting resumes from the first part
-    not sent, and the update's own outcome applies once every part is sent.
-  - **Guards:**
-    - while an update's turn runs for a chat, `whatsapp_send` to that chat is refused, whatever the
-      call claims of itself;
-    - `stormo.yaml` `core.returns: drain` opens no new returns and gives queued updates back to the
-      bus, as does the agent opting out or its engine answering it no longer enforces (an engine that
-      does not answer keeps its last answer); `stop` starts and posts nothing more, holding everything
-      as it is until `on` or `drain`.
+    - The reply is one WhatsApp message of at most 3500 characters, cut short with "…" past it (the
+      whole text is kept).
+    - Under the posting lane the connector checks the device is the origin's and the chat still
+      admitted. The core's fence checks the switch is not `stop`, the agent's returns do not drain,
+      and the delivery is still prepared. Then it is `sending`; once WhatsApp's server acknowledges
+      it, it is `settled` as confirmed with its id.
+  - **Outcomes** (each settles the delivery's range):
+    - **confirmed**: the return is `updated`. A confirmed `[DONE]` closes it as `done`, but only when
+      it was not cut short and covered every captured event; otherwise what came meanwhile goes next.
+    - **silent**: `[SILENT]`, nothing posted.
+    - **unconfirmed**: a send that may have gone (a timeout, a cancelled wait, any error whatsmeow
+      does not answer before writing, a core stopped while sending). It is never sent again; a high
+      `return_unconfirmed` finding. An unconfirmed `[DONE]` stops the due prompts but leaves the
+      return open: a later answer still reaches the person, and starts them again.
+    - **failed** (a high `return_undelivered` finding):
+      - a send that provably did not go (not connected, refused by the server) is retried as it is,
+        up to 6 times, then fails;
+      - a turn that failed with no tool call runs again with a new execution (3 tries in all);
+      - a turn that may have acted, or the last try, gets one *recovery* turn: it is offered only
+        `msg_inbox`, `msg_read` and `msg_thread`, its runtime refuses any other tool, and the core
+        refuses a verified recovery execution's other calls. Its reply goes through the same outbox.
+        A recovery that fails settles as failed;
+      - a turn the runtime no longer knows, or one it never confirmed admitting in 30 minutes, may
+        have run and cannot be shown to have stopped: failed, never rerun or recovered.
+    - **closed**: the return closed before it went.
+  - **Closing.** A return closes as `expired`, with a reason and a high `return_closed` finding, when:
+    - the person's chat can no longer be reached (no longer allowed, another device linked, the
+      origin gone);
+    - the agent opts out;
+    - `stormo.yaml` `core.returns: drain` is set;
+    - its engine answers it no longer enforces (one that does not answer keeps its last answer).
+
+    Everything captured is settled, a turn of it ended, and nothing is re-woken; a send in flight
+    settles first. It also expires, with a medium finding, once escalated, caught up, idle and quiet
+    for seven days. `core.returns: stop` starts and posts nothing more, holding everything as it is
+    until `on` or `drain`.
+  - **Escalation** (`escalate_after`) raises a high `return_escalated` finding and stops the due
+    prompts; captured news still reaches the person.
+  - **The guards:** while an update's turn runs for a chat, `whatsapp_send` to that chat is refused,
+    whatever the call claims of itself.
+  - **A person's own turn** that outlives the connector's wait (10 minutes) is abandoned: the
+    connector tells them it could not complete, on a context of its own. The worker follows the turn
+    to its end, records what it did and posts nothing; a request it made still comes back. So is one
+    running when the core stopped (only turns older than the core's start).
+  - **Diagnostics** (owner only): `GET /api/returns` (`stormo core returns [agent]`) lists each
+    return's state, close reason, escalation and updates by outcome, never a requester or a word
+    said. Findings are rows (`stormo core findings`): alerting the owner on the high ones is the
+    instance's.
   - **Retention.** The bus does not prune a thread an open return is about: the request's, and that
-    of anything recorded as one of its events (an answer may be in a thread of its own). The worker
-    keeps the negotiation of an agent with any turn running fresh, so a request made late in a long
-    turn still opens its return. After 30 days, a closed
-    delivery's words and parts and an origin's quote and requester are cleared; states and ids stay,
-    so a thread stays bound to its person. Tokens are cleared a week after their execution ended (a
-    call that late is refused).
+    of anything it captured (an answer may be in a thread of its own). The worker keeps the
+    negotiation of an agent with any turn running fresh, so a request made late in a long turn still
+    opens its return. After 30 days, a settled delivery's words and an origin's quote and requester
+    are cleared; states and ids stay, so a thread stays bound to its person. Tokens are cleared a week
+    after their execution ended (a call that late is refused).
   - **Not in v1:**
     - the person's input is not marked structurally: as on the chat path, an unverified sender's
       voice note is a marked file and their text carries a prose warning;
@@ -770,7 +781,7 @@ not flagged client-facing). Samples come from the agent's own API (`/api/session
 They contain client data, so they are judged locally and only the finding, with a session id and a
 redacted excerpt, is kept.
 
-Findings never trigger restarts. Severity `high` alerts the owner; everything shows in the UI.
+Findings never trigger restarts. Severity `high` is for the owner first; the core stores findings and lists them (`GET /api/findings`), and alerting on them is the instance's.
 
 ## 8. The core agent
 

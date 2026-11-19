@@ -21,6 +21,7 @@ import (
 
 	"github.com/camfinc/stormo/internal/needletail/fsx"
 	"github.com/camfinc/stormo/internal/needletail/loop"
+	"github.com/camfinc/stormo/internal/needletail/mcp"
 	"github.com/camfinc/stormo/internal/needletail/messaging"
 	"github.com/camfinc/stormo/internal/needletail/sessions"
 	"github.com/camfinc/stormo/internal/needletail/wire"
@@ -300,8 +301,8 @@ func (s *Server) channelStart(w http.ResponseWriter, r *http.Request) {
 	case !execIDRe.MatchString(req.Execution):
 		writeError(w, http.StatusBadRequest, "execution is 8 to 64 letters, digits, _ or -")
 		return
-	case req.Kind != messaging.ExecInbound && req.Kind != messaging.ExecReturn:
-		writeError(w, http.StatusBadRequest, `kind is "inbound" or "return"`)
+	case req.Kind != messaging.ExecInbound && !messaging.BringsBack(req.Kind):
+		writeError(w, http.StatusBadRequest, `kind is "inbound", "return" or "recovery"`)
 		return
 	case !sessions.ValidID(req.Session) || !channelPath(s.store, req.Session) || Reserved(s.store, req.Session):
 		writeError(w, http.StatusForbidden, "session is not a conversation of the core's channels")
@@ -374,8 +375,15 @@ func (s *Server) channelRun(req wire.ChannelTurn, root string) {
 		return c.commit(e, "", time.Time{})
 	}
 	message, opts := req.Message, loop.Options{}
-	if req.Kind == messaging.ExecReturn {
+	if messaging.BringsBack(req.Kind) {
 		opts.InputKind = wire.KindReturn
+	}
+	if req.Kind == messaging.ExecRecovery {
+		// it only reads and reports: offered the core's reads, nothing else (the loop refuses a
+		// call to a tool it was not offered)
+		for _, n := range messaging.RecoveryCoreTools {
+			opts.Tools = append(opts.Tools, mcp.Prefix+n)
+		}
 	}
 	if len(req.Files) > 0 {
 		block, images := s.takeFiles(req.Session, root, req.Files)

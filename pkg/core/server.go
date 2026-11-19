@@ -481,6 +481,12 @@ func StartCore(o CoreOptions) (*Core, error) {
 	broker.Recover() // before anything is served: a job of this run is never taken for a leftover
 	var c *Core
 	mcp := NewMCP(keys, BusTools(bus), WorkdirTools(workdir), CapabilityTools(broker), WhatsAppTools(func() *Core { return c }))
+	mcp.Guard = func(tool string, call ToolCall) error {
+		if c.Returns == nil {
+			return nil
+		}
+		return c.Returns.guard(tool, call)
+	}
 	deps := o.LearnDeps
 	if deps.NapNow == nil {
 		// A nap now: the agent's sidecar takes it over the link, else `docker compose exec` locally.
@@ -891,8 +897,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 			}
 			writeJSONBody(w, 200, v)
 			return
-		case path == "/api/returns" || strings.HasPrefix(path, "/api/returns/"):
-			// the return paths' diagnostics and a held update's resolution: the owner only
+		case path == "/api/returns":
+			// the return paths' diagnostics: the owner only
 			if !c.caller(r).Owner {
 				writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
 				return
@@ -907,24 +913,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 				writeJSONBody(w, 200, map[string]any{"returns": rows})
 				return
 			}
-			rest, ok := strings.CutSuffix(strings.TrimPrefix(path, "/api/returns/"), "/resolve")
-			id, err := strconv.ParseInt(rest, 10, 64)
-			if r.Method != http.MethodPost || !ok || err != nil {
-				writeJSONBody(w, 404, errBody("not_found", "POST /api/returns/{id}/resolve, or GET /api/returns"))
-				return
-			}
-			var body struct {
-				As string `json:"as"`
-			}
-			if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body) != nil || body.As != "sent" && body.As != "resend" {
-				writeJSONBody(w, 400, errBody("bad_request", `body is {"as": "sent"} or {"as": "resend"}`))
-				return
-			}
-			if err := c.Returns.Resolve(id, body.As == "sent"); err != nil {
-				writeJSONBody(w, 409, errBody("conflict", err.Error()))
-				return
-			}
-			writeJSONBody(w, 200, map[string]any{"resolved": id, "as": body.As})
+			writeJSONBody(w, 404, errBody("not_found", "GET /api/returns"))
 			return
 		case get && (path == "/api/messages" || path == "/api/findings"):
 			// Bodies, subjects and evidence can hold client data: the owner only.

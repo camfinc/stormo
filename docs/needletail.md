@@ -438,8 +438,8 @@ the request URI (its query included), the time, the nonce and the body's SHA-256
 (`wire.SignChannel`). A signature more than 10 minutes off, or a nonce seen in that window, is
 refused. The bearer API key is required too.
 
-- **`POST /v1/channel/turns`** `{execution, kind: inbound|return, session, title?, message,
-  audio_format?, files?}`.
+- **`POST /v1/channel/turns`** `{execution, token, kind: inbound|return|recovery, session, title?,
+  message, audio_format?, files?}`.
   - **Admission:** a turn is admitted once per execution, durably, before it runs. It answers 202
     with its status only after `channel-turns.json` holds it.
   - **Repeats:** a repeat of the same request answers that turn's status and never runs a second
@@ -454,7 +454,10 @@ refused. The bearer API key is required too.
     the request's `token`, the core's secret for the execution. The runtime keeps it in memory only:
     the store keeps the request's hash, and a terminal command has no way to it.
   - **A `return` turn** (the core bringing back a request's outcome) marks its input row
-    `KindReturn`, schedules no follow-up, and answers in text only. An `inbound` one may answer with
+    `KindReturn`, schedules no follow-up, waits for no approval, and answers in text only. So does a
+    `recovery` turn (an update's turn failed, maybe after acting). That turn is offered only the
+    core's `msg_inbox`, `msg_read` and `msg_thread`; the loop refuses a call to any tool it was not
+    offered, so the turn reads and reports, and does nothing else. An `inbound` one may answer with
     a voice note, as `/chat` does.
 - **`GET /v1/channel/turns/{exec}?wait=<s>`** is the turn's status (`running`, `ok`, `failed`,
   `interrupted`), waiting up to 60 s for it to end. Once it ended, the result has:

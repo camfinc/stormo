@@ -35,7 +35,7 @@ func conversational(from Conversation) bool { return from.Session != "" && from.
 
 // Create checks spec and queues it for the conversation session belongs to.
 func (q *Queue) Create(ctx context.Context, session string, spec Spec) (Item, error) {
-	if e := messaging.ExecutionOf(ctx); e != nil && e.Kind == messaging.ExecReturn {
+	if e := messaging.ExecutionOf(ctx); e != nil && messaging.BringsBack(e.Kind) {
 		return Item{}, errors.New("this turn brings back the outcome of a request: it cannot schedule a follow-up (the core follows up its deadline)")
 	}
 	if id := Firing(ctx); id != "" {
