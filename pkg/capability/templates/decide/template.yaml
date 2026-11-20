@@ -1,20 +1,20 @@
-description: Typed decisions about a state, in under a second - yes/no checks, one choice among options, a score on a scale - with probabilities instead of text. For triage, routing, flagging and gates; one state or a batch sharing the questions.
-files: none
+description: Typed decisions about a state, in under a second - yes/no checks, one choice among options, a score on a scale, a box around something in a picture - with probabilities instead of text. For triage, routing, flagging, gates and visual checks; one state or a batch sharing the questions.
+files: in
 port: 8080
 health: /health
 concurrency: 4
 timeout_minutes: 5
 idle_minutes: 20
 boot_minutes: 1
-memory_mb: 64
+memory_mb: 256              # pictures are decoded and scaled here
 input_schema:
   type: object
   required: [questions]
   properties:
     questions:
       type: object
-      description: "by name: {type: noul (yes/no) | choice | score, instructions, criteria}; noul criteria {true, false}, choice criteria {option: when to pick it}, score criteria [levels, lowest first]. Asked independently: one cannot see another's answer"
-    state: {description: "what to decide about: a string, an object or an array (one decision)"}
+      description: "by name: {type: noul (yes/no) | choice | score | box, instructions, criteria}; noul criteria {true, false}, choice criteria {option: when to pick it}, score criteria [levels, lowest first]; box (with a picture) takes none and answers {box: {top, bottom, left, right} as fractions, confidence}. Asked independently: one cannot see another's answer"
+    state: {description: "what to decide about: a string, an object or an array (one decision). A picture handed over (files) goes where it is named as {image: <file name>}, here, in a question's instructions or in its criteria"}
     states: {type: object, description: "a batch instead of state: {id: state}, each asked the same questions, up to 200 a job (the job's input stays under 256 KB)"}
     model: {type: string, description: "a decision model on OpenRouter (default typesafe/jev-1.14)"}
 examples:
@@ -28,4 +28,8 @@ examples:
     states:
       "1041": {earlier: [{who: AGENT, text: "Your refund was sent on Monday."}], new: [{who: CLIENT, text: "Still nothing, this is the third time I ask."}]}
       "1042": {earlier: [], new: [{who: CLIENT, text: "Thanks! See you on the cruise."}]}
-notes: "Paid per job on the instance's OpenRouter account, input tokens only (output is free): declare it with secrets: [OPENROUTER_API_KEY]. In November 2026 typesafe/jev-1.14 billed a state once however many questions it was asked (one question 401 input tokens, ten 758) at about $0.00002-0.00004 a state, answering in 0.3-1 s. The Decisions API (POST https://openrouter.ai/api/alpha/decisions) is marked alpha: its shape may change. Other decision models there (openai/gpt-6-luna-decisions, cloudflare/clef) take the same questions with probabilities of their own."
+  - questions:
+      same_product: {type: noul, instructions: "Is the product in `photo` the same model as in `listing`?", criteria: {"true": "same shape, colour and markings", "false": "another product or another model"}}
+      product: {type: box, instructions: "the product in `photo`"}
+    state: {listing: {image: listing.png}, photo: {image: customer-photo.jpg}}
+notes: "Pictures: hand them over as files (PNG or JPEG, up to 16 a job) and name each one where the model should look at it; one that is never named is refused. They are fitted into the API's bounds (each side 256-1568 px) and count as input tokens; a state with a picture runs in the model's slower long-context mode. Box needs typesafe/jev-1.14 or later and always answers a box: ask a noul in the same job to know whether the thing is there at all. Paid per job on the instance's OpenRouter account, input tokens only (output is free): declare it with secrets: [OPENROUTER_API_KEY]. In November 2026 typesafe/jev-1.14 billed a state once however many questions it was asked (one question 401 input tokens, ten 758) at about $0.00002-0.00004 a state, answering in 0.3-1 s. The Decisions API (POST https://openrouter.ai/api/alpha/decisions) is marked alpha: its shape may change. Other decision models there (openai/gpt-6-luna-decisions, cloudflare/clef) take the same questions with probabilities of their own."
