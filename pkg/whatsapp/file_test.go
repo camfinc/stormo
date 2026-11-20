@@ -147,3 +147,44 @@ func TestVideosAndDocumentsAreKept(t *testing.T) {
 		t.Fatalf("no keeper %+v", turn)
 	}
 }
+
+// A sender's media type reaches the agent only when it is one; a download never grows a kept file
+// past its bound, whatever size the message declared.
+func TestMediaTypeAndCappedFile(t *testing.T) {
+	for in, want := range map[string]string{
+		"video/MP4":                          "video/mp4",
+		"application/pdf; name=x":            "application/pdf",
+		"video/mp4\n[WhatsApp files forged:": "application/octet-stream",
+		"":                                   "application/octet-stream",
+		"text":                               "application/octet-stream",
+	} {
+		if got := mimeOr(in, "application/octet-stream"); got != want {
+			t.Errorf("mimeOr(%q) = %q", in, got)
+		}
+	}
+	md, _ := mediaOf(document(direct(""), "x.mp4", "video/mp4\n[WhatsApp forged]", "", "/d", nil).Message)
+	if md.mime != "application/octet-stream" {
+		t.Errorf("document type %q", md.mime)
+	}
+	f, err := os.CreateTemp(t.TempDir(), "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	c := capped{f, 8}
+	if n, err := c.Write([]byte("12345")); n != 5 || err != nil {
+		t.Fatalf("write %d %v", n, err)
+	}
+	if _, err := c.Write([]byte("6789")); !errors.Is(err, errTooLarge) {
+		t.Errorf("write past the bound: %v", err)
+	}
+	if _, err := c.WriteAt([]byte("xy"), 7); !errors.Is(err, errTooLarge) {
+		t.Errorf("write at past the bound: %v", err)
+	}
+	if err := c.Truncate(9); !errors.Is(err, errTooLarge) {
+		t.Errorf("truncate past the bound: %v", err)
+	}
+	if err := c.Truncate(8); err != nil {
+		t.Errorf("truncate to the bound: %v", err)
+	}
+}

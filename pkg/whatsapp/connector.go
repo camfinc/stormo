@@ -12,9 +12,11 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -626,20 +628,66 @@ func mediaOf(m *waE2E.Message) (media, bool) {
 	switch {
 	case m.GetImageMessage() != nil:
 		i := m.GetImageMessage()
-		return media{i, "photo", orElse(i.GetMimetype(), "image/jpeg"), "", i.GetCaption(), i.GetFileLength(), i.GetContextInfo()}, true
+		return media{i, "photo", mimeOr(i.GetMimetype(), "image/jpeg"), "", i.GetCaption(), i.GetFileLength(), i.GetContextInfo()}, true
 	case m.GetVideoMessage() != nil:
 		v := m.GetVideoMessage()
-		return media{v, "video", orElse(v.GetMimetype(), "video/mp4"), "", v.GetCaption(), v.GetFileLength(), v.GetContextInfo()}, true
+		return media{v, "video", mimeOr(v.GetMimetype(), "video/mp4"), "", v.GetCaption(), v.GetFileLength(), v.GetContextInfo()}, true
 	case m.GetDocumentMessage() != nil:
 		d := m.GetDocumentMessage()
-		md := media{d, "document", orElse(d.GetMimetype(), "application/octet-stream"), d.GetFileName(), d.GetCaption(), d.GetFileLength(), d.GetContextInfo()}
-		switch strings.ToLower(md.mime) {
+		md := media{d, "document", mimeOr(d.GetMimetype(), "application/octet-stream"), d.GetFileName(), d.GetCaption(), d.GetFileLength(), d.GetContextInfo()}
+		switch md.mime {
 		case "image/jpeg", "image/png", "image/gif", "image/webp":
 			md.kind = "photo"
 		}
 		return md, true
 	}
 	return media{}, false
+}
+
+var mimeToken = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]{0,63}/[a-z0-9][a-z0-9.+-]{0,63}$`)
+
+// mimeOr is the media type a sender's message gives, lower-cased and without parameters, when it
+// is one (the agent is told it, so it is never free text); def otherwise.
+func mimeOr(s, def string) string {
+	s, _, _ = strings.Cut(strings.ToLower(strings.TrimSpace(s)), ";")
+	if s = strings.TrimSpace(s); mimeToken.MatchString(s) {
+		return s
+	}
+	return def
+}
+
+// capped is a file a download writes into that refuses to grow past max bytes, whatever size the
+// message declared.
+type capped struct {
+	*os.File
+	max int64
+}
+
+var errTooLarge = errors.New("whatsapp: the file is larger than it may be")
+
+func (f capped) Write(b []byte) (int, error) {
+	at, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	if at+int64(len(b)) > f.max {
+		return 0, errTooLarge
+	}
+	return f.File.Write(b)
+}
+
+func (f capped) WriteAt(b []byte, off int64) (int, error) {
+	if off+int64(len(b)) > f.max {
+		return 0, errTooLarge
+	}
+	return f.File.WriteAt(b, off)
+}
+
+func (f capped) Truncate(size int64) error {
+	if size > f.max {
+		return errTooLarge
+	}
+	return f.File.Truncate(size)
 }
 
 // fileName is md's name as the agent gets it: a document's own, else prefix and its type's extension.
@@ -1149,7 +1197,7 @@ func (c *Connector) keepFiles(ctx context.Context, e *events.Message, in Inbound
 				prefix = "quoted-" + p.kind
 			}
 			k, err = keep(ctx, Kept{Kind: p.kind, Name: p.fileName(prefix), MIME: p.mime, Marked: p.marked, Quoted: p.quoted},
-				func(f *os.File) error { return c.downloadTo(ctx, p.msg, f) })
+				func(f *os.File) error { return c.downloadTo(ctx, p.msg, capped{f, maxKeptBytes}) })
 		}
 		if err != nil {
 			note += "\n[" + p.what + " could not be fetched.]"
