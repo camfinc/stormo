@@ -112,6 +112,10 @@ type Agent struct {
 	// outcome that could not be written while a turn ran): appended before the turn's input, then
 	// done is called.
 	Notes func(conversation string) (rows []wire.Message, done func())
+	// Decay, when set, is taint decay (approvals.endorse, docs/needletail.md §7): run as a turn
+	// starts, before its history is read, on the conversation's live session. It never fails the
+	// turn: what it cannot do leaves the conversation as it was.
+	Decay func(ctx context.Context, tip string)
 }
 
 // Options shape one turn.
@@ -203,6 +207,9 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 	}
 	unlockLearning := a.lockLearning(tip)
 	defer unlockLearning()
+	if a.Decay != nil {
+		a.Decay(ctx, tip)
+	}
 	var obs observers
 	for _, o := range []Observer{a.Observer, opts.Observer} {
 		if o != nil {
@@ -316,7 +323,9 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 		}
 		final := step >= a.Cfg.Limits.Turns
 		window := a.window(ctx, turn)
-		estimate := max(estimateTokens(system, history, specs)+len(recalled)/charsPerTok+(len(inputImages)+len(shown))*imageTokens, lastTotal+sinceTotal/charsPerTok)
+		// what taint decay took out of context reaches the model as stubs (and counts as them)
+		seen := sessions.View(history, a.Store.Evicted(res.Session))
+		estimate := max(estimateTokens(system, seen, specs)+len(recalled)/charsPerTok+(len(inputImages)+len(shown))*imageTokens, lastTotal+sinceTotal/charsPerTok)
 		if float64(estimate) > compactAt*float64(window) {
 			newTip, newHistory, err := a.compact(ctx, turn, res.Session, history, window, int(keepRecent*float64(window)))
 			if err != nil {
@@ -324,9 +333,10 @@ func (a *Agent) Run(ctx context.Context, session, input string, opts Options) (r
 			} else {
 				res.Session, history = newTip, newHistory
 				lastTotal, sinceTotal = 0, 0
+				seen = sessions.View(history, a.Store.Evicted(res.Session))
 			}
 		}
-		req := llm.Request{Messages: withImages(withRecall(toLLM(system, history), recalled), inputImages, shown)}
+		req := llm.Request{Messages: withImages(withRecall(toLLM(system, seen), recalled), inputImages, shown)}
 		if final {
 			req.Messages = append(req.Messages, llm.Message{Role: "system", Content: "You have reached this turn's tool-call limit. Answer now with what you have; do not call tools."})
 		} else {
@@ -705,7 +715,8 @@ func (a *Agent) compact(ctx context.Context, turn *llm.Turn, tip string, history
 	if cut <= 0 {
 		return "", nil, errors.New("no point to cut the conversation at")
 	}
-	summary := a.summarise(ctx, turn, history[:cut], window)
+	// the summary is made from what the model sees: what taint decay took out stays out
+	summary := a.summarise(ctx, turn, sessions.View(history, a.Store.Evicted(tip))[:cut], window)
 	// the summary keeps its inputs' marks: a marked row (after the owner's endorsement) summarised
 	// leaves the summary marked, so compaction never launders taint
 	endorsed, marked := a.Store.Endorsed(tip), false

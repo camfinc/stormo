@@ -330,6 +330,24 @@ func readAgentConfig(dir string) (*agentConfig, error) {
 				return nil, fmt.Errorf("%s: approvals.commands pattern %q is not a regular expression", ConfigFile, r.Pattern)
 			}
 		}
+		if e := a.Endorse; e != nil {
+			switch {
+			case strings.TrimSpace(e.Screen) == "":
+				return nil, fmt.Errorf("%s: approvals.endorse.screen names the capability that screens (one made from the decide template)", ConfigFile)
+			case e.AfterMinutes != 0 && (e.AfterMinutes < wire.EndorseMinAfter || e.AfterMinutes > wire.EndorseMaxAfter):
+				return nil, fmt.Errorf("%s: approvals.endorse.after_minutes %d must be %d to %d (0 or unset: 30)", ConfigFile, e.AfterMinutes, wire.EndorseMinAfter, wire.EndorseMaxAfter)
+			case e.MaxBytes != 0 && (e.MaxBytes < wire.EndorseMinMaxBytes || e.MaxBytes > wire.EndorseMaxMaxBytes):
+				return nil, fmt.Errorf("%s: approvals.endorse.max_bytes %d must be %d to %d (0 or unset: 131072)", ConfigFile, e.MaxBytes, wire.EndorseMinMaxBytes, wire.EndorseMaxMaxBytes)
+			}
+			for q, t := range e.Thresholds {
+				if !slices.Contains(wire.EndorseQuestions, q) {
+					return nil, fmt.Errorf("%s: approvals.endorse.thresholds: %q is not one of the screen's questions (%s)", ConfigFile, q, strings.Join(wire.EndorseQuestions, ", "))
+				}
+				if t <= 0 || t >= 1 {
+					return nil, fmt.Errorf("%s: approvals.endorse.thresholds.%s %v must be a probability above 0 and below 1", ConfigFile, q, t)
+				}
+			}
+		}
 	}
 	if c.Schedules.Turns < 0 || c.Schedules.Turns > maxScheduleTurns {
 		return nil, fmt.Errorf("%s: schedules.turns %d must be 1 to %d (0 or unset: the runtime's 1)", ConfigFile, c.Schedules.Turns, maxScheduleTurns)
@@ -565,6 +583,9 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	if err := checkSearchKey(a, ac); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
 	}
+	if err := checkEndorse(a, ac); err != nil {
+		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
+	}
 	rendered := renderConfig(a, conn, ctx.Target, manifest.CoreForPlacement(ctx.Instance, ctx.Target, ctx.Placement), ac)
 	if rendered.Model.Providers, err = scheduleProviders(a, ctx.Instance); err != nil {
 		return nil, fmt.Errorf("agents/%s: %w", a.ID, err)
@@ -599,4 +620,16 @@ func (n *Needletail) Compile(a *manifest.Agent, ctx engine.CompileContext) (map[
 	files[n.layout.Memory.Memory] = []byte(n.Memory().File(ctx.Seed.Memory))
 	files[n.layout.Memory.User] = []byte(n.Memory().File(ctx.Seed.User))
 	return files, nil
+}
+
+// checkEndorse: taint decay's screen is a capability the agent is granted (the core refuses the
+// job otherwise, and every marked conversation would stay marked).
+func checkEndorse(a *manifest.Agent, ac *agentConfig) error {
+	if ac == nil || ac.Approvals == nil || ac.Approvals.Endorse == nil {
+		return nil
+	}
+	if screen := ac.Approvals.Endorse.Screen; !slices.Contains(a.Capabilities, screen) {
+		return fmt.Errorf("%s: approvals.endorse.screen %q is not a capability the agent is granted (agent.yaml capabilities:)", ConfigFile, screen)
+	}
+	return nil
 }

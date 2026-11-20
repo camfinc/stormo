@@ -456,6 +456,43 @@ func TestApprovalsRender(t *testing.T) {
 	}
 }
 
+// approvals.endorse (taint decay) reaches needletail.yaml; bad bounds, an unknown question and a
+// screen the agent is not granted are refused.
+func TestEndorseRender(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "engine", "needletail"), 0o755)
+	inst, a := atlas(t)
+	conn, _ := inst.Connection(a.Engine.Provider)
+	body := "approvals:\n  marked: internal\n  endorse: {screen: decision.ask, after_minutes: 45, max_bytes: 65536, thresholds: {contact: 0.6}}\n"
+	_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(body), 0o644)
+	ac, err := readAgentConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := yaml.Marshal(renderConfig(a, conn, manifest.AWS, manifest.CoreFor(inst, manifest.AWS), ac))
+	for _, want := range []string{"endorse:", "screen: decision.ask", "after_minutes: 45", "max_bytes: 65536", "contact: 0.6"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("needletail.yaml lacks %q:\n%s", want, raw)
+		}
+	}
+	if err := checkEndorse(a, ac); err == nil || !strings.Contains(err.Error(), "not a capability the agent is granted") {
+		t.Errorf("an ungranted screen: %v", err)
+	}
+	granted := *a
+	granted.Capabilities = append([]string{"decision.ask"}, a.Capabilities...)
+	if err := checkEndorse(&granted, ac); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range []string{"approvals:\n  endorse: {after_minutes: 30}\n", "approvals:\n  endorse: {screen: decision.ask, after_minutes: 2}\n",
+		"approvals:\n  endorse: {screen: decision.ask, max_bytes: 999999}\n", "approvals:\n  endorse: {screen: decision.ask, thresholds: {injected: 0.5}}\n",
+		"approvals:\n  endorse: {screen: decision.ask, thresholds: {override: 1.2}}\n", "approvals:\n  endorse: {screen: decision.ask, later: 1}\n"} {
+		_ = os.WriteFile(filepath.Join(dir, filepath.FromSlash(ConfigFile)), []byte(bad), 0o644)
+		if _, err := readAgentConfig(dir); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 // engine/needletail/config.yaml's files and stt reach needletail.yaml; bad values are refused; with
 // neither, nothing is rendered (older images keep working); stt needs its key declared.
 func TestFilesAndSTTRender(t *testing.T) {

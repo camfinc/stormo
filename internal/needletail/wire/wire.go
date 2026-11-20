@@ -130,6 +130,11 @@ type Session struct {
 	Endorsed   int    `json:"endorsed,omitempty"`
 	EndorsedBy string `json:"endorsed_by,omitempty"`
 	EndorsedAt string `json:"endorsed_at,omitempty"`
+	// Evicted is how many of the session file's rows taint decay took outsiders' words out of
+	// (approvals.endorse, docs/needletail.md §7 "Taint decay"): before it, tool results (but swarm
+	// messages read) and marked person rows reach the model as a stub; the file keeps them whole.
+	// Added with taint decay; absent: none.
+	Evicted int `json:"evicted,omitempty"`
 }
 
 // Taint is one source of a conversation's marked data (Session.Taint): the people (Slack user or
@@ -517,7 +522,40 @@ type ApprovalsConfig struct {
 	// approvers; MarkedInternal lets what reaches only an audience the owner configured go too.
 	// An image older than it refuses a needletail.yaml that has it.
 	Marked string `json:"marked,omitempty" yaml:"marked,omitempty"`
+	// Endorse is taint decay (docs/needletail.md §7, "Taint decay"): nil keeps a marked
+	// conversation marked until a person endorses it. An image older than it refuses a
+	// needletail.yaml that has it.
+	Endorse *EndorseConfig `json:"endorse,omitempty" yaml:"endorse,omitempty"`
 }
+
+// EndorseConfig is approvals.endorse: once no marked data has come into a conversation for
+// AfterMinutes, the runtime takes outsiders' words out of its context and screens what stays
+// marked with the Screen capability; a pass endorses the conversation as the owner's trust does.
+type EndorseConfig struct {
+	// Screen is the capability that screens (one built from the decide template, granted to the
+	// agent in agent.yaml).
+	Screen string `json:"screen" yaml:"screen"`
+	// AfterMinutes is how long a conversation stays quiet of new marked data first (0: 30; 5 to
+	// 1440).
+	AfterMinutes int `json:"after_minutes,omitempty" yaml:"after_minutes,omitempty"`
+	// MaxBytes is the most marked text one screen judges (0: 131072; 4096 to 163840): past it the
+	// conversation stays marked.
+	MaxBytes int `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
+	// Thresholds override the screen's questions' (by name): a probability at or above one holds
+	// the conversation marked.
+	Thresholds map[string]float64 `json:"thresholds,omitempty" yaml:"thresholds,omitempty"`
+}
+
+// The bounds of approvals.endorse, and the screen's questions (internal/needletail/decay): the
+// keys approvals.endorse.thresholds takes.
+const (
+	EndorseMinAfter    = 5
+	EndorseMaxAfter    = 24 * 60
+	EndorseMinMaxBytes = 4 << 10
+	EndorseMaxMaxBytes = 160 << 10
+)
+
+var EndorseQuestions = []string{"override", "exfiltrate", "settings", "contact", "impersonate", "secrets"}
 
 // The approvals.marked values.
 const (

@@ -879,6 +879,8 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	link := connectCore(rt)
 	defer link.close(3 * time.Second)
+	// taint decay (approvals.endorse, docs/needletail.md §7): set before any turn can start
+	dec := startDecay(rt)
 	plat := &platforms{}
 	srv, err := api.New(api.Options{Files: rt.files, STT: startSTT(rt), Sees: func() bool { return rt.agent.LLM.Sees(0) }, Neutralise: slack.Neutralise,
 		Speaker: rt.speaker, Voice: rt.voiceReplies,
@@ -923,6 +925,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); rt.agent.RunSkillMaintenance(ticks) }()
 	defer func() { stopTicks(); <-maintenanceDone }()
+	if dec != nil {
+		decayDone := make(chan struct{})
+		go func() { defer close(decayDone); sweepDecay(ticks, rt, srv, dec) }()
+		defer func() { stopTicks(); <-decayDone }()
+	}
 	// approvals (docs/needletail.md §7): the cards go through the gateway, which takes their buttons
 	svc := startApprovals(ticks, rt, srv, plat)
 	if svc != nil && gw != nil {

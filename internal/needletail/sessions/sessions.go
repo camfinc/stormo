@@ -69,6 +69,11 @@ type meta struct {
 	// in a marked conversation): an approval's trust part endorses only when none came after its
 	// request (TrustAt)
 	marks int
+	// lastMark is when marked data last came into the session (a read, an outsider's words, a
+	// gateway's mark; never the plain mark of a turn in a marked conversation): taint decay waits
+	// for it to be old enough. Kept in memory only: after a restart it is the last activity of a
+	// marked session (later, never earlier, than the truth).
+	lastMark time.Time
 }
 
 // Store is the sessions directory. Safe for concurrent use; the caller serialises turns per
@@ -136,6 +141,9 @@ func Open(dir string, redact func(string) string) (*Store, error) {
 		m := &meta{Session: h, lastActive: h.Created}
 		for _, r := range rows {
 			m.observe(r)
+		}
+		if m.Untrusted {
+			m.lastMark = parseStamp(m.lastActive)
 		}
 		s.metas[id] = m
 		msgs[id] = rows
@@ -360,13 +368,19 @@ func (s *Store) Untrusted(id string) bool {
 // MarkUntrusted durably marks the current tip before marked content can escape.
 // It does not add a synthetic message and never clears an existing mark.
 func (s *Store) MarkUntrusted(id string) error {
-	return s.AddTaint(id, wire.Taint{})
+	// a gateway's or an approval note's mark: marked data comes in with it
+	return s.addTaint(id, wire.Taint{}, true)
 }
 
 // AddTaint durably marks the current tip, keeping t (who and what brought the marked data in) in
 // its header when it says something new (at most wire.MaxTaint entries, the first kept); an
 // empty t only marks.
 func (s *Store) AddTaint(id string, t wire.Taint) error {
+	return s.addTaint(id, t, t.Why != "" || len(t.Users) > 0)
+}
+
+// addTaint is AddTaint; fresh: marked data came in (its time is what taint decay waits on).
+func (s *Store) addTaint(id string, t wire.Taint, fresh bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	line, ok := s.lineage(id)
@@ -376,6 +390,9 @@ func (s *Store) AddTaint(id string, t wire.Taint) error {
 	m := s.metas[line[len(line)-1]]
 	if t.Why != "" || len(t.Users) > 0 {
 		m.marks++ // new marked data (a plain mark, a turn in a marked conversation, is none)
+	}
+	if fresh {
+		m.lastMark = s.now()
 	}
 	add := t.Why != "" && len(m.Taint) < wire.MaxTaint && !slices.ContainsFunc(m.Taint, func(x wire.Taint) bool {
 		return x.Why == t.Why && slices.Equal(x.Users, t.Users) && x.Channel == t.Channel && x.Thread == t.Thread
@@ -506,6 +523,76 @@ func (s *Store) Endorsed(id string) int {
 	return 0
 }
 
+// Evicted is how many rows of session id taint decay took outsiders' words out of (View).
+func (s *Store) Evicted(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m, ok := s.metas[id]; ok {
+		return m.Evicted
+	}
+	return 0
+}
+
+// Evict is taint decay's first step (docs/needletail.md §7, "Taint decay"): in the live session
+// of the conversation id belongs to, every row it holds now reaches the model through View (the
+// outsiders' words as stubs); the file keeps them whole. It returns the session's new Evicted.
+func (s *Store) Evict(id string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return 0, ErrNotFound
+	}
+	m := s.metas[line[len(line)-1]]
+	if m.EndReason != "" {
+		return 0, ErrEnded
+	}
+	if m.Evicted >= m.rows {
+		return m.Evicted, nil
+	}
+	rows := m.rows
+	if err := s.rewriteHeader(m, func(h *wire.Session) { h.Evicted = rows }); err != nil {
+		return 0, err
+	}
+	return rows, s.syncFile(m.ID)
+}
+
+// MarkedSince is whether the conversation id belongs to is marked and, when it is, since when no
+// new marked data came in (in this process; after a restart, its last activity).
+func (s *Store) MarkedSince(id string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lineage(id)
+	if !ok {
+		return time.Time{}, false
+	}
+	m := s.metas[l[len(l)-1]]
+	return m.lastMark, m.Untrusted
+}
+
+// Marked are the live sessions (conversations' tips, not ended) that are marked.
+func (s *Store) Marked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []string{}
+	for id, m := range s.metas {
+		if m.Untrusted && m.child == "" && m.EndReason == "" {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parseStamp reads a Stamp; the zero time when it cannot.
+func parseStamp(v string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 // WithTrusted runs a short persistence operation while holding the session authority
 // lock. The callback must not call session methods. This closes races with handlers
 // appending untrusted rows outside the main agent loop. A conversation holding marked data in its
@@ -547,6 +634,9 @@ func (s *Store) Append(id string, rows ...wire.Message) ([]wire.Message, error) 
 	}
 	if m.EndReason != "" {
 		return nil, ErrEnded
+	}
+	if slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted && r.Role == "user" }) {
+		m.lastMark = s.now() // an outsider's words (or a marked note) came in
 	}
 	if !m.Untrusted && slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted }) {
 		// the header is marked before the row is written: a conversation never holds an
@@ -684,12 +774,25 @@ func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Mess
 		return "", ErrEnded
 	}
 	carry = append([]wire.Message{}, carry...)
+	evicted, kept := 0, false // carried rows taint decay took out of context: they stay out
 	for i := range carry {
-		if m.rows-len(carry)+i < m.Endorsed {
+		at := m.rows - len(carry) + i
+		out := at < m.Evicted
+		if out {
+			evicted++
+		}
+		// an endorsed row's mark goes, but for an outsider's words kept out of context: the
+		// endorsement never saw them, so they never read as trusted later
+		if at < m.Endorsed && !(out && carry[i].Untrusted && carry[i].Role == "user") {
 			carry[i].Untrusted = false
 		}
+		kept = kept || carry[i].Untrusted
 	}
-	child, err := s.create(wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted || marked, Taint: m.Taint})
+	h := wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted || marked || kept, Taint: m.Taint}
+	if evicted > 0 {
+		h.Evicted = 1 + evicted // the summary row, then the carried rows from the start
+	}
+	child, err := s.create(h)
 	if err != nil {
 		return "", err
 	}
@@ -712,6 +815,7 @@ func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Mess
 		return "", err
 	}
 	c.carried = len(carry)
+	c.lastMark = m.lastMark
 	m.child = child.ID
 	return child.ID, s.writeIndex()
 }
