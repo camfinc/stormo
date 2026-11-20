@@ -79,10 +79,15 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 		})
 		// Through the runtime's Exchanger when it has one: a person's voice note goes to the agent
 		// to transcribe, and its voice reply comes back as a voice note (Ogg Opus).
+		if c.Relay != nil {
+			// videos and documents stay with the core: the agent names them relay:<id>
+			conn.UseKeep(c.Relay.Keeper(id))
+		}
 		conn.UseExchange(func(ctx context.Context, session string, t whatsapp.Turn) (whatsapp.Answer, error) {
 			if !c.whatsappPolicy(id).Enabled {
 				return whatsapp.Answer{}, fmt.Errorf("channel disabled")
 			}
+			t.Text += keptText(t.Kept)
 			if c.Returns != nil {
 				// a recorded message runs as a channel turn: once, attributed, its result kept
 				if ans, err := c.Returns.InboundTurn(ctx, id, session, t); !errors.Is(err, ErrNoReturns) {
