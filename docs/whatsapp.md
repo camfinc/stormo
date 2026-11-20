@@ -21,6 +21,19 @@ channels:
 
 It does not provide cron delivery (a job's `deliver:`), files other than PNG and JPEG images, images in a turn's own reply (post them with `whatsapp_send`), typing indicators, read receipts, or remote agent routing. Access is denied by default. Channel removal disables task dispatch immediately; use **Unlink** before removing the channel to revoke the device session as well.
 
+**What is kept, and for how long.** Nothing is downloaded from a message that is not addressed to the agent: an allowed group's other photos, videos and documents reach only the group context log, as a line (`[video] <caption>`), never their bytes. What a message to the agent brings is kept only where it is needed, for a set time, and never in the shared space:
+
+| What | Where | For how long |
+|---|---|---|
+| The group context log (text lines) | the connector's `session.db` | 7 days |
+| A download being taken in | a temporary file in the connector's folder (`.swarm/core/whatsapp/<agent>/.fetch-*`), capped at its bound | until it is read, the same turn |
+| A photo or voice note | the agent's own upload store for that chat (needletail: `files/<conversation>/`, docs/needletail.md §4.9), so `view_file` can show it again | the runtime's `files.retention_days` (default 14 days) |
+| A video or document | the core relay, `.swarm/core/relay/<id>/` (docs/core.md, "Relay"), granted to the agent and those it forwards it to | 7 days, used or not (2 GB in all) |
+| A capability job's copy of a relay file or upload | the job's own folder | until the job is delivered |
+| What a job makes from it | the job's `out` folder: the agent's unit layer by default (`/shared/<unit>/capabilities/…`) | until someone removes it |
+
+So a file outlives its time only when the agent decides it should: by handing it to a job whose output it keeps. Expired files go on the store's own sweep (the relay's hourly, the runtime's), whether or not new ones come. Shorten a runtime's store with its `files.retention_days`; the relay's 7 days and the log's are fixed.
+
 Sessions are restored on core startup. Device keys, received-message IDs, the agent's sent messages (their ids and first 200 characters, kept 90 days, to know a reaction or a reply is to the agent) and the group context log (allowed groups' messages with their senders' names and numbers, and what the agent posted with `whatsapp_send`; up to 800 characters each, kept 7 days) are stored in `.swarm/core/whatsapp/<agent>/session.db` with file mode 0600 inside a 0700 directory. Protect this directory like a password; do not publish or share it. Pairing codes are exposed only to authenticated operators and are not cached. Unlink removes the local session after successful remote logout; if WhatsApp is unreachable, remove the device from the phone's Linked devices screen and retry.
 
 Messages are processed sequentially with a bounded queue and a ten-minute turn deadline. IDs are claimed durably before agent execution to avoid repeating tool calls after reconnect or restart. A crash or delivery failure can therefore leave a request without a reply: check its agent conversation before retrying. Queue overflow appears in connector status. Conversations have stable `whatsapp-…` IDs and use the engines' existing session APIs (their displayed source may be API).
