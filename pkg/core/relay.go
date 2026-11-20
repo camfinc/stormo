@@ -159,6 +159,16 @@ func (r *Relay) get(agent, id string) (RelayFile, error) {
 	return f, nil
 }
 
+// Lookup is id's record whoever holds it, while it is kept: what a message's attachment is, for
+// its readers (using it still needs Get).
+func (r *Relay) Lookup(id string) (RelayFile, bool) {
+	if !relayID.MatchString(id) {
+		return RelayFile{}, false
+	}
+	f, err := readMeta(filepath.Join(r.dir, id))
+	return f, err == nil && f.ID == id && f.Expires > r.now().UnixMilli()
+}
+
 // Open is the bytes of a file Get gave.
 func (r *Relay) Open(f RelayFile) (*os.File, error) {
 	return os.Open(filepath.Join(r.dir, f.ID, "data"))

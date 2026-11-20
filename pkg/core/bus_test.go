@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1230,5 +1231,51 @@ func TestAnswersEdgesReachTheAsker(t *testing.T) {
 	var answered int64
 	if err := f.db.QueryRow(`SELECT answered FROM answers WHERE message = ?`, r.ID).Scan(&answered); err != nil || answered != q.ID {
 		t.Fatalf("edge %d %v", answered, err)
+	}
+}
+
+// A file the core keeps for the sender travels as relay:<id>: its recipients may use it once the
+// message is sent, a reader sees what it is, and one whose sender may not instruct agents marks
+// the message. One the sender does not hold is refused.
+func TestRelayAttachments(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	r := NewRelay(filepath.Join(t.TempDir(), "relay"), nil)
+	f.bus.o.Relay = r
+	write := func(f *os.File) error { _, err := f.WriteString("mp4"); return err }
+	clip, err := r.Keep("atlas", RelayFile{Name: "promo.mp4", MIME: "video/mp4", Marked: true}, write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.bus.Send("nova", SendRequest{To: "atlas", Subject: "s", Body: "b", Attach: []string{clip.Ref()}}); err == nil {
+		t.Fatal("nova sent a file it does not hold")
+	}
+	if _, err := r.Get("nova", clip.ID); err == nil {
+		t.Fatal("a refused send granted the file")
+	}
+	out, err := f.bus.Send("atlas", SendRequest{To: "nova", Subject: "the promo", Body: "cut a reel", Attach: []string{" " + clip.Ref()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Get("nova", clip.ID); err != nil {
+		t.Fatalf("nova may not use it: %v", err)
+	}
+	m, err := f.bus.Read("nova", out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Attach) != 1 || m.Attach[0] != clip.Ref() || len(m.RelayFiles) != 1 || !strings.HasPrefix(m.RelayFiles[0], clip.Ref()+" (promo.mp4, video/mp4, 3 bytes") {
+		t.Fatalf("message %+v", m)
+	}
+	if !strings.Contains(m.Untrusted, "from someone who may not instruct agents") {
+		t.Errorf("untrusted %q", m.Untrusted)
+	}
+	// a file the sender's run already marked keeps that reason; an unmarked file marks nothing
+	plain, _ := r.Keep("atlas", RelayFile{Name: "logo.mov", MIME: "video/quicktime"}, write)
+	out, err = f.bus.Send("atlas", SendRequest{To: "nova", Subject: "logo", Body: "b", Attach: []string{plain.Ref()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := f.bus.Read("nova", out.ID); m == nil || m.Untrusted != "" {
+		t.Errorf("an unmarked file marked the message: %+v", m)
 	}
 }

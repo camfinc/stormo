@@ -624,3 +624,105 @@ func TestCapabilityOwnerJobAndCancel(t *testing.T) {
 		t.Errorf("notices: %s", all)
 	}
 }
+
+// A relay:<id> input is a file the core keeps for the agent: copied into the job as an upload under
+// a name the job takes (with an agent's own uploads still to come, the job waits for them), never
+// through the shared space. One the agent does not hold, or for a capability that takes no
+// uploaded files, is refused.
+func TestCapabilityRelayInputs(t *testing.T) {
+	_, inst := fixture(t)
+	wroot, jobs := t.TempDir(), t.TempDir()
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		var body struct {
+			Files []string `json:"files"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		names := []string{}
+		for _, f := range body.Files {
+			b, _ := os.ReadFile(filepath.Join(jobs, "media-cover", strings.TrimPrefix(f, "/jobs/")))
+			names = append(names, fmt.Sprintf("%s=%s", filepath.Base(f), b))
+		}
+		fmt.Fprintf(w, `{"saw":%q}`, strings.Join(names, ","))
+	}))
+	defer worker.Close()
+	services := link.NewServices("acme")
+	services.Docker = serviceDocker(strings.TrimPrefix(worker.URL, "http://"))
+	inst.Capabilities = []instance.Capability{
+		{Name: "media.cover", Kind: "service", Image: "m:1", Placement: "local", Port: 8080, Health: "/health", IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "both"},
+		{Name: "web.read", Kind: "service", Image: "w:1", Placement: "local", Port: 8080, Health: "/health", IdleMinutes: 10, BootMinutes: 1, Concurrency: 1, TimeoutMinutes: 1, Files: "out"},
+	}
+	c, err := StartCore(CoreOptions{Inst: inst, Port: 0, NoFleet: true, DB: testDB(t), Keys: testKeys(t), OwnerToken: "owner-token-0123456789", NoMirror: true,
+		WorkdirRoot: wroot, Roster: func() []BusAgent { return []BusAgent{{ID: "atlas", Unit: "sales"}, {ID: "nova", Unit: "media"}} },
+		CapabilityGrants: func(string) []string { return []string{"media.cover", "web.read"} },
+		Services:         services, CapabilityImage: func(string) error { return nil }, CapabilityJobs: jobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	write := func(s string) func(*os.File) error {
+		return func(f *os.File) error { _, err := f.WriteString(s); return err }
+	}
+	clip, err := c.Relay.Keep("atlas", RelayFile{Name: "../promo video?.mp4", MIME: "video/mp4"}, write("video-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := map[string]MCPTool{}
+	for _, tl := range CapabilityTools(c.Broker) {
+		tools[tl.Name] = tl
+	}
+	call := func(agent, tool string, args any) (any, error) {
+		b, _ := json.Marshal(args)
+		return tools[tool].Run(ToolCall{Agent: agent, Args: b})
+	}
+	for agent, refused := range map[string]map[string]any{
+		"nova":  {"capability": "media.cover", "files": []string{clip.Ref()}},                       // not hers
+		"atlas": {"capability": "web.read", "files": []string{clip.Ref()}},                          // takes no files
+		"ghost": {"capability": "media.cover", "files": []string{"relay:0123456789abcdef01234567"}}, // never kept
+	} {
+		if _, err := call(agent, "cap_start", refused); err == nil {
+			t.Errorf("%s %v accepted", agent, refused)
+		}
+	}
+
+	// with one of the agent's own uploads still to come, the job waits for it
+	v, err := call("atlas", "cap_start", map[string]any{"capability": "media.cover", "files": []string{clip.Ref()}, "files_pending": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := v.(*JobView)
+	if j.Status != "waiting" || j.Pending != 1 || strings.Join(j.Uploads, ",") != "promo video_.mp4" {
+		t.Fatalf("waiting: %+v", j)
+	}
+	if _, err := c.Broker.Upload("atlas", j.ID, "voice.m4a", strings.NewReader("audio"), 5); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the job", func() bool { j, _ := c.Broker.Job("atlas", j.ID); return j.Status == "done" })
+	done, _ := c.Broker.Job("atlas", j.ID)
+	if !strings.Contains(string(done.Output), "promo video_.mp4=video-bytes,voice.m4a=audio") {
+		t.Errorf("done: %+v %s", done, done.Output)
+	}
+
+	// a relay file alone queues the job at once; its name, taken, gets the file's id
+	v, err = call("atlas", "cap_start", map[string]any{"capability": "media.cover", "files": []string{clip.Ref()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := v.(*JobView); j.Status != "queued" || j.Pending != 0 {
+		t.Fatalf("queued: %+v", j)
+	}
+	if got := relayJobName(clip, []string{"Promo Video_.mp4"}); got != clip.ID[:8]+"-promo video_.mp4" {
+		t.Errorf("name when taken: %q", got)
+	}
+	if got := relayJobName(RelayFile{ID: clip.ID, Name: "..."}, nil); got != clip.ID[:8]+"-" {
+		t.Errorf("name of nothing: %q", got)
+	}
+	filepath.WalkDir(wroot, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".mp4") {
+			t.Errorf("a relay file in the shared space: %s", p)
+		}
+		return nil
+	})
+}

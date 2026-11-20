@@ -72,6 +72,8 @@ type BusOptions struct {
 	Hold   func(agent, session string) string
 	Limits BusLimits
 	Now    func() time.Time
+	// Relay keeps the files a message may carry as relay:<id> (nil: none).
+	Relay *Relay
 }
 
 // Bus is the message bus; safe for concurrent use.
@@ -137,8 +139,10 @@ type Message struct {
 	Body     string   `json:"body,omitempty"`
 	Priority string   `json:"priority"`
 	Attach   []string `json:"attach"`
-	Hop      int      `json:"hop"`
-	Sent     string   `json:"sent"`
+	// RelayFiles say what each relay:<id> attachment is (name, type, size, until when it is kept).
+	RelayFiles []string `json:"relay_files,omitempty"`
+	Hop        int      `json:"hop"`
+	Sent       string   `json:"sent"`
 	// Due is when its sender wants an answer by (msg_send due_minutes), "" when it set none.
 	Due string `json:"due,omitempty"`
 	// Untrusted is why the sender's run held untrusted input when it wrote this ("" when it did
@@ -383,8 +387,24 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		return nil, toolErr("no one to send to (a message to yourself is a note: keep it in your memory)")
 	}
 	sort.Slice(recipients, func(i, j int) bool { return recipients[i].ID < recipients[j].ID })
-	attach := []string{}
+	attach, relays := []string{}, []string{}
+	untrusted := strings.TrimSpace(req.Untrusted)
 	for _, p := range req.Attach {
+		if id, ok := RelayRef(p); ok {
+			// a file the core keeps for the sender: its recipients may use it too once it is sent
+			if b.o.Relay == nil {
+				return nil, toolErr("%s: this core keeps no relay files", p)
+			}
+			f, err := b.o.Relay.Get(sender, id)
+			if err != nil {
+				return nil, toolErr("%s is not a file the core keeps for you (it was never yours, or it is past its %d days)", p, int(RelayKeep/(24*time.Hour)))
+			}
+			if f.Marked && untrusted == "" {
+				untrusted = "it carries a file from someone who may not instruct agents (" + f.Ref() + ")"
+			}
+			attach, relays = append(attach, f.Ref()), append(relays, id)
+			continue
+		}
 		clean, err := attachPath(p, from, recipients)
 		if err != nil {
 			if strings.Contains(err.Error(), "is private to unit") {
@@ -457,7 +477,7 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		sendKey = key
 	}
 	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due, send_key, send_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(strings.TrimSpace(req.Untrusted), 300), due, sendKey, hash)
+		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(untrusted, 300), due, sendKey, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -518,10 +538,22 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	if len(relays) > 0 {
+		// granted once the message exists: a refused send hands no one a file
+		ids := make([]string, len(recipients))
+		for i, r := range recipients {
+			ids[i] = r.ID
+		}
+		for _, f := range relays {
+			if _, err := b.o.Relay.Grant(sender, f, ids); err != nil {
+				log.Printf("bus: message %d: relay file %s not granted: %v", id, f, err)
+			}
+		}
+	}
 	if req.Priority == "urgent" && b.o.Mirror != nil {
 		for _, r := range recipients {
 			text := fmt.Sprintf("Urgent message from %s on the swarm bus: %s (I'll read it with msg_inbox, message %d).", sender, req.Subject, id)
-			if strings.TrimSpace(req.Untrusted) != "" {
+			if untrusted != "" {
 				// its subject carries untrusted input: never posted to people as the agent's words
 				text = fmt.Sprintf("Urgent message from %s on the swarm bus, carrying untrusted input (I'll read it with msg_inbox, message %d).", sender, id)
 			}
@@ -1053,6 +1085,15 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 		if m.Attach == nil {
 			m.Attach = []string{}
 		}
+		for _, a := range m.Attach {
+			if id, ok := RelayRef(a); ok && b.o.Relay != nil {
+				if f, ok := b.o.Relay.Lookup(id); ok {
+					m.RelayFiles = append(m.RelayFiles, f.Describe())
+				} else {
+					m.RelayFiles = append(m.RelayFiles, a+" (no longer kept)")
+				}
+			}
+		}
 		m.Sent, m.Read, m.Acked = isoMs(sent), optIso(read), optIso(acked)
 		if due > 0 {
 			m.Due = isoMs(due)
@@ -1342,7 +1383,8 @@ func BusTools(b *Bus) []MCPTool {
 			Description: "Send a message to another agent of this swarm (not to people: they are on Slack). `to` is an agent id, " +
 				"`unit:<id>` for every agent of a unit, or `group` for all agents. Reply in a conversation by passing `thread` " +
 				"(any message id in it). An idle recipient is woken to read it. Attach files by their shared-space path " +
-				"(/shared/group/…; a unit's own layer only to agents of that unit), never by pasting contents. Cross-unit messages " +
+				"(/shared/group/…; a unit's own layer only to agents of that unit), or a file the core keeps for you by its relay:<id> " +
+				"(its recipients may then use it too), never by pasting contents. Cross-unit messages " +
 				"follow the group rules: no client personal data. Use priority `urgent` only when it cannot wait for the next turn. " +
 				"A direct message its recipient leaves unanswered (no reply in the thread, no msg_ack) is followed up, and if it still " +
 				"goes unanswered you get a core notice in the thread. When your message answers a request, name the request's " +
@@ -1354,7 +1396,7 @@ func BusTools(b *Bus) []MCPTool {
 				"body":     str("the message, up to 16 KB"),
 				"thread":   integer("a message id of the conversation this answers"),
 				"priority": map[string]any{"type": "string", "enum": []string{"normal", "urgent"}},
-				"attach":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared-space paths"},
+				"attach":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared-space paths, or relay:<id> files the core keeps for you"},
 				"due_minutes": integer("for a request to one agent that someone waits on: if it is not answered this many minutes " +
 					"after you send it (1 to 1440), you are told where it stands, so you can update whoever waits on you"),
 				"answers": map[string]any{"type": "array", "items": map[string]any{"type": "integer"},

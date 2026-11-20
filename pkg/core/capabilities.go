@@ -72,6 +72,8 @@ type BrokerOptions struct {
 	CoreURL func() string
 	// KeepEvery is how often always-on services are checked and booted again (default 15 s).
 	KeepEvery time.Duration
+	// Relay keeps the files an agent names as relay:<id> inputs (nil: none).
+	Relay *Relay
 }
 
 // Broker runs capability jobs.
@@ -227,24 +229,30 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 		return nil, toolErr("input is JSON up to %d KB", maxJobInput>>10)
 	}
 	takes, gives := c.Files == "in" || c.Files == "both", c.Files == "out" || c.Files == "both"
+	// relay:<id> inputs are files the core keeps for the agent: copied into the job like uploads
+	shared, relays, err := b.relayInputs(agent, req.Files)
+	if err != nil {
+		return nil, err
+	}
 	if len(req.Files) > 0 && !takes {
 		return nil, toolErr("%s takes no files (cap_describe says what it takes)", c.Name)
 	}
 	if req.Out != "" && !gives {
 		return nil, toolErr("%s writes no files, so it takes no out folder", c.Name)
 	}
-	if req.FilesPending < 0 || req.FilesPending > maxPending {
-		return nil, toolErr("files_pending is 0 to %d", maxPending)
+	pending := req.FilesPending + len(relays)
+	if req.FilesPending < 0 || pending > maxPending {
+		return nil, toolErr("files_pending and relay files together are 0 to %d", maxPending)
 	}
-	if req.FilesPending > 0 && (!takes || c.Kind == "http" || c.Placement != "local") {
-		return nil, toolErr("%s takes no uploaded files (only a container or service on the core's host that takes files does)", c.Name)
+	if pending > 0 && (!takes || c.Kind == "http" || c.Placement != "local") {
+		return nil, toolErr("%s takes no uploaded or relay files (only a container or service on the core's host that takes files does)", c.Name)
 	}
 	if (takes || gives) && b.o.Workdir == nil {
 		return nil, toolErr("this core has no shared space to hand files over")
 	}
 	inputs := []string{}
-	if len(req.Files) > 0 {
-		if inputs, err = b.o.Workdir.JobInputs(agent, req.Files); err != nil {
+	if len(shared) > 0 {
+		if inputs, err = b.o.Workdir.JobInputs(agent, shared); err != nil {
 			return nil, err
 		}
 	}
@@ -273,11 +281,11 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	}
 	defer tx.Rollback()
 	status, waitUntil := "queued", int64(0)
-	if req.FilesPending > 0 {
+	if pending > 0 {
 		status, waitUntil = "waiting", b.o.Now().Add(pendingWait).UnixMilli()
 	}
 	res, err := tx.Exec(`INSERT INTO cap_jobs (capability, agent, status, input, preview, cost, created, files, out, notify, pending, wait_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Name, agent, status, string(input), preview, c.CostUSD, now, string(files), out, notify, req.FilesPending, waitUntil)
+		c.Name, agent, status, string(input), preview, c.CostUSD, now, string(files), out, notify, pending, waitUntil)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +303,14 @@ func (b *Broker) Start(agent string, req StartRequest) (*JobView, error) {
 	b.poke()
 	v := &JobView{ID: id, Capability: c.Name, Agent: agent, Status: status, Preview: preview, CostUSD: c.CostUSD, Created: now, Inputs: inputs, Out: out, Notify: notify,
 		Pending: req.FilesPending}
+	if len(relays) > 0 {
+		if err := b.stageRelays(agent, id, relays, inputs); err != nil {
+			return nil, err
+		}
+		if j, err := b.Job(agent, id); err == nil {
+			v.Status, v.Uploads = j.Status, j.Uploads
+		}
+	}
 	if req.FilesPending > 0 {
 		v.Upload = UploadPath(id)
 		v.Note = fmt.Sprintf("waiting for %d file(s): upload each to %s?name=<file name> (your core key; cap_attach does it for a file you were sent), within %s",
@@ -915,6 +931,78 @@ func (b *Broker) expireWaiting() {
 
 var uploadName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$`)
 
+// relayInputs splits a job's files into shared paths and relay files agent holds.
+func (b *Broker) relayInputs(agent string, files []string) (shared []string, relays []RelayFile, err error) {
+	for _, p := range files {
+		id, ok := RelayRef(p)
+		if !ok {
+			shared = append(shared, p)
+			continue
+		}
+		if b.o.Relay == nil {
+			return nil, nil, toolErr("%s: this core keeps no relay files", p)
+		}
+		f, err := b.o.Relay.Get(agent, id)
+		if err != nil {
+			return nil, nil, toolErr("%s is not a file the core keeps for you (it was never yours, or it is past its %d days)", p, int(RelayKeep/(24*time.Hour)))
+		}
+		relays = append(relays, f)
+	}
+	return shared, relays, nil
+}
+
+// stageRelays copies relay files into waiting job id as uploads, each under a name the job takes
+// once; the last pending one queues it. One that cannot be copied fails the job: it would only
+// wait out its time.
+func (b *Broker) stageRelays(agent string, id int64, relays []RelayFile, inputs []string) error {
+	used := baseNames(inputs)
+	for _, f := range relays {
+		name := relayJobName(f, used)
+		used = append(used, name)
+		err := func() error {
+			data, err := b.o.Relay.Open(f)
+			if err != nil {
+				return err
+			}
+			defer data.Close()
+			_, err = b.Upload(agent, id, name, data, f.Size)
+			return err
+		}()
+		if err != nil {
+			j, jerr := b.Job(agent, id)
+			if jerr == nil {
+				res, uerr := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = ?, finished = ? WHERE id = ? AND status = 'waiting'`,
+					"a relay file could not be copied in", b.o.Now().UnixMilli(), id)
+				if n, _ := res.RowsAffected(); uerr == nil && n == 1 {
+					_ = os.RemoveAll(b.jobDir(j.Capability, id))
+				}
+			}
+			return fmt.Errorf("%s could not be handed to job %d: %w", f.Ref(), id, err)
+		}
+	}
+	return nil
+}
+
+var unsafeJobName = regexp.MustCompile(`[^A-Za-z0-9._ -]+`)
+
+// relayJobName is f's name as a job file (uploadName): unsafe runs replaced, at most 120
+// characters with its extension kept, made distinct from used (case-folded) with its id.
+func relayJobName(f RelayFile, used []string) string {
+	name := strings.ReplaceAll(unsafeJobName.ReplaceAllString(f.Name, "_"), "..", "_")
+	name = strings.TrimLeft(strings.TrimSpace(name), "._ -")
+	if ext := path.Ext(name); len(name) > 100 {
+		if len(ext) > 12 {
+			ext = ""
+		}
+		name = name[:100-len(ext)] + ext
+	}
+	taken := slices.ContainsFunc(used, func(u string) bool { return strings.EqualFold(u, name) })
+	if name == "" || taken || !uploadName.MatchString(name) {
+		name = strings.TrimSpace(f.ID[:8] + "-" + name)
+	}
+	return name
+}
+
 // Upload takes one of the files a waiting job of agent's waits for, straight into the job's folder
 // (never the shared space): at most the hand-over's size. The last one queues the job.
 func (b *Broker) Upload(agent string, id int64, name string, body io.Reader, size int64) (*JobView, error) {
@@ -1171,11 +1259,11 @@ func (b *Broker) Describe(agent, capability string) (map[string]any, error) {
 	how := "cap_start {capability, input} queues a job and a notice wakes you when it is done; cap_run waits for it up to wait_seconds."
 	switch c.Files {
 	case "in":
-		how += " Hand it files with files: [\"/shared/…\"] (yours: group and your unit), or upload ones you were sent (files_pending, then cap_attach)."
+		how += " Hand it files with files: [\"/shared/…\"] (yours: group and your unit) or [\"relay:…\"] (files the core keeps for you), or upload ones you were sent (files_pending, then cap_attach)."
 	case "out":
 		how += fmt.Sprintf(" Its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
 	case "both":
-		how += fmt.Sprintf(" Hand it files with files: [\"/shared/…\"] (yours: group and your unit), or upload ones you were sent (files_pending, then cap_attach); its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
+		how += fmt.Sprintf(" Hand it files with files: [\"/shared/…\"] (yours: group and your unit) or [\"relay:…\"] (files the core keeps for you), or upload ones you were sent (files_pending, then cap_attach); its files go to out (a shared folder of yours; default %s).", b.outDefaultHint(agent, c.Name))
 	}
 	if st := b.workerState(c); st == "asleep" {
 		how += " Its worker is asleep: the next job boots it, which takes longer."
@@ -1234,7 +1322,7 @@ func CapabilityTools(b *Broker) []MCPTool {
 	jobArgs := map[string]any{
 		"capability": str("the capability's name (cap_list)"),
 		"input":      map[string]any{"type": "object", "description": "what it takes: cap_describe gives its input schema and examples"},
-		"files":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared paths (files or folders) to hand it, for those that take files"},
+		"files":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "shared paths (files or folders), or relay:<id> files the core keeps for you, to hand it, for those that take files"},
 		"out":        str("shared folder its files go to, for those that write files (default: one per job in your unit's capabilities/ folder)"),
 	}
 	startArgs := map[string]any{"notify": boolean("leave you a notice that wakes you when it is done (default true)"),

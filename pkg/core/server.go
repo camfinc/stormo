@@ -432,7 +432,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	// files the core keeps for agents that cannot take them in (a WhatsApp video), as relay:<id>
 	relay := NewRelay(filepath.Join(CoreDir(inst.Root), "relay"), nil)
-	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror, Hold: monitor.SessionState}
+	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror, Hold: monitor.SessionState, Relay: relay}
 	if bo.Roster == nil {
 		bo.Roster = func() []BusAgent {
 			out := []BusAgent{}
@@ -470,7 +470,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	var coreURL atomic.Value // set once the core listens; the ingress worker boots only then
 	broker := NewBroker(BrokerOptions{Inst: inst, DB: db, Runners: runners, Scrub: Scrubber(learning.NewScrubber(inst)),
 		Grants: o.CapabilityGrants, Container: o.Container, Services: o.Services, Image: o.CapabilityImage, Workdir: workdir, Notify: bus.Notify,
-		JobsDir: o.CapabilityJobs, Now: o.CapabilityNow, Ingress: ingress, KeepEvery: o.CapabilityKeepEvery,
+		JobsDir: o.CapabilityJobs, Now: o.CapabilityNow, Ingress: ingress, KeepEvery: o.CapabilityKeepEvery, Relay: relay,
 		CoreURL: func() string {
 			u, _ := coreURL.Load().(string)
 			return u
