@@ -129,7 +129,7 @@ func TestPhotosReachTheAgent(t *testing.T) {
 	var none sends
 	none.record(plain)
 	plain.handle(ctx, photo(direct(""), "redo this", "/own", nil))
-	if !strings.HasSuffix(input, "redo this\n[The photo could not be given to you: this connection takes text only.]") {
+	if !strings.HasSuffix(input, "redo this\n[What came with this message (a photo, a video, a document) could not be given to you: this connection takes text only.]") {
 		t.Fatalf("plain input %q", input)
 	}
 }

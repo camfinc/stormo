@@ -133,14 +133,31 @@ const (
 type Reply func(context.Context, string, string) (string, error)
 
 // Turn is what a message brings the agent: the turn's input and, for a voice note, its audio; for
-// a photo, or a mention in a reply to one, the photos.
+// a photo, or a mention in a reply to one, the photos; for a video or document, what the core kept.
 type Turn struct {
 	Text   string
 	Audio  *Audio
 	Images []Image
+	Kept   []Kept
 	// Origin is the core's record of the message the turn answers ("" none; UseOrigins).
 	Origin string
 }
+
+// Kept is a video or document the core keeps for the agent (UseKeep), which it is told how to
+// name: the agent never takes its bytes in.
+type Kept struct {
+	Ref    string // how the agent names it (the keeper's)
+	Kind   string // video or document
+	Name   string
+	MIME   string
+	Size   int64
+	Marked bool // whoever sent it may not instruct the agent
+	Quoted bool // the message replied to brought it
+}
+
+// Keep stores a video or document for the agent: fill writes its bytes (a download streams into
+// the file); the answer is k with its Ref and Size.
+type Keep func(ctx context.Context, k Kept, fill func(*os.File) error) (Kept, error)
 
 // Audio is a voice note someone sent: its bytes and MIME type; Marked when its sender may not
 // instruct the agent.
@@ -170,19 +187,24 @@ type Answer struct {
 // Exchange is Reply with voice notes both ways: the person's to transcribe, the agent's to post.
 type Exchange func(ctx context.Context, session string, t Turn) (Answer, error)
 
-// Bounds of a voice note taken in, and of a photo fetched.
+// Bounds of a voice note taken in, of a photo fetched, and of a video or document kept (the core
+// relay's).
 const (
 	maxVoiceSeconds = 15 * 60
 	maxVoiceBytes   = 20 << 20
 	maxImageBytes   = 20 << 20
+	maxKeptBytes    = 200 << 20
 )
 
 type Connector struct {
 	send     func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
 	upload   func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
 	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
-	exchange Exchange
-	register func(context.Context, OriginEvent) (string, error)
+	// downloadTo streams a video or document into a file; keep is where it goes (UseKeep)
+	downloadTo func(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error
+	keep       Keep
+	exchange   Exchange
+	register   func(context.Context, OriginEvent) (string, error)
 	// link is the link's id (origins.go), under mu; relinking while a new one is not on disk yet.
 	// rotating serialises rotations (taken before mu, never under it).
 	link      string
@@ -267,6 +289,7 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	}
 	c.upload = c.client.Upload
 	c.download = c.client.Download
+	c.downloadTo = c.client.DownloadToFile
 	c.connected = func() bool { return c.Paired() && c.client.IsConnected() }
 	c.me = func() Me { return Me{PN: c.client.Store.GetJID(), LID: c.client.Store.GetLID()} }
 	if err := c.loadLink(); err != nil {
@@ -318,6 +341,10 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 // UseExchange answers messages through f instead of the Reply Open was given: voice notes are taken
 // in (downloaded, for the agent to transcribe) and the agent may answer with one.
 func (c *Connector) UseExchange(f Exchange) { c.mu.Lock(); c.exchange = f; c.mu.Unlock() }
+
+// UseKeep keeps the videos and documents messages bring through k (with an exchange): without
+// one, the agent is told they could not be given to it.
+func (c *Connector) UseKeep(k Keep) { c.mu.Lock(); c.keep = k; c.mu.Unlock() }
 
 func (c *Connector) set(s Status)   { c.mu.Lock(); c.status = s; c.mu.Unlock() }
 func (c *Connector) Status() Status { c.mu.Lock(); defer c.mu.Unlock(); return c.status }
@@ -403,9 +430,11 @@ type Inbound struct {
 	QuotedFrom     string
 	QuotedVerified bool
 	QuotedText     string
-	QuotedImage    bool // that message is a photo (fetched for the agent to see)
-	Voice          bool // a voice note (its audio is fetched for the agent to transcribe)
-	Image          bool // a photo (fetched for the agent to see); Text is its caption
+	QuotedImage    bool   // that message is a photo (fetched for the agent to see)
+	QuotedFile     string // that message is a video or document (kept by the core): which
+	Voice          bool   // a voice note (its audio is fetched for the agent to transcribe)
+	Image          bool   // a photo (fetched for the agent to see); Text is its caption
+	File           string // a video or document (kept by the core): which; Text is its caption
 }
 
 // Accepted is deliberately limited: a fresh direct text, photo or voice note from a permitted phone
@@ -444,8 +473,13 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 		text = e.Message.GetExtendedTextMessage().GetText()
 	}
 	info := e.Message.GetExtendedTextMessage().GetContextInfo()
-	if img := e.Message.GetImageMessage(); img != nil && text == "" {
-		text, info, in.Image = img.GetCaption(), img.GetContextInfo(), true
+	if md, ok := mediaOf(e.Message); ok && text == "" {
+		text, info = md.caption, md.info
+		if md.kind == "photo" {
+			in.Image = true
+		} else {
+			in.File = md.kind
+		}
 	}
 	if audio := e.Message.GetAudioMessage(); audio != nil && strings.TrimSpace(text) == "" {
 		if audio.GetSeconds() > maxVoiceSeconds || audio.GetFileLength() > maxVoiceBytes {
@@ -462,7 +496,7 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 		in.Voice = true
 		return in, true
 	}
-	if !in.Image && strings.TrimSpace(text) == "" || len(text) > 32000 {
+	if !in.Image && in.File == "" && strings.TrimSpace(text) == "" || len(text) > 32000 {
 		return Inbound{}, false
 	}
 	if in.Group {
@@ -492,7 +526,11 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 			in.Quoted = ""
 			if text := lineText(info.GetQuotedMessage()); in.QuotedID != "" && text != "" {
 				in.QuotedText = clean(text, maxLineRunes)
-				in.QuotedImage = info.GetQuotedMessage().GetImageMessage() != nil
+				if md, ok := mediaOf(info.GetQuotedMessage()); ok && md.kind == "photo" {
+					in.QuotedImage = true
+				} else if ok {
+					in.QuotedFile = md.kind
+				}
 				if author.Server == types.DefaultUserServer {
 					in.QuotedFrom = "+" + author.User
 					in.QuotedVerified = p.All || slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == author.User })
@@ -567,6 +605,53 @@ func Overheard(e *events.Message, p Policy, me Me) (Line, bool) {
 	}
 	in := senderOf(e, p)
 	return Line{ID: e.Info.ID, At: at, Name: in.Name, Number: in.Number, Verified: in.Verified, Text: clean(text, maxLineRunes)}, true
+}
+
+// media is a photo, video or document a message carries: what to download, what it is (a
+// document that is an image the model can be shown counts as a photo), its type, a document's file
+// name, its caption, its declared size and its context (mentions, the message it replies to).
+type media struct {
+	msg     whatsmeow.DownloadableMessage
+	kind    string // photo, video or document
+	mime    string
+	name    string
+	caption string
+	size    uint64
+	info    *waE2E.ContextInfo
+}
+
+// mediaOf is the photo, video or document m carries; false for anything else (a text, a voice
+// note, a sticker).
+func mediaOf(m *waE2E.Message) (media, bool) {
+	switch {
+	case m.GetImageMessage() != nil:
+		i := m.GetImageMessage()
+		return media{i, "photo", orElse(i.GetMimetype(), "image/jpeg"), "", i.GetCaption(), i.GetFileLength(), i.GetContextInfo()}, true
+	case m.GetVideoMessage() != nil:
+		v := m.GetVideoMessage()
+		return media{v, "video", orElse(v.GetMimetype(), "video/mp4"), "", v.GetCaption(), v.GetFileLength(), v.GetContextInfo()}, true
+	case m.GetDocumentMessage() != nil:
+		d := m.GetDocumentMessage()
+		md := media{d, "document", orElse(d.GetMimetype(), "application/octet-stream"), d.GetFileName(), d.GetCaption(), d.GetFileLength(), d.GetContextInfo()}
+		switch strings.ToLower(md.mime) {
+		case "image/jpeg", "image/png", "image/gif", "image/webp":
+			md.kind = "photo"
+		}
+		return md, true
+	}
+	return media{}, false
+}
+
+// fileName is md's name as the agent gets it: a document's own, else prefix and its type's extension.
+func (md media) fileName(prefix string) string {
+	if n := clean(md.name, 120); n != "" {
+		return n
+	}
+	ext := md.mime[strings.LastIndex(md.mime, "/")+1:]
+	if i := strings.IndexAny(ext, "; "); i >= 0 {
+		ext = ext[:i]
+	}
+	return prefix + "." + ext
 }
 
 // lineText is what m says: its text, a photo's, video's or document's caption (after what it is),
@@ -673,13 +758,19 @@ func Input(in Inbound, group string) string {
 				from += ", not one of your allowed people"
 			}
 			how += fmt.Sprintf(`, in a reply to a message from %s: "%s"`, from, clean(in.QuotedText, maxLineRunes))
-			if in.QuotedImage {
+			switch {
+			case in.QuotedImage:
 				how += " (its photo is attached below)"
+			case in.QuotedFile != "":
+				how += " (its " + in.QuotedFile + " is kept for you: below)"
 			}
 		}
 	}
-	if in.Image {
+	switch {
+	case in.Image:
 		how += ", with a photo (attached below)"
+	case in.File != "":
+		how += ", with a " + in.File + " (kept for you: below)"
 	}
 	text := in.Text
 	switch {
@@ -688,6 +779,8 @@ func Input(in Inbound, group string) string {
 		text = "(a voice note: its transcript is below)"
 	case text == "" && in.Image:
 		text = "(no text: only the photo)"
+	case text == "" && in.File != "":
+		text = "(no text: only the " + in.File + ")"
 	case text == "":
 		text = "(no text: they only mentioned you)"
 	}
@@ -918,13 +1011,14 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 				t.Audio = &Audio{Data: data, MIME: audio.GetMimetype(), Marked: !in.Verified}
 			}
 		}
-		var note string
-		t.Images, note = c.photos(turn, e, in)
-		t.Text += note
+		var photos, kept string
+		t.Images, photos = c.photos(turn, e, in)
+		t.Kept, kept = c.keepFiles(turn, e, in)
+		t.Text += photos + kept
 		ans, err = exchange(turn, session, t)
 	} else {
-		if in.Image || in.QuotedImage {
-			input += "\n[The photo could not be given to you: this connection takes text only.]"
+		if in.Image || in.QuotedImage || in.File != "" || in.QuotedFile != "" {
+			input += "\n[What came with this message (a photo, a video, a document) could not be given to you: this connection takes text only.]"
 		}
 		ans.Text, err = c.reply(turn, session, input)
 	}
@@ -981,40 +1075,89 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	}
 }
 
-// photos fetches the photos in brings for the agent to see: its own (Image) and the one it replies
-// to (QuotedImage), each marked when whoever sent it may not instruct the agent; note names any that
-// could not be fetched (over 20 MB, or media WhatsApp no longer serves).
-func (c *Connector) photos(ctx context.Context, e *events.Message, in Inbound) (images []Image, note string) {
+// part is one of the media a message brings: its own, or the one it replies to; marked when
+// whoever sent it may not instruct the agent; what is how a note names it.
+type part struct {
+	media
+	quoted bool
+	marked bool
+	what   string
+}
+
+// parts is what in brings to take in or keep: its own photo, video or document and the one it
+// replies to (Image/File, QuotedImage/QuotedFile).
+func parts(e *events.Message, in Inbound) []part {
+	var out []part
 	info := e.Message.GetExtendedTextMessage().GetContextInfo()
-	if in.Image {
-		info = e.Message.GetImageMessage().GetContextInfo()
+	if own, ok := mediaOf(e.Message); ok {
+		info = own.info
+		if in.Image || in.File != "" {
+			out = append(out, part{own, false, !in.Verified, "The " + own.kind})
+		}
 	}
-	for _, p := range []struct {
-		take   bool
-		name   string
-		img    *waE2E.ImageMessage
-		marked bool
-		what   string
-	}{
-		{in.Image, "photo", e.Message.GetImageMessage(), !in.Verified, "The photo"},
-		{in.QuotedImage, "quoted-photo", info.GetQuotedMessage().GetImageMessage(), !in.Verified || !in.QuotedVerified, "The photo replied to"},
-	} {
-		if !p.take {
+	if q, ok := mediaOf(info.GetQuotedMessage()); ok && (in.QuotedImage || in.QuotedFile != "") {
+		out = append(out, part{q, true, !in.Verified || !in.QuotedVerified, "The " + q.kind + " replied to"})
+	}
+	return out
+}
+
+// photos fetches the photos in brings for the agent to see (at most 20 MB each); note names any
+// that could not be fetched (media WhatsApp no longer serves).
+func (c *Connector) photos(ctx context.Context, e *events.Message, in Inbound) (images []Image, note string) {
+	for _, p := range parts(e, in) {
+		if p.kind != "photo" {
 			continue
 		}
 		var data []byte
 		var err error
-		if p.img.GetFileLength() <= maxImageBytes {
-			data, err = c.download(ctx, p.img)
+		if p.size <= maxImageBytes {
+			data, err = c.download(ctx, p.msg)
 		}
 		if err != nil || len(data) == 0 || len(data) > maxImageBytes {
 			note += "\n[" + p.what + " could not be fetched.]"
 			continue
 		}
-		mime := orElse(p.img.GetMimetype(), "image/jpeg")
-		images = append(images, Image{Name: p.name + "." + strings.TrimPrefix(mime, "image/"), Data: data, MIME: mime, Marked: p.marked})
+		prefix := "photo"
+		if p.quoted {
+			prefix = "quoted-photo"
+		}
+		images = append(images, Image{Name: p.fileName(prefix), Data: data, MIME: p.mime, Marked: p.marked})
 	}
 	return images, note
+}
+
+// keepFiles streams the videos and documents in brings to the keeper (UseKeep), which tells the
+// agent how to name them; note names any that could not be kept (no keeper, over 200 MB, media
+// WhatsApp no longer serves).
+func (c *Connector) keepFiles(ctx context.Context, e *events.Message, in Inbound) (kept []Kept, note string) {
+	c.mu.Lock()
+	keep := c.keep
+	c.mu.Unlock()
+	for _, p := range parts(e, in) {
+		if p.kind == "photo" {
+			continue
+		}
+		if p.size > maxKeptBytes {
+			note += fmt.Sprintf("\n[%s is over %d MB: it was not fetched (ask for it another way).]", p.what, maxKeptBytes>>20)
+			continue
+		}
+		var k Kept
+		err := errors.New("nothing keeps files here")
+		if keep != nil {
+			prefix := p.kind
+			if p.quoted {
+				prefix = "quoted-" + p.kind
+			}
+			k, err = keep(ctx, Kept{Kind: p.kind, Name: p.fileName(prefix), MIME: p.mime, Marked: p.marked, Quoted: p.quoted},
+				func(f *os.File) error { return c.downloadTo(ctx, p.msg, f) })
+		}
+		if err != nil {
+			note += "\n[" + p.what + " could not be fetched.]"
+			continue
+		}
+		kept = append(kept, k)
+	}
+	return kept, note
 }
 
 // Send posts text to chat on the agent's own account, unprompted (the caller decides the chat may
