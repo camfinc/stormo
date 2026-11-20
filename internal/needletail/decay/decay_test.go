@@ -173,6 +173,7 @@ func TestDecayNeedsADecision(t *testing.T) {
 		"over 1":           all(`{"type":"noul","noul":1.5}`),
 		"not a number":     all(`{"type":"noul","noul":"0.1"}`),
 		"untyped":          all(`{"noul":0.1}`),
+		"null":             all(`{"type":"noul","noul":null}`), // Codex review, second pass
 	}
 	for name, answer := range cases {
 		s := marked(t)

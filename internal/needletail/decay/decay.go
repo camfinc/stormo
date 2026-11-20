@@ -332,12 +332,12 @@ func (d *Decay) verdict(raw json.RawMessage, parts int) (map[string]float64, str
 		}
 		for _, q := range Questions {
 			a, ok := r.Answers[q.Name]
-			var p float64
-			if !ok || a.Type != "noul" || json.Unmarshal(a.Noul, &p) != nil || math.IsNaN(p) || p < 0 || p > 1 {
+			var p *float64 // a pointer: JSON null decodes into a float as 0, a pass
+			if !ok || a.Type != "noul" || json.Unmarshal(a.Noul, &p) != nil || p == nil || math.IsNaN(*p) || *p < 0 || *p > 1 {
 				// a refusal, a missing or malformed answer: no decision, never a pass
 				return scores, fmt.Sprintf("the screen gave no probability for %q in part %d", q.Name, i)
 			}
-			scores[q.Name] = max(scores[q.Name], p)
+			scores[q.Name] = max(scores[q.Name], *p)
 		}
 	}
 	for _, q := range Questions {
