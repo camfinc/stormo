@@ -1269,6 +1269,21 @@ func TestRelayAttachments(t *testing.T) {
 	if !strings.Contains(m.Untrusted, "from someone who may not instruct agents") {
 		t.Errorf("untrusted %q", m.Untrusted)
 	}
+	// a grant that cannot be written sends nothing
+	stuck, _ := r.Keep("atlas", RelayFile{Name: "stuck.mp4", MIME: "video/mp4"}, write)
+	dir := filepath.Join(r.dir, stuck.ID)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := f.bus.Inbox("nova", false, 0)
+	if _, err := f.bus.Send("atlas", SendRequest{To: "nova", Subject: "stuck", Body: "b", Attach: []string{stuck.Ref()}}); err == nil {
+		t.Error("a send whose grant failed went")
+	}
+	os.Chmod(dir, 0o700)
+	if after, _ := f.bus.Inbox("nova", false, 0); len(after) != len(before) {
+		t.Errorf("a send whose grant failed was delivered: %d then %d", len(before), len(after))
+	}
+
 	// a file the sender's run already marked keeps that reason; an unmarked file marks nothing
 	plain, _ := r.Keep("atlas", RelayFile{Name: "logo.mov", MIME: "video/quicktime"}, write)
 	out, err = f.bus.Send("atlas", SendRequest{To: "nova", Subject: "logo", Body: "b", Attach: []string{plain.Ref()}})

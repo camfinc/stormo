@@ -55,8 +55,9 @@ func TestVoiceNotesBothWays(t *testing.T) {
 		return "", nil
 	})
 	c.UseExchange(func(_ context.Context, _ string, tt Turn) (Answer, error) { turn = tt; return answer, nil })
-	c.download = func(_ context.Context, m whatsmeow.DownloadableMessage) ([]byte, error) {
-		return []byte("OggS the person's note"), nil
+	c.downloadTo = func(_ context.Context, m whatsmeow.DownloadableMessage, f whatsmeow.File) error {
+		_, err := f.Write([]byte("OggS the person's note"))
+		return err
 	}
 	var uploads []whatsmeow.MediaType
 	c.upload = func(_ context.Context, data []byte, kind whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {

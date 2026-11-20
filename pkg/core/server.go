@@ -538,6 +538,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	go learner.Run(c.stop, time.Minute)
 	go links.WatchLost(c.stop, time.Minute, 10*time.Minute)
 	go broker.Run(c.stop)
+	go relay.Run(c.stop, time.Hour)
 	c.lifecycle = o.Lifecycle
 	if c.lifecycle.Local == nil || c.lifecycle.Remote == nil {
 		def := defaultLifecycle(inst, learner.o.Deps.Restart)

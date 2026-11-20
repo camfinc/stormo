@@ -77,6 +77,16 @@ func TestRelay(t *testing.T) {
 		t.Errorf("left behind: %d entries", len(entries))
 	}
 
+	// Past what all kept files may hold, a new one is refused (an older one is never evicted).
+	r.total = 30
+	if _, err := r.Keep("atlas", RelayFile{Name: "big"}, write(strings.Repeat("x", 20))); !errors.Is(err, errRelayFull) {
+		t.Errorf("over the total: %v", err)
+	}
+	if _, err := r.Get("atlas", f.ID); err != nil {
+		t.Errorf("an older file went: %v", err)
+	}
+	r.total = MaxRelayTotal
+
 	// Past RelayKeep it is gone, and the next prune removes it.
 	now = now.Add(RelayKeep + time.Minute)
 	if _, err := r.Get("atlas", f.ID); !errors.Is(err, ErrRelayGone) {

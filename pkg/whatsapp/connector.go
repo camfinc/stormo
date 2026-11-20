@@ -199,11 +199,13 @@ const (
 )
 
 type Connector struct {
-	send     func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
-	upload   func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
-	download func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
-	// downloadTo streams a video or document into a file; keep is where it goes (UseKeep)
+	send   func(context.Context, types.JID, *waE2E.Message) (types.MessageID, error)
+	upload func(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
+	// downloadTo streams media into a file (a capped one: whatsmeow takes whatever the server
+	// sends); dir holds the session and, briefly, what fetch reads; keep is where a video or
+	// document goes (UseKeep)
 	downloadTo func(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error
+	dir        string
 	keep       Keep
 	exchange   Exchange
 	register   func(context.Context, OriginEvent) (string, error)
@@ -290,8 +292,8 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 		return resp.ID, err
 	}
 	c.upload = c.client.Upload
-	c.download = c.client.Download
 	c.downloadTo = c.client.DownloadToFile
+	c.dir = filepath.Dir(path)
 	c.connected = func() bool { return c.Paired() && c.client.IsConnected() }
 	c.me = func() Me { return Me{PN: c.client.Store.GetJID(), LID: c.client.Store.GetLID()} }
 	if err := c.loadLink(); err != nil {
@@ -657,37 +659,65 @@ func mimeOr(s, def string) string {
 }
 
 // capped is a file a download writes into that refuses to grow past max bytes, whatever size the
-// message declared.
+// message declared. It holds the file rather than embedding it: an embedded *os.File's ReadFrom
+// would let io.Copy write past Write.
 type capped struct {
-	*os.File
+	f   *os.File
 	max int64
 }
 
 var errTooLarge = errors.New("whatsapp: the file is larger than it may be")
 
-func (f capped) Write(b []byte) (int, error) {
-	at, err := f.Seek(0, io.SeekCurrent)
+func (c capped) Read(b []byte) (int, error)                { return c.f.Read(b) }
+func (c capped) ReadAt(b []byte, off int64) (int, error)   { return c.f.ReadAt(b, off) }
+func (c capped) Seek(off int64, whence int) (int64, error) { return c.f.Seek(off, whence) }
+func (c capped) Stat() (os.FileInfo, error)                { return c.f.Stat() }
+
+func (c capped) Write(b []byte) (int, error) {
+	at, err := c.f.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return 0, err
 	}
-	if at+int64(len(b)) > f.max {
+	if at+int64(len(b)) > c.max {
 		return 0, errTooLarge
 	}
-	return f.File.Write(b)
+	return c.f.Write(b)
 }
 
-func (f capped) WriteAt(b []byte, off int64) (int, error) {
-	if off+int64(len(b)) > f.max {
+func (c capped) WriteAt(b []byte, off int64) (int, error) {
+	if off+int64(len(b)) > c.max {
 		return 0, errTooLarge
 	}
-	return f.File.WriteAt(b, off)
+	return c.f.WriteAt(b, off)
 }
 
-func (f capped) Truncate(size int64) error {
-	if size > f.max {
+func (c capped) Truncate(size int64) error {
+	if size > c.max {
 		return errTooLarge
 	}
-	return f.File.Truncate(size)
+	return c.f.Truncate(size)
+}
+
+// fetch is m's bytes, at most max: streamed into a capped file in the connector's folder (gone once
+// read), so a message that declares less than it holds never fills memory.
+func (c *Connector) fetch(ctx context.Context, m whatsmeow.DownloadableMessage, max int64) ([]byte, error) {
+	f, err := os.CreateTemp(c.dir, ".fetch-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := c.downloadTo(ctx, m, capped{f, max}); err != nil {
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err == nil && (len(data) == 0 || int64(len(data)) > max) {
+		err = errTooLarge
+	}
+	return data, err
 }
 
 // fileName is md's name as the agent gets it: a document's own, else prefix and its type's extension.
@@ -1053,7 +1083,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		t := Turn{Text: input, Origin: origin}
 		if in.Voice {
 			audio := e.Message.GetAudioMessage()
-			if data, derr := c.download(turn, audio); derr != nil || len(data) > maxVoiceBytes {
+			if data, derr := c.fetch(turn, audio, maxVoiceBytes); derr != nil {
 				t.Text += "\n[The voice note could not be fetched.]"
 			} else {
 				t.Audio = &Audio{Data: data, MIME: audio.GetMimetype(), Marked: !in.Verified}
@@ -1159,9 +1189,9 @@ func (c *Connector) photos(ctx context.Context, e *events.Message, in Inbound) (
 		var data []byte
 		var err error
 		if p.size <= maxImageBytes {
-			data, err = c.download(ctx, p.msg)
+			data, err = c.fetch(ctx, p.msg, maxImageBytes)
 		}
-		if err != nil || len(data) == 0 || len(data) > maxImageBytes {
+		if err != nil || len(data) == 0 {
 			note += "\n[" + p.what + " could not be fetched.]"
 			continue
 		}

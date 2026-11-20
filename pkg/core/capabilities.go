@@ -923,8 +923,10 @@ func (b *Broker) expireWaiting() {
 	for _, q := range late {
 		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = ?, finished = ? WHERE id = ? AND status = 'waiting'`,
 			fmt.Sprintf("its files did not arrive within %s", pendingWait), b.o.Now().UnixMilli(), q.id)
-		if n, _ := res.RowsAffected(); err == nil && n == 1 {
-			_ = os.RemoveAll(b.jobDir(q.capability, q.id))
+		if err == nil {
+			if n, _ := res.RowsAffected(); n == 1 {
+				_ = os.RemoveAll(b.jobDir(q.capability, q.id))
+			}
 		}
 	}
 }
@@ -973,8 +975,10 @@ func (b *Broker) stageRelays(agent string, id int64, relays []RelayFile, inputs 
 			if jerr == nil {
 				res, uerr := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'failed', error = ?, finished = ? WHERE id = ? AND status = 'waiting'`,
 					"a relay file could not be copied in", b.o.Now().UnixMilli(), id)
-				if n, _ := res.RowsAffected(); uerr == nil && n == 1 {
-					_ = os.RemoveAll(b.jobDir(j.Capability, id))
+				if uerr == nil {
+					if n, _ := res.RowsAffected(); n == 1 {
+						_ = os.RemoveAll(b.jobDir(j.Capability, id))
+					}
 				}
 			}
 			return fmt.Errorf("%s could not be handed to job %d: %w", f.Ref(), id, err)

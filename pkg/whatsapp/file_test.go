@@ -3,7 +3,9 @@ package whatsapp
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -186,5 +188,30 @@ func TestMediaTypeAndCappedFile(t *testing.T) {
 	}
 	if err := c.Truncate(8); err != nil {
 		t.Errorf("truncate to the bound: %v", err)
+	}
+	// io.Copy, as whatsmeow downloads, goes through Write too (no promoted ReadFrom)
+	g, _ := os.CreateTemp(t.TempDir(), "copy")
+	defer g.Close()
+	if _, err := io.Copy(capped{g, 8}, strings.NewReader("0123456789abcdefghij")); !errors.Is(err, errTooLarge) {
+		t.Errorf("io.Copy past the bound: %v", err)
+	}
+	if st, _ := g.Stat(); st.Size() > 8 {
+		t.Errorf("io.Copy wrote %d bytes", st.Size())
+	}
+
+	// fetch refuses media larger than its bound whatever was declared, and leaves nothing behind
+	conn := open(t, Policy{Enabled: true}, nil)
+	conn.downloadTo = func(_ context.Context, _ whatsmeow.DownloadableMessage, f whatsmeow.File) error {
+		_, err := io.Copy(f, strings.NewReader(strings.Repeat("x", 64)))
+		return err
+	}
+	if _, err := conn.fetch(context.Background(), &waE2E.ImageMessage{FileLength: proto.Uint64(10)}, 32); err == nil {
+		t.Error("fetched past the bound")
+	}
+	if data, err := conn.fetch(context.Background(), &waE2E.ImageMessage{}, 64); err != nil || len(data) != 64 {
+		t.Errorf("fetch within the bound: %d %v", len(data), err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(conn.dir, ".fetch-*")); len(left) != 0 {
+		t.Errorf("fetch left %v", left)
 	}
 }

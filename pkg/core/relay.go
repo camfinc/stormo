@@ -23,6 +23,7 @@ import (
 // granted to may. Records live beside the files, not in core.db: nothing to migrate.
 type Relay struct {
 	dir    string
+	total  int64 // what all kept files may hold (MaxRelayTotal)
 	now    func() time.Time
 	mu     sync.Mutex
 	pruned time.Time
@@ -42,10 +43,12 @@ type RelayFile struct {
 	Expires int64    `json:"expires"`
 }
 
-// Bounds of the relay.
+// Bounds of the relay: how long a file is kept, how large one is, how much all of them hold
+// (past it a new file is refused, never an older one evicted).
 const (
 	RelayKeep     = 7 * 24 * time.Hour
 	MaxRelayBytes = 200 << 20
+	MaxRelayTotal = 2 << 30
 	relayPrefix   = "relay:"
 )
 
@@ -80,7 +83,7 @@ func NewRelay(dir string, now func() time.Time) *Relay {
 	if now == nil {
 		now = time.Now
 	}
-	r := &Relay{dir: dir, now: now}
+	r := &Relay{dir: dir, total: MaxRelayTotal, now: now}
 	r.prune()
 	return r
 }
@@ -90,6 +93,9 @@ func NewRelay(dir string, now func() time.Time) *Relay {
 // are kept; the rest is the relay's.
 func (r *Relay) Keep(agent string, f RelayFile, fill func(*os.File) error) (RelayFile, error) {
 	r.maybePrune()
+	if r.used() >= r.total {
+		return RelayFile{}, errRelayFull
+	}
 	if err := os.MkdirAll(r.dir, 0o700); err != nil {
 		return RelayFile{}, err
 	}
@@ -121,6 +127,9 @@ func (r *Relay) Keep(agent string, f RelayFile, fill func(*os.File) error) (Rela
 	if st.Size() == 0 || st.Size() > MaxRelayBytes {
 		return RelayFile{}, fmt.Errorf("relay: a file is 1 byte to %d MB (this one is %d bytes)", MaxRelayBytes>>20, st.Size())
 	}
+	if r.used()+st.Size() > r.total {
+		return RelayFile{}, errRelayFull
+	}
 	now := r.now()
 	f.ID, f.Size, f.Grants = newID(), st.Size(), []string{agent}
 	f.Created, f.Expires = now.UnixMilli(), now.Add(RelayKeep).UnixMilli()
@@ -136,6 +145,38 @@ func (r *Relay) Keep(agent string, f RelayFile, fill func(*os.File) error) (Rela
 	}
 	keep = true
 	return f, nil
+}
+
+var errRelayFull = fmt.Errorf("relay: the core's store of kept files is full (%d GB)", MaxRelayTotal>>30)
+
+// used is what the kept files hold now.
+func (r *Relay) used() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	entries, _ := os.ReadDir(r.dir)
+	for _, e := range entries {
+		if relayID.MatchString(e.Name()) {
+			if f, err := readMeta(filepath.Join(r.dir, e.Name())); err == nil {
+				n += f.Size
+			}
+		}
+	}
+	return n
+}
+
+// Run prunes every interval until stop closes: expired files go whether or not new ones come.
+func (r *Relay) Run(stop <-chan struct{}, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			r.prune()
+		}
+	}
 }
 
 // ErrRelayGone: no such file for that agent (never kept, expired, or not granted to it).

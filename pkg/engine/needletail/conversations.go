@@ -1,9 +1,14 @@
 package needletail
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/url"
 	"strings"
@@ -214,12 +219,42 @@ func chatFiles(ctx context.Context, files []engine.File) []wire.ChatFile {
 			break
 		}
 		tried[i] = true
-		if img, err := attach.PrepareImageCtx(ctx, out[i].Data); err == nil && len(img.Data) < len(out[i].Data) {
-			total -= len(out[i].Data) - len(img.Data)
-			out[i].Data, out[i].MIME = img.Data, img.MIME
+		data, mime := out[i].Data, out[i].MIME
+		if img, err := attach.PrepareImageCtx(ctx, data); err == nil && len(img.Data) < len(data) {
+			data, mime = img.Data, img.MIME
+		} else if b, m, err := reencoded(data); err == nil && len(b) < len(data) {
+			// within the model's bounds already (PrepareImage gives it back as it is), yet too large
+			// for the request with the others
+			data, mime = b, m
 		}
+		total -= len(out[i].Data) - len(data)
+		out[i].Data, out[i].MIME = data, mime
 	}
 	return out
+}
+
+// reencoded is an image as a smaller file: at most attach.MaxSide on its longest side, a JPEG at
+// quality 75 (PNG when it has transparency). Refused past 50 megapixels, before it is decoded.
+func reencoded(data []byte) ([]byte, string, error) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 50_000_000 {
+		return nil, "", fmt.Errorf("the image is %dx%d, too large to decode", cfg.Width, cfg.Height)
+	}
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", err
+	}
+	dst := attach.Downscale(src, attach.MaxSide)
+	var buf bytes.Buffer
+	if o, ok := dst.(interface{ Opaque() bool }); ok && !o.Opaque() {
+		err = (&png.Encoder{CompressionLevel: png.BestCompression}).Encode(&buf, dst)
+		return buf.Bytes(), "image/png", err
+	}
+	err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 75})
+	return buf.Bytes(), "image/jpeg", err
 }
 
 // Delete removes the conversation's whole lineage in one request; 0 when it did not exist.

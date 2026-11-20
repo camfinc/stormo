@@ -75,11 +75,12 @@ func TestPhotosReachTheAgent(t *testing.T) {
 	var got sends
 	got.record(c)
 	c.UseExchange(func(_ context.Context, _ string, tt Turn) (Answer, error) { turn = tt; return Answer{Text: "ok"}, nil })
-	c.download = func(_ context.Context, m whatsmeow.DownloadableMessage) ([]byte, error) {
+	c.downloadTo = func(_ context.Context, m whatsmeow.DownloadableMessage, f whatsmeow.File) error {
 		if m.GetDirectPath() == "/gone" {
-			return nil, errors.New("media expired")
+			return errors.New("media expired")
 		}
-		return []byte("jpeg " + m.GetDirectPath()), nil
+		_, err := f.Write([]byte("jpeg " + m.GetDirectPath()))
+		return err
 	}
 	ctx := context.Background()
 	image := func(i int, name, data string, marked bool) bool {

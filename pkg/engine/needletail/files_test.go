@@ -49,4 +49,23 @@ func TestChatFilesFit(t *testing.T) {
 	if len(chatFiles(context.Background(), nil)) != 0 {
 		t.Error("files from none")
 	}
+
+	// two images each within the model's bounds, too large together: re-encoded smaller
+	small := image.NewNRGBA(image.Rect(0, 0, 900, 600))
+	for i := range small.Pix {
+		small.Pix[i] = uint8(r.Intn(256))
+	}
+	for i := 3; i < len(small.Pix); i += 4 {
+		small.Pix[i] = 255
+	}
+	var mid bytes.Buffer
+	if err := png.Encode(&mid, small); err != nil {
+		t.Fatal(err)
+	}
+	two := []engine.File{{Name: "photo.png", MIME: "image/png", Data: mid.Bytes()}, {Name: "quoted-photo.png", MIME: "image/png", Data: mid.Bytes()}}
+	filesRoom = mid.Len() * 3 / 2
+	got = chatFiles(context.Background(), two)
+	if total := len(got[0].Data) + len(got[1].Data); total > filesRoom || got[0].MIME != "image/jpeg" {
+		t.Fatalf("two images: %d bytes (room %d), %s", total, filesRoom, got[0].MIME)
+	}
 }

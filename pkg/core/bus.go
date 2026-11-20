@@ -535,20 +535,22 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	if len(relays) > 0 {
-		// granted once the message exists: a refused send hands no one a file
+		// granted once every check passed, before the message exists: a refused send hands no one
+		// a file, a grant that fails sends nothing, and a delivered relay:<id> is always usable (a
+		// stop between the two leaves only a grant no one was told of)
 		ids := make([]string, len(recipients))
 		for i, r := range recipients {
 			ids[i] = r.ID
 		}
 		for _, f := range relays {
 			if _, err := b.o.Relay.Grant(sender, f, ids); err != nil {
-				log.Printf("bus: message %d: relay file %s not granted: %v", id, f, err)
+				return nil, fmt.Errorf("relay:%s could not be shared: %w", f, err)
 			}
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	if req.Priority == "urgent" && b.o.Mirror != nil {
 		for _, r := range recipients {
