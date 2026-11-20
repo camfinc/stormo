@@ -514,7 +514,8 @@ subprocesses of one Hermes install, which does not fit one container per agent.
 **Relay.** Files the core keeps for agents that cannot take them in themselves (a WhatsApp video or
 document, docs/whatsapp.md): each in `.swarm/core/relay/<id>/` (the file and its record,
 `meta.json`: name, type, size, mark, the agents it is granted to, created, expires; nothing in
-core.db), at most 200 MB, kept 7 days (pruned at boot and at most hourly). An agent names one as
+core.db), at most 200 MB each and 2 GB in all (past it a new file is refused, never an older one
+evicted), kept 7 days (pruned at boot and hourly). An agent names one as
 `relay:<id>`, only one granted to it: the agent it came to, and those it was sent on to with
 `msg_send`. It goes to a capability job (`cap_start` `files`, docs/capabilities.md) or another
 agent, never into the shared space and never through the agent itself. (Not the agent sidecar's
