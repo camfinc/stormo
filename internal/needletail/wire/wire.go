@@ -135,6 +135,10 @@ type Session struct {
 	// messages read) and marked person rows reach the model as a stub; the file keeps them whole.
 	// Added with taint decay; absent: none.
 	Evicted int `json:"evicted,omitempty"`
+	// MarkedOutside: a gateway marked the conversation for words that are not among its rows (a
+	// marked post into it, a handler's result, an outsider's message a handler saw): taint decay
+	// cannot screen them, so only a person's endorsement clears it. Added with taint decay.
+	MarkedOutside bool `json:"marked_outside,omitempty"`
 }
 
 // Taint is one source of a conversation's marked data (Session.Taint): the people (Slack user or

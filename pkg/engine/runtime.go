@@ -113,9 +113,11 @@ type Conversations interface {
 
 // ConversationCommands is a Conversations that takes a person's chat commands for a channel the
 // core runs (WhatsApp's /new and /trust; docs/whatsapp.md): optional. by names the person
-// ("whatsapp:+…"); a conversation a turn runs in answers ErrBusy, one never started ErrNotFound.
+// ("whatsapp:+…"); a conversation a turn runs in answers ErrBusy, a runtime that predates a
+// command ErrUnsupported.
 type ConversationCommands interface {
-	// Restart goes on with conversation id in a fresh session (the earlier one archived).
+	// Restart goes on with conversation id in a fresh session (the earlier one archived); one
+	// never started is already fresh (nil).
 	Restart(ctx context.Context, id, by string) error
 	// Trust endorses conversation id as its owner's trust does; marked is whether it was.
 	Trust(ctx context.Context, id, by string) (marked bool, err error)
@@ -203,6 +205,9 @@ type Transcript struct {
 	Compacted bool      `json:"compacted"`
 	Messages  []Message `json:"messages"`
 }
+
+// ErrUnsupported is an engine runtime that does not take a request (one older than it).
+var ErrUnsupported = errors.New("not supported by this agent's runtime")
 
 // ErrNotFound is a conversation the engine does not hold.
 var ErrNotFound = errors.New("conversation not found")

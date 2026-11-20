@@ -144,8 +144,10 @@ func whatsappCommand(ctx context.Context, cc engine.ConversationCommands, p what
 	switch cmd {
 	case whatsapp.CommandNew:
 		switch err := cc.Restart(ctx, session, by); {
-		case err == nil, errors.Is(err, engine.ErrNotFound):
+		case err == nil:
 			return "Fresh start: our earlier messages are archived and no longer in my context."
+		case errors.Is(err, engine.ErrUnsupported):
+			return "Chat commands are not available for this agent yet."
 		case errors.Is(err, engine.ErrBusy):
 			return "I am answering here right now; send /new again when I have."
 		default:

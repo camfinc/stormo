@@ -901,10 +901,15 @@ func (s *Server) trustConversation(w http.ResponseWriter, r *http.Request) {
 
 // restartConversation is a person's /new through a channel the core runs: the conversation goes on
 // in a fresh session, the earlier one archived. Refused while a turn runs in it; a conversation
-// never started is already fresh (404).
+// never started is already fresh ({"restarted": ""}, never a 404: a 404 here means a runtime from
+// before the route, which the caller tells apart).
 func (s *Server) restartConversation(w http.ResponseWriter, r *http.Request) {
 	if s.restart == nil {
 		writeError(w, http.StatusNotImplemented, "starting a fresh conversation is not available")
+		return
+	}
+	if _, found := s.store.Root(r.PathValue("id")); !found {
+		writeJSON(w, http.StatusOK, map[string]any{"restarted": ""})
 		return
 	}
 	root, by, release, ok := s.commandOn(w, r)

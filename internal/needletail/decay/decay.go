@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -161,6 +162,7 @@ func (d *Decay) Run(ctx context.Context, tip string, wait time.Duration) (Outcom
 		return Outcome{}, nil
 	}
 	out := Outcome{Ran: true}
+	since, _ := d.Store.MarkedSince(tip) // marked data that comes in from here on refuses the endorsement
 	evicted, err := d.Store.Evict(tip)
 	if err != nil {
 		d.later(tip, retry)
@@ -185,6 +187,8 @@ func (d *Decay) Run(ctx context.Context, tip string, wait time.Duration) (Outcom
 	}
 	by := "screen:" + d.Cfg.Screen
 	switch {
+	case h.MarkedOutside:
+		out.Held = "a gateway marked it for words that are not among its rows (a marked post into it, a handler's result): only a person's trust clears that"
 	case size > d.maxBytes():
 		out.Held = fmt.Sprintf("%d bytes of marked text stay in context, more than one screen judges (%d)", size, d.maxBytes())
 	case len(judge) > 0:
@@ -198,7 +202,7 @@ func (d *Decay) Run(ctx context.Context, tip string, wait time.Duration) (Outcom
 	}
 	root, _ := d.Store.Root(tip)
 	if out.Held == "" {
-		if err := d.Store.TrustAt(tip, by, point); err != nil {
+		if err := d.Store.TrustScreened(tip, by, point, len(rows), since); err != nil {
 			if errors.Is(err, sessions.ErrTrustMoved) {
 				d.later(tip, retry)
 				out.Held = err.Error()
@@ -258,7 +262,7 @@ func Judged(rows []wire.Message, endorsed, evicted int) (people []string, judge 
 				judge = append(judge, Item{"assistant action", strings.TrimSpace(c.Name + " " + c.Arguments)})
 			}
 		case "tool":
-			judge = append(judge, Item{"result of " + names[r.ToolCallID], r.Content})
+			judge = append(judge, Item{"result of " + names[i], r.Content})
 		case "system":
 			judge = append(judge, Item{"summary", r.Content})
 		default:
@@ -310,8 +314,8 @@ func (d *Decay) verdict(raw json.RawMessage, parts int) (map[string]float64, str
 	var o struct {
 		Results map[string]struct {
 			Answers map[string]struct {
-				Type string   `json:"type"`
-				Noul *float64 `json:"noul"`
+				Type string          `json:"type"`
+				Noul json.RawMessage `json:"noul"`
 			} `json:"answers"`
 			Error string `json:"error"`
 		} `json:"results"`
@@ -328,10 +332,12 @@ func (d *Decay) verdict(raw json.RawMessage, parts int) (map[string]float64, str
 		}
 		for _, q := range Questions {
 			a, ok := r.Answers[q.Name]
-			if !ok || a.Noul == nil {
-				return scores, fmt.Sprintf("the screen gave no probability for %q", q.Name)
+			var p float64
+			if !ok || a.Type != "noul" || json.Unmarshal(a.Noul, &p) != nil || math.IsNaN(p) || p < 0 || p > 1 {
+				// a refusal, a missing or malformed answer: no decision, never a pass
+				return scores, fmt.Sprintf("the screen gave no probability for %q in part %d", q.Name, i)
 			}
-			scores[q.Name] = max(scores[q.Name], *a.Noul)
+			scores[q.Name] = max(scores[q.Name], p)
 		}
 	}
 	for _, q := range Questions {

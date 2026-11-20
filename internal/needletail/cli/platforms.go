@@ -221,7 +221,8 @@ func startTelegram(rt *runtime, srv *api.Server) *telegram.Gateway {
 			if err := create(session, true); err != nil {
 				return err
 			}
-			return store.MarkUntrusted(session)
+			// what the gateway marks it for (a marked post, a handler's result) is not among its rows
+			return store.MarkOutside(session)
 		},
 		Chats:        func() []string { return telegramChats(rt) },
 		AllowedUsers: envList("TELEGRAM_ALLOWED_USERS"),

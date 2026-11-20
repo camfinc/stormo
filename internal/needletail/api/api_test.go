@@ -636,8 +636,11 @@ func TestConversationCommandsContract(t *testing.T) {
 		t.Fatal("the adapter's Conversations takes no commands")
 	}
 	ctx := context.Background()
-	if err := cc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); !errors.Is(err, engine.ErrNotFound) {
-		t.Fatalf("never started: %v", err)
+	if err := cc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); err != nil {
+		t.Fatalf("never started: already fresh, %v", err)
+	}
+	if len(log) != 0 {
+		t.Fatalf("a never-started conversation was restarted: %v", log)
 	}
 	if _, err := store.Create(wire.Session{ID: "whatsapp-0a", Source: "api_server"}); err != nil {
 		t.Fatal(err)
@@ -673,5 +676,24 @@ func TestConversationCommandsContract(t *testing.T) {
 	st, _, _ := call(srv, key)(ctx, http.MethodPost, "/v1/sessions/whatsapp-0a/trust", map[string]string{"by": "a\nb"})
 	if st != http.StatusBadRequest {
 		t.Fatalf("a multi-line by: %d", st)
+	}
+
+	// a runtime from before the routes: /new is not taken (never "already fresh"); its trust route
+	// trusts without saying whether it was marked, which counts as marked
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/sessions/whatsapp-0a/trust" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"trusted":"whatsapp-0a"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(old.Close)
+	oc := adapter.NewRuntime().Conversations(call(old, key)).(engine.ConversationCommands)
+	if err := oc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); !errors.Is(err, engine.ErrUnsupported) {
+		t.Fatalf("an older runtime's /new: %v", err)
+	}
+	if marked, err := oc.Trust(ctx, "whatsapp-0a", "whatsapp:+393331234567"); err != nil || !marked {
+		t.Fatalf("an older runtime's trust: %v %v", marked, err)
 	}
 }

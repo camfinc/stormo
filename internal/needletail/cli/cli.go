@@ -712,7 +712,8 @@ func startSlack(rt *runtime, srv *api.Server) *slack.Gateway {
 					}
 				}
 			}
-			return store.MarkUntrusted(session)
+			// what the gateway marks it for (a marked post, a handler's result) is not among its rows
+			return store.MarkOutside(session)
 		},
 		Channels:     func() []string { return slackChannels(store) },
 		AllowedUsers: users,

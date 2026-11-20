@@ -368,19 +368,28 @@ func (s *Store) Untrusted(id string) bool {
 // MarkUntrusted durably marks the current tip before marked content can escape.
 // It does not add a synthetic message and never clears an existing mark.
 func (s *Store) MarkUntrusted(id string) error {
-	// a gateway's or an approval note's mark: marked data comes in with it
-	return s.addTaint(id, wire.Taint{}, true)
+	// an approval note's mark: marked data comes in with it (its row follows)
+	return s.addTaint(id, wire.Taint{}, true, false)
+}
+
+// MarkOutside is a gateway's mark (the Slack and Telegram gateways' quarantine): MarkUntrusted for
+// words that are not among the conversation's rows (a marked post into it, a handler's result), so
+// the header keeps MarkedOutside: taint decay holds such a conversation for a person.
+func (s *Store) MarkOutside(id string) error {
+	return s.addTaint(id, wire.Taint{}, true, true)
 }
 
 // AddTaint durably marks the current tip, keeping t (who and what brought the marked data in) in
 // its header when it says something new (at most wire.MaxTaint entries, the first kept); an
 // empty t only marks.
 func (s *Store) AddTaint(id string, t wire.Taint) error {
-	return s.addTaint(id, t, t.Why != "" || len(t.Users) > 0)
+	return s.addTaint(id, t, t.Why != "" || len(t.Users) > 0, false)
 }
 
-// addTaint is AddTaint; fresh: marked data came in (its time is what taint decay waits on).
-func (s *Store) addTaint(id string, t wire.Taint, fresh bool) error {
+// addTaint is AddTaint; fresh: marked data came in (its time is what taint decay waits on, and a
+// screen's endorsement is refused when it moved: TrustScreened); outside: words that are not among
+// the rows (MarkOutside).
+func (s *Store) addTaint(id string, t wire.Taint, fresh, outside bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	line, ok := s.lineage(id)
@@ -391,8 +400,8 @@ func (s *Store) addTaint(id string, t wire.Taint, fresh bool) error {
 	if t.Why != "" || len(t.Users) > 0 {
 		m.marks++ // new marked data (a plain mark, a turn in a marked conversation, is none)
 	}
-	if fresh {
-		m.lastMark = s.now()
+	if fresh || !m.Untrusted || m.lastMark.IsZero() {
+		m.lastMark = s.now() // new marked data, or the session's first mark
 	}
 	add := t.Why != "" && len(m.Taint) < wire.MaxTaint && !slices.ContainsFunc(m.Taint, func(x wire.Taint) bool {
 		return x.Why == t.Why && slices.Equal(x.Users, t.Users) && x.Channel == t.Channel && x.Thread == t.Thread
@@ -400,9 +409,10 @@ func (s *Store) addTaint(id string, t wire.Taint, fresh bool) error {
 	if t.At == "" {
 		t.At = Stamp(s.now())
 	}
-	if !m.Untrusted || add {
+	if !m.Untrusted || add || outside && !m.MarkedOutside {
 		if err := s.rewriteHeader(m, func(h *wire.Session) {
 			h.Untrusted = true
+			h.MarkedOutside = h.MarkedOutside || outside
 			if add {
 				h.Taint = append(append([]wire.Taint{}, h.Taint...), t)
 			}
@@ -453,7 +463,7 @@ func (s *Store) trustLocked(m *meta, by string) error {
 	}
 	rows := m.rows
 	if err := s.rewriteHeader(m, func(h *wire.Session) {
-		h.Untrusted, h.Taint, h.Endorsed, h.EndorsedBy, h.EndorsedAt = false, nil, rows, by, Stamp(s.now())
+		h.Untrusted, h.Taint, h.Endorsed, h.EndorsedBy, h.EndorsedAt, h.MarkedOutside = false, nil, rows, by, Stamp(s.now()), false
 	}); err != nil {
 		return err
 	}
@@ -500,8 +510,12 @@ func (s *Store) TrustAt(id, by string, p TrustPoint) error {
 	if !ok {
 		return ErrNotFound
 	}
+	return s.trustAtLocked(s.metas[line[len(line)-1]], line, by, p)
+}
+
+// trustAtLocked is TrustAt on m, the live session of line (s.mu held).
+func (s *Store) trustAtLocked(m *meta, line []string, by string, p TrustPoint) error {
 	tip := line[len(line)-1]
-	m := s.metas[tip]
 	switch {
 	case p.Epoch != s.epoch:
 		return fmt.Errorf("%w: the runtime restarted since the request", ErrTrustMoved)
@@ -511,6 +525,31 @@ func (s *Store) TrustAt(id, by string, p TrustPoint) error {
 		return fmt.Errorf("%w: new untrusted input came into the conversation after the request", ErrTrustMoved)
 	}
 	return s.trustLocked(m, by)
+}
+
+// TrustScreened is taint decay's endorsement (docs/needletail.md §7, "Taint decay"): TrustAt's,
+// and only while the live session still holds exactly rows rows, those its screen judged (a row
+// appended since, by a handler or a follow-up outside the conversation's hold, refuses it), no
+// marked data came in since since (MarkedSince: a gateway's mark, a marked note or follow-up, a
+// read), and no gateway marked it for words outside its rows (MarkedOutside: only a person
+// endorses those).
+func (s *Store) TrustScreened(id, by string, p TrustPoint, rows int, since time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, ok := s.lineage(id)
+	if !ok {
+		return ErrNotFound
+	}
+	m := s.metas[line[len(line)-1]]
+	switch {
+	case m.ID != p.Session || m.rows != rows:
+		return fmt.Errorf("%w: rows came into the conversation while it was screened", ErrTrustMoved)
+	case !m.lastMark.Equal(since):
+		return fmt.Errorf("%w: marked data came into the conversation while it was screened", ErrTrustMoved)
+	case m.MarkedOutside:
+		return fmt.Errorf("%w: a gateway marked it for words outside its rows", ErrTrustMoved)
+	}
+	return s.trustAtLocked(m, line, by, p)
 }
 
 // Endorsed is how many rows of session id the owner endorsed (Trust): their marks no longer count.
@@ -635,10 +674,14 @@ func (s *Store) Append(id string, rows ...wire.Message) ([]wire.Message, error) 
 	if m.EndReason != "" {
 		return nil, ErrEnded
 	}
-	if slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted && r.Role == "user" }) {
-		m.lastMark = s.now() // an outsider's words (or a marked note) came in
+	if slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted && (r.Role == "user" || r.Kind == wire.KindFollowUp) }) {
+		// an outsider's words, a marked note or a marked follow-up's text came in
+		m.lastMark = s.now()
 	}
 	if !m.Untrusted && slices.ContainsFunc(rows, func(r wire.Message) bool { return r.Untrusted }) {
+		if m.lastMark.IsZero() {
+			m.lastMark = s.now() // the session's first mark
+		}
 		// the header is marked before the row is written: a conversation never holds an
 		// untrusted row it does not know of (fails closed: no mark, no row)
 		if err := s.rewriteHeader(m, func(h *wire.Session) { h.Untrusted = true }); err != nil {
@@ -788,7 +831,7 @@ func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Mess
 		}
 		kept = kept || carry[i].Untrusted
 	}
-	h := wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted || marked || kept, Taint: m.Taint}
+	h := wire.Session{Parent: id, Source: m.Source, Title: m.Title, Untrusted: m.Untrusted || marked || kept, Taint: m.Taint, MarkedOutside: m.MarkedOutside}
 	if evicted > 0 {
 		h.Evicted = 1 + evicted // the summary row, then the carried rows from the start
 	}
@@ -816,6 +859,9 @@ func (s *Store) CompactMarked(id, summary string, marked bool, carry []wire.Mess
 	}
 	c.carried = len(carry)
 	c.lastMark = m.lastMark
+	if c.Untrusted && c.lastMark.IsZero() {
+		c.lastMark = s.now()
+	}
 	m.child = child.ID
 	return child.ID, s.writeIndex()
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -267,19 +268,25 @@ func (c conversations) Delete(ctx context.Context, id string) (int, error) {
 	return out.Deleted, err
 }
 
-// Restart is a person's /new on a channel the core runs (POST /v1/sessions/{id}/new).
+// Restart is a person's /new on a channel the core runs (POST /v1/sessions/{id}/new). The route
+// answers a conversation never started with 200, so a 404 is a runtime from before it.
 func (c conversations) Restart(ctx context.Context, id, by string) error {
 	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/new", map[string]string{"by": by}, nil)
+	if errors.Is(err, engine.ErrNotFound) {
+		return engine.ErrUnsupported
+	}
 	return err
 }
 
-// Trust is an approver's /trust on a channel the core runs (POST /v1/sessions/{id}/trust).
+// Trust is an approver's /trust on a channel the core runs (POST /v1/sessions/{id}/trust). A
+// runtime from before the route took who asked does not say whether it was marked: it trusted it
+// all the same, so it counts as marked.
 func (c conversations) Trust(ctx context.Context, id, by string) (bool, error) {
 	var out struct {
-		Marked bool `json:"marked"`
+		Marked *bool `json:"marked"`
 	}
 	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/trust", map[string]string{"by": by}, &out)
-	return out.Marked, err
+	return out.Marked == nil || *out.Marked, err
 }
 
 var _ engine.ConversationCommands = conversations{}

@@ -156,11 +156,23 @@ func TestDecayHoldsWhatTheScreenFlags(t *testing.T) {
 // No decision is never a pass: a part without answers, a refused question, an unreadable answer.
 // A screen that cannot be reached is an error, tried again soon (not after After).
 func TestDecayNeedsADecision(t *testing.T) {
+	all := func(answer string) string { // every question answered the same way
+		var parts []string
+		for _, q := range Questions {
+			parts = append(parts, fmt.Sprintf("%q:%s", q.Name, answer))
+		}
+		return `{"results":{"1":{"answers":{` + strings.Join(parts, ",") + `}}}}`
+	}
 	cases := map[string]string{
-		"no part":  `{"results":{}}`,
-		"refused":  `{"results":{"1":{"answers":{"override":{"type":"refus"}}}}}`,
-		"an error": `{"results":{"1":{"error":"model unavailable"}}}`,
-		"junk":     `not json`,
+		"no part":          `{"results":{}}`,
+		"refused":          `{"results":{"1":{"answers":{"override":{"type":"refus"}}}}}`,
+		"an error":         `{"results":{"1":{"error":"model unavailable"}}}`,
+		"junk":             `not json`,
+		"refused with a 0": all(`{"type":"refus","noul":0}`), // Codex review #4
+		"a negative":       all(`{"type":"noul","noul":-1}`),
+		"over 1":           all(`{"type":"noul","noul":1.5}`),
+		"not a number":     all(`{"type":"noul","noul":"0.1"}`),
+		"untyped":          all(`{"noul":0.1}`),
 	}
 	for name, answer := range cases {
 		s := marked(t)
@@ -344,3 +356,42 @@ func TestPiecesNeverSplitARune(t *testing.T) {
 }
 
 func utfValid(s string) bool { return strings.ToValidUTF8(s, "�") == s }
+
+// Codex review #1: a conversation a gateway marked for words outside its rows is held for a person,
+// unscreened; #3: a gateway's mark or a row that comes in while the screen runs refuses its pass.
+func TestDecayHoldsWhatItCannotSee(t *testing.T) {
+	s := marked(t)
+	if err := s.MarkOutside(conv); err != nil {
+		t.Fatal(err)
+	}
+	var audit []map[string]any
+	d := decayOf(s, func(context.Context, string, json.RawMessage, time.Duration) (json.RawMessage, error) {
+		t.Fatal("screened what it cannot see")
+		return nil, nil
+	}, &audit)
+	d.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if out, err := d.Run(context.Background(), conv, time.Second); err != nil || out.Endorsed || !strings.Contains(out.Held, "not among its rows") {
+		t.Fatalf("marked outside: %+v %v", out, err)
+	}
+
+	for name, during := range map[string]func(*sessions.Store) error{
+		"a gateway's mark": func(s *sessions.Store) error { return s.MarkUntrusted(conv) },
+		"a handler's row": func(s *sessions.Store) error {
+			_, err := s.Append(conv, wire.Message{Role: "assistant", Content: "a handler's note"})
+			return err
+		},
+	} {
+		s := marked(t)
+		var asked []json.RawMessage
+		pass := screenOf(nil, &asked)
+		d := decayOf(s, func(ctx context.Context, c string, in json.RawMessage, w time.Duration) (json.RawMessage, error) {
+			if err := during(s); err != nil {
+				return nil, err
+			}
+			return pass(ctx, c, in, w)
+		}, &audit)
+		if out, err := d.Run(context.Background(), conv, time.Second); err != nil || out.Endorsed || !s.Untrusted(conv) {
+			t.Errorf("%s during the screen: %+v %v", name, out, err)
+		}
+	}
+}

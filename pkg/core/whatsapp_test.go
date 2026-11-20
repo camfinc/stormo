@@ -159,9 +159,9 @@ func TestWhatsAppCommands(t *testing.T) {
 	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.Contains(got, "answering here right now") {
 		t.Fatalf("busy: %q", got)
 	}
-	f.err = engine.ErrNotFound
-	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.HasPrefix(got, "Fresh start") {
-		t.Fatalf("never started: %q", got)
+	f.err = engine.ErrUnsupported
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.Contains(got, "not available for this agent yet") {
+		t.Fatalf("an older runtime: %q", got)
 	}
 	if got := whatsappCommand(ctx, nil, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.Contains(got, "not available") {
 		t.Fatalf("no commands: %q", got)

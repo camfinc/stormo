@@ -195,3 +195,133 @@ func TestParseStamp(t *testing.T) {
 		t.Fatal("junk is the zero time")
 	}
 }
+
+// Codex review (2026-11-20) #2: a tool result is matched to the calls of its own block, never by an
+// id anywhere in the history: a later swarm read reusing a page's call id leaves the page out.
+func TestViewMatchesResultsToTheirBlock(t *testing.T) {
+	rows := []wire.Message{
+		{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "call_0", Name: "web_extract"}}},
+		{Role: "tool", ToolCallID: "call_0", Content: "PAGE", Untrusted: true},
+		{Role: "assistant", Content: "Resumen."},
+		{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "call_0", Name: "mcp_core_msg_read"}}},
+		{Role: "tool", ToolCallID: "call_0", Content: "BRIEF", Untrusted: true},
+		{Role: "tool", ToolCallID: "call_9", Content: "ORPHAN", Untrusted: true},
+	}
+	names := ToolNames(rows)
+	if names[1] != "web_extract" || names[4] != "mcp_core_msg_read" || names[5] != "" {
+		t.Fatalf("names %q", names)
+	}
+	v := View(rows, len(rows))
+	if !strings.HasPrefix(v[1].Content, "[Taken out") || v[4].Content != "BRIEF" || !strings.HasPrefix(v[5].Content, "[Taken out") {
+		t.Fatalf("view: %q | %q | %q", v[1].Content, v[4].Content, v[5].Content)
+	}
+}
+
+// Codex review #1 and #3: a gateway's mark is for words outside the rows (MarkedOutside, kept in
+// the header across a restart and a compaction): a screen's endorsement is refused, a person's
+// trust clears it. A screen's endorsement is also refused when rows came in, or marked data came in
+// (its time moved), while it ran; a plain re-mark of a turn moves neither.
+func TestTrustScreened(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	s := open(t, dir)
+	id := "slack-C0DEV00001-1.1"
+	if _, err := s.Create(wire.Session{ID: id, Source: "slack"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(id, wire.Message{Role: "user", Content: "hola"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddTaint(id, wire.Taint{Why: "read a web page (web_extract)"}); err != nil {
+		t.Fatal(err)
+	}
+	screened := func() error {
+		since, _ := s.MarkedSince(id)
+		p, _ := s.Point(id)
+		rows, _ := s.Messages(id)
+		return s.TrustScreened(id, "screen:decision.ask", p, len(rows), since)
+	}
+	// rows appended after the screen read them
+	since, _ := s.MarkedSince(id)
+	p, _ := s.Point(id)
+	rows, _ := s.Messages(id)
+	if _, err := s.Append(id, wire.Message{Role: "assistant", Content: "a handler's note"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrustScreened(id, "screen:decision.ask", p, len(rows), since); !errors.Is(err, ErrTrustMoved) {
+		t.Fatalf("rows since the read: %v", err)
+	}
+	// a gateway's plain mark during the screen moves the time (it brings words in), a turn's does not
+	since, _ = s.MarkedSince(id)
+	p, _ = s.Point(id)
+	rows, _ = s.Messages(id)
+	if err := s.AddTaint(id, wire.Taint{}); err != nil { // a turn in the marked conversation
+		t.Fatal(err)
+	}
+	if err := s.MarkUntrusted(id); err != nil { // a marked note
+		t.Fatal(err)
+	}
+	if err := s.TrustScreened(id, "screen:decision.ask", p, len(rows), since); !errors.Is(err, ErrTrustMoved) {
+		t.Fatalf("a mark during the screen: %v", err)
+	}
+	if err := s.MarkOutside(id); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.Get(id); !h.MarkedOutside {
+		t.Fatal("MarkOutside is not in the header")
+	}
+	if err := screened(); !errors.Is(err, ErrTrustMoved) || !strings.Contains(err.Error(), "outside its rows") {
+		t.Fatalf("marked outside: %v", err)
+	}
+	s2 := open(t, dir) // a restart keeps it
+	if h, _ := s2.Get(id); !h.MarkedOutside {
+		t.Fatal("MarkedOutside lost at a restart")
+	}
+	rows, _ = s2.Messages(id)
+	child, err := s2.Compact(id, "summary", rows[len(rows)-1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s2.Get(child); !h.MarkedOutside || !s2.Untrusted(child) {
+		t.Fatal("a compaction dropped MarkedOutside")
+	}
+	if err := s2.Trust(child, "U0OWNER001"); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s2.Get(child); h.MarkedOutside || s2.Untrusted(child) {
+		t.Fatal("a person's trust leaves it marked outside")
+	}
+	// with nothing moving, a screen endorses
+	if err := s2.AddTaint(child, wire.Taint{Why: "read a web page (web_extract)"}); err != nil {
+		t.Fatal(err)
+	}
+	since, _ = s2.MarkedSince(child)
+	p, _ = s2.Point(child)
+	rows, _ = s2.Messages(child)
+	if err := s2.TrustScreened(child, "screen:decision.ask", p, len(rows), since); err != nil || s2.Untrusted(child) {
+		t.Fatalf("an unmoved screen: %v", err)
+	}
+}
+
+// Codex review #5: a session first marked by a row (a marked follow-up's text into a fresh
+// session) has the time of that mark, so decay can come due; a follow-up's marked text later moves
+// it as an outsider's words do.
+func TestFirstMarkHasATime(t *testing.T) {
+	s := open(t, filepath.Join(t.TempDir(), "sessions"))
+	id := "slack-D0DEV00001-dm"
+	if _, err := s.Create(wire.Session{ID: id, Source: "slack"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(id, wire.Message{Role: "assistant", Kind: wire.KindFollowUp, Content: "Reminder", Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	first, marked := s.MarkedSince(id)
+	if !marked || first.IsZero() {
+		t.Fatalf("first mark by a row: %v %v", first, marked)
+	}
+	if _, err := s.Append(id, wire.Message{Role: "assistant", Kind: wire.KindFollowUp, Content: "Another", Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := s.MarkedSince(id); !again.After(first) {
+		t.Fatal("a marked follow-up's text did not move it")
+	}
+}
