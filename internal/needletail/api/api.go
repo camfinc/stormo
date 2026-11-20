@@ -88,7 +88,7 @@ const (
 	defaultMaxTurns = 2
 	defaultJobTurns = 1
 	defaultGrace    = 3 * time.Second
-	maxBody         = 4 << 20
+	maxBody         = wire.MaxRequestBytes
 	defaultList     = 50
 	maxList         = 200
 	defaultMessages = 200

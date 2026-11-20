@@ -132,10 +132,12 @@ const (
 
 type Reply func(context.Context, string, string) (string, error)
 
-// Turn is what a message brings the agent: the turn's input and, for a voice note, its audio.
+// Turn is what a message brings the agent: the turn's input and, for a voice note, its audio; for
+// a photo, or a mention in a reply to one, the photos.
 type Turn struct {
-	Text  string
-	Audio *Audio
+	Text   string
+	Audio  *Audio
+	Images []Image
 	// Origin is the core's record of the message the turn answers ("" none; UseOrigins).
 	Origin string
 }
@@ -143,6 +145,15 @@ type Turn struct {
 // Audio is a voice note someone sent: its bytes and MIME type; Marked when its sender may not
 // instruct the agent.
 type Audio struct {
+	Data   []byte
+	MIME   string
+	Marked bool
+}
+
+// Image is a photo: the message's own or the one it replies to, as a file named for which it is;
+// Marked when whoever sent it may not instruct the agent.
+type Image struct {
+	Name   string
 	Data   []byte
 	MIME   string
 	Marked bool
@@ -159,10 +170,11 @@ type Answer struct {
 // Exchange is Reply with voice notes both ways: the person's to transcribe, the agent's to post.
 type Exchange func(ctx context.Context, session string, t Turn) (Answer, error)
 
-// Bounds of a voice note taken in.
+// Bounds of a voice note taken in, and of a photo fetched.
 const (
 	maxVoiceSeconds = 15 * 60
 	maxVoiceBytes   = 20 << 20
+	maxImageBytes   = 20 << 20
 )
 
 type Connector struct {
@@ -391,13 +403,17 @@ type Inbound struct {
 	QuotedFrom     string
 	QuotedVerified bool
 	QuotedText     string
+	QuotedImage    bool // that message is a photo (fetched for the agent to see)
 	Voice          bool // a voice note (its audio is fetched for the agent to transcribe)
+	Image          bool // a photo (fetched for the agent to see); Text is its caption
 }
 
-// Accepted is deliberately limited: a fresh direct text or voice note from a permitted phone
-// number; in an allowed group, a text that mentions the agent or replies to one of its messages, or
-// a voice note that replies to one; or a reaction to one of its messages in either. A voice note
-// over 15 minutes or 20 MB is not taken. sent finds one of the agent's own messages (the start of its text).
+// Accepted is deliberately limited: a fresh direct text, photo or voice note from a permitted phone
+// number; in an allowed group, a text or photo that mentions the agent (a photo in its caption) or
+// replies to one of its messages, or a voice note that replies to one; or a reaction to one of its
+// messages in either. A voice note over 15 minutes or 20 MB is not taken. A mention in a reply to
+// someone else's photo brings that photo too (QuotedImage). sent finds one of the agent's own
+// messages (the start of its text).
 func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (string, bool)) (Inbound, bool) {
 	chat := e.Info.Chat
 	// The broadcast server also carries status updates, which IsBroadcastList does not count.
@@ -427,6 +443,10 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 	if text == "" {
 		text = e.Message.GetExtendedTextMessage().GetText()
 	}
+	info := e.Message.GetExtendedTextMessage().GetContextInfo()
+	if img := e.Message.GetImageMessage(); img != nil && text == "" {
+		text, info, in.Image = img.GetCaption(), img.GetContextInfo(), true
+	}
 	if audio := e.Message.GetAudioMessage(); audio != nil && strings.TrimSpace(text) == "" {
 		if audio.GetSeconds() > maxVoiceSeconds || audio.GetFileLength() > maxVoiceBytes {
 			return Inbound{}, false
@@ -442,11 +462,10 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 		in.Voice = true
 		return in, true
 	}
-	if strings.TrimSpace(text) == "" || len(text) > 32000 {
+	if !in.Image && strings.TrimSpace(text) == "" || len(text) > 32000 {
 		return Inbound{}, false
 	}
 	if in.Group {
-		info := e.Message.GetExtendedTextMessage().GetContextInfo()
 		mentioned := slices.ContainsFunc(info.GetMentionedJID(), func(s string) bool {
 			j, err := types.ParseJID(s)
 			return err == nil && me.Is(j)
@@ -473,6 +492,7 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 			in.Quoted = ""
 			if text := lineText(info.GetQuotedMessage()); in.QuotedID != "" && text != "" {
 				in.QuotedText = clean(text, maxLineRunes)
+				in.QuotedImage = info.GetQuotedMessage().GetImageMessage() != nil
 				if author.Server == types.DefaultUserServer {
 					in.QuotedFrom = "+" + author.User
 					in.QuotedVerified = p.All || slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == author.User })
@@ -653,13 +673,21 @@ func Input(in Inbound, group string) string {
 				from += ", not one of your allowed people"
 			}
 			how += fmt.Sprintf(`, in a reply to a message from %s: "%s"`, from, clean(in.QuotedText, maxLineRunes))
+			if in.QuotedImage {
+				how += " (its photo is attached below)"
+			}
 		}
+	}
+	if in.Image {
+		how += ", with a photo (attached below)"
 	}
 	text := in.Text
 	switch {
 	case in.Voice:
 		how = strings.Replace(how, ", mentioning you", "", 1)
 		text = "(a voice note: its transcript is below)"
+	case text == "" && in.Image:
+		text = "(no text: only the photo)"
 	case text == "":
 		text = "(no text: they only mentioned you)"
 	}
@@ -890,8 +918,14 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 				t.Audio = &Audio{Data: data, MIME: audio.GetMimetype(), Marked: !in.Verified}
 			}
 		}
+		var note string
+		t.Images, note = c.photos(turn, e, in)
+		t.Text += note
 		ans, err = exchange(turn, session, t)
 	} else {
+		if in.Image || in.QuotedImage {
+			input += "\n[The photo could not be given to you: this connection takes text only.]"
+		}
 		ans.Text, err = c.reply(turn, session, input)
 	}
 	// what is posted now is posted on a context of its own: a turn that ran out of time still tells
@@ -945,6 +979,42 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	if message {
 		c.react(post, e, done)
 	}
+}
+
+// photos fetches the photos in brings for the agent to see: its own (Image) and the one it replies
+// to (QuotedImage), each marked when whoever sent it may not instruct the agent; note names any that
+// could not be fetched (over 20 MB, or media WhatsApp no longer serves).
+func (c *Connector) photos(ctx context.Context, e *events.Message, in Inbound) (images []Image, note string) {
+	info := e.Message.GetExtendedTextMessage().GetContextInfo()
+	if in.Image {
+		info = e.Message.GetImageMessage().GetContextInfo()
+	}
+	for _, p := range []struct {
+		take   bool
+		name   string
+		img    *waE2E.ImageMessage
+		marked bool
+		what   string
+	}{
+		{in.Image, "photo", e.Message.GetImageMessage(), !in.Verified, "The photo"},
+		{in.QuotedImage, "quoted-photo", info.GetQuotedMessage().GetImageMessage(), !in.Verified || !in.QuotedVerified, "The photo replied to"},
+	} {
+		if !p.take {
+			continue
+		}
+		var data []byte
+		var err error
+		if p.img.GetFileLength() <= maxImageBytes {
+			data, err = c.download(ctx, p.img)
+		}
+		if err != nil || len(data) == 0 || len(data) > maxImageBytes {
+			note += "\n[" + p.what + " could not be fetched.]"
+			continue
+		}
+		mime := orElse(p.img.GetMimetype(), "image/jpeg")
+		images = append(images, Image{Name: p.name + "." + strings.TrimPrefix(mime, "image/"), Data: data, MIME: mime, Marked: p.marked})
+	}
+	return images, note
 }
 
 // Send posts text to chat on the agent's own account, unprompted (the caller decides the chat may

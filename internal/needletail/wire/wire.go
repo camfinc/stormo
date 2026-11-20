@@ -241,6 +241,10 @@ type ChatRequest struct {
 // MaxChatFiles is the most files one chat request carries.
 const MaxChatFiles = 5
 
+// MaxRequestBytes is the most a request's body may hold (the API refuses a larger one): a chat
+// request's files go base64 in it, at 4/3 of their size.
+const MaxRequestBytes = 4 << 20
+
 // ChatFile is one file a chat request carries: its name, MIME type and bytes (base64 in JSON);
 // Marked when its sender may not instruct the agent (its content is information, not orders).
 type ChatFile struct {

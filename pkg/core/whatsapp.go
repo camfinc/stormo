@@ -95,14 +95,14 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 			}
 			ex, ok := conversations.(engine.Exchanger)
 			if !ok {
-				reply, _, err := conversations.Send(ctx, session, t.Text)
+				text := t.Text
+				if len(turnFiles(t)) > 0 {
+					text += "\n[What came with this message (a photo, a voice note) could not be given to you: this agent's runtime takes no files.]"
+				}
+				reply, _, err := conversations.Send(ctx, session, text)
 				return whatsapp.Answer{Text: reply}, err
 			}
-			in := engine.Input{Text: t.Text, AudioFormat: "opus"}
-			if a := t.Audio; a != nil {
-				in.Files = []engine.File{{Name: "voice-note.ogg", MIME: a.MIME, Data: a.Data, Marked: a.Marked}}
-			}
-			r, err := ex.Exchange(ctx, session, in)
+			r, err := ex.Exchange(ctx, session, engine.Input{Text: t.Text, AudioFormat: "opus", Files: turnFiles(t)})
 			if err != nil {
 				return whatsapp.Answer{}, err
 			}
@@ -116,6 +116,20 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 	}
 	return conn, err
 }
+
+// turnFiles is what a WhatsApp turn brings besides its text, as the agent's chat files: the voice
+// note to transcribe and the photos to see.
+func turnFiles(t whatsapp.Turn) []engine.File {
+	var files []engine.File
+	if a := t.Audio; a != nil {
+		files = append(files, engine.File{Name: "voice-note.ogg", MIME: a.MIME, Data: a.Data, Marked: a.Marked})
+	}
+	for _, img := range t.Images {
+		files = append(files, engine.File{Name: img.Name, MIME: img.MIME, Data: img.Data, Marked: img.Marked})
+	}
+	return files
+}
+
 func (c *Core) startWhatsApp() {
 	c.whatsapp.Lock()
 	defer c.whatsapp.Unlock()

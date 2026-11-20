@@ -8,7 +8,25 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/camfinc/stormo/pkg/whatsapp"
 )
+
+// A WhatsApp turn's voice note and photos go to the agent as its chat files, each with its mark.
+func TestWhatsAppTurnFiles(t *testing.T) {
+	if files := turnFiles(whatsapp.Turn{Text: "hi"}); len(files) != 0 {
+		t.Fatalf("files from text alone: %+v", files)
+	}
+	files := turnFiles(whatsapp.Turn{Audio: &whatsapp.Audio{Data: []byte("OggS"), MIME: "audio/ogg"},
+		Images: []whatsapp.Image{{Name: "photo.jpeg", Data: []byte("jpeg"), MIME: "image/jpeg"}, {Name: "quoted-photo.jpeg", Data: []byte("theirs"), MIME: "image/jpeg", Marked: true}}})
+	var got []string
+	for _, f := range files {
+		got = append(got, fmt.Sprintf("%s %s %s %v", f.Name, f.MIME, f.Data, f.Marked))
+	}
+	if strings.Join(got, "|") != "voice-note.ogg audio/ogg OggS false|photo.jpeg image/jpeg jpeg false|quoted-photo.jpeg image/jpeg theirs true" {
+		t.Fatalf("files %v", got)
+	}
+}
 
 func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	_, inst := fixture(t)

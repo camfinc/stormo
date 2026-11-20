@@ -78,10 +78,8 @@ func status(s wire.ChannelTurnStatus) engine.ChannelTurnStatus {
 }
 
 func (c channelTurns) Start(ctx context.Context, t engine.ChannelTurn) (engine.ChannelTurnStatus, error) {
-	req := wire.ChannelTurn{Execution: t.Execution, Token: t.Token, Kind: t.Kind, Session: t.Session, Title: t.Title, Message: t.In.Text, AudioFormat: t.In.AudioFormat}
-	for _, f := range t.In.Files {
-		req.Files = append(req.Files, wire.ChatFile{Name: f.Name, MIME: f.MIME, Data: f.Data, Marked: f.Marked})
-	}
+	req := wire.ChannelTurn{Execution: t.Execution, Token: t.Token, Kind: t.Kind, Session: t.Session, Title: t.Title, Message: t.In.Text, AudioFormat: t.In.AudioFormat,
+		Files: chatFiles(ctx, t.In.Files)}
 	var out wire.ChannelTurnStatus
 	code, err := c.do(ctx, http.MethodPost, "/v1/channel/turns", req, &out)
 	switch {

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/camfinc/stormo/internal/needletail/attach"
 	"github.com/camfinc/stormo/internal/needletail/wire"
 	"github.com/camfinc/stormo/pkg/engine"
 )
@@ -160,10 +161,7 @@ func (c conversations) Send(ctx context.Context, id, message string) (string, st
 // Exchange is Send with files in and the agent's voice note out (wire.ChatRequest's files and
 // audio_format, wire.ChatResponse's message.audio).
 func (c conversations) Exchange(ctx context.Context, id string, m engine.Input) (*engine.Reply, error) {
-	req := wire.ChatRequest{Message: m.Text, AudioFormat: m.AudioFormat}
-	for _, f := range m.Files {
-		req.Files = append(req.Files, wire.ChatFile{Name: f.Name, MIME: f.MIME, Data: f.Data, Marked: f.Marked})
-	}
+	req := wire.ChatRequest{Message: m.Text, AudioFormat: m.AudioFormat, Files: chatFiles(ctx, m.Files)}
 	var out wire.ChatResponse
 	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/chat", req, &out)
 	if err == engine.ErrNotFound {
@@ -188,6 +186,41 @@ func (c conversations) Exchange(ctx context.Context, id string, m engine.Input) 
 }
 
 var _ engine.Exchanger = conversations{}
+
+// filesRoom is what a request's files may hold (their bytes: base64 in JSON is 4/3 of it) within
+// the runtime's request bound, with room for the message. A var: tests lower it.
+var filesRoom = (wire.MaxRequestBytes - 256<<10) * 3 / 4
+
+// chatFiles is files as a request carries them. Files that would not fit filesRoom (a phone's
+// full-size photo, two of them) have their largest images sent as the model is shown them
+// (attach.PrepareImage: at most attach.MaxSide px, re-encoded) until they do, so the request is not
+// refused for them; what still does not fit goes as it is, for the runtime to refuse.
+func chatFiles(ctx context.Context, files []engine.File) []wire.ChatFile {
+	var out []wire.ChatFile
+	total := 0
+	for _, f := range files {
+		out = append(out, wire.ChatFile{Name: f.Name, MIME: f.MIME, Data: f.Data, Marked: f.Marked})
+		total += len(f.Data)
+	}
+	tried := make([]bool, len(out))
+	for total > filesRoom {
+		i := -1
+		for j, f := range out {
+			if !tried[j] && attach.ShowableImage(strings.ToLower(f.MIME)) && (i < 0 || len(f.Data) > len(out[i].Data)) {
+				i = j
+			}
+		}
+		if i < 0 {
+			break
+		}
+		tried[i] = true
+		if img, err := attach.PrepareImageCtx(ctx, out[i].Data); err == nil && len(img.Data) < len(out[i].Data) {
+			total -= len(out[i].Data) - len(img.Data)
+			out[i].Data, out[i].MIME = img.Data, img.MIME
+		}
+	}
+	return out
+}
 
 // Delete removes the conversation's whole lineage in one request; 0 when it did not exist.
 func (c conversations) Delete(ctx context.Context, id string) (int, error) {

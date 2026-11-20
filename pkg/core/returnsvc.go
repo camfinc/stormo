@@ -250,10 +250,7 @@ func (r *Returns) InboundTurn(ctx context.Context, agent, session string, t what
 		exec, agent, "inbound", t.Origin, token, session, "running", r.o.Now().UnixMilli()); err != nil {
 		return whatsapp.Answer{}, err
 	}
-	in := engine.Input{Text: t.Text, AudioFormat: "opus"}
-	if a := t.Audio; a != nil {
-		in.Files = []engine.File{{Name: "voice-note.ogg", MIME: a.MIME, Data: a.Data, Marked: a.Marked}}
-	}
+	in := engine.Input{Text: t.Text, AudioFormat: "opus", Files: turnFiles(t)}
 	turn := engine.ChannelTurn{Execution: exec, Token: token, Kind: "inbound", Session: session, In: in}
 	st, err := r.admit(ctx, ct, turn)
 	if err == nil {
