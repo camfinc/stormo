@@ -208,6 +208,7 @@ type Connector struct {
 	dir        string
 	keep       Keep
 	exchange   Exchange
+	commands   Commands
 	register   func(context.Context, OriginEvent) (string, error)
 	// link is the link's id (origins.go), under mu; relinking while a new one is not on disk yet.
 	// rotating serialises rotations (taken before mu, never under it).
@@ -341,6 +342,38 @@ func Open(path string, policy func() Policy, reply Reply) (*Connector, error) {
 	}()
 	return c, nil
 }
+
+// Commands answers a chat command (CommandNew, CommandTrust) a person sent the agent, without a
+// turn: session is the chat's conversation, in the message; the text it answers goes to that chat
+// alone.
+type Commands func(ctx context.Context, session, command string, in Inbound) string
+
+// The chat commands a person may send as a whole message (docs/whatsapp.md, "Commands").
+const (
+	CommandNew   = "new"
+	CommandTrust = "trust"
+)
+
+// UseCommands answers /new and /trust through f instead of passing them to the agent as messages.
+func (c *Connector) UseCommands(f Commands) { c.mu.Lock(); c.commands = f; c.mu.Unlock() }
+
+// commandOf is the chat command a message is ("" for none): a text that is only /new or /trust.
+func commandOf(in Inbound) string {
+	if in.Reaction != "" || in.Voice || in.Image || in.File != "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(in.Text)) {
+	case "/" + CommandNew:
+		return CommandNew
+	case "/" + CommandTrust:
+		return CommandTrust
+	}
+	return ""
+}
+
+// inGroupText answers a chat command sent in a group: a group is one conversation for all its
+// members, so none of them resets or endorses it for the others.
+const inGroupText = "Chat commands (/new, /trust) work in a direct chat with me, not in a group."
 
 // UseExchange answers messages through f instead of the Reply Open was given: voice notes are taken
 // in (downloaded, for the agent to transcribe) and the agent may answer with one.
@@ -1020,11 +1053,15 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 		c.set(Status{State: "delivery_error", Error: "The WhatsApp session could not keep its link. Check the agent's storage."})
 		return
 	}
+	c.mu.Lock()
+	register, commands := c.register, c.commands
+	c.mu.Unlock()
+	if cmd := commandOf(in); cmd != "" && commands != nil {
+		c.command(ctx, e, in, session, link, cmd, commands)
+		return
+	}
 	// Recorded before it is claimed (idempotent on its id): a crash between the two leaves the
 	// record for the redelivered message, never a claimed message with none.
-	c.mu.Lock()
-	register := c.register
-	c.mu.Unlock()
 	origin := ""
 	if register != nil && in.Reaction == "" {
 		quote, _ := proto.Marshal(e.Message)
@@ -1150,6 +1187,37 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 	}
 	if message {
 		c.react(post, e, done)
+	}
+}
+
+// command answers a chat command: claimed once (a redelivered /new never runs twice), no turn, no
+// reaction, no record for return paths; the answer goes to the chat alone, from the link that
+// received it, as a reply does.
+func (c *Connector) command(ctx context.Context, e *events.Message, in Inbound, session, link, cmd string, run Commands) {
+	key := e.Info.Chat.String() + ":" + e.Info.ID
+	result, err := c.db.ExecContext(ctx, `INSERT OR IGNORE INTO stormo_received(id,at) VALUES (?,?)`, key, time.Now().Unix())
+	if err != nil {
+		return
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return
+	}
+	answer := inGroupText
+	if !in.Group {
+		turn, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		answer = run(turn, session, cmd, in)
+		cancel()
+	}
+	if answer == "" || !c.policy().Enabled {
+		return
+	}
+	c.lane.Lock()
+	defer c.lane.Unlock()
+	if _, ok := c.accept(ctx, e); !ok || c.account() != link {
+		return
+	}
+	if _, err := c.post(ctx, e.Info.Chat, answer, nil, false); err != nil {
+		c.set(Status{State: "delivery_error", Error: "A reply could not be delivered. Check the agent conversation before retrying."})
 	}
 }
 

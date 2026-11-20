@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,9 +118,59 @@ func (c *Core) openWhatsApp(id string) (*whatsapp.Connector, error) {
 			}
 			return ans, nil
 		})
+		// /new and /trust go to the agent's runtime as commands, never as messages to answer
+		conn.UseCommands(func(ctx context.Context, session, cmd string, in whatsapp.Inbound) string {
+			conversations, err := local.Conversations(c.inst, id)
+			if err != nil {
+				log.Printf("whatsapp %s: /%s: %v", id, cmd, err)
+				return "Could not reach me right now; try again in a moment."
+			}
+			cc, _ := conversations.(engine.ConversationCommands)
+			return whatsappCommand(ctx, cc, c.whatsappPolicy(id), session, cmd, in)
+		})
 		c.whatsapp.clients[id] = conn
 	}
 	return conn, err
+}
+
+// whatsappCommand answers a person's /new or /trust in a direct chat (docs/whatsapp.md,
+// "Commands"): /new from anyone the channel lets in, /trust from its owner only (the first of its
+// allowed_users, as Slack approvals default to the first allowed user).
+func whatsappCommand(ctx context.Context, cc engine.ConversationCommands, p whatsapp.Policy, session, cmd string, in whatsapp.Inbound) string {
+	if cc == nil {
+		return "Chat commands are not available for this agent."
+	}
+	by := "whatsapp:+" + in.Number
+	switch cmd {
+	case whatsapp.CommandNew:
+		switch err := cc.Restart(ctx, session, by); {
+		case err == nil, errors.Is(err, engine.ErrNotFound):
+			return "Fresh start: our earlier messages are archived and no longer in my context."
+		case errors.Is(err, engine.ErrBusy):
+			return "I am answering here right now; send /new again when I have."
+		default:
+			log.Printf("whatsapp: /new in %s: %v", session, err)
+			return "Could not start a fresh conversation; try again in a moment."
+		}
+	case whatsapp.CommandTrust:
+		if len(p.Users) == 0 || strings.TrimPrefix(p.Users[0], "+") != in.Number || in.Number == "" {
+			return "Only my owner can use /trust."
+		}
+		marked, err := cc.Trust(ctx, session, by)
+		switch {
+		case errors.Is(err, engine.ErrNotFound):
+			return "Nothing to endorse: we have not talked here yet."
+		case errors.Is(err, engine.ErrBusy):
+			return "I am answering here right now; send /trust again when I have."
+		case err != nil:
+			log.Printf("whatsapp: /trust in %s: %v", session, err)
+			return "Could not endorse this conversation; try again in a moment."
+		case !marked:
+			return "Nothing to endorse: this conversation is not marked."
+		}
+		return "Endorsed: what made this conversation untrusted no longer holds me back. Anything new from outside marks it again."
+	}
+	return ""
 }
 
 // turnFiles is what a WhatsApp turn brings besides its text, as the agent's chat files: the voice

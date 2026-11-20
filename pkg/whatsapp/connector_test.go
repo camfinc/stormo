@@ -657,3 +657,49 @@ func TestMembers(t *testing.T) {
 		t.Fatalf("members = %+v", got)
 	}
 }
+
+// /new and /trust (docs/whatsapp.md, "Commands"): a whole message that is one goes to Commands,
+// once, answered in the chat with no turn and no reaction; in a group the answer says to use a
+// direct chat; without Commands it is an ordinary message.
+func TestChatCommands(t *testing.T) {
+	turns := 0
+	c := open(t, Policy{Enabled: true, Users: []string{"393331234567"}, Groups: []string{group.String()}}, func(context.Context, string, string) (string, error) {
+		turns++
+		return "a turn", nil
+	})
+	var got sends
+	got.record(c)
+	var ran []string
+	c.UseCommands(func(_ context.Context, session, cmd string, in Inbound) string {
+		ran = append(ran, cmd+" "+in.Number+" "+session[:9])
+		return "done: " + cmd
+	})
+	e := direct("  /NEW ")
+	c.handle(context.Background(), e)
+	c.handle(context.Background(), e) // redelivered: not run twice
+	t2 := direct("/trust")
+	t2.Info.ID = "in-9"
+	c.handle(context.Background(), t2)
+	if turns != 0 || strings.Join(ran, "|") != "new 393331234567 whatsapp-|trust 393331234567 whatsapp-" || strings.Join(got, "|") != "done: new|done: trust" {
+		t.Fatalf("turns=%d ran=%v sends=%v", turns, ran, got)
+	}
+	got = nil
+	c.handle(context.Background(), inGroup("@393330000000 /new", &waE2E.ContextInfo{MentionedJID: []string{me.PN.String()}}))
+	if turns != 0 || len(ran) != 2 || strings.Join(got, "|") != inGroupText {
+		t.Fatalf("in a group: turns=%d ran=%v sends=%v", turns, ran, got)
+	}
+	got = nil
+	other := direct("/new please")
+	other.Info.ID = "in-10"
+	c.handle(context.Background(), other)
+	if turns != 1 || len(ran) != 2 {
+		t.Fatalf("a message that only starts with a command is a message: turns=%d ran=%v", turns, ran)
+	}
+	c.UseCommands(nil)
+	plain := direct("/new")
+	plain.Info.ID = "in-11"
+	c.handle(context.Background(), plain)
+	if turns != 2 {
+		t.Fatalf("without Commands /new is a message: turns=%d", turns)
+	}
+}

@@ -607,3 +607,71 @@ func TestHold(t *testing.T) {
 		t.Errorf("a hold after the shutdown began: %v", err)
 	}
 }
+
+// A channel the core runs takes /new and /trust through the adapter (engine.ConversationCommands):
+// the routes hold the conversation (a turn there: busy), name who asked, say whether it was
+// marked, and answer not found for a conversation never started.
+func TestConversationCommandsContract(t *testing.T) {
+	state := t.TempDir()
+	store, err := sessions.Open(filepath.Join(state, "sessions"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fa := &fakeAgent{store: store, release: make(chan struct{}), stuck: make(chan struct{})}
+	var log []string
+	s, err := New(Options{Key: key, Store: store, Agent: fa, StateDir: filepath.Join(state, "state"),
+		Trust: func(conv, by string) error { log = append(log, "trust "+conv+" "+by); return store.Trust(conv, by) },
+		Restart: func(conv, by string) error {
+			log = append(log, "new "+conv+" "+by)
+			_, err := store.Restart(conv, "fresh")
+			return err
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	cc, ok := adapter.NewRuntime().Conversations(call(srv, key)).(engine.ConversationCommands)
+	if !ok {
+		t.Fatal("the adapter's Conversations takes no commands")
+	}
+	ctx := context.Background()
+	if err := cc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); !errors.Is(err, engine.ErrNotFound) {
+		t.Fatalf("never started: %v", err)
+	}
+	if _, err := store.Create(wire.Session{ID: "whatsapp-0a", Source: "api_server"}); err != nil {
+		t.Fatal(err)
+	}
+	if marked, err := cc.Trust(ctx, "whatsapp-0a", "whatsapp:+393331234567"); err != nil || marked {
+		t.Fatalf("an unmarked conversation: %v %v", marked, err)
+	}
+	if err := store.AddTaint("whatsapp-0a", wire.Taint{Why: "read a web page"}); err != nil {
+		t.Fatal(err)
+	}
+	if marked, err := cc.Trust(ctx, "whatsapp-0a", "whatsapp:+393331234567"); err != nil || !marked || store.Untrusted("whatsapp-0a") {
+		t.Fatalf("a marked conversation: %v %v", marked, err)
+	}
+	release, err := s.Hold("whatsapp-0a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); !errors.Is(err, engine.ErrBusy) {
+		t.Fatalf("while a turn runs: %v", err)
+	}
+	release()
+	if err := cc.Restart(ctx, "whatsapp-0a", "whatsapp:+393331234567"); err != nil {
+		t.Fatal(err)
+	}
+	if tip, _ := store.Tip("whatsapp-0a"); tip == "whatsapp-0a" {
+		t.Fatal("not restarted")
+	}
+	want := "trust whatsapp-0a whatsapp:+393331234567|trust whatsapp-0a whatsapp:+393331234567|new whatsapp-0a whatsapp:+393331234567"
+	if strings.Join(log, "|") != want {
+		t.Fatalf("calls: %v", log)
+	}
+	// who asked is one short line
+	st, _, _ := call(srv, key)(ctx, http.MethodPost, "/v1/sessions/whatsapp-0a/trust", map[string]string{"by": "a\nb"})
+	if st != http.StatusBadRequest {
+		t.Fatalf("a multi-line by: %d", st)
+	}
+}

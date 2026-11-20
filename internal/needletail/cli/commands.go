@@ -34,6 +34,18 @@ func (rt *runtime) trustConversation(conv, by string) error {
 	return nil
 }
 
+// restartConversation is a person's /new (a gateway's, or a channel the core runs through the API):
+// the conversation, held by the caller, goes on in a fresh session; its background processes go
+// with its context.
+func (rt *runtime) restartConversation(root, by string) error {
+	if _, err := rt.store.Restart(root, restartNote); err != nil {
+		return err
+	}
+	rt.agent.Env.Processes.EndConversation(root, "new")
+	rt.logger.Printf("commands: %s started a fresh conversation in %s (/new)", by, root)
+	return nil
+}
+
 // commandBackend is what the chat commands act on (docs/needletail.md §4.9): the sessions, the
 // API's turns, the scheduler, the approvals and the memory, every one in the conversation the
 // gateway named (its root), never one the command's text names. platforms are the gateways'
@@ -58,13 +70,7 @@ func (rt *runtime) commandBackend(srv *api.Server, platforms func() map[string]s
 				return err
 			}
 			defer release()
-			if _, err := rt.store.Restart(r, restartNote); err != nil {
-				return err
-			}
-			// the conversation's background processes go with its context
-			rt.agent.Env.Processes.EndConversation(r, "new")
-			rt.logger.Printf("commands: %s started a fresh conversation in %s (/new)", by, r)
-			return nil
+			return rt.restartConversation(r, by)
 		},
 		Stop: func(conv string) bool {
 			stopped := srv.Cancel(conv)

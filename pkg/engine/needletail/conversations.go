@@ -266,3 +266,20 @@ func (c conversations) Delete(ctx context.Context, id string) (int, error) {
 	}
 	return out.Deleted, err
 }
+
+// Restart is a person's /new on a channel the core runs (POST /v1/sessions/{id}/new).
+func (c conversations) Restart(ctx context.Context, id, by string) error {
+	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/new", map[string]string{"by": by}, nil)
+	return err
+}
+
+// Trust is an approver's /trust on a channel the core runs (POST /v1/sessions/{id}/trust).
+func (c conversations) Trust(ctx context.Context, id, by string) (bool, error) {
+	var out struct {
+		Marked bool `json:"marked"`
+	}
+	_, err := c.do(ctx, http.MethodPost, sessionPath(id)+"/trust", map[string]string{"by": by}, &out)
+	return out.Marked, err
+}
+
+var _ engine.ConversationCommands = conversations{}

@@ -117,7 +117,8 @@ type Server struct {
 	jobs        func() ([]string, time.Time)
 	platform    func() map[string]wire.Platform
 	jail        string
-	trust       func(conversation string) error
+	trust       func(conversation, by string) error
+	restart     func(conversation, by string) error
 	files       *attach.Store
 	stt         Transcriber
 	sees        func() bool
@@ -189,9 +190,13 @@ type Options struct {
 	ChannelKey     string
 	ChannelEnforce bool
 	// Trust is the owner's endorsement of a conversation (POST /v1/sessions/{id}/trust): its
-	// marked rows no longer taint it, recorded with an audit entry (docs/needletail.md §7). nil:
+	// marked rows no longer taint it, recorded with an audit entry (docs/needletail.md §7); by is
+	// who the caller says asked (a channel the core runs: "whatsapp:+…"), "" for the owner. nil:
 	// the route answers 501.
-	Trust func(conversation string) error
+	Trust func(conversation, by string) error
+	// Restart is a person's /new on a channel the core runs (POST /v1/sessions/{id}/new): the
+	// conversation goes on in a fresh session (docs/needletail.md §4.9), by whom. nil: 501.
+	Restart func(conversation, by string) error
 }
 
 // New builds the server.
@@ -210,7 +215,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{key: o.Key, learningKey: o.LearningKey, store: o.Store, agent: o.Agent, idem: idem, maxTurns: o.MaxTurns, maxJobs: o.JobTurns, log: o.Log, redact: o.Redact,
-		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, busy: map[string]bool{}, stops: map[string]context.CancelFunc{},
+		now: o.Now, grace: o.StopGrace, jobs: o.Jobs, platform: o.Platforms, jail: o.Jail, trust: o.Trust, restart: o.Restart, busy: map[string]bool{}, stops: map[string]context.CancelFunc{},
 		files: o.Files, stt: o.STT, sees: o.Sees, neutralise: o.Neutralise, speaker: o.Speaker, voice: o.Voice,
 		channel: channel, channelKey: o.ChannelKey, enforce: o.ChannelEnforce}
 	if s.maxTurns <= 0 {
@@ -254,6 +259,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/sessions/{id}/chat", s.auth(s.chat))
 	mux.Handle("DELETE /v1/sessions/{id}", s.auth(s.remove))
 	mux.Handle("POST /v1/sessions/{id}/trust", s.auth(s.trustConversation))
+	mux.Handle("POST /v1/sessions/{id}/new", s.auth(s.restartConversation))
 	mux.Handle("GET /v1/capabilities", s.auth(s.capabilities))
 	mux.Handle("POST /v1/channel/turns", s.auth(s.channelStart))
 	mux.Handle("GET /v1/channel/turns/{exec}", s.auth(s.channelGet))
@@ -873,29 +879,73 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 }
 
 // trustConversation is the owner endorsing a conversation (its marked rows no longer taint it),
-// with the API's key: the owner's. Refused while a turn runs in it.
+// with the API's key: the owner's. An optional {"by"} names who asked through a channel the core
+// runs (the audit keeps it). Refused while a turn runs in it. marked says whether it was.
 func (s *Server) trustConversation(w http.ResponseWriter, r *http.Request) {
 	if s.trust == nil {
 		writeError(w, http.StatusNotImplemented, "trusting a conversation is not available")
 		return
 	}
-	id := r.PathValue("id")
-	root, ok := s.store.Root(id)
+	root, by, release, ok := s.commandOn(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "no such session")
 		return
+	}
+	defer release()
+	marked := s.store.Untrusted(root)
+	if err := s.trust(root, by); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"trusted": root, "marked": marked})
+}
+
+// restartConversation is a person's /new through a channel the core runs: the conversation goes on
+// in a fresh session, the earlier one archived. Refused while a turn runs in it; a conversation
+// never started is already fresh (404).
+func (s *Server) restartConversation(w http.ResponseWriter, r *http.Request) {
+	if s.restart == nil {
+		writeError(w, http.StatusNotImplemented, "starting a fresh conversation is not available")
+		return
+	}
+	root, by, release, ok := s.commandOn(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	if err := s.restart(root, by); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"restarted": root})
+}
+
+// commandOn is the conversation a command route names (its root), who asked (the optional body's
+// "by", at most 128 characters) and the conversation held; false when it answered the request.
+func (s *Server) commandOn(w http.ResponseWriter, r *http.Request) (root, by string, release func(), ok bool) {
+	var body struct {
+		By string `json:"by"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "the body is {\"by\": \"…\"} or nothing")
+			return "", "", nil, false
+		}
+	}
+	if len(body.By) > 128 || strings.ContainsAny(body.By, "\n\r") {
+		writeError(w, http.StatusBadRequest, "by is one line of at most 128 characters")
+		return "", "", nil, false
+	}
+	root, found := s.store.Root(r.PathValue("id"))
+	if !found {
+		writeError(w, http.StatusNotFound, "no such session")
+		return "", "", nil, false
 	}
 	release, err := s.Hold(root)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
-		return
+		return "", "", nil, false
 	}
-	defer release()
-	if err := s.trust(root); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"trusted": root})
+	return root, body.By, release, true
 }
 
 func randHex(n int) string {

@@ -886,9 +886,19 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		Speaker: rt.speaker, Voice: rt.voiceReplies,
 		Key: key, LearningKey: rt.sec.Get(secrets.LearningKey), ChannelKey: rt.sec.Get(secrets.CoreKey), ChannelEnforce: rt.cfg.ChannelTurns == "enforce", Store: rt.store, Agent: rt.agent, StateDir: rt.cfg.StateDir(), TmpDir: rt.cfg.TmpDir(),
 		Log: func(s string) { rt.logger.Println(s) }, Redact: rt.red.Redact, Jobs: rt.sched.Running, JobTurns: rt.cfg.Schedules.Turns, MaxTurns: rt.cfg.ChatTurns(), Jail: rt.jail,
-		Trust: func(conv string) error {
-			// the owner (the API's key is theirs) endorses a conversation: kept with an audit record
-			return rt.trustConversation(conv, "owner (API)")
+		Trust: func(conv, by string) error {
+			// the owner (the API's key is theirs) endorses a conversation, or the core does for a
+			// person of a channel it runs (WhatsApp's /trust): kept with an audit record
+			if by == "" {
+				return rt.trustConversation(conv, "owner (API)")
+			}
+			return rt.trustConversation(conv, by+" (/trust, through the core)")
+		},
+		Restart: func(conv, by string) error {
+			if by == "" {
+				by = "owner (API)"
+			}
+			return rt.restartConversation(conv, by)
 		},
 		Platforms: func() map[string]wire.Platform {
 			if states := plat.states(); len(states) > 0 {

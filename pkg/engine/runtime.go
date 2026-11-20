@@ -111,6 +111,16 @@ type Conversations interface {
 	Delete(ctx context.Context, id string) (int, error)
 }
 
+// ConversationCommands is a Conversations that takes a person's chat commands for a channel the
+// core runs (WhatsApp's /new and /trust; docs/whatsapp.md): optional. by names the person
+// ("whatsapp:+…"); a conversation a turn runs in answers ErrBusy, one never started ErrNotFound.
+type ConversationCommands interface {
+	// Restart goes on with conversation id in a fresh session (the earlier one archived).
+	Restart(ctx context.Context, id, by string) error
+	// Trust endorses conversation id as its owner's trust does; marked is whether it was.
+	Trust(ctx context.Context, id, by string) (marked bool, err error)
+}
+
 // Exchanger is a Conversations whose turns carry files in and a voice note out (needletail's
 // API): a person's voice note to transcribe, the agent's spoken reply to post as one.
 type Exchanger interface {

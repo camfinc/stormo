@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/camfinc/stormo/pkg/engine"
 	"github.com/camfinc/stormo/pkg/whatsapp"
 )
 
@@ -115,4 +117,56 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 	}
 	check("DELETE", owner, 200)
 	check("PUT", owner, 405)
+}
+
+type fakeCommands struct {
+	calls  []string
+	err    error
+	marked bool
+}
+
+func (f *fakeCommands) Restart(_ context.Context, id, by string) error {
+	f.calls = append(f.calls, "new "+id+" "+by)
+	return f.err
+}
+
+func (f *fakeCommands) Trust(_ context.Context, id, by string) (bool, error) {
+	f.calls = append(f.calls, "trust "+id+" "+by)
+	return f.marked, f.err
+}
+
+// WhatsApp's /new is anyone's the channel lets in; /trust only its owner's (the first of its
+// allowed_users); an engine without commands, busy or not-found conversations are answered plainly.
+func TestWhatsAppCommands(t *testing.T) {
+	ctx := context.Background()
+	p := whatsapp.Policy{Enabled: true, Users: []string{"+393331234567", "+393339999999"}}
+	owner, member := whatsapp.Inbound{Number: "393331234567"}, whatsapp.Inbound{Number: "393339999999"}
+	f := &fakeCommands{}
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, member); !strings.HasPrefix(got, "Fresh start") || f.calls[0] != "new whatsapp-0a whatsapp:+393339999999" {
+		t.Fatalf("/new: %q %v", got, f.calls)
+	}
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandTrust, member); got != "Only my owner can use /trust." || len(f.calls) != 1 {
+		t.Fatalf("/trust by a member: %q %v", got, f.calls)
+	}
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandTrust, owner); !strings.HasPrefix(got, "Nothing to endorse: this conversation is not marked") {
+		t.Fatalf("/trust unmarked: %q", got)
+	}
+	f.marked = true
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandTrust, owner); !strings.HasPrefix(got, "Endorsed") || f.calls[len(f.calls)-1] != "trust whatsapp-0a whatsapp:+393331234567" {
+		t.Fatalf("/trust: %q %v", got, f.calls)
+	}
+	f.err = engine.ErrBusy
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.Contains(got, "answering here right now") {
+		t.Fatalf("busy: %q", got)
+	}
+	f.err = engine.ErrNotFound
+	if got := whatsappCommand(ctx, f, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.HasPrefix(got, "Fresh start") {
+		t.Fatalf("never started: %q", got)
+	}
+	if got := whatsappCommand(ctx, nil, p, "whatsapp-0a", whatsapp.CommandNew, owner); !strings.Contains(got, "not available") {
+		t.Fatalf("no commands: %q", got)
+	}
+	if got := whatsappCommand(ctx, f, whatsapp.Policy{Enabled: true, All: true}, "whatsapp-0a", whatsapp.CommandTrust, owner); got != "Only my owner can use /trust." {
+		t.Fatalf("anyone may message, no listed owner: %q", got)
+	}
 }
