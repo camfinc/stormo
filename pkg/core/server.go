@@ -195,6 +195,8 @@ type Core struct {
 	Runners *LinkHub
 	// Broker runs capability jobs for agents.
 	Broker *Broker
+	// Relay keeps the files agents cannot take in themselves (relay:<id>).
+	Relay *Relay
 	// ingress holds the per-boot keys of ingress capabilities (the device gateway); devices the
 	// in-memory part of linked devices; conversations drives an agent's chat (tests replace it).
 	ingress       *IngressKeys
@@ -428,6 +430,8 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if fleet != nil {
 		fleet.SetLinks(links)
 	}
+	// files the core keeps for agents that cannot take them in (a WhatsApp video), as relay:<id>
+	relay := NewRelay(filepath.Join(CoreDir(inst.Root), "relay"), nil)
 	bo := BusOptions{DB: db, Roster: o.Roster, Wake: o.Wake, Mirror: o.Mirror, Hold: monitor.SessionState}
 	if bo.Roster == nil {
 		bo.Roster = func() []BusAgent {
@@ -501,7 +505,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	learner := NewLearner(LearnerOptions{Inst: inst, DB: db, Roster: bo.Roster, Deps: deps, Gateways: gateway})
 	c = &Core{Gateway: def, Gateways: gateway, Fleet: fleet, Office: office, DB: db, Monitor: monitor, Bus: bus, Workdir: workdir, Learner: learner, MCP: mcp, Links: links, Runners: runners, Broker: broker,
-		inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{}), ingress: ingress, conversations: o.Conversations}
+		Relay: relay, inst: inst, keys: keys, owner: owner, loopbackTrust: inst.CoreLoopbackTrust, ownDB: ownDB, stop: make(chan struct{}), ingress: ingress, conversations: o.Conversations}
 	// the return paths: a request from a person's conversation brings its outcome back there
 	c.Returns = NewReturns(ReturnsOptions{DB: db, Bus: bus,
 		Settings: func(agent string) *manifest.Returns {
