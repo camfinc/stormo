@@ -464,7 +464,7 @@ internal bus for agent-to-agent work that should not clutter Slack.
 
 - MCP tools: `msg_send(to, subject, body, thread?, priority?, attach?, due_minutes?, answers?)` where `to` is an agent,
   `unit:<id>` or `group`; `msg_inbox(unread_only)`, `msg_read(id)`, `msg_ack(id)`, `msg_thread(id)`.
-  Attachments are workdir paths, never file contents.
+  Attachments are workdir paths or `relay:<id>` files the core keeps (**Relay**), never file contents.
 - Delivery: stored in `core.db`; if the recipient is idle, core wakes it with a run on its API
   (`POST /v1/runs`, input `[AGENT MESSAGE from <sender>] <subject>, read it with msg_inbox`), the
   same pattern the addressability plugin uses for `[AUTOMATED ALERT]`. A busy recipient gets it at
@@ -505,7 +505,20 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   or preview, so listing never marks; its wake input and urgent mirror leave the subject out.
 - *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
   normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
-  agents of that unit (else refused and a `unit_boundary` finding).
+  agents of that unit (else refused and a `unit_boundary` finding). Or a file the core keeps for
+  the sender (**Relay**, below) as `relay:<id>`: once the message is sent its recipients may use it
+  too (a refused send grants nothing), readers get what each is in `relay_files` (name, type, size,
+  until when it is kept), and one whose sender may not instruct agents marks the message (its
+  `untrusted` reason, when the sender's run gave none).
+
+**Relay.** Files the core keeps for agents that cannot take them in themselves (a WhatsApp video or
+document, docs/whatsapp.md): each in `.swarm/core/relay/<id>/` (the file and its record,
+`meta.json`: name, type, size, mark, the agents it is granted to, created, expires; nothing in
+core.db), at most 200 MB, kept 7 days (pruned at boot and at most hourly). An agent names one as
+`relay:<id>`, only one granted to it: the agent it came to, and those it was sent on to with
+`msg_send`. It goes to a capability job (`cap_start` `files`, docs/capabilities.md) or another
+agent, never into the shared space and never through the agent itself. (Not the agent sidecar's
+HTTP relay, `link`.)
 - *Wake*: a round every 5 s and on every send. Each running agent that is idle (no turn, job,
   tool call or gateway call in flight) with unread messages it was not yet woken for gets one run
   on its own API (`POST /v1/runs` with its `API_SERVER_KEY`, `session_id` `swarm-bus-<thread>`,

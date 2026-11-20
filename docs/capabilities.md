@@ -115,6 +115,8 @@ not overwritten. The job's own folder (`.swarm/capabilities/jobs/`) is gone once
 files do not all arrive within 15 minutes fails; a core restart fails waiting jobs. The worker gets
 uploads after the shared inputs in `files`.
 
+**Files the core keeps for the agent** (its relay, docs/core.md: a WhatsApp video or document) go in `files` as `relay:<id>`: the core copies each into the job as an upload (the same `in/`, under a name the job takes: unsafe characters replaced, the file's id in front when the name is taken), counted with `files_pending` (together at most 10), so only a container or service on the core's host that takes files takes them. One the agent does not hold, or past its 7 days, is refused; one that cannot be copied fails the job at once.
+
 ## What agents call
 
 The core's MCP tools (every engine; needletail's Luau reaches them with `core_call` and a
