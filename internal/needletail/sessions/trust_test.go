@@ -186,4 +186,21 @@ func TestEndorsedSend(t *testing.T) {
 	if _, ok := endorsed("whatsapp-nobody", 7, at7); ok {
 		t.Fatal("unknown conversation endorsed")
 	}
+	// a chat that began days before it sent (a DM is one conversation for good)
+	long := "whatsapp-00aa11bb22cc33dd44ee55ff66778899"
+	if _, err := s.Create(wire.Session{ID: long, Source: "whatsapp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddTaint(long, wire.Taint{Why: "web page"}); err != nil {
+		t.Fatal(err)
+	}
+	days := s.now
+	s.now = func() time.Time { return days().Add(48 * time.Hour) }
+	at12 := send(long, "c12", 12)
+	if err := s.Trust(long, "whatsapp:+15550100"); err != nil {
+		t.Fatal(err)
+	}
+	if by, ok := endorsed(long, 12, at12); !ok || by != "whatsapp:+15550100" {
+		t.Fatalf("a long-lived chat's send: %q %v", by, ok)
+	}
 }
