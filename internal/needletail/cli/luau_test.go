@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -205,5 +207,72 @@ func TestLuauCheckCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	if code := Run(context.Background(), []string{"luau", "reference"}, &stdout, &bytes.Buffer{}); code != 0 || !strings.Contains(stdout.String(), "nt.fs.read(path) · `read_file(path)`") {
 		t.Errorf("reference: %d %s", code, stdout.String())
+	}
+}
+
+// pingTool is a Luau tool with no capabilities: it answers with the word it is given.
+const pingTool = `--[[needletail
+format: 1
+name: ping
+description: Answer with the word given.
+args: {type: object, properties: {word: {type: string}}, required: [word]}
+timeout: 5s
+]]
+return function(args)
+  return {pong = args.word}
+end
+`
+
+// A scheduled run that is the agent's first turn since it booted is offered the skills' Luau
+// tools, whether its job has no tools list or one that names the tool: the run's tool list is
+// taken once the Luau tools are found again, not from what the last turn left in the registry
+// (nothing, at boot). A daily job whose skill works through a Luau tool failed every first
+// morning after a restart, offered luau_test's dry run only.
+func TestFirstJobAfterBootIsOfferedLuauTools(t *testing.T) {
+	for name, toolsets := range map[string][]string{"no tools list": nil, "a list naming the tool": {"skills", "pinger__ping"}} {
+		t.Run(name, func(t *testing.T) {
+			model := &scripted{}
+			srv := httptest.NewServer(model)
+			defer srv.Close()
+			h := home(t, srv.URL+"/v1", srv.URL+"/v1")
+			setenv(t, h)
+			skill := filepath.Join(h, "skills", "ops", "pinger")
+			if err := os.MkdirAll(filepath.Join(skill, "tools"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: pinger\ndescription: Ping.\n---\nCall pinger__ping with the word.\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(skill, "tools", "ping.luau"), []byte(pingTool), 0o644)
+			job := map[string]any{"id": "b1c2d3e4f5a6", "name": "Ping", "prompt": "Ping with hi.",
+				"schedule": map[string]any{"kind": "interval", "minutes": 60, "display": "every 60m"}, "schedule_display": "every 60m",
+				"repeat": map[string]any{"times": nil, "completed": 0}, "enabled": true, "state": "scheduled",
+				"next_run_at": time.Now().Add(-time.Minute).Format(time.RFC3339), "deliver": "local"}
+			if toolsets != nil {
+				job["enabled_toolsets"] = toolsets
+			}
+			body, _ := json.Marshal(map[string]any{"jobs": []any{job}})
+			if err := os.WriteFile(filepath.Join(h, "cron", "jobs.json"), body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			model.script(toolStep("p1", "pinger__ping", map[string]any{"word": "hi"}), textStep("pong hi"))
+
+			// serve: the scheduler's first tick runs the due job before any other turn
+			s := startServe(t)
+			defer s.stop()
+			var job1 map[string]any
+			for end := time.Now().Add(20 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+				if job1 = jobsIn(t, h)["b1c2d3e4f5a6"]; job1["last_status"] != nil && job1["running"] != true {
+					break
+				}
+			}
+			if job1["last_status"] != "ok" {
+				t.Fatalf("the job did not run ok: %v", job1)
+			}
+			model.mu.Lock()
+			seen := append([]string{}, model.seen...)
+			model.mu.Unlock()
+			if len(seen) < 2 || !strings.Contains(seen[1], `\"pong\":\"hi\"`) {
+				t.Fatalf("the run was not offered its Luau tool; the tool call's result: %v", seen)
+			}
+		})
 	}
 }

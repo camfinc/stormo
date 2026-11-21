@@ -74,7 +74,9 @@ type Options struct {
 	Turns Turns
 	// Skills loads a job's skills as skill_view does (nil: a job's skills are reported missing).
 	Skills *skills.Library
-	// Tools is every tool's name (the registry's), for a job's enabled_toolsets.
+	// Tools is every tool's name (the registry's), for a job's enabled_toolsets, asked as each
+	// run starts: it must find the Luau tools again first, as a turn's start does, or the first
+	// run after a boot (no turn has found them yet) is offered none of them.
 	Tools func() []string
 	// Env is what a script runs with (tools.CommandEnv) and how its output is redacted.
 	Env tools.Env

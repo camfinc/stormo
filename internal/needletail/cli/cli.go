@@ -270,7 +270,15 @@ func boot(home string, stderr io.Writer) (*runtime, error) {
 	}
 	// The scheduler (§4.7): its tool works in every command; serve gives it turns and ticks it.
 	// Cron expressions run on the agent's wall clock: needletail.yaml's timezone, else TZ, else UTC.
-	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: agent.Tools.Names, Env: env,
+	// A run's tool list is taken once the Luau tools are found again: the registry holds what the
+	// last turn found, nothing before the first turn after a boot.
+	jobTools := func() []string {
+		if agent.Refresh != nil {
+			agent.Refresh(context.Background())
+		}
+		return agent.Tools.Names()
+	}
+	opts := sched.Options{Home: cfg.Home, Skills: env.Skills, Tools: jobTools, Env: env,
 		End: store.End, Location: cfg.Location, Log: logf, RepoJobs: cfg.Schedules.Repo, OnDelivery: deliveryLearning(agent, logf),
 		Model: jobModels(cfg, sec, client)}
 	if lr != nil {
