@@ -762,9 +762,18 @@ func TestEndorsedSendContract(t *testing.T) {
 	if st, _, _ := call(srv, "not-the-key-not-the-key-not-the-key")(ctx, http.MethodGet, "/v1/sessions/"+id+"/endorsed?message=41&at="+sent.UTC().Format(time.RFC3339), nil); st != http.StatusUnauthorized {
 		t.Fatalf("without the owner's key: %d", st)
 	}
+	// a runtime from before the route, and one whose answer names no message it checked
 	old := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(old.Close)
 	if _, _, err := adapter.NewRuntime().Conversations(call(old, key)).(engine.Endorsements).EndorsedSend(ctx, id, 41, sent); !errors.Is(err, engine.ErrUnsupported) {
 		t.Fatalf("an older runtime: %v", err)
+	}
+	unchecked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"endorsed":true,"by":"owner (API)"}`))
+	}))
+	t.Cleanup(unchecked.Close)
+	if ok, _, err := adapter.NewRuntime().Conversations(call(unchecked, key)).(engine.Endorsements).EndorsedSend(ctx, id, 41, sent); ok || !errors.Is(err, engine.ErrUnsupported) {
+		t.Fatalf("an answer that names no message: %v %v", ok, err)
 	}
 }

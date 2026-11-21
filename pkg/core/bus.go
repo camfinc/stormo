@@ -1161,33 +1161,21 @@ func (b *Bus) settle(ms []Message) {
 	if b.o.Endorsed == nil {
 		return
 	}
-	todo := []int{}
-	for i := range ms {
-		if ms[i].Untrusted != "" && ms[i].origin != "" && !b.askedLately(ms[i].ID) {
-			todo = append(todo, i)
-		}
-	}
-	// the longest unasked first: a read's few asks reach every message in turn
-	last := b.lastAsked(ms, todo)
-	sort.SliceStable(todo, func(x, y int) bool { return last[todo[x]].Before(last[todo[y]]) })
-	if len(todo) > settleAsks {
-		todo = todo[:settleAsks]
-	}
-	for _, i := range todo {
+	for _, i := range b.reserve(ms) {
 		m := &ms[i]
 		ctx, cancel := context.WithTimeout(context.Background(), settleWait)
 		ok, by, err := b.o.Endorsed(ctx, m.From, m.origin, m.ID, time.UnixMilli(m.created))
 		cancel()
 		if err != nil || !ok {
-			b.notEndorsed(m.ID)
 			continue
 		}
 		res, err := b.o.DB.Exec(`UPDATE messages SET untrusted = '', origin = '' WHERE id = ? AND sender = ? AND created = ? AND origin = ?`,
 			m.ID, m.From, m.created, m.origin)
-		if n, _ := res.RowsAffected(); err != nil || n != 1 {
-			if err != nil {
-				log.Printf("bus: message %d: clearing its mark: %v", m.ID, err)
-			}
+		if err != nil {
+			log.Printf("bus: message %d: clearing its mark: %v", m.ID, err)
+			continue
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
 			continue // gone, or another message took its id meanwhile
 		}
 		log.Printf("bus: message %d from %s: mark cleared (its conversation %s endorsed since by %s)", m.ID, m.From, m.origin, clip(by, 80))
@@ -1195,25 +1183,10 @@ func (b *Bus) settle(ms []Message) {
 	}
 }
 
-func (b *Bus) askedLately(id int64) bool {
-	b.nmu.Lock()
-	defer b.nmu.Unlock()
-	at, ok := b.asked[id]
-	return ok && b.o.Now().Sub(at) < settleNo
-}
-
-// lastAsked is when settle last asked about each of ms[todo] (the zero time: never).
-func (b *Bus) lastAsked(ms []Message, todo []int) map[int]time.Time {
-	b.nmu.Lock()
-	defer b.nmu.Unlock()
-	out := make(map[int]time.Time, len(todo))
-	for _, i := range todo {
-		out[i] = b.asked[ms[i].ID]
-	}
-	return out
-}
-
-func (b *Bus) notEndorsed(id int64) {
+// reserve picks which of ms settle asks about now and records the ask before it is made, so
+// reads at the same time never ask twice: the marked messages that name their conversation and
+// were not asked about in the last settleNo, the longest unasked first, settleAsks at most.
+func (b *Bus) reserve(ms []Message) []int {
 	b.nmu.Lock()
 	defer b.nmu.Unlock()
 	now := b.o.Now()
@@ -1225,7 +1198,21 @@ func (b *Bus) notEndorsed(id int64) {
 			delete(b.asked, k)
 		}
 	}
-	b.asked[id] = now
+	todo := []int{}
+	for i := range ms {
+		at, seen := b.asked[ms[i].ID]
+		if ms[i].Untrusted != "" && ms[i].origin != "" && (!seen || now.Sub(at) >= settleNo) {
+			todo = append(todo, i)
+		}
+	}
+	sort.SliceStable(todo, func(x, y int) bool { return b.asked[ms[todo[x]].ID].Before(b.asked[ms[todo[y]].ID]) })
+	if len(todo) > settleAsks {
+		todo = todo[:settleAsks]
+	}
+	for _, i := range todo {
+		b.asked[ms[i].ID] = now
+	}
+	return todo
 }
 
 // Inbox is the agent's received messages, newest first, with a short body preview.

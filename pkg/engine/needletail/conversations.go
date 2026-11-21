@@ -292,11 +292,13 @@ func (c conversations) Trust(ctx context.Context, id, by string) (bool, error) {
 
 // EndorsedSend asks whether swarm message (sent at at) went out from conversation id and an
 // endorsement has covered it since (GET /v1/sessions/{id}/endorsed). A runtime from before the
-// route answers 404: unsupported, so the core keeps the mark.
+// route answers 404, and one whose answer does not name the message it checked never checked
+// it: unsupported either way, so the core keeps the mark.
 func (c conversations) EndorsedSend(ctx context.Context, id string, message int64, at time.Time) (bool, string, error) {
 	var out struct {
 		Endorsed bool   `json:"endorsed"`
 		By       string `json:"by"`
+		Message  int64  `json:"message"`
 	}
 	q := url.Values{"message": {fmt.Sprint(message)}, "at": {at.UTC().Format(time.RFC3339Nano)}}
 	_, err := c.do(ctx, http.MethodGet, sessionPath(id)+"/endorsed?"+q.Encode(), nil, &out)
@@ -305,6 +307,9 @@ func (c conversations) EndorsedSend(ctx context.Context, id string, message int6
 	}
 	if err != nil {
 		return false, "", err
+	}
+	if out.Message != message {
+		return false, "", engine.ErrUnsupported
 	}
 	return out.Endorsed, out.By, nil
 }

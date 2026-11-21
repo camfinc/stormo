@@ -15,6 +15,7 @@ package sessions
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -632,51 +633,62 @@ const sendNear = time.Hour
 
 // EndorsedSend is whether the swarm message the core numbered message (sent at at) went out from
 // the conversation id belongs to, through the model's own msg_send call, and an endorsement has
-// covered that call since (docs/needletail.md §7, "Endorsed messages"): the session file holding
-// the call endorsed past it (its header's endorsed rows include the call's answer), or, when a
-// compaction continued that session, an endorsement of a continuation (its summary carries the
-// call). A /new's fresh session never vouches for rows before it. Rows, never clocks, decide: a
-// conversation that holds no such call (another's, a handler's, a script's send) covers nothing.
-// It answers who endorsed it.
-func (s *Store) EndorsedSend(id string, message int64, at time.Time) (by string, ok bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	line, found := s.lineage(id)
-	if !found || message <= 0 {
+// covered that call since (docs/needletail.md §7, "Endorsed messages"): a session file of the
+// conversation holds the call's answer within its endorsed rows (the session where it was made,
+// or a compaction's continuation that carried the call into its own rows, which the screen saw).
+// A compaction's summary never vouches for a send it only summarised, nor a /new's fresh session
+// for rows before it. Rows, never clocks, decide: a conversation that holds no such call
+// (another's, a handler's, a script's send) covers nothing. It answers who endorsed it. Only
+// sessions endorsed at all and active near at are read, outside the store's lock (a session
+// file is appended to, and its header rewritten by a rename), until ctx ends.
+func (s *Store) EndorsedSend(ctx context.Context, id string, message int64, at time.Time) (by string, ok bool, err error) {
+	if message <= 0 || at.IsZero() {
 		return "", false, nil
 	}
-	for i, sid := range line {
-		_, rows, err := s.read(sid)
+	type cand struct {
+		id       string
+		endorsed int
+		by       string
+	}
+	var cands []cand
+	s.mu.Lock()
+	line, _ := s.lineage(id)
+	for _, sid := range line {
+		m := s.metas[sid]
+		if m.Endorsed == 0 {
+			continue
+		}
+		if c := parseStamp(m.Created); !c.IsZero() && c.After(at.Add(sendNear)) {
+			continue // made after the send
+		}
+		if a := parseStamp(m.lastActive); !a.IsZero() && a.Before(at.Add(-sendNear)) {
+			continue // quiet since well before it
+		}
+		cands = append(cands, cand{sid, m.Endorsed, m.EndorsedBy})
+	}
+	s.mu.Unlock()
+	for _, c := range cands {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
+		_, rows, err := s.read(c.id)
 		if err != nil {
 			return "", false, err
 		}
-		r := sendRow(rows, message, at)
-		if r < 0 {
-			continue
-		}
-		if m := s.metas[sid]; r < m.Endorsed {
-			return m.EndorsedBy, true, nil
-		}
-		for j := i; j < len(line)-1 && s.metas[line[j]].EndReason == wire.EndCompression; j++ {
-			if c := s.metas[line[j+1]]; c.Endorsed > 0 {
-				return c.EndorsedBy, true, nil
-			}
+		if r := sendRow(rows, message, at); r >= 0 && r < c.endorsed {
+			return c.by, true, nil
 		}
 	}
 	return "", false, nil
 }
 
 // sendRow is the index of the row that answered a msg_send call with message's id, near at; -1
-// when rows hold none.
+// when rows hold none. A result is paired with the calls of its own block, each once (ToolNames),
+// never by an id a provider may have used again elsewhere.
 func sendRow(rows []wire.Message, message int64, at time.Time) int {
-	calls := map[string]bool{}
+	names := ToolNames(rows)
 	for i, r := range rows {
-		for _, c := range r.ToolCalls {
-			if c.Name == SendTool {
-				calls[c.ID] = true
-			}
-		}
-		if r.Role != "tool" || !calls[r.ToolCallID] {
+		if names[i] != SendTool {
 			continue
 		}
 		var res struct {
@@ -685,7 +697,7 @@ func sendRow(rows []wire.Message, message int64, at time.Time) int {
 		if json.Unmarshal([]byte(r.Content), &res) != nil || res.ID != message {
 			continue
 		}
-		if d := parseStamp(r.At).Sub(at); r.At != "" && (d > sendNear || d < -sendNear) {
+		if d := parseStamp(r.At).Sub(at); r.At == "" || d > sendNear || d < -sendNear {
 			continue
 		}
 		return i

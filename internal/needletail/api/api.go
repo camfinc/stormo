@@ -916,12 +916,13 @@ func (s *Server) endorsedSince(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "at: when the core says it was sent, an RFC 3339 time")
 		return
 	}
-	by, ok, err := s.store.EndorsedSend(r.PathValue("id"), message, at)
+	by, ok, err := s.store.EndorsedSend(r.Context(), r.PathValue("id"), message, at)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"endorsed": ok, "by": by})
+	// message says which send was checked: a core takes no answer that does not name it
+	writeJSON(w, http.StatusOK, map[string]any{"endorsed": ok, "by": by, "message": message})
 }
 
 // restartConversation is a person's /new through a channel the core runs: the conversation goes on

@@ -1438,6 +1438,29 @@ func TestSettleIsFairAndExact(t *testing.T) {
 			t.Fatalf("message %d untrusted %q", m.ID, m.Untrusted)
 		}
 	}
+	// two reads at once: what one reserved, the other does not ask about
+	f.now = f.now.Add(settleNo)
+	var raw []Message
+	rows, err := f.db.Query(`SELECT ` + msgCols + `, NULL, NULL FROM messages m WHERE m.untrusted != '' ORDER BY m.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err = f.bus.scanMessages(rows, true); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(settleNo)
+	a, b := f.bus.reserve(raw), f.bus.reserve(raw)
+	if len(a) != settleAsks || len(a)+len(b) != len(raw) {
+		t.Fatalf("reserved %d, then %d, of %d", len(a), len(b), len(raw))
+	}
+	for _, i := range a {
+		if slices.Contains(b, i) {
+			t.Fatalf("message %d asked about twice at once", raw[i].ID)
+		}
+	}
+	if c := f.bus.reserve(raw); len(c) != 0 {
+		t.Fatalf("a third read at once asks again: %v", c)
+	}
 	// a message that changed under the ask (another took its id) is not cleared
 	other := ids[0]
 	f.bus.o.Endorsed = func(_ context.Context, _, _ string, message int64, _ time.Time) (bool, string, error) {
