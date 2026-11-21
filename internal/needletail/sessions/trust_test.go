@@ -150,6 +150,8 @@ func TestEndorsedSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	at10 := parseStamp(rows[1].At)
+	later := s.now
+	s.now = func() time.Time { return later().Add(2 * time.Hour) } // compacted hours after the send
 	carried, err := s.CompactMarked(tip, "summary", true, rows)
 	if err != nil {
 		t.Fatal(err)

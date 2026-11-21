@@ -658,20 +658,16 @@ func (s *Store) EndorsedSend(ctx context.Context, id string, message int64, at t
 		if m.Endorsed == 0 {
 			continue
 		}
-		if c := parseStamp(m.Created); !c.IsZero() && c.After(at.Add(sendNear)) {
-			continue // made after the send
-		}
+		// rows keep their stamps when a compaction carries them, in order, so a session whose
+		// last row is well before the send holds none of it (a continuation made later may)
 		if a := parseStamp(m.lastActive); !a.IsZero() && a.Before(at.Add(-sendNear)) {
-			continue // quiet since well before it
+			continue
 		}
 		cands = append(cands, cand{sid, m.Endorsed, m.EndorsedBy})
 	}
 	s.mu.Unlock()
 	for _, c := range cands {
-		if err := ctx.Err(); err != nil {
-			return "", false, err
-		}
-		_, rows, err := s.read(c.id)
+		rows, err := s.readPrefix(ctx, c.id, c.endorsed)
 		if err != nil {
 			return "", false, err
 		}
@@ -680,6 +676,45 @@ func (s *Store) EndorsedSend(ctx context.Context, id string, message int64, at t
 		}
 	}
 	return "", false, nil
+}
+
+// readPrefix is a session's first n rows (read as read does, without the store's lock), until ctx
+// ends: what EndorsedSend looks through, the endorsed rows only.
+func (s *Store) readPrefix(ctx context.Context, id string, n int) ([]wire.Message, error) {
+	f, err := os.Open(s.path(id))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
+	var rows []wire.Message
+	first := true
+	for line := 0; len(rows) < n && sc.Scan(); line++ {
+		if line%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		if first {
+			first = false
+			var h wire.Session
+			if err := json.Unmarshal(b, &h); err != nil || h.V != wire.SessionVersion {
+				return nil, fmt.Errorf("%s: not a v%d session header", id, wire.SessionVersion)
+			}
+			continue
+		}
+		var m wire.Message
+		if json.Unmarshal(b, &m) != nil {
+			continue // a torn last line
+		}
+		rows = append(rows, m)
+	}
+	return rows, sc.Err()
 }
 
 // sendRow is the index of the row that answered a msg_send call with message's id, near at; -1
