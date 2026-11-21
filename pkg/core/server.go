@@ -460,7 +460,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 	}
 	if bo.Endorsed == nil {
 		// the sender's own runtime, with the owner's key: what an agent's scripts never hold
-		bo.Endorsed = func(ctx context.Context, agent, session string, at time.Time) (bool, string, error) {
+		bo.Endorsed = func(ctx context.Context, agent, session string, message int64, at time.Time) (bool, string, error) {
 			conv, err := local.Conversations(inst, agent)
 			if err != nil {
 				return false, "", err
@@ -469,7 +469,7 @@ func StartCore(o CoreOptions) (*Core, error) {
 			if !ok {
 				return false, "", engine.ErrUnsupported
 			}
-			return en.EndorsedSince(ctx, session, at)
+			return en.EndorsedSend(ctx, session, message, at)
 		}
 	}
 	bus := NewBus(bo)

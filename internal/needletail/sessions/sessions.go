@@ -623,39 +623,74 @@ func (s *Store) Marked() []string {
 	return out
 }
 
-// EndorsedSince is whether what the conversation id belongs to held at time at has been endorsed
-// since (docs/needletail.md §7, "Endorsed messages"): the session file live at at, or a
-// compaction's continuation of it, endorsed at or after at. A /new's fresh session never vouches
-// for the rows before it, and a conversation that started after at holds nothing of then. It
-// answers who endorsed and when.
-func (s *Store) EndorsedSince(id string, at time.Time) (by, when string, ok bool) {
+// SendTool is the core's msg_send as the model calls it: EndorsedSend looks for its calls.
+const SendTool = "mcp_core_msg_send"
+
+// sendNear is how far the stamp of the row that answered a send may lie from the time the core
+// gave the message: the id alone could name a later message that reused it.
+const sendNear = time.Hour
+
+// EndorsedSend is whether the swarm message the core numbered message (sent at at) went out from
+// the conversation id belongs to, through the model's own msg_send call, and an endorsement has
+// covered that call since (docs/needletail.md §7, "Endorsed messages"): the session file holding
+// the call endorsed past it (its header's endorsed rows include the call's answer), or, when a
+// compaction continued that session, an endorsement of a continuation (its summary carries the
+// call). A /new's fresh session never vouches for rows before it. Rows, never clocks, decide: a
+// conversation that holds no such call (another's, a handler's, a script's send) covers nothing.
+// It answers who endorsed it.
+func (s *Store) EndorsedSend(id string, message int64, at time.Time) (by string, ok bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	line, found := s.lineage(id)
-	if !found || at.IsZero() {
-		return "", "", false
+	if !found || message <= 0 {
+		return "", false, nil
 	}
-	start := -1
 	for i, sid := range line {
-		c := parseStamp(s.metas[sid].Created)
-		if c.IsZero() || c.After(at) {
-			break
+		_, rows, err := s.read(sid)
+		if err != nil {
+			return "", false, err
 		}
-		start = i
-	}
-	if start < 0 {
-		return "", "", false
-	}
-	for _, sid := range line[start:] {
-		m := s.metas[sid]
-		if e := parseStamp(m.EndorsedAt); !e.IsZero() && !e.Before(at) {
-			return m.EndorsedBy, m.EndorsedAt, true
+		r := sendRow(rows, message, at)
+		if r < 0 {
+			continue
 		}
-		if m.EndReason != wire.EndCompression {
-			break // the live session, or a /new: what follows does not carry these rows
+		if m := s.metas[sid]; r < m.Endorsed {
+			return m.EndorsedBy, true, nil
+		}
+		for j := i; j < len(line)-1 && s.metas[line[j]].EndReason == wire.EndCompression; j++ {
+			if c := s.metas[line[j+1]]; c.Endorsed > 0 {
+				return c.EndorsedBy, true, nil
+			}
 		}
 	}
-	return "", "", false
+	return "", false, nil
+}
+
+// sendRow is the index of the row that answered a msg_send call with message's id, near at; -1
+// when rows hold none.
+func sendRow(rows []wire.Message, message int64, at time.Time) int {
+	calls := map[string]bool{}
+	for i, r := range rows {
+		for _, c := range r.ToolCalls {
+			if c.Name == SendTool {
+				calls[c.ID] = true
+			}
+		}
+		if r.Role != "tool" || !calls[r.ToolCallID] {
+			continue
+		}
+		var res struct {
+			ID int64 `json:"id"`
+		}
+		if json.Unmarshal([]byte(r.Content), &res) != nil || res.ID != message {
+			continue
+		}
+		if d := parseStamp(r.At).Sub(at); r.At != "" && (d > sendNear || d < -sendNear) {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // parseStamp reads a Stamp; the zero time when it cannot.

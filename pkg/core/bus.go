@@ -75,10 +75,11 @@ type BusOptions struct {
 	Now    func() time.Time
 	// Relay keeps the files a message may carry as relay:<id> (nil: none).
 	Relay *Relay
-	// Endorsed asks agent's runtime whether what its conversation session held at at has been
-	// endorsed since (engine.Endorsements, with the owner's key): yes clears the mark of a message
-	// that conversation sent then, when it is read (settle). nil, an error or no: it stays marked.
-	Endorsed func(ctx context.Context, agent, session string, at time.Time) (ok bool, by string, err error)
+	// Endorsed asks agent's runtime whether message (sent at at) went out from its conversation
+	// session through the model's own send and an endorsement has covered it since
+	// (engine.Endorsements, with the owner's key): yes clears its mark when it is read (settle).
+	// nil, an error or no: it stays marked.
+	Endorsed func(ctx context.Context, agent, session string, message int64, at time.Time) (ok bool, by string, err error)
 }
 
 // Bus is the message bus; safe for concurrent use.
@@ -89,10 +90,10 @@ type Bus struct {
 	// returns are the return paths (NewReturns sets them): requests from a person's conversation
 	// whose outcome must reach that person. nil: none.
 	returns *Returns
-	// notYet remembers a runtime's recent "not endorsed" (or no answer) per message, so a thread
-	// read again soon does not ask it again (settle).
-	nmu    sync.Mutex
-	notYet map[int64]time.Time
+	// asked is when settle last asked about a message that stayed marked: one asked lately is not
+	// asked again, and the longest unasked go first, so a read's few asks reach every message.
+	nmu   sync.Mutex
+	asked map[int64]time.Time
 }
 
 // RetainMessages is how long a thread is kept after its last message (open decision 6).
@@ -1140,44 +1141,54 @@ const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.prio
 // originID is a runtime conversation id as a message keeps it (messages.origin).
 var originID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
 
-// How settle asks: at most settleAsks runtimes a read, settleWait each, and a "no" is not asked
-// again for settleNo.
+// How settle asks: at most settleAsks runtimes a read, settleWait each; a "no" is not asked again
+// for settleNo, and remembered (for the order) for settleKeep.
 const (
 	settleAsks = 6
 	settleWait = time.Second
 	settleNo   = 30 * time.Second
+	settleKeep = 24 * time.Hour
 )
 
 // settle clears the marks their senders' owners have since endorsed (docs/core.md, "Marked
 // messages"): for a marked message that names the conversation it came from, the sender's
-// runtime is asked whether what that conversation held when it sent it has been endorsed since
-// (a person's trust, an approval's, taint decay's screen). Yes clears the mark for good, in the
-// database and in ms; no, no answer or a runtime that cannot say keeps it, and the reader is
+// runtime is asked whether it went out from that conversation through the model's own send and an
+// endorsement has covered that send since (a person's trust, an approval's, taint decay's
+// screen). Yes clears the mark for good, in the database (that very record: id, sender, time and
+// conversation) and in ms; no, no answer or a runtime that cannot say keeps it, and the reader is
 // marked as before.
 func (b *Bus) settle(ms []Message) {
 	if b.o.Endorsed == nil {
 		return
 	}
-	asked := 0
+	todo := []int{}
 	for i := range ms {
+		if ms[i].Untrusted != "" && ms[i].origin != "" && !b.askedLately(ms[i].ID) {
+			todo = append(todo, i)
+		}
+	}
+	// the longest unasked first: a read's few asks reach every message in turn
+	last := b.lastAsked(ms, todo)
+	sort.SliceStable(todo, func(x, y int) bool { return last[todo[x]].Before(last[todo[y]]) })
+	if len(todo) > settleAsks {
+		todo = todo[:settleAsks]
+	}
+	for _, i := range todo {
 		m := &ms[i]
-		if m.Untrusted == "" || m.origin == "" || b.askedLately(m.ID) {
-			continue
-		}
-		if asked == settleAsks {
-			return
-		}
-		asked++
 		ctx, cancel := context.WithTimeout(context.Background(), settleWait)
-		ok, by, err := b.o.Endorsed(ctx, m.From, m.origin, time.UnixMilli(m.created))
+		ok, by, err := b.o.Endorsed(ctx, m.From, m.origin, m.ID, time.UnixMilli(m.created))
 		cancel()
 		if err != nil || !ok {
 			b.notEndorsed(m.ID)
 			continue
 		}
-		if _, err := b.o.DB.Exec(`UPDATE messages SET untrusted = '', origin = '' WHERE id = ? AND origin = ?`, m.ID, m.origin); err != nil {
-			log.Printf("bus: message %d: clearing its mark: %v", m.ID, err)
-			continue
+		res, err := b.o.DB.Exec(`UPDATE messages SET untrusted = '', origin = '' WHERE id = ? AND sender = ? AND created = ? AND origin = ?`,
+			m.ID, m.From, m.created, m.origin)
+		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+			if err != nil {
+				log.Printf("bus: message %d: clearing its mark: %v", m.ID, err)
+			}
+			continue // gone, or another message took its id meanwhile
 		}
 		log.Printf("bus: message %d from %s: mark cleared (its conversation %s endorsed since by %s)", m.ID, m.From, m.origin, clip(by, 80))
 		m.Untrusted, m.origin = "", ""
@@ -1187,23 +1198,34 @@ func (b *Bus) settle(ms []Message) {
 func (b *Bus) askedLately(id int64) bool {
 	b.nmu.Lock()
 	defer b.nmu.Unlock()
-	at, ok := b.notYet[id]
+	at, ok := b.asked[id]
 	return ok && b.o.Now().Sub(at) < settleNo
+}
+
+// lastAsked is when settle last asked about each of ms[todo] (the zero time: never).
+func (b *Bus) lastAsked(ms []Message, todo []int) map[int]time.Time {
+	b.nmu.Lock()
+	defer b.nmu.Unlock()
+	out := make(map[int]time.Time, len(todo))
+	for _, i := range todo {
+		out[i] = b.asked[ms[i].ID]
+	}
+	return out
 }
 
 func (b *Bus) notEndorsed(id int64) {
 	b.nmu.Lock()
 	defer b.nmu.Unlock()
 	now := b.o.Now()
-	if b.notYet == nil {
-		b.notYet = map[int64]time.Time{}
+	if b.asked == nil {
+		b.asked = map[int64]time.Time{}
 	}
-	for k, at := range b.notYet {
-		if now.Sub(at) >= settleNo {
-			delete(b.notYet, k)
+	for k, at := range b.asked {
+		if now.Sub(at) >= settleKeep {
+			delete(b.asked, k)
 		}
 	}
-	b.notYet[id] = now
+	b.asked[id] = now
 }
 
 // Inbox is the agent's received messages, newest first, with a short body preview.

@@ -123,11 +123,11 @@ type ConversationCommands interface {
 	Trust(ctx context.Context, id, by string) (marked bool, err error)
 }
 
-// Endorsements is a Conversations that says whether what conversation id held at a moment has
-// been endorsed since (needletail's API): the core asks before it clears the mark of a swarm
-// message the conversation sent then (docs/core.md, "Marked messages"). by is who endorsed it.
+// Endorsements is a Conversations that says whether swarm message (sent at at) went out from
+// conversation id and an endorsement has covered it since (needletail's API): the core asks
+// before it clears the message's mark (docs/core.md, "Marked messages"). by is who endorsed it.
 type Endorsements interface {
-	EndorsedSince(ctx context.Context, id string, at time.Time) (endorsed bool, by string, err error)
+	EndorsedSend(ctx context.Context, id string, message int64, at time.Time) (endorsed bool, by string, err error)
 }
 
 // Exchanger is a Conversations whose turns carry files in and a voice note out (needletail's

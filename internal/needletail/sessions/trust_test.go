@@ -2,8 +2,10 @@ package sessions
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/camfinc/stormo/internal/needletail/wire"
 )
@@ -53,11 +55,11 @@ func TestTrustAtTheRequest(t *testing.T) {
 	}
 }
 
-// A message a conversation sent while marked is covered by an endorsement of that conversation
-// made since (the core asks before it clears the message's mark): the session live then, or a
-// compaction's continuation of it, endorsed after the send. Never an endorsement from before it,
-// nor a /new's fresh session, nor a conversation that started later.
-func TestEndorsedSince(t *testing.T) {
+// A message a conversation sent while marked is covered by an endorsement that saw the model's
+// own send: the session holding the call endorsed past it, or a compaction's continuation of it
+// endorsed. Never a send after the endorsement, a message merely read, a conversation that never
+// sent it, an id another message reused later, nor a /new's fresh session.
+func TestEndorsedSend(t *testing.T) {
 	s := open(t, t.TempDir())
 	id := "whatsapp-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 	if _, err := s.Create(wire.Session{ID: id, Source: "whatsapp"}); err != nil {
@@ -66,41 +68,85 @@ func TestEndorsedSince(t *testing.T) {
 	if err := s.AddTaint(id, wire.Taint{Why: "web page"}); err != nil {
 		t.Fatal(err)
 	}
-	sent := s.now() // a marked message leaves the conversation
-	if _, _, ok := s.EndorsedSince(id, sent); ok {
+	send := func(session, call string, message int64) time.Time {
+		t.Helper()
+		rows, err := s.Append(session,
+			wire.Message{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: call, Name: SendTool, Arguments: `{"to":"nova","subject":"s","body":"b"}`}}, Untrusted: true},
+			wire.Message{Role: "tool", ToolCallID: call, Content: fmt.Sprintf(`{"id":%d,"thread":%d,"recipients":["nova"]}`, message, message), Untrusted: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parseStamp(rows[1].At)
+	}
+	endorsed := func(session string, message int64, at time.Time) (string, bool) {
+		t.Helper()
+		by, ok, err := s.EndorsedSend(session, message, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return by, ok
+	}
+	at7 := send(id, "c7", 7)
+	if _, ok := endorsed(id, 7, at7); ok {
 		t.Fatal("endorsed before any trust")
+	}
+	// a message it only read names an id too: never a send of its own
+	if _, err := s.Append(id, wire.Message{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "r9", Name: "mcp_core_msg_read", Arguments: `{"id":9}`}}},
+		wire.Message{Role: "tool", ToolCallID: "r9", Content: `{"id":9,"from":"nova","untrusted":"web page"}`, Untrusted: true}); err != nil {
+		t.Fatal(err)
 	}
 	if err := s.Trust(id, "owner (API)"); err != nil {
 		t.Fatal(err)
 	}
-	if by, when, ok := s.EndorsedSince(id, sent); !ok || by != "owner (API)" || when == "" {
-		t.Fatalf("trust after the send: %q %q %v", by, when, ok)
+	if by, ok := endorsed(id, 7, at7); !ok || by != "owner (API)" {
+		t.Fatalf("a send the trust saw: %q %v", by, ok)
 	}
-	if _, _, ok := s.EndorsedSince(id, s.now()); ok {
-		t.Fatal("a trust from before the send covers it")
+	if _, ok := endorsed(id, 9, at7); ok {
+		t.Fatal("a message the conversation only read")
 	}
-	// marked again, a message, compacted: endorsing the continuation covers it, asked by either id
+	if _, ok := endorsed(id, 7, at7.Add(2*time.Hour)); ok {
+		t.Fatal("a later message that reused the id")
+	}
+	// another conversation, endorsed, never sent it
+	other := "slack-D0DM000002-dm"
+	if _, err := s.Create(wire.Session{ID: other, Source: "slack"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Trust(other, "U0OWNER001"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := endorsed(other, 7, at7); ok {
+		t.Fatal("a conversation that never sent it vouches for it")
+	}
+	// marked again: a send after the trust is not covered by it
 	if err := s.AddTaint(id, wire.Taint{Why: "read a swarm message from nova that carries untrusted input"}); err != nil {
 		t.Fatal(err)
 	}
-	sent = s.now()
+	at8 := send(id, "c8", 8)
+	if _, ok := endorsed(id, 8, at8); ok {
+		t.Fatal("a trust from before the send covers it")
+	}
+	// compacted: endorsing the continuation covers it, asked by either id
 	tip, err := s.CompactMarked(id, "summary", true, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := endorsed(id, 8, at8); ok {
+		t.Fatal("covered before the continuation was endorsed")
 	}
 	if err := s.Trust(tip, "screen:decision.ask"); err != nil {
 		t.Fatal(err)
 	}
 	for _, ask := range []string{id, tip} {
-		if by, _, ok := s.EndorsedSince(ask, sent); !ok || by != "screen:decision.ask" {
+		if by, ok := endorsed(ask, 8, at8); !ok || by != "screen:decision.ask" {
 			t.Fatalf("compaction continued (asked as %s): %q %v", ask, by, ok)
 		}
 	}
-	// marked again, a message, then /new: the fresh session's trust never vouches for it
+	// marked again, a send, then /new: the fresh session's trust never vouches for it
 	if err := s.AddTaint(tip, wire.Taint{Why: "web page"}); err != nil {
 		t.Fatal(err)
 	}
-	sent = s.now()
+	at11 := send(tip, "c11", 11)
 	fresh, err := s.Restart(tip, "fresh start")
 	if err != nil {
 		t.Fatal(err)
@@ -108,21 +154,10 @@ func TestEndorsedSince(t *testing.T) {
 	if err := s.Trust(fresh, "owner (API)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := s.EndorsedSince(id, sent); ok {
+	if _, ok := endorsed(id, 11, at11); ok {
 		t.Fatal("a /new's trust covers what the conversation held before it")
 	}
-	// unknown, or asked about a time before the conversation began
-	if _, _, ok := s.EndorsedSince("whatsapp-nobody", sent); ok {
+	if _, ok := endorsed("whatsapp-nobody", 7, at7); ok {
 		t.Fatal("unknown conversation endorsed")
-	}
-	later := "slack-D0DM000002-dm"
-	if _, err := s.Create(wire.Session{ID: later, Source: "slack"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Trust(later, "U0OWNER001"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, ok := s.EndorsedSince(later, sent); ok {
-		t.Fatal("a conversation that began after the send covers it")
 	}
 }

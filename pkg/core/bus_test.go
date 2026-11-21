@@ -1345,8 +1345,8 @@ func TestEndorsedConversationClearsItsMessagesMarks(t *testing.T) {
 	}
 	var asks []string
 	answer, answerErr := false, error(nil)
-	f.bus.o.Endorsed = func(_ context.Context, agent, session string, at time.Time) (bool, string, error) {
-		asks = append(asks, fmt.Sprintf("%s %s %d", agent, session, at.UnixMilli()))
+	f.bus.o.Endorsed = func(_ context.Context, agent, session string, message int64, at time.Time) (bool, string, error) {
+		asks = append(asks, fmt.Sprintf("%s %s %d %d", agent, session, message, at.UnixMilli()))
 		return answer, "whatsapp:+15550100", answerErr
 	}
 	answerErr = engine.ErrUnsupported // an older runtime
@@ -1361,10 +1361,10 @@ func TestEndorsedConversationClearsItsMessagesMarks(t *testing.T) {
 	if th, _ := f.bus.Thread("nova", marked); th[0].Untrusted == "" || len(asks) != 2 {
 		t.Fatalf("not endorsed: %+v asks %v", th[0], asks)
 	}
-	// the sender's own runtime, about its own conversation as it stood when it sent the message
+	// the sender's own runtime, about that message from its own conversation
 	var sent int64
 	_ = f.db.QueryRow(`SELECT created FROM messages WHERE id = ?`, marked).Scan(&sent)
-	if want := fmt.Sprintf("atlas whatsapp-0d %d", sent); asks[0] != want {
+	if want := fmt.Sprintf("atlas whatsapp-0d %d %d", marked, sent); asks[0] != want {
 		t.Fatalf("asked %q, want %q", asks[0], want)
 	}
 	answer = true
@@ -1388,5 +1388,71 @@ func TestEndorsedConversationClearsItsMessagesMarks(t *testing.T) {
 	}
 	if m, _ := f.bus.Read("nova", odd); m.Untrusted == "" {
 		t.Fatal("a message with no conversation of record was cleared")
+	}
+}
+
+// A read asks about a few marked messages at most, the longest unasked first, so messages that
+// stay marked never keep the others from being asked about; and a mark is cleared only on the
+// very record asked about (another message that took its id meanwhile keeps its own).
+func TestSettleIsFairAndExact(t *testing.T) {
+	f := newBusFixture(t, BusLimits{PairPerHour: 100})
+	var send MCPTool
+	for _, tl := range BusTools(f.bus) {
+		if tl.Name == "msg_send" {
+			send = tl
+		}
+	}
+	ids := []int64{}
+	for i := 0; i < settleAsks+2; i++ {
+		a, _ := json.Marshal(map[string]any{"to": "nova", "subject": fmt.Sprint("m", i), "body": "b", "thread": 0})
+		out, err := send.Run(ToolCall{Agent: "atlas", Args: a, Meta: CallMeta{Untrusted: "read a web page", Session: "whatsapp-0e"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, out.(*SendResult).ID)
+	}
+	endorsedOne := ids[len(ids)-1] // the last: only reached once the others were asked about
+	asked := map[int64]int{}
+	f.bus.o.Endorsed = func(_ context.Context, _, _ string, message int64, _ time.Time) (bool, string, error) {
+		asked[message]++
+		return message == endorsedOne, "owner (API)", nil
+	}
+	read := func() []Message {
+		in, err := f.bus.Inbox("nova", false, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	read()
+	if len(asked) != settleAsks {
+		t.Fatalf("first read asked about %d", len(asked))
+	}
+	f.now = f.now.Add(settleNo)
+	in := read()
+	if len(asked) != len(ids) {
+		t.Fatalf("the second read did not reach the ones left: %v", asked)
+	}
+	for _, m := range in {
+		if (m.ID == endorsedOne) != (m.Untrusted == "") {
+			t.Fatalf("message %d untrusted %q", m.ID, m.Untrusted)
+		}
+	}
+	// a message that changed under the ask (another took its id) is not cleared
+	other := ids[0]
+	f.bus.o.Endorsed = func(_ context.Context, _, _ string, message int64, _ time.Time) (bool, string, error) {
+		if _, err := f.db.Exec(`UPDATE messages SET created = created + 1 WHERE id = ?`, message); err != nil {
+			t.Fatal(err)
+		}
+		return true, "owner (API)", nil
+	}
+	f.now = f.now.Add(settleNo)
+	if m, _ := f.bus.Read("nova", other); m.Untrusted == "" {
+		t.Fatal("cleared a record that changed under the ask")
+	}
+	var u string
+	_ = f.db.QueryRow(`SELECT untrusted FROM messages WHERE id = ?`, other).Scan(&u)
+	if u == "" {
+		t.Fatal("the database lost the mark")
 	}
 }

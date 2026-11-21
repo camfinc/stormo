@@ -900,17 +900,28 @@ func (s *Server) trustConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"trusted": root, "marked": marked})
 }
 
-// endorsedSince is whether what conversation id held at ?at= (RFC 3339) has been endorsed since
-// (sessions.Store.EndorsedSince): the core asks before it clears the mark of a swarm message the
-// conversation sent then. It only reads: it never waits for a turn there.
+// endorsedSince is whether swarm message ?message= (sent at ?at=, RFC 3339) went out from
+// conversation id through the model's msg_send and an endorsement has covered that call since
+// (sessions.Store.EndorsedSend): the core asks before it clears the message's mark. It only
+// reads: it never waits for a turn there.
 func (s *Server) endorsedSince(w http.ResponseWriter, r *http.Request) {
-	at, err := time.Parse(time.RFC3339Nano, r.URL.Query().Get("at"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "at: the moment asked about, an RFC 3339 time")
+	q := r.URL.Query()
+	message, err := strconv.ParseInt(q.Get("message"), 10, 64)
+	if err != nil || message <= 0 {
+		writeError(w, http.StatusBadRequest, "message: the swarm message's id")
 		return
 	}
-	by, when, ok := s.store.EndorsedSince(r.PathValue("id"), at)
-	writeJSON(w, http.StatusOK, map[string]any{"endorsed": ok, "by": by, "at": when})
+	at, err := time.Parse(time.RFC3339Nano, q.Get("at"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "at: when the core says it was sent, an RFC 3339 time")
+		return
+	}
+	by, ok, err := s.store.EndorsedSend(r.PathValue("id"), message, at)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"endorsed": ok, "by": by})
 }
 
 // restartConversation is a person's /new through a channel the core runs: the conversation goes on

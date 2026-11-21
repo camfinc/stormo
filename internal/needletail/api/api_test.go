@@ -698,10 +698,11 @@ func TestConversationCommandsContract(t *testing.T) {
 	}
 }
 
-// The core asks the runtime whether what a conversation held when it sent a marked swarm message
-// has been endorsed since (engine.Endorsements), with the owner's key, never waiting for a turn;
-// a runtime from before the route is unsupported, so the core keeps the mark.
-func TestEndorsedSinceContract(t *testing.T) {
+// The core asks the runtime whether a marked swarm message went out from a conversation through
+// the model's own send and an endorsement covered it since (engine.Endorsements), with the
+// owner's key, never waiting for a turn; a runtime from before the route is unsupported, so the
+// core keeps the mark.
+func TestEndorsedSendContract(t *testing.T) {
 	state := t.TempDir()
 	store, err := sessions.Open(filepath.Join(state, "sessions"), nil)
 	if err != nil {
@@ -726,8 +727,14 @@ func TestEndorsedSinceContract(t *testing.T) {
 	if err := store.AddTaint(id, wire.Taint{Why: "read a web page"}); err != nil {
 		t.Fatal(err)
 	}
-	sent := time.Now().Truncate(time.Millisecond) // after the conversation began, at the stamps' precision
-	if ok, _, err := en.EndorsedSince(ctx, id, sent); err != nil || ok {
+	rows, err := store.Append(id,
+		wire.Message{Role: "assistant", ToolCalls: []wire.ToolCall{{ID: "c1", Name: sessions.SendTool, Arguments: `{"to":"nova"}`}}, Untrusted: true},
+		wire.Message{Role: "tool", ToolCallID: "c1", Content: `{"id":41,"thread":41,"recipients":["nova"]}`, Untrusted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, _ := time.Parse(time.RFC3339Nano, rows[1].At)
+	if ok, _, err := en.EndorsedSend(ctx, id, 41, sent); err != nil || ok {
 		t.Fatalf("marked, never endorsed: %v %v", ok, err)
 	}
 	release, err := s.Hold(id) // a turn there: the answer does not wait for it
@@ -737,25 +744,27 @@ func TestEndorsedSinceContract(t *testing.T) {
 	if err := store.Trust(id, "whatsapp:+393331234567"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, by, err := en.EndorsedSince(ctx, id, sent); err != nil || !ok || by != "whatsapp:+393331234567" {
+	if ok, by, err := en.EndorsedSend(ctx, id, 41, sent); err != nil || !ok || by != "whatsapp:+393331234567" {
 		t.Fatalf("endorsed since: %v %q %v", ok, by, err)
 	}
 	release()
-	if ok, _, err := en.EndorsedSince(ctx, id, time.Now().Add(time.Hour)); err != nil || ok {
-		t.Fatalf("a moment after the endorsement: %v %v", ok, err)
+	if ok, _, err := en.EndorsedSend(ctx, id, 42, sent); err != nil || ok {
+		t.Fatalf("a message it never sent: %v %v", ok, err)
 	}
-	if ok, _, err := en.EndorsedSince(ctx, "whatsapp-none", sent); err != nil || ok {
+	if ok, _, err := en.EndorsedSend(ctx, "whatsapp-none", 41, sent); err != nil || ok {
 		t.Fatalf("an unknown conversation: %v %v", ok, err)
 	}
-	if st, _, _ := call(srv, key)(ctx, http.MethodGet, "/v1/sessions/"+id+"/endorsed?at=yesterday", nil); st != http.StatusBadRequest {
-		t.Fatalf("a bad at: %d", st)
+	for _, q := range []string{"message=41&at=yesterday", "message=x&at=" + sent.UTC().Format(time.RFC3339), "at=" + sent.UTC().Format(time.RFC3339)} {
+		if st, _, _ := call(srv, key)(ctx, http.MethodGet, "/v1/sessions/"+id+"/endorsed?"+q, nil); st != http.StatusBadRequest {
+			t.Fatalf("%s: %d", q, st)
+		}
 	}
-	if st, _, _ := call(srv, "not-the-key-not-the-key-not-the-key")(ctx, http.MethodGet, "/v1/sessions/"+id+"/endorsed?at="+sent.UTC().Format(time.RFC3339), nil); st != http.StatusUnauthorized {
+	if st, _, _ := call(srv, "not-the-key-not-the-key-not-the-key")(ctx, http.MethodGet, "/v1/sessions/"+id+"/endorsed?message=41&at="+sent.UTC().Format(time.RFC3339), nil); st != http.StatusUnauthorized {
 		t.Fatalf("without the owner's key: %d", st)
 	}
 	old := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(old.Close)
-	if _, _, err := adapter.NewRuntime().Conversations(call(old, key)).(engine.Endorsements).EndorsedSince(ctx, id, sent); !errors.Is(err, engine.ErrUnsupported) {
+	if _, _, err := adapter.NewRuntime().Conversations(call(old, key)).(engine.Endorsements).EndorsedSend(ctx, id, 41, sent); !errors.Is(err, engine.ErrUnsupported) {
 		t.Fatalf("an older runtime: %v", err)
 	}
 }

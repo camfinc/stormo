@@ -507,13 +507,16 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   conversation that sent the message (`_meta.session`); the core keeps it when the mark is the run's
   own (never one an outsider's relay file brought, never a malformed id). When the message is read
   (`msg_read`, `msg_thread`, `msg_inbox`), the core asks the sender's runtime, with the owner's key
-  (engine.Endorsements, needletail's `GET /v1/sessions/{id}/endorsed?at=`), whether what that
-  conversation held when it sent the message has been endorsed since (a person's `/trust`, an
-  approval's "trust thread", the API, taint decay's screen): yes clears the mark for good (logged,
-  `bus: message N … mark cleared`), so re-reading a conversation's own earlier messages after its
-  owner trusted it no longer marks it again. No, no answer (1 s), a runtime that cannot say or a
-  message from before migration 16: the mark stays, and a no is not asked again for 30 s (at most 6
-  asks a read). Wake inputs and follow-ups made before such a read still leave the subject out.
+  (engine.Endorsements, needletail's `GET /v1/sessions/{id}/endorsed?message=&at=`), whether the
+  message went out from that conversation through the model's own send and an endorsement has
+  covered that send since (a person's `/trust`, an approval's "trust thread", the API, taint decay's
+  screen): the runtime answers from its rows, never clocks, so a conversation named by anyone else
+  (a script holding the agent's key, a handler) covers nothing. Yes clears the mark for good, on
+  that very record (id, sender, time, conversation; logged `bus: message N … mark cleared`), so
+  re-reading a conversation's own earlier messages after its owner trusted it no longer marks it
+  again. No, no answer (1 s), a runtime that cannot say or a message from before migration 16: the
+  mark stays; a no is not asked again for 30 s, and a read asks about 6 at most, the longest unasked
+  first. Wake inputs and follow-ups made before such a read still leave the subject out.
 - *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
   normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
   agents of that unit (else refused and a `unit_boundary` finding). Or a file the core keeps for
