@@ -46,7 +46,7 @@ func TestQuarantineCoreWritesRefusedBeforeTransport(t *testing.T) {
 			t.Errorf("direct %s wasn't quarantined: %v", name, err)
 		}
 	}
-	env := &tools.Env{Untrusted: func(context.Context, string) string { return why }}
+	env := &tools.Env{Session: "whatsapp-0c", Untrusted: func(context.Context, string) string { return why }}
 	for _, tool := range client.Tools([]ToolInfo{{Name: "fs_write", InputSchema: []byte(`{}`)}}) {
 		if _, err := tool.Run(context.Background(), env, nil); err == nil {
 			t.Error("persisted mark bypassed registered MCP tool")
@@ -70,11 +70,12 @@ func TestQuarantineCoreWritesRefusedBeforeTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if meta, _ := sent["msg_send"]["_meta"].(map[string]any); meta["untrusted"] != why {
+	// with the conversation that sent it: the core asks it about the owner's endorsement later
+	if meta, _ := sent["msg_send"]["_meta"].(map[string]any); meta["untrusted"] != why || meta["session"] != "whatsapp-0c" {
 		t.Errorf("msg_send %v", sent["msg_send"])
 	}
-	if _, err := client.Call(context.Background(), "msg_send", nil); err != nil || sent["msg_send"]["_meta"] != nil {
-		t.Errorf("an unmarked run's message is marked: %v %v", err, sent["msg_send"])
+	if _, err := client.Call(messaging.WithSession(context.Background(), "whatsapp-0c"), "msg_send", nil); err != nil || sent["msg_send"]["_meta"] != nil {
+		t.Errorf("an unmarked run's message is marked or names its conversation: %v %v", err, sent["msg_send"])
 	}
 }
 

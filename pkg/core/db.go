@@ -372,6 +372,10 @@ var migrations = []string{
 	ALTER TABLE messages ADD COLUMN send_key TEXT;
 	ALTER TABLE messages ADD COLUMN send_hash TEXT NOT NULL DEFAULT '';
 	CREATE UNIQUE INDEX messages_send_key ON messages(sender, send_key) WHERE send_key IS NOT NULL;`,
+	// 16: the conversation a marked message came from (the sender's runtime names it with the
+	// mark): when its owner has endorsed it since, a read clears the message's mark
+	// (docs/core.md, "Marked messages"). '' for older messages and unmarked ones.
+	`ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT '';`,
 }
 
 // DB is core.db.

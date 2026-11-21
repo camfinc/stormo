@@ -623,6 +623,41 @@ func (s *Store) Marked() []string {
 	return out
 }
 
+// EndorsedSince is whether what the conversation id belongs to held at time at has been endorsed
+// since (docs/needletail.md §7, "Endorsed messages"): the session file live at at, or a
+// compaction's continuation of it, endorsed at or after at. A /new's fresh session never vouches
+// for the rows before it, and a conversation that started after at holds nothing of then. It
+// answers who endorsed and when.
+func (s *Store) EndorsedSince(id string, at time.Time) (by, when string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	line, found := s.lineage(id)
+	if !found || at.IsZero() {
+		return "", "", false
+	}
+	start := -1
+	for i, sid := range line {
+		c := parseStamp(s.metas[sid].Created)
+		if c.IsZero() || c.After(at) {
+			break
+		}
+		start = i
+	}
+	if start < 0 {
+		return "", "", false
+	}
+	for _, sid := range line[start:] {
+		m := s.metas[sid]
+		if e := parseStamp(m.EndorsedAt); !e.IsZero() && !e.Before(at) {
+			return m.EndorsedBy, m.EndorsedAt, true
+		}
+		if m.EndReason != wire.EndCompression {
+			break // the live session, or a /new: what follows does not carry these rows
+		}
+	}
+	return "", "", false
+}
+
 // parseStamp reads a Stamp; the zero time when it cannot.
 func parseStamp(v string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, v)

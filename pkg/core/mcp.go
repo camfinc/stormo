@@ -44,6 +44,10 @@ type CallMeta struct {
 	// ExecToken is the execution's secret the core gave its runtime: a call naming an execution
 	// without it is refused, so a turn's attribution cannot be claimed from outside it.
 	ExecToken string `json:"exec_token,omitempty"`
+	// Session is the calling runtime's conversation, sent with a mark (Untrusted): msg_send keeps
+	// it on the message, and the core asks that conversation's runtime (the sender's, by its key)
+	// whether its owner has endorsed it since, before it clears the mark.
+	Session string `json:"session,omitempty"`
 }
 
 // MCPTool is a tool the core serves.

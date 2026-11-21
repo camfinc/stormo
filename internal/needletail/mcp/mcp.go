@@ -255,7 +255,9 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (*
 // CallMarked runs tool name from a run that holds untrusted input for why ("" when it does not;
 // the caller passes its conversation's mark too, which ctx alone may not carry): a marked run
 // calls only what messaging.MarkedRunMay allows, and a message it sends carries why in the
-// call's _meta, where the core keeps it (docs/core.md, marked messages).
+// call's _meta, where the core keeps it (docs/core.md, marked messages), with the conversation
+// that sent it (messaging.SessionOf): once its owner endorses that conversation, the core clears
+// the message's mark.
 func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessage, why string) (*Result, error) {
 	if why != "" && !messaging.MarkedRunMay(name, c.Internal) {
 		return nil, messaging.Deferred("core tool "+name, why)
@@ -273,6 +275,9 @@ func (c *Client) CallMarked(ctx context.Context, name string, args json.RawMessa
 	meta := map[string]string{}
 	if why != "" && messaging.MarkCarryingCoreTool(name) {
 		meta["untrusted"] = why
+		if id := messaging.SessionOf(ctx); id != "" {
+			meta["session"] = id
+		}
 	}
 	// a channel turn's calls carry its execution and an operation number: the core attributes
 	// them to the interaction that started the turn, even when one reaches it later
@@ -322,6 +327,9 @@ func (c *Client) Tools(list []ToolInfo) []tools.Tool {
 					// a person approves it; talk to another agent carries the mark instead, and
 					// under approvals.marked internal a capability job or a WhatsApp send goes
 					return nil, messaging.NeedsApproval("core tool "+name, why)
+				}
+				if env != nil && env.Session != "" && messaging.SessionOf(ctx) == "" {
+					ctx = messaging.WithSession(ctx, env.Session)
 				}
 				res, err := c.CallMarked(ctx, name, args, why)
 				if err != nil {

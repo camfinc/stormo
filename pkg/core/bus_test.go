@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/camfinc/stormo/pkg/engine"
 )
 
 type wakeCall struct{ agent, input, session, idem string }
@@ -1292,5 +1294,99 @@ func TestRelayAttachments(t *testing.T) {
 	}
 	if m, _ := f.bus.Read("nova", out.ID); m == nil || m.Untrusted != "" {
 		t.Errorf("an unmarked file marked the message: %+v", m)
+	}
+}
+
+// A marked message keeps the conversation its runtime named with the mark (never for a mark an
+// outsider's file brought, never a malformed id); once the sender's runtime says that
+// conversation's owner endorsed it since, a read clears the mark for good. No, an error, an older
+// runtime or no way to ask keeps it, and a "no" is not asked again for a while.
+func TestEndorsedConversationClearsItsMessagesMarks(t *testing.T) {
+	f := newBusFixture(t, BusLimits{})
+	var send MCPTool
+	for _, tl := range BusTools(f.bus) {
+		if tl.Name == "msg_send" {
+			send = tl
+		}
+	}
+	sendAs := func(agent, to, subject string, meta CallMeta, attach ...string) int64 {
+		t.Helper()
+		a, _ := json.Marshal(map[string]any{"to": to, "subject": subject, "body": "the words", "attach": attach})
+		out, err := send.Run(ToolCall{Agent: agent, Args: a, Meta: meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.(*SendResult).ID
+	}
+	origin := func(id int64) string {
+		var o string
+		if err := f.db.QueryRow(`SELECT origin FROM messages WHERE id = ?`, id).Scan(&o); err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	marked := sendAs("atlas", "nova", "Regenerate the cover", CallMeta{Untrusted: "read a web page", Session: "whatsapp-0d"})
+	plain := sendAs("atlas", "nova", "plain", CallMeta{Session: "whatsapp-0d"})
+	odd := sendAs("atlas", "nova", "odd id", CallMeta{Untrusted: "read a web page", Session: "../../etc"})
+	r := NewRelay(filepath.Join(t.TempDir(), "relay"), nil)
+	f.bus.o.Relay = r
+	clip, err := r.Keep("atlas", RelayFile{Name: "promo.mp4", MIME: "video/mp4", Marked: true}, func(f *os.File) error { _, err := f.WriteString("mp4"); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFile := sendAs("atlas", "nova", "with a file", CallMeta{Untrusted: "read a web page", Session: "whatsapp-0d"}, clip.Ref())
+	if origin(marked) != "whatsapp-0d" || origin(plain) != "" || origin(odd) != "" || origin(withFile) != "" {
+		t.Fatalf("origins: marked %q plain %q odd %q with an outsider's file %q", origin(marked), origin(plain), origin(odd), origin(withFile))
+	}
+
+	// no way to ask: marked as before
+	if m, _ := f.bus.Read("nova", marked); m.Untrusted == "" {
+		t.Fatal("cleared with no way to ask")
+	}
+	var asks []string
+	answer, answerErr := false, error(nil)
+	f.bus.o.Endorsed = func(_ context.Context, agent, session string, at time.Time) (bool, string, error) {
+		asks = append(asks, fmt.Sprintf("%s %s %d", agent, session, at.UnixMilli()))
+		return answer, "whatsapp:+15550100", answerErr
+	}
+	answerErr = engine.ErrUnsupported // an older runtime
+	if m, _ := f.bus.Read("nova", marked); m.Untrusted == "" {
+		t.Fatal("cleared on an older runtime")
+	}
+	answerErr = nil
+	if m, _ := f.bus.Read("nova", marked); m.Untrusted == "" || len(asks) != 1 {
+		t.Fatalf("a no lately was asked again or cleared: %v", asks)
+	}
+	f.now = f.now.Add(settleNo)
+	if th, _ := f.bus.Thread("nova", marked); th[0].Untrusted == "" || len(asks) != 2 {
+		t.Fatalf("not endorsed: %+v asks %v", th[0], asks)
+	}
+	// the sender's own runtime, about its own conversation as it stood when it sent the message
+	var sent int64
+	_ = f.db.QueryRow(`SELECT created FROM messages WHERE id = ?`, marked).Scan(&sent)
+	if want := fmt.Sprintf("atlas whatsapp-0d %d", sent); asks[0] != want {
+		t.Fatalf("asked %q, want %q", asks[0], want)
+	}
+	answer = true
+	f.now = f.now.Add(settleNo)
+	in, _ := f.bus.Inbox("nova", false, 0)
+	var listed *Message
+	for i := range in {
+		if in[i].ID == marked {
+			listed = &in[i]
+		}
+	}
+	if listed == nil || listed.Untrusted != "" || listed.Subject != "Regenerate the cover" {
+		t.Fatalf("endorsed since: the inbox still hides it: %+v", listed)
+	}
+	if m, _ := f.bus.Read("nova", marked); m.Untrusted != "" || origin(marked) != "" {
+		t.Fatalf("the mark came back: %+v origin %q", m, origin(marked))
+	}
+	n := len(asks)
+	if m, _ := f.bus.Read("nova", withFile); m.Untrusted == "" || len(asks) != n {
+		t.Fatalf("an outsider's file's mark was asked about or cleared: %+v", m)
+	}
+	if m, _ := f.bus.Read("nova", odd); m.Untrusted == "" {
+		t.Fatal("a message with no conversation of record was cleared")
 	}
 }

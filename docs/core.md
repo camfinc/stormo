@@ -503,6 +503,17 @@ subprocesses of one Hermes install, which does not fit one container per agent.
   with it, so the reader's own sends out of the swarm are what waits for a person, not the talk
   between agents (docs/needletail.md §7). `msg_inbox` lists a marked message without its subject
   or preview, so listing never marks; its wake input and urgent mirror leave the subject out.
+  *Endorsed since* (migration 16, `messages.origin`): with the mark the runtime names the
+  conversation that sent the message (`_meta.session`); the core keeps it when the mark is the run's
+  own (never one an outsider's relay file brought, never a malformed id). When the message is read
+  (`msg_read`, `msg_thread`, `msg_inbox`), the core asks the sender's runtime, with the owner's key
+  (engine.Endorsements, needletail's `GET /v1/sessions/{id}/endorsed?at=`), whether what that
+  conversation held when it sent the message has been endorsed since (a person's `/trust`, an
+  approval's "trust thread", the API, taint decay's screen): yes clears the mark for good (logged,
+  `bus: message N … mark cleared`), so re-reading a conversation's own earlier messages after its
+  owner trusted it no longer marks it again. No, no answer (1 s), a runtime that cannot say or a
+  message from before migration 16: the mark stays, and a no is not asked again for 30 s (at most 6
+  asks a read). Wake inputs and follow-ups made before such a read still leave the subject out.
 - *Attachments* are shared-space paths as agents see them (`/shared/group/…`, `/shared/<unit>/…`),
   normalised; a sender may attach from group or its own unit, and a unit's layer only reaches
   agents of that unit (else refused and a `unit_boundary` finding). Or a file the core keeps for

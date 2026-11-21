@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -74,6 +75,10 @@ type BusOptions struct {
 	Now    func() time.Time
 	// Relay keeps the files a message may carry as relay:<id> (nil: none).
 	Relay *Relay
+	// Endorsed asks agent's runtime whether what its conversation session held at at has been
+	// endorsed since (engine.Endorsements, with the owner's key): yes clears the mark of a message
+	// that conversation sent then, when it is read (settle). nil, an error or no: it stays marked.
+	Endorsed func(ctx context.Context, agent, session string, at time.Time) (ok bool, by string, err error)
 }
 
 // Bus is the message bus; safe for concurrent use.
@@ -84,6 +89,10 @@ type Bus struct {
 	// returns are the return paths (NewReturns sets them): requests from a person's conversation
 	// whose outcome must reach that person. nil: none.
 	returns *Returns
+	// notYet remembers a runtime's recent "not endorsed" (or no answer) per message, so a thread
+	// read again soon does not ask it again (settle).
+	nmu    sync.Mutex
+	notYet map[int64]time.Time
 }
 
 // RetainMessages is how long a thread is kept after its last message (open decision 6).
@@ -147,13 +156,18 @@ type Message struct {
 	Due string `json:"due,omitempty"`
 	// Untrusted is why the sender's run held untrusted input when it wrote this ("" when it did
 	// not): its words carry what that input said, so they are information, never instructions,
-	// and reading them marks the reader's run in turn.
+	// and reading them marks the reader's run in turn. Cleared once the owner of the conversation
+	// that sent it has endorsed that conversation since (settle).
 	Untrusted string `json:"untrusted,omitempty"`
 	// The caller's delivery: when it read and acknowledged the message (recipients only).
 	Read  string `json:"read,omitempty"`
 	Acked string `json:"acked,omitempty"`
 	// Recipients and their state (the sender's view and the owner's).
 	Recipients []Recipient `json:"recipients,omitempty"`
+	// origin is the sender's conversation that marked it (messages.origin) and created when it was
+	// sent (Unix ms): what settle asks the sender's runtime about. Never shown.
+	origin  string
+	created int64
 }
 
 // Recipient is one delivery of a message.
@@ -188,6 +202,9 @@ type SendRequest struct {
 	Op   string `json:"-"`
 	// ExecToken is the execution's secret, from _meta: without it Exec is refused.
 	ExecToken string `json:"-"`
+	// Origin is the calling runtime's conversation, from _meta with the mark: kept on a marked
+	// message so the owner's endorsement of that conversation can clear the mark (settle).
+	Origin string `json:"-"`
 }
 
 // SendResult is what msg_send answers.
@@ -389,6 +406,7 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 	sort.Slice(recipients, func(i, j int) bool { return recipients[i].ID < recipients[j].ID })
 	attach, relays := []string{}, []string{}
 	untrusted := strings.TrimSpace(req.Untrusted)
+	outsiderFile := false
 	for _, p := range req.Attach {
 		if id, ok := RelayRef(p); ok {
 			// a file the core keeps for the sender: its recipients may use it too once it is sent
@@ -402,6 +420,7 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 			if f.Marked && untrusted == "" {
 				untrusted = "it carries a file from someone who may not instruct agents (" + f.Ref() + ")"
 			}
+			outsiderFile = outsiderFile || f.Marked
 			attach, relays = append(attach, f.Ref()), append(relays, id)
 			continue
 		}
@@ -472,12 +491,19 @@ func (b *Bus) send(sender string, req SendRequest) (*SendResult, error) {
 		}
 	}
 	att, _ := json.Marshal(attach)
+	// the conversation whose mark it carries, so its owner's endorsement can clear the mark later
+	// (settle); never for a mark that came with an outsider's file, which endorsing the sender's
+	// conversation does not vouch for
+	origin := ""
+	if strings.TrimSpace(req.Untrusted) != "" && !outsiderFile && originID.MatchString(req.Origin) {
+		origin = req.Origin
+	}
 	var sendKey any
 	if key != "" {
 		sendKey = key
 	}
-	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due, send_key, send_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(untrusted, 300), due, sendKey, hash)
+	res, err := tx.Exec(`INSERT INTO messages(thread, sender, audience, subject, body, priority, attach, hop, created, untrusted, due, send_key, send_hash, origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		thread, sender, to, req.Subject, req.Body, req.Priority, string(att), hop, now.UnixMilli(), clip(untrusted, 300), due, sendKey, hash, origin)
 	if err != nil {
 		return nil, err
 	}
@@ -1080,9 +1106,10 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 		var att string
 		var sent, due int64
 		var read, acked sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Thread, &m.From, &m.To, &m.Subject, &m.Body, &m.Priority, &att, &m.Hop, &sent, &m.Untrusted, &due, &read, &acked); err != nil {
+		if err := rows.Scan(&m.ID, &m.Thread, &m.From, &m.To, &m.Subject, &m.Body, &m.Priority, &att, &m.Hop, &sent, &m.Untrusted, &due, &m.origin, &read, &acked); err != nil {
 			return nil, err
 		}
+		m.created = sent
 		_ = json.Unmarshal([]byte(att), &m.Attach)
 		if m.Attach == nil {
 			m.Attach = []string{}
@@ -1108,7 +1135,76 @@ func (b *Bus) scanMessages(rows *sql.Rows, withBody bool) ([]Message, error) {
 	return out, rows.Err()
 }
 
-const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.priority, m.attach, m.hop, m.created, m.untrusted, m.due`
+const msgCols = `m.id, m.thread, m.sender, m.audience, m.subject, m.body, m.priority, m.attach, m.hop, m.created, m.untrusted, m.due, m.origin`
+
+// originID is a runtime conversation id as a message keeps it (messages.origin).
+var originID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+
+// How settle asks: at most settleAsks runtimes a read, settleWait each, and a "no" is not asked
+// again for settleNo.
+const (
+	settleAsks = 6
+	settleWait = time.Second
+	settleNo   = 30 * time.Second
+)
+
+// settle clears the marks their senders' owners have since endorsed (docs/core.md, "Marked
+// messages"): for a marked message that names the conversation it came from, the sender's
+// runtime is asked whether what that conversation held when it sent it has been endorsed since
+// (a person's trust, an approval's, taint decay's screen). Yes clears the mark for good, in the
+// database and in ms; no, no answer or a runtime that cannot say keeps it, and the reader is
+// marked as before.
+func (b *Bus) settle(ms []Message) {
+	if b.o.Endorsed == nil {
+		return
+	}
+	asked := 0
+	for i := range ms {
+		m := &ms[i]
+		if m.Untrusted == "" || m.origin == "" || b.askedLately(m.ID) {
+			continue
+		}
+		if asked == settleAsks {
+			return
+		}
+		asked++
+		ctx, cancel := context.WithTimeout(context.Background(), settleWait)
+		ok, by, err := b.o.Endorsed(ctx, m.From, m.origin, time.UnixMilli(m.created))
+		cancel()
+		if err != nil || !ok {
+			b.notEndorsed(m.ID)
+			continue
+		}
+		if _, err := b.o.DB.Exec(`UPDATE messages SET untrusted = '', origin = '' WHERE id = ? AND origin = ?`, m.ID, m.origin); err != nil {
+			log.Printf("bus: message %d: clearing its mark: %v", m.ID, err)
+			continue
+		}
+		log.Printf("bus: message %d from %s: mark cleared (its conversation %s endorsed since by %s)", m.ID, m.From, m.origin, clip(by, 80))
+		m.Untrusted, m.origin = "", ""
+	}
+}
+
+func (b *Bus) askedLately(id int64) bool {
+	b.nmu.Lock()
+	defer b.nmu.Unlock()
+	at, ok := b.notYet[id]
+	return ok && b.o.Now().Sub(at) < settleNo
+}
+
+func (b *Bus) notEndorsed(id int64) {
+	b.nmu.Lock()
+	defer b.nmu.Unlock()
+	now := b.o.Now()
+	if b.notYet == nil {
+		b.notYet = map[int64]time.Time{}
+	}
+	for k, at := range b.notYet {
+		if now.Sub(at) >= settleNo {
+			delete(b.notYet, k)
+		}
+	}
+	b.notYet[id] = now
+}
 
 // Inbox is the agent's received messages, newest first, with a short body preview.
 func (b *Bus) Inbox(agent string, unreadOnly bool, limit int) ([]Message, error) {
@@ -1136,6 +1232,7 @@ func (b *Bus) InboxIn(agent string, unreadOnly bool, limit int, exec string) ([]
 		return nil, err
 	}
 	ms, err := b.scanMessages(rows, false)
+	b.settle(ms)
 	for i := range ms {
 		if ms[i].Untrusted != "" {
 			// a marked message's words only where reading them marks the reader (msg_read,
@@ -1179,6 +1276,7 @@ func (b *Bus) Read(agent string, id int64) (*Message, error) {
 	if len(ms) == 0 {
 		return nil, toolErr("no message %d for you", id)
 	}
+	b.settle(ms)
 	m := ms[0]
 	if m.From == agent {
 		if m.Recipients, err = b.recipients(id); err != nil {
@@ -1237,6 +1335,7 @@ func (b *Bus) ThreadIn(agent string, id int64, exec string) ([]Message, error) {
 	if len(ms) == 0 {
 		return nil, toolErr("thread %d is not one you are part of", root)
 	}
+	b.settle(ms)
 	held := map[int64]bool{}
 	hrows, err := b.o.DB.Query(`SELECT d.message FROM deliveries d JOIN messages m ON m.id = d.message WHERE d.agent = ? AND m.thread = ? AND `+returnOwnedNotIn, agent, root, exec)
 	if err != nil {
@@ -1409,7 +1508,7 @@ func BusTools(b *Bus) []MCPTool {
 				if err := decodeArgs(c, &req); err != nil {
 					return nil, err
 				}
-				req.Untrusted, req.Exec, req.Op, req.ExecToken = c.Meta.Untrusted, c.Meta.Exec, c.Meta.Op, c.Meta.ExecToken
+				req.Untrusted, req.Exec, req.Op, req.ExecToken, req.Origin = c.Meta.Untrusted, c.Meta.Exec, c.Meta.Op, c.Meta.ExecToken, c.Meta.Session
 				return b.Send(c.Agent, req)
 			},
 		},

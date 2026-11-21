@@ -458,6 +458,20 @@ func StartCore(o CoreOptions) (*Core, error) {
 	if bo.Mirror == nil && !o.NoMirror {
 		bo.Mirror = SlackMirror(inst, nil)
 	}
+	if bo.Endorsed == nil {
+		// the sender's own runtime, with the owner's key: what an agent's scripts never hold
+		bo.Endorsed = func(ctx context.Context, agent, session string, at time.Time) (bool, string, error) {
+			conv, err := local.Conversations(inst, agent)
+			if err != nil {
+				return false, "", err
+			}
+			en, ok := conv.(engine.Endorsements)
+			if !ok {
+				return false, "", engine.ErrUnsupported
+			}
+			return en.EndorsedSince(ctx, session, at)
+		}
+	}
 	bus := NewBus(bo)
 	wroot := o.WorkdirRoot
 	if wroot == "" {

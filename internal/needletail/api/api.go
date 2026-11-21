@@ -259,6 +259,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/sessions/{id}/chat", s.auth(s.chat))
 	mux.Handle("DELETE /v1/sessions/{id}", s.auth(s.remove))
 	mux.Handle("POST /v1/sessions/{id}/trust", s.auth(s.trustConversation))
+	mux.Handle("GET /v1/sessions/{id}/endorsed", s.auth(s.endorsedSince))
 	mux.Handle("POST /v1/sessions/{id}/new", s.auth(s.restartConversation))
 	mux.Handle("GET /v1/capabilities", s.auth(s.capabilities))
 	mux.Handle("POST /v1/channel/turns", s.auth(s.channelStart))
@@ -897,6 +898,19 @@ func (s *Server) trustConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"trusted": root, "marked": marked})
+}
+
+// endorsedSince is whether what conversation id held at ?at= (RFC 3339) has been endorsed since
+// (sessions.Store.EndorsedSince): the core asks before it clears the mark of a swarm message the
+// conversation sent then. It only reads: it never waits for a turn there.
+func (s *Server) endorsedSince(w http.ResponseWriter, r *http.Request) {
+	at, err := time.Parse(time.RFC3339Nano, r.URL.Query().Get("at"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "at: the moment asked about, an RFC 3339 time")
+		return
+	}
+	by, when, ok := s.store.EndorsedSince(r.PathValue("id"), at)
+	writeJSON(w, http.StatusOK, map[string]any{"endorsed": ok, "by": by, "at": when})
 }
 
 // restartConversation is a person's /new through a channel the core runs: the conversation goes on
