@@ -703,3 +703,50 @@ func TestChatCommands(t *testing.T) {
 		t.Fatalf("without Commands /new is a message: turns=%d", turns)
 	}
 }
+
+// trusted_groups: in a group listed there (and in Groups), a member Users does not list counts as
+// an allowed person: verified as a sender and as a quoted author, and the group's context lines
+// carry no [unverified], those logged before the group was trusted too. Their DM, and the group
+// once it is no longer allowed, are unchanged.
+func TestTrustedGroups(t *testing.T) {
+	cur := Policy{Enabled: true, Users: []string{"393331234567"}, Groups: []string{group.String()}}
+	c, err := Open(filepath.Join(t.TempDir(), "session.db"), func() Policy { return cur }, func(context.Context, string, string) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	c.me = func() Me { return me }
+	none := func(types.MessageID) (string, bool) { return "", false }
+	mention := &waE2E.ContextInfo{MentionedJID: []string{me.PN.String()}}
+
+	if in, ok := Accepted(inGroup("@393330000000 hola", mention), cur, me, none); !ok || in.Verified {
+		t.Fatalf("a member of an allowed group: %+v %v", in, ok)
+	}
+	line := inGroup("the promo ends Friday", nil)
+	line.Info.ID = "in-log"
+	c.note(context.Background(), line) // logged while the group is not trusted
+	if text, _ := c.chatContext(context.Background(), group.String(), "other", true); !strings.Contains(text, "[unverified] Ann") {
+		t.Fatalf("context before trust: %q", text)
+	}
+
+	cur.Trusted = []string{group.String()}
+	if in, ok := Accepted(inGroup("@393330000000 hola", mention), cur, me, none); !ok || !in.Verified {
+		t.Fatalf("a member of a trusted group: %+v %v", in, ok)
+	}
+	quoted := inGroup("@393330000000 mira esto", &waE2E.ContextInfo{MentionedJID: []string{me.PN.String()},
+		StanzaID: proto.String("q1"), Participant: proto.String(member.String()), QuotedMessage: &waE2E.Message{Conversation: proto.String("hola")}})
+	if in, ok := Accepted(quoted, cur, me, none); !ok || !in.QuotedVerified {
+		t.Fatalf("a quoted member of a trusted group: %+v %v", in, ok)
+	}
+	if text, _ := c.chatContext(context.Background(), group.String(), "other", true); strings.Contains(text, "[unverified] Ann") || !strings.Contains(text, "· Ann (+393339999999): the promo ends Friday") {
+		t.Fatalf("context once trusted: %q", text)
+	}
+	dm := direct("hola")
+	dm.Info.Chat, dm.Info.Sender = member, member
+	if _, ok := Accepted(dm, cur, me, none); ok {
+		t.Fatal("a trusted group's member may DM the agent")
+	}
+	if cur.verified(group, member.User) != true || (Policy{Trusted: []string{group.String()}}).verified(group, member.User) {
+		t.Fatal("a trusted group counts only while it is an allowed group")
+	}
+}

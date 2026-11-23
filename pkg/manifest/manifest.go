@@ -49,6 +49,10 @@ type SlackSettings struct {
 	// WhatsApp only. Group chats (ids …@g.us) the agent answers in, when a message mentions it or
 	// replies to one of its messages; allowed_users still decides whom it takes instructions from.
 	AllowedGroups []string `json:"allowed_groups,omitempty"`
+	// WhatsApp only. Groups of allowed_groups whose every member counts as one of allowed_users
+	// there: their words are an allowed person's in that group, never in a DM. Only groups of the
+	// owner's own people (membership is whatever WhatsApp says).
+	TrustedGroups []string `json:"trusted_groups,omitempty"`
 }
 
 // Channel is one messaging platform an agent is reachable on.
@@ -501,6 +505,7 @@ func settings(m map[string]any, okBools *bool) SlackSettings {
 		HomeChannelName: str(m["home_channel_name"]),
 		AllowBots:       str(m["allow_bots"]),
 		AllowedGroups:   anyStrs(m["allowed_groups"]),
+		TrustedGroups:   anyStrs(m["trusted_groups"]),
 	}
 }
 
@@ -687,6 +692,18 @@ func Parse(root, id, secretPrefix string, body []byte) (*Agent, error) {
 				return nil, err
 			}
 			if err := req(groupRe.MatchString(g), `%s: WhatsApp allowed_groups entry "%s" must be a group id (…@g.us)`, where, g); err != nil {
+				return nil, err
+			}
+		}
+		trusted := append([]string{}, ch.TrustedGroups...)
+		if ch.Local != nil {
+			trusted = append(trusted, ch.Local.TrustedGroups...)
+		}
+		for _, g := range trusted {
+			if err := req(kind == "whatsapp", "%s: trusted_groups is whatsapp-only", where); err != nil {
+				return nil, err
+			}
+			if err := req(slices.Contains(groups, g), `%s: WhatsApp trusted_groups entry "%s" must also be in allowed_groups`, where, g); err != nil {
 				return nil, err
 			}
 		}

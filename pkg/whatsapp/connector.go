@@ -41,10 +41,24 @@ type Status struct {
 // Policy is where the agent answers: direct chats from Users (phone numbers), or from anyone when
 // All; and Groups (…@g.us), where a message must mention the agent or reply to one of its messages.
 type Policy struct {
-	Users   []string
-	Groups  []string
+	Users  []string
+	Groups []string
+	// Trusted are groups of Groups whose every member counts as one of Users there (the agent's
+	// trusted_groups): their words are an allowed person's, in that group only.
+	Trusted []string
 	All     bool
 	Enabled bool
+}
+
+// verified is whether number (no +) is one of p's allowed people in chat: listed in Users, anyone
+// when All, or any member of a group in Trusted. Every "may instruct the agent" decision of the
+// connector is this one.
+func (p Policy) verified(chat types.JID, number string) bool {
+	if p.All || number != "" && slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == number }) {
+		return true
+	}
+	id := chat.ToNonAD().String()
+	return chat.Server == types.GroupServer && slices.Contains(p.Trusted, id) && slices.Contains(p.Groups, id)
 }
 
 // AllowedChat is chat as the JID the agent may post to unprompted: a group in Groups (…@g.us) or a
@@ -570,7 +584,7 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 				}
 				if author.Server == types.DefaultUserServer {
 					in.QuotedFrom = "+" + author.User
-					in.QuotedVerified = p.All || slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == author.User })
+					in.QuotedVerified = p.verified(chat, author.User)
 				}
 			}
 		}
@@ -586,7 +600,7 @@ func Accepted(e *events.Message, p Policy, me Me, sent func(types.MessageID) (st
 }
 
 // senderOf is who wrote e: their WhatsApp name, phone number (no +; a LID sender's from SenderAlt)
-// and whether they are in p's Users (or anyone may message).
+// and whether they are one of p's allowed people there (Policy.verified).
 func senderOf(e *events.Message, p Policy) Inbound {
 	in := Inbound{Name: clean(e.Info.PushName, 60)}
 	sender := e.Info.Sender
@@ -596,7 +610,7 @@ func senderOf(e *events.Message, p Policy) Inbound {
 	if sender.Server == types.DefaultUserServer {
 		in.Number = sender.User
 	}
-	in.Verified = p.All || in.Number != "" && slices.ContainsFunc(p.Users, func(u string) bool { return strings.TrimPrefix(u, "+") == in.Number })
+	in.Verified = p.verified(e.Info.Chat, in.Number)
 	return in
 }
 
@@ -1011,12 +1025,15 @@ func (c *Connector) chatContext(ctx context.Context, chat, id string, group bool
 	defer rows.Close()
 	var lines []Line
 	runes := 0
+	// a line logged before its group became trusted counts as its members' words do now
+	trusted := group && c.policy().verified(types.NewJID(strings.TrimSuffix(chat, "@"+types.GroupServer), types.GroupServer), "")
 	for rows.Next() {
 		var l Line
 		var at int64
 		if rows.Scan(&l.ID, &at, &l.Name, &l.Number, &l.Verified, &l.Mine, &l.Text) != nil {
 			return "", 0
 		}
+		l.Verified = l.Verified || trusted
 		if runes += len([]rune(l.Text)); runes > maxContextRunes && len(lines) > 0 {
 			break
 		}
@@ -1102,7 +1119,7 @@ func (c *Connector) handle(ctx context.Context, e *events.Message) {
 			case in.Quoted != "" && l.Mine:
 				in.Quoted = l.Text
 			case in.QuotedText != "" && !l.Mine:
-				in.QuotedFrom, in.QuotedVerified = clean(orElse(l.Name, "someone"), 60), l.Verified
+				in.QuotedFrom, in.QuotedVerified = clean(orElse(l.Name, "someone"), 60), l.Verified || c.policy().verified(e.Info.Chat, l.Number)
 				if l.Number != "" {
 					in.QuotedFrom += " (+" + l.Number + ")"
 				}

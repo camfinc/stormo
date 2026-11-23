@@ -87,9 +87,15 @@ func TestWhatsAppAccessAndConfiguration(t *testing.T) {
 
 	raw = []byte(strings.ReplaceAll(string(raw), "kind: whatsapp", "kind: whatsapp\n    allowed_groups: [120363012345678901@g.us]\n    local: {allowed_groups: [120363000000000001@g.us]}"))
 	write(t, path, string(raw))
-	if p := c.whatsappPolicy("atlas"); len(p.Groups) != 1 || p.Groups[0] != "120363000000000001@g.us" {
+	if p := c.whatsappPolicy("atlas"); len(p.Groups) != 1 || p.Groups[0] != "120363000000000001@g.us" || len(p.Trusted) != 0 {
 		t.Fatalf("local groups not applied: %+v", p)
 	}
+	trusted := strings.ReplaceAll(string(raw), "local: {allowed_groups: [120363000000000001@g.us]}", "local: {allowed_groups: [120363000000000001@g.us], trusted_groups: [120363000000000001@g.us]}")
+	write(t, path, trusted)
+	if p := c.whatsappPolicy("atlas"); len(p.Trusted) != 1 || p.Trusted[0] != "120363000000000001@g.us" {
+		t.Fatalf("trusted groups not applied: %+v", p)
+	}
+	write(t, path, string(raw))
 
 	// whatsapp_send: as the agent, over the MCP handler (no initialize needed).
 	send := func(args, want string) {

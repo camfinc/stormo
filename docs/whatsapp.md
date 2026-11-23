@@ -17,7 +17,17 @@ channels:
   - kind: whatsapp
     allowed_users: ["+393331234567"]
     allowed_groups: ["120363012345678901@g.us"]   # local: overrides it, as allowed_users
+    trusted_groups: ["120363012345678901@g.us"]   # optional: every member counts as an allowed person there
 ```
+
+**Trusted groups.** A group of `allowed_groups` also listed under `trusted_groups` counts every
+member as one of the agent's allowed people there: their lines and mentions carry no `[unverified]`,
+so the agent may act on what any of them asks in that group (and, once WhatsApp senders mark a
+run, their words never mark one). It changes nothing else: their DMs still need `allowed_users`,
+and where the agent may post is unchanged. Membership is whatever WhatsApp says, so anyone a group
+admin adds is trusted from their first message: list only groups of the owner's own people (the
+same rule as `approvals.marked: internal` audiences). `stormo check` refuses an entry that is not
+also in `allowed_groups`; `local:` overrides it like the others.
 
 **Posting first.** An agent can start a message with the core's MCP tool `whatsapp_send(chat, text, image?)` (`mcp_core_whatsapp_send` in a turn): on its own linked account, to a group of its `allowed_groups` or a number of its `allowed_users`, never elsewhere (“Anyone may message” lets anyone write to it, not it write to anyone). `image` is a PNG or JPEG the agent can see in the shared space (`/shared/group/…` or its unit's, up to 16 MB), sent as a photo with `text` as its caption (a caption over 1,024 characters follows the photo as messages). It needs the account linked and connected on that core; what it sends is remembered like a reply, so a reaction or a reply to it reaches the agent in that chat's conversation. Use it for a result that was not ready when the agent answered (an image another agent made), an alert, or a follow-up it was asked to post; answers to people who wrote need nothing.
 

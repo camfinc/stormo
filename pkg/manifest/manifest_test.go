@@ -263,11 +263,21 @@ func TestWhatsAppAllowedGroups(t *testing.T) {
 		ch.Local == nil || !slices.Equal(ch.Local.AllowedGroups, []string{"120363000000000001@g.us"}) {
 		t.Errorf("channel = %+v", ch)
 	}
+	// trusted_groups: a subset of allowed_groups (a local one too)
+	a, err = parseAs(t, atlasHead+"engine: {kind: hermes, version: 1, model: m}\nchannels:\n  - kind: whatsapp\n    allowed_groups: [120363012345678901@g.us]\n    trusted_groups: [120363012345678901@g.us]\n    local: {allowed_groups: [120363000000000001@g.us], trusted_groups: [120363000000000001@g.us]}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch := a.Channels[0]; !slices.Equal(ch.TrustedGroups, []string{"120363012345678901@g.us"}) || !slices.Equal(ch.Local.TrustedGroups, []string{"120363000000000001@g.us"}) {
+		t.Errorf("trusted groups = %+v", ch)
+	}
 	for body, want := range map[string]string{
-		"  - kind: whatsapp\n    allowed_groups: [\"+393331234567\"]\n":       "must be a group id",
-		"  - kind: whatsapp\n    local: {allowed_groups: [family]}\n":         "must be a group id",
-		"  - kind: slack\n    allowed_groups: [120363012345678901@g.us]\n":    "allowed_groups is whatsapp-only",
-		"  - kind: telegram\n    allowed_groups: [120363012345678901@g.us]\n": "allowed_groups is whatsapp-only",
+		"  - kind: whatsapp\n    allowed_groups: [\"+393331234567\"]\n":                                                      "must be a group id",
+		"  - kind: whatsapp\n    local: {allowed_groups: [family]}\n":                                                        "must be a group id",
+		"  - kind: slack\n    allowed_groups: [120363012345678901@g.us]\n":                                                   "allowed_groups is whatsapp-only",
+		"  - kind: telegram\n    allowed_groups: [120363012345678901@g.us]\n":                                                "allowed_groups is whatsapp-only",
+		"  - kind: whatsapp\n    allowed_groups: [120363012345678901@g.us]\n    trusted_groups: [120363000000000001@g.us]\n": "must also be in allowed_groups",
+		"  - kind: slack\n    trusted_groups: [120363012345678901@g.us]\n":                                                   "trusted_groups is whatsapp-only",
 	} {
 		secrets := "secrets: [SLACK_BOT_TOKEN, SLACK_APP_TOKEN, TELEGRAM_BOT_TOKEN]\n"
 		if _, err := parseAs(t, atlasHead+"engine: {kind: hermes, version: 1, model: m}\n"+secrets+"channels:\n"+body); err == nil || !strings.Contains(err.Error(), want) {

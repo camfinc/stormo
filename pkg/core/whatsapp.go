@@ -45,8 +45,11 @@ func (c *Core) whatsappPolicy(id string) whatsapp.Policy {
 				if ch.Local.AllowedGroups != nil {
 					s.AllowedGroups = ch.Local.AllowedGroups
 				}
+				if ch.Local.TrustedGroups != nil {
+					s.TrustedGroups = ch.Local.TrustedGroups
+				}
 			}
-			return whatsapp.Policy{Enabled: true, Users: s.AllowedUsers, Groups: s.AllowedGroups, All: s.AllowAllUsers != nil && *s.AllowAllUsers}
+			return whatsapp.Policy{Enabled: true, Users: s.AllowedUsers, Groups: s.AllowedGroups, Trusted: s.TrustedGroups, All: s.AllowAllUsers != nil && *s.AllowAllUsers}
 		}
 	}
 	return whatsapp.Policy{}
