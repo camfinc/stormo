@@ -586,7 +586,11 @@ func (b *Broker) dispatch() {
 			continue
 		}
 		res, err := b.o.DB.Exec(`UPDATE cap_jobs SET status = 'running', started = ? WHERE id = ? AND status = 'queued'`, b.o.Now().UnixMilli(), q.id)
-		if n, _ := res.RowsAffected(); err != nil || n == 0 {
+		if err != nil {
+			b.mu.Unlock()
+			continue // the database refused (or closed with the core); the next pass retries
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
 			b.mu.Unlock()
 			continue // cancelled meanwhile
 		}
