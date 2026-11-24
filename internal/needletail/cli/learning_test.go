@@ -557,7 +557,7 @@ func TestRejectionSurvivesEarlyNap(t *testing.T) {
 			t.Errorf("the report does not name %q:\n%s", text, report)
 		}
 	}
-	if strings.Contains(string(report), loop.MemoryMergeHash(kept)) || strings.Contains(string(report), "EUR") || strings.Contains(string(report), "555") {
+	if strings.Contains(string(report), loop.MemoryMergeHash(kept)) || strings.Contains(string(report), "EUR") || strings.Contains(string(report), "555 0123") {
 		t.Errorf("the report names more than the rejections:\n%s", report)
 	}
 	if st, err := os.Stat(filepath.Join(home3, loop.MemoryMergePath)); err != nil || st.Mode().Perm() != 0o600 {

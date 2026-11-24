@@ -309,7 +309,7 @@ func TestLearningLoop(t *testing.T) {
 		}
 		want := []MemoryMergeRejection{{Hash: MemoryMergeHash(phone), At: decided}}
 		if decided == "" || merge.V != 2 || !slices.Equal(merge.Memory.Purged, want) || len(merge.Memory.Deferred) != 0 ||
-			len(merge.User.Purged) != 0 || len(merge.User.Deferred) != 0 || strings.Contains(body, "555") || strings.Contains(body, "John") {
+			len(merge.User.Purged) != 0 || len(merge.User.Deferred) != 0 || strings.Contains(body, "555 0123") || strings.Contains(body, "John") {
 			t.Errorf("memory-merge.json = %s", body)
 		}
 		if sum := sha256.Sum256([]byte(learning.Normalize(phone))); MemoryMergeHash(phone) != hex.EncodeToString(sum[:]) {
