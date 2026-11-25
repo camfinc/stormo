@@ -1,6 +1,11 @@
 import Foundation
 import Observation
 
+/// Why a review request failed, in the core's words when it gave some.
+public struct ReviewProblem: Error, Sendable, Equatable {
+    public var message: String
+}
+
 /// The Review section: proposed lessons and skills, decided with the owner token. Held in memory
 /// only (lessons are scrubbed, but skill files are the agent's own writing).
 @MainActor @Observable
@@ -99,6 +104,16 @@ public final class ReviewStore {
             problem = Self.describe(error)
         }
         await load()
+    }
+
+    /// A flagged skill proposal as the agent wrote it, for the person about to accept it. Not kept.
+    public func original(agent: String, skill: String) async -> Result<ReviewOriginal, ReviewProblem> {
+        guard let owner = token() else { return .failure(ReviewProblem(message: "No owner token for this instance.")) }
+        do {
+            return .success(try await client.with(timeout: 40).reviewOriginal(agent: agent, skill: skill, owner: owner))
+        } catch {
+            return .failure(ReviewProblem(message: Self.describe(error)))
+        }
     }
 
     public func restart(agent: String) async {

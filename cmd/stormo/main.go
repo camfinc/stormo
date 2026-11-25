@@ -74,6 +74,8 @@ const usage = `stormo: manage %s agents (instance %s). Local containers by defau
   learn promote <agent> <id...> --scope unit|group
   learn skills <agent>                   list skill proposals
   learn skill-accept|skill-reject <agent> <skill-dir>
+                                         a proposal the scrubber flagged is accepted only with --original:
+                                         the agent's own text from its nap, what was hidden included
   learn schedules <agent>                the schedules the agent changed at runtime, as agent.yaml would hold them
   learn schedules-accept|schedules-reject <agent>   take them into agent.yaml, or drop its runtime jobs
   learn settings <agent>                 settings it changed at runtime (home channel, approved commands, MCP)
@@ -193,6 +195,7 @@ var (
 	fUnit        = fs.String("unit", "", "")
 	fReplace     = fs.Bool("replace", false, "")
 	fWithActions = fs.Bool("with-actions", false, "")
+	fOriginal    = fs.Bool("original", false, "")
 	fWithPersona = fs.Bool("with-persona", false, "")
 	fKind        = fs.String("kind", "", "")
 	fConnection  = fs.String("connection", "", "")
@@ -840,14 +843,8 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		uri := *fStore
-		if uri == "" {
-			uri = os.Getenv("SWARM_STORE")
-		}
-		var st loop.Store
-		if uri == "" {
-			st = loop.LocalStore{Root: inst.Root}
-		} else if st, err = loop.Open(uri, region(inst)); err != nil {
+		st, err := dreamStore(inst)
+		if err != nil {
 			return err
 		}
 		r, err := loop.Dream(inst, id, st)
@@ -1522,6 +1519,20 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 		if sub == "skill-reject" {
 			decision, verb = "rejected", "rejected"
 		}
+		if *fOriginal && sub == "skill-accept" {
+			// A person's final word on a flagged proposal: the agent's own text, from the store its
+			// dream read. It lands in the working tree, where `git diff` shows what was hidden.
+			st, err := dreamStore(inst)
+			if err != nil {
+				return err
+			}
+			p, err := loop.AcceptSkillOriginal(inst, st, id, ids[0], "")
+			if err != nil {
+				return err
+			}
+			fmt.Printf("applied %s with the agent's original text (the scrubber had flagged %s); review it with git diff before committing\n", ids[0], strings.Join(p.PII, ", "))
+			return nil
+		}
 		if _, err := loop.DecideSkill(root, id, ids[0], decision); err != nil {
 			return err
 		}
@@ -1612,6 +1623,18 @@ func learnCmd(inst *instance.Instance, deps *ops.Deps, where place.Where, sub st
 type sidecar struct {
 	agent, home, baselineDir string
 	store                    loop.Store
+}
+
+// dreamStore is the store the dream reads: --store, else SWARM_STORE, else the instance's local one.
+func dreamStore(inst *instance.Instance) (loop.Store, error) {
+	uri := *fStore
+	if uri == "" {
+		uri = os.Getenv("SWARM_STORE")
+	}
+	if uri == "" {
+		return loop.LocalStore{Root: inst.Root}, nil
+	}
+	return loop.Open(uri, region(inst))
 }
 
 func sidecarEnv(inst *instance.Instance) (*sidecar, error) {

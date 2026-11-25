@@ -19,6 +19,30 @@ import Testing
         #expect(ReviewDecision.schedules(of: "atlas", .accept).key != ReviewDecision.settings(["x"], of: "atlas", .accept).key)
     }
 
+    @Test func flaggedSkillOriginalRoundTripsAsTheCoreReadsIt() throws {
+        let plain = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(ReviewDecision.skill("quote-mail", of: "atlas", .accept))) as? [String: Any])
+        #expect(plain["original"] == nil && plain["napHash"] == nil)
+        let d = ReviewDecision.skillOriginal("quote-mail", of: "atlas", napHash: "h1")
+        let o = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(d)) as? [String: Any])
+        #expect(o["skill"] as? String == "quote-mail" && o["decision"] as? String == "accept" && o["original"] as? Bool == true && o["napHash"] as? String == "h1")
+        // The same row is busy whichever accept it sent.
+        #expect(d.key == ReviewDecision.skill("quote-mail", of: "atlas", .accept).key)
+
+        let skills = #"""
+        [{"skill":"quote-mail","pii":["email"],"nap":"n","new":true,"stale":false,"files":[],"originalAccept":true},
+         {"skill":"token-note","pii":["secret"],"nap":"n","new":true,"stale":false,"files":[],"originalAccept":false,"originalRefused":"a skill never holds a secret"},
+         {"skill":"older-core","pii":["email"],"nap":"n","new":true,"files":[]}]
+        """#
+        let s = try JSONDecoder().decode([ReviewSkill].self, from: Data(skills.utf8))
+        #expect(s[0].originalAccept == true && s[1].originalAccept == false && s[1].originalRefused != nil && s[2].originalAccept == nil)
+
+        let original = #"""
+        {"agent":"atlas","skill":"quote-mail","nap":"n","napHash":"h1","pii":["email"],"files":[{"path":"SKILL.md","size":12,"text":"mail a@b.co"}]}
+        """#
+        let r = try JSONDecoder().decode(ReviewOriginal.self, from: Data(original.utf8))
+        #expect(r.napHash == "h1" && r.files.first?.text == "mail a@b.co")
+    }
+
     @Test func decodesVerdictsHeldReasonsAndRuntimeProposals() throws {
         let body = #"""
         {"review":"auto","reviewConnection":"chatgpt","autoAccept":true,"autoAcceptMinSeen":1,"autoRestart":false,"agents":[

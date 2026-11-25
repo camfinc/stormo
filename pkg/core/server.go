@@ -740,6 +740,9 @@ func StartCore(o CoreOptions) (*Core, error) {
 		case path == "/api/review":
 			c.handleReview(w, r, bo.Roster)
 			return
+		case path == "/api/review/original":
+			c.handleReviewOriginal(w, r)
+			return
 		case r.Method == http.MethodPost && lifecyclePath.MatchString(path):
 			m := lifecyclePath.FindStringSubmatch(path)
 			c.handleLifecycle(w, r, who, m[1], m[2], bo.Roster)

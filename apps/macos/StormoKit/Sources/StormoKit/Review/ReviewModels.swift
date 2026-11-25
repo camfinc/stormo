@@ -145,7 +145,24 @@ public struct ReviewSkill: Codable, Sendable, Equatable, Identifiable {
     public var files: [ReviewFile]
     public var ai: ReviewAI?
     public var held: String?
+    /// The scrubber flagged it, so `files` are the scrubbed copy: a person may still accept the
+    /// agent's own text (`ReviewOriginal`), or `originalRefused` says why not (a secret, stale). Absent
+    /// from a core that predates it: the flagged proposal then can't be accepted here.
+    public var originalAccept: Bool?
+    public var originalRefused: String?
     public var id: String { skill }
+}
+
+/// `GET /api/review/original`: a flagged skill proposal as the agent wrote it, what the scrubber hid
+/// included. Fetched only when a person asks to accept it; never kept past that sheet.
+public struct ReviewOriginal: Codable, Sendable, Equatable {
+    public var agent: String
+    public var skill: String
+    public var nap: String
+    /// The version shown: the accept sends it back, and the core refuses one that changed since.
+    public var napHash: String
+    public var pii: [String]
+    public var files: [ReviewFile]
 }
 
 /// A proposal's file, with its text when small and textual.
@@ -169,6 +186,9 @@ public struct ReviewDecision: Codable, Sendable, Equatable {
     public var decision: Verdict
     /// promote: "unit" or "group".
     public var scope: String?
+    /// A flagged skill accepted with the agent's own text, as shown at `napHash`.
+    public var original: Bool?
+    public var napHash: String?
 
     public static func lessons(_ ids: [String], of agent: String, _ decision: Verdict, scope: String? = nil) -> Self {
         Self(agent: agent, lessons: ids, decision: decision, scope: scope)
@@ -184,6 +204,11 @@ public struct ReviewDecision: Codable, Sendable, Equatable {
 
     public static func skill(_ name: String, of agent: String, _ decision: Verdict) -> Self {
         Self(agent: agent, skill: name, decision: decision)
+    }
+
+    /// A person's final word on a skill the scrubber flagged: accept the agent's own text, the version shown.
+    public static func skillOriginal(_ name: String, of agent: String, napHash: String) -> Self {
+        Self(agent: agent, skill: name, decision: .accept, original: true, napHash: napHash)
     }
 
     /// Accept writes the runtime schedules to agent.yaml; reject drops the jobs created at runtime.

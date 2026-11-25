@@ -37,6 +37,9 @@ import (
 type LearnDeps struct {
 	NapNow func(id string) error
 	Dream  func(id string) (*loop.DreamReport, error)
+	// Store is the store the dream reads naps from (ops.LocalStore): a person's accept of a flagged
+	// skill reads the agent's original text there.
+	Store loop.Store
 	// Prune drops the naps the dream has folded (loop.Prune).
 	Prune func(id string) (*loop.PruneReport, error)
 	// Candidates sorts an agent's open proposals by the review's rules (loop.ReviewCandidates).
@@ -144,6 +147,9 @@ func NewLearner(o LearnerOptions) *Learner {
 	}
 	if d.Prune == nil {
 		d.Prune = func(id string) (*loop.PruneReport, error) { return loop.Prune(inst, id, ops.LocalStore(inst.Root), 0) }
+	}
+	if d.Store == nil {
+		d.Store = ops.LocalStore(inst.Root)
 	}
 	if d.Candidates == nil {
 		d.Candidates = func(id string, minSeen int) ([]loop.Candidate, []loop.Held, error) {

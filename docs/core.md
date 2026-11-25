@@ -786,7 +786,8 @@ Core triggers and sequences the existing nap/dream loop; it does not replace it.
   a referrer), stays in that tab's session storage, and goes as a bearer to `/api/review`
   (`GET`, `POST {agent, lessons | skill, decision, scope}`) and
   `POST /api/agents/<id>/restart`, owner token only. Decisions are `loop.Decide` /
-  `loop.DecideSkill`, the same as `stormo learn`: working tree only.
+  `loop.DecideSkill`, the same as `stormo learn`: working tree only. A skill the scrubber flagged
+  is accepted only with the agent's own text (`GET /api/review/original`, then `original: true`).
 - *Digest*: `.swarm/core/digests/<date>-cycle-<id>.md` (0600): per agent, nap or why not, naps
   folded, new lessons, lessons seen again, skill and cron proposals, what waits for review, and
   the `stormo learn list|skills <agent>` commands. Counts only, never lesson text. Slack delivery

@@ -254,11 +254,39 @@ func TestLearningLoop(t *testing.T) {
 		if ben, _ := learning.VisibleLearnings(inst, "ben"); len(ben) != 0 {
 			t.Errorf("ben (other unit) sees %v", ben)
 		}
-		if _, err := DecideSkill(root, "atlas", "crm/order-lookup", "accepted"); err != nil {
+		// order-lookup was flagged (order-id): its proposal is the scrubbed copy.
+		lookup := filepath.Join(root, "agents/atlas/skills/crm/order-lookup/SKILL.md")
+		if _, err := DecideSkill(root, "atlas", "crm/order-lookup", "accepted"); err == nil || exists(lookup) {
+			t.Fatalf("a flagged proposal's placeholders were accepted (err %v)", err)
+		}
+		p, err := FindSkillProposal(root, "atlas", "crm/order-lookup")
+		if err != nil || OriginalRefusal(*p) != "" {
+			t.Fatalf("proposal %+v, %v", p, err)
+		}
+		if _, err := AcceptSkillOriginal(inst, store, "atlas", "crm/order-lookup", "another-version"); err == nil || exists(lookup) {
+			t.Fatalf("accepted a version the person was not shown (err %v)", err)
+		}
+		missing := *p
+		missing.Nap = "20261006T000000000Z-gone"
+		if _, err := SkillOriginals(inst, store, "atlas", missing); err == nil {
+			t.Error("read originals from a nap that is not in the store")
+		}
+		changed := *p
+		changed.NapHash = "0000"
+		if _, err := SkillOriginals(inst, store, "atlas", changed); err == nil {
+			t.Error("read originals the nap does not hold at the proposal's hash")
+		}
+		if why := OriginalRefusal(SkillProposal{PII: []string{"email", "secret"}}); why == "" {
+			t.Error("a secret's original may be accepted")
+		}
+		if _, err := AcceptSkillOriginal(inst, store, "atlas", "crm/order-lookup", p.NapHash); err != nil {
 			t.Fatal(err)
 		}
-		if !exists(filepath.Join(root, "agents/atlas/skills/crm/order-lookup/SKILL.md")) {
-			t.Error("accepted skill not copied")
+		if got := read(t, lookup); !strings.Contains(got, "Ask for order AB12CD34 first.") || strings.Contains(got, "[ORDER-ID]") {
+			t.Errorf("accepted skill = %q, want the agent's original text", got)
+		}
+		if _, err := FindSkillProposal(root, "atlas", "crm/order-lookup"); err == nil {
+			t.Error("the decided proposal is still open")
 		}
 	})
 

@@ -183,6 +183,7 @@ private struct SkillRow: View {
     /// Files whose diff is shown. Not a DisclosureGroup: in a Form row it takes the row's clicks,
     /// so Reject and Accept toggled the diff instead of deciding.
     @State private var open: Set<String>?
+    @State private var confirmingOriginal = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -196,10 +197,16 @@ private struct SkillRow: View {
                 if busy { ProgressView().controlSize(.small) }
                 Button("Reject") { decide(.reject) }
                     .disabled(busy)
-                Button("Accept") { decide(.accept) }
-                    .disabled(!skill.pii.isEmpty || stale || busy)
+                Button(flagged ? "Accept…" : "Accept") {
+                    if flagged { confirmingOriginal = true } else { decide(.accept) }
+                }
+                .disabled((flagged && skill.originalAccept != true) || stale || busy)
+                .help(acceptHelp)
             }
             .controlSize(.small)
+            .sheet(isPresented: $confirmingOriginal) {
+                OriginalAcceptSheet(agent: agent, skill: skill)
+            }
             LearningEvidenceNote(evidence: skill.evidence)
             ReviewNote(ai: skill.ai, held: skill.held)
             if stale {
@@ -244,6 +251,18 @@ private struct SkillRow: View {
     }
 
     private var stale: Bool { skill.stale ?? false }
+    /// The scrubber flagged it: the files shown are its scrubbed copy.
+    private var flagged: Bool { !skill.pii.isEmpty }
+
+    private var acceptHelp: String {
+        if stale { return "The agent changed an older version than the repo's: merge what you want by hand, then reject it." }
+        guard flagged else { return "Copies the skill into the agent's skills folder in the repo; it applies when the agent restarts." }
+        if skill.originalAccept == true {
+            return "The scrubber hid \(skill.pii.joined(separator: ", ")) in this copy. Shows you the agent's own text first; accepting writes it, what was hidden included, into the repo."
+        }
+        if let why = skill.originalRefused { return "Can't accept: \(why)." }
+        return "The scrubber hid \(skill.pii.joined(separator: ", ")) in this copy, and this core can't show the original: update Stormo, or reject it."
+    }
 
     /// The first file, when its diff is short enough to show unasked.
     private var defaultOpen: Set<String> {
@@ -439,6 +458,88 @@ private struct SettingRow: View {
 
     private func decide(_ verdict: ReviewDecision.Verdict) {
         Task { await model.review.decide(.settings([setting.key], of: agent, verdict)) }
+    }
+}
+
+/// A person's final word on a skill the scrubber flagged: what it hid, then the agent's own text
+/// accepted. The original is fetched for this sheet only and never kept.
+private struct OriginalAcceptSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let agent: String
+    let skill: ReviewSkill
+    @State private var original: ReviewOriginal?
+    @State private var problem: String?
+    @State private var accepting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Accept \(skill.skill) with the agent's own text?").font(.headline)
+            Text("The scrubber hid \(skill.pii.joined(separator: ", ")) in the copy you reviewed. Below is what it changed: red is that copy, green is what the agent wrote. Accepting writes the agent's text, what was hidden included, to agents/\(agent)/skills/\(skill.skill)/ in the repo. It applies when the agent restarts; the automatic review never accepts this for you.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let original {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(original.files) { file in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(file.path).font(.caption.monospaced())
+                                if let text = file.text {
+                                    let diff = LineDiff(old: scrubbed(file.path) ?? "", new: text, context: 1)
+                                    if diff.isEmpty {
+                                        Text("Nothing hidden in this file.").font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        DiffView(diff: diff)
+                                    }
+                                } else {
+                                    Text("\(file.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 120, maxHeight: 360)
+            } else if let problem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ProgressView("Reading the agent's own text…").controlSize(.small)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Accept the Agent's Text") { accept() }
+                    .disabled(original == nil || accepting)
+            }
+        }
+        .padding(20)
+        .frame(width: 680)
+        .task { await load() }
+    }
+
+    /// The scrubbed copy of a file, as the review showed it.
+    private func scrubbed(_ path: String) -> String? {
+        skill.files.first { $0.path == path }?.text
+    }
+
+    private func load() async {
+        switch await model.review.original(agent: agent, skill: skill.skill) {
+        case .success(let o): original = o
+        case .failure(let p): problem = p.message
+        }
+    }
+
+    private func accept() {
+        guard let original else { return }
+        accepting = true
+        Task {
+            await model.review.decide(.skillOriginal(skill.skill, of: agent, napHash: original.napHash))
+            accepting = false
+            dismiss()
+        }
     }
 }
 

@@ -72,6 +72,12 @@ public struct CoreClient: Sendable {
         try JSONDecoder().decode(ReviewView.self, from: try await send(request("api/review", owner: owner)))
     }
 
+    public func reviewOriginal(agent: String, skill: String, owner: String) async throws -> ReviewOriginal {
+        var r = request("api/review/original", owner: owner)
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "agent", value: agent), URLQueryItem(name: "skill", value: skill)])
+        return try JSONDecoder().decode(ReviewOriginal.self, from: try await send(r))
+    }
+
     public func decide(_ decision: ReviewDecision, owner: String) async throws {
         var r = request("api/review", owner: owner)
         r.httpMethod = "POST"

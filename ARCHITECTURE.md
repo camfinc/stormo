@@ -392,6 +392,10 @@ asked for anything else, and raw history sits under a prefix the dream role can 
   flags) is not flagged again by later sightings of the old text, which keep its id.
 - Changed or new skills in the newest nap become scrubbed copies under
   `learnings/proposals/skills/` (a skill already decided at that content hash is not re-proposed).
+  A copy the scrubber flagged is never accepted as is (it would write the placeholders): the person
+  deciding it reads the agent's own text from that nap, checked against the proposal's hash, and has
+  the final word (`loop.AcceptSkillOriginal`; refused for a secret or a stale proposal). The
+  automatic review never takes it.
   Schedule changes the agent made at runtime become `learnings/proposals/schedules.yaml` (agent.yaml's
   form; format 0, or a job agent.yaml cannot express: `learnings/proposals/cron/jobs.json`). Skill telemetry is kept in
   `learnings/skill-usage.json`.

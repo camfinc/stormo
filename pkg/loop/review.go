@@ -7,10 +7,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/camfinc/stormo/pkg/build"
+	"github.com/camfinc/stormo/pkg/engine"
+	"github.com/camfinc/stormo/pkg/instance"
 	"github.com/camfinc/stormo/pkg/learning"
 	"github.com/camfinc/stormo/pkg/manifest"
 )
@@ -152,40 +156,157 @@ func ListSkillProposals(root, agent string) ([]SkillProposal, error) {
 }
 
 // DecideSkill accepts (copies into skills/) or rejects a skill proposal and records the decision.
+// A proposal the scrubber flagged is its scrubbed copy, so accepting it is refused: it would write
+// the placeholders into the skill. A person accepts the agent's own text with AcceptSkillOriginal.
 func DecideSkill(root, agent, skill, decision string) (*SkillProposal, error) {
 	return DecideSkillBy(root, agent, skill, decision, Decider{})
 }
 
 // DecideSkillBy is DecideSkill recording who decided (the core's review) and why.
 func DecideSkillBy(root, agent, skill, decision string, who Decider) (*SkillProposal, error) {
+	return decideSkill(root, agent, skill, decision, who, nil)
+}
+
+// AcceptSkillOriginal is a person's final word on a proposal the scrubber flagged: it writes the
+// agent's own files (SkillOriginals) instead of the scrubbed copy, and records the decision. napHash,
+// when set, is the version the person was shown; a proposal that changed since is refused. Nothing is
+// written unless every file was read from the nap and matches the proposal's hash.
+func AcceptSkillOriginal(inst *instance.Instance, s Store, agent, skill, napHash string) (*SkillProposal, error) {
+	return decideSkill(inst.Root, agent, skill, "accepted", Decider{Reason: "a person accepted the agent's original text"},
+		func(p SkillProposal) ([]SkillOriginal, error) {
+			if napHash != "" && napHash != p.NapHash {
+				return nil, fmt.Errorf("%s: %s changed since it was shown; reload the review", agent, skill)
+			}
+			return SkillOriginals(inst, s, agent, p)
+		})
+}
+
+// SkillOriginal is a file of a skill proposal as the agent wrote it, before the scrub.
+type SkillOriginal struct {
+	// Path inside the skill's folder, as the proposal names it.
+	Path string
+	Body []byte
+}
+
+// OriginalRefusal is why a person may not accept a proposal's original text, "" when they may: a
+// secret never goes into a skill, and a stale proposal is merged by hand.
+func OriginalRefusal(p SkillProposal) string {
+	switch {
+	case p.Stale:
+		return "the agent changed an older version than the repo's: merge what you want by hand, then reject it"
+	case slices.Contains(p.PII, "secret"):
+		return "the scrubber found a secret, and a skill never holds one: copy what you want by hand without it, then reject it"
+	}
+	return ""
+}
+
+// SkillOriginals reads a proposal's files as the agent wrote them, from the nap it came from (the
+// store its dream read), checked against the proposal's hash.
+func SkillOriginals(inst *instance.Instance, s Store, agentID string, p SkillProposal) ([]SkillOriginal, error) {
+	if why := OriginalRefusal(p); why != "" {
+		return nil, fmt.Errorf("%s: %s: %s", agentID, p.Skill, why)
+	}
+	agent, err := manifest.Load(inst.Root, agentID, inst.Names.Secret)
+	if err != nil {
+		return nil, err
+	}
+	eng, err := engineFor(agent.Engine.Kind, inst)
+	if err != nil {
+		return nil, err
+	}
+	L := eng.Layout()
+	var nap Nap
+	if ok, err := ReadJSON(s, NapKey(agentID, p.Nap), &nap); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, fmt.Errorf("%s: nap %s, which %s came from, is no longer in the store; reject it", agentID, p.Nap, p.Skill)
+	}
+	hashes := map[string]string{}
+	learningPaths := []string{}
+	for _, f := range nap.Files {
+		hashes[f.Path] = f.Sha256
+		if f.Class == engine.Learning {
+			learningPaths = append(learningPaths, f.Path)
+		}
+	}
+	paths := build.SkillDirs(learningPaths, L.SkillsDir)[p.Skill]
+	if len(paths) == 0 || build.SkillHash(hashes, paths) != p.NapHash {
+		return nil, fmt.Errorf("%s: nap %s does not hold the proposed version of %s; reject it", agentID, p.Nap, p.Skill)
+	}
+	sort.Strings(paths)
+	prefix := L.SkillsDir + "/" + p.Skill + "/"
+	out := make([]SkillOriginal, 0, len(paths))
+	for _, path := range paths {
+		body, err := learningBlob(s, agentID, &nap, path)
+		if err != nil {
+			return nil, err
+		}
+		if body == nil || build.Sha256([]byte(*body)) != hashes[path] {
+			return nil, fmt.Errorf("%s: the store does not hold %s as nap %s recorded it; reject it", agentID, path, p.Nap)
+		}
+		out = append(out, SkillOriginal{Path: strings.TrimPrefix(path, prefix), Body: []byte(*body)})
+	}
+	return out, nil
+}
+
+// FindSkillProposal is the agent's open proposal for skill.
+func FindSkillProposal(root, agent, skill string) (*SkillProposal, error) {
+	props, err := ListSkillProposals(root, agent)
+	if err != nil {
+		return nil, err
+	}
+	for i := range props {
+		if props[i].Skill == skill {
+			return &props[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%s: no skill proposal %s", agent, skill)
+}
+
+// decideSkill: originals, when set, is a person accepting a flagged proposal's original text.
+func decideSkill(root, agent, skill, decision string, who Decider, originals func(SkillProposal) ([]SkillOriginal, error)) (*SkillProposal, error) {
 	unlock, err := learning.LockLedger(root, agent, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	props, err := ListSkillProposals(root, agent)
+	prop, err := FindSkillProposal(root, agent, skill)
 	if err != nil {
 		return nil, err
-	}
-	var prop *SkillProposal
-	for i := range props {
-		if props[i].Skill == skill {
-			prop = &props[i]
-		}
-	}
-	if prop == nil {
-		return nil, fmt.Errorf("%s: no skill proposal %s", agent, skill)
 	}
 	src := filepath.Join(ProposalsDir(root, agent), skill)
 	if decision == "accepted" && prop.Stale {
 		return nil, fmt.Errorf("%s: %s was changed by the agent from an older version (%s); the repo's copy has changed since, so accepting would undo that. Merge it by hand from %s, then reject the proposal", agent, skill, or(prop.Base, "an earlier build"), src)
 	}
+	if decision == "accepted" && len(prop.PII) > 0 && originals == nil {
+		return nil, fmt.Errorf("%s: the scrubber flagged %s in %s, so the proposal holds placeholders where the agent's text was and accepting it would write them into the skill. Accept the agent's original text instead (Accept in the app, or `stormo learn skill-accept --original`), or reject it", agent, strings.Join(prop.PII, ", "), skill)
+	}
 	if decision == "accepted" {
+		// Every original is read and checked before the repo's copy is touched.
+		var files []SkillOriginal
+		if originals != nil && len(prop.PII) > 0 {
+			if files, err = originals(*prop); err != nil {
+				return nil, err
+			}
+		}
 		dest := filepath.Join(manifest.AgentDir(root, agent), "skills", skill)
 		if err := os.RemoveAll(dest); err != nil {
 			return nil, err
 		}
-		if err := copyTree(src, dest, func(p string) bool { return !strings.HasSuffix(p, ".proposal.json") }); err != nil {
+		if files != nil {
+			for _, f := range files {
+				target := filepath.Join(dest, filepath.FromSlash(f.Path))
+				if !strings.HasPrefix(target, dest+string(filepath.Separator)) {
+					return nil, fmt.Errorf("%s: %s: a file outside the skill (%s)", agent, skill, f.Path)
+				}
+				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(target, f.Body, 0o644); err != nil {
+					return nil, err
+				}
+			}
+		} else if err := copyTree(src, dest, func(p string) bool { return !strings.HasSuffix(p, ".proposal.json") }); err != nil {
 			return nil, err
 		}
 	}

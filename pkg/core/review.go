@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,6 +100,11 @@ type ReviewSkill struct {
 	Files []ReviewFile `json:"files"`
 	AI    *ReviewAI    `json:"ai,omitempty"`
 	Held  string       `json:"held,omitempty"`
+	// The scrubber flagged it, so Files are the scrubbed copy. OriginalAccept: a person may still
+	// accept the agent's own text (GET /api/review/original shows it; POST with original: true);
+	// OriginalRefused: why not (a secret, or a stale proposal).
+	OriginalAccept  bool   `json:"originalAccept"`
+	OriginalRefused string `json:"originalRefused,omitempty"`
 }
 
 // ReviewFile is a file of a skill proposal, with its text when small and textual.
@@ -289,6 +296,10 @@ func skillView(root, agent string, p loop.SkillProposal) ReviewSkill {
 	if _, err := os.Stat(cur); err != nil {
 		s.New = true
 	}
+	if len(p.PII) > 0 {
+		s.OriginalRefused = loop.OriginalRefusal(p)
+		s.OriginalAccept = s.OriginalRefused == ""
+	}
 	_ = filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || strings.HasSuffix(path, ".proposal.json") {
 			return nil
@@ -319,6 +330,10 @@ type reviewDecision struct {
 	Settings  []string `json:"settings"`
 	Decision  string   `json:"decision"` // accept | reject | promote (lessons)
 	Scope     string   `json:"scope"`    // promote: unit | group
+	// Original: accept a flagged skill with the agent's own text, as GET /api/review/original showed
+	// it at NapHash (a proposal that changed since is refused).
+	Original bool   `json:"original"`
+	NapHash  string `json:"napHash"`
 }
 
 func (l *Learner) decide(d reviewDecision) error {
@@ -349,7 +364,14 @@ func (l *Learner) decide(d reviewDecision) error {
 		if dec == "" {
 			return fmt.Errorf("a skill is accepted or rejected")
 		}
-		if _, err := loop.DecideSkill(root, d.Agent, d.Skill, dec); err != nil {
+		if d.Original {
+			if dec != "accepted" || d.NapHash == "" {
+				return fmt.Errorf("original goes with accept and the napHash that was shown")
+			}
+			if _, err := loop.AcceptSkillOriginal(l.o.Inst, l.o.Deps.Store, d.Agent, d.Skill, d.NapHash); err != nil {
+				return err
+			}
+		} else if _, err := loop.DecideSkill(root, d.Agent, d.Skill, dec); err != nil {
 			return err
 		}
 		if dec == "accepted" {
@@ -426,9 +448,76 @@ func (c *Core) handleReview(w http.ResponseWriter, r *http.Request, roster func(
 		if d.Schedules {
 			target = append(target, "schedules")
 		}
-		c.DB.Audit(c.caller(r).Actor(), "review."+d.Decision, d.Agent, strings.TrimSpace(strings.Join(target, " ")))
+		action := "review." + d.Decision
+		if d.Original {
+			action += "-original"
+		}
+		c.DB.Audit(c.caller(r).Actor(), action, d.Agent, strings.TrimSpace(strings.Join(target, " ")))
 		writeJSONBody(w, 200, map[string]any{"ok": true})
 	default:
 		writeJSONBody(w, 405, errBody("method_not_allowed", "GET or POST"))
 	}
+}
+
+// ReviewOriginal is GET /api/review/original's answer: a flagged skill proposal's files as the agent
+// wrote them, what the scrubber hid included, for the person deciding it. GET /api/review never
+// carries it.
+type ReviewOriginal struct {
+	Agent   string   `json:"agent"`
+	Skill   string   `json:"skill"`
+	Nap     string   `json:"nap"`
+	NapHash string   `json:"napHash"`
+	PII     []string `json:"pii"`
+	// Text when small and textual, as in the review.
+	Files []ReviewFile `json:"files"`
+}
+
+var errNoProposal = errors.New("no such proposal")
+
+func (l *Learner) original(agent, skill string) (*ReviewOriginal, error) {
+	root := l.o.Inst.Root
+	if !slicesContains(manifest.AgentIDs(root), agent) {
+		return nil, errNoProposal
+	}
+	p, err := loop.FindSkillProposal(root, agent, skill)
+	if err != nil {
+		return nil, errNoProposal
+	}
+	files, err := loop.SkillOriginals(l.o.Inst, l.o.Deps.Store, agent, *p)
+	if err != nil {
+		return nil, err
+	}
+	out := &ReviewOriginal{Agent: agent, Skill: p.Skill, Nap: p.Nap, NapHash: p.NapHash, PII: p.PII, Files: []ReviewFile{}}
+	for _, f := range files {
+		rf := ReviewFile{Path: f.Path, Size: int64(len(f.Body))}
+		if len(f.Body) <= maxReviewText && !bytes.ContainsRune(f.Body, 0) {
+			rf.Text = string(f.Body)
+		}
+		out.Files = append(out.Files, rf)
+	}
+	return out, nil
+}
+
+// handleReviewOriginal serves GET /api/review/original?agent=<id>&skill=<skill> for the owner.
+func (c *Core) handleReviewOriginal(w http.ResponseWriter, r *http.Request) {
+	if !c.caller(r).Owner {
+		writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSONBody(w, 405, errBody("method_not_allowed", "GET"))
+		return
+	}
+	agent, skill := r.URL.Query().Get("agent"), r.URL.Query().Get("skill")
+	v, err := c.Learner.original(agent, skill)
+	switch {
+	case errors.Is(err, errNoProposal):
+		writeJSONBody(w, 404, errBody("not_found", fmt.Sprintf("%s has no skill proposal %q", agent, skill)))
+		return
+	case err != nil:
+		writeJSONBody(w, 409, errBody("refused", clip(err.Error(), 300)))
+		return
+	}
+	c.DB.Audit(c.caller(r).Actor(), "review.original", agent, skill)
+	writeJSONBody(w, 200, v)
 }
