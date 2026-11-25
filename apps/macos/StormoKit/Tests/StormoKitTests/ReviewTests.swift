@@ -37,10 +37,10 @@ import Testing
         #expect(s[0].originalAccept == true && s[1].originalAccept == false && s[1].originalRefused != nil && s[2].originalAccept == nil)
 
         let original = #"""
-        {"agent":"atlas","skill":"quote-mail","nap":"n","napHash":"h1","pii":["email"],"files":[{"path":"SKILL.md","size":12,"text":"mail a@b.co"}]}
+        {"agent":"atlas","skill":"quote-mail","nap":"n","napHash":"h1","pii":["email"],"hidden":[{"kind":"email","text":"a@b.co"}],"files":[{"path":"SKILL.md","size":12,"text":"mail a@b.co"}]}
         """#
         let r = try JSONDecoder().decode(ReviewOriginal.self, from: Data(original.utf8))
-        #expect(r.napHash == "h1" && r.files.first?.text == "mail a@b.co")
+        #expect(r.napHash == "h1" && r.files.first?.text == "mail a@b.co" && r.hidden == [ReviewHidden(kind: "email", text: "a@b.co")])
     }
 
     @Test func decodesVerdictsHeldReasonsAndRuntimeProposals() throws {

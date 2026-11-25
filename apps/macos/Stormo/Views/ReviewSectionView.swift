@@ -475,21 +475,38 @@ private struct OriginalAcceptSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Accept \(skill.skill) with the agent's own text?").font(.headline)
-            Text("The scrubber hid \(skill.pii.joined(separator: ", ")) in the copy you reviewed. Below is what it changed: red is that copy, green is what the agent wrote. Accepting writes the agent's text, what was hidden included, to agents/\(agent)/skills/\(skill.skill)/ in the repo. It applies when the agent restarts; the automatic review never accepts this for you.")
+            Text("The scrubber hid \(skill.pii.joined(separator: ", ")) in the copy you reviewed. Accepting writes the agent's own text, what was hidden included, to agents/\(agent)/skills/\(skill.skill)/ in the repo. It applies when the agent restarts; the automatic review never accepts this for you.")
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let original {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
+                        if let hidden = original.hidden, !hidden.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("What it hid").font(.subheadline.weight(.semibold))
+                                ForEach(hidden) { h in
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        Tag(h.kind, tint: .red)
+                                        Text(h.text).font(.callout.monospaced())
+                                            .textSelection(.enabled)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                        }
+                        Text("Lines it changed: red is the copy you reviewed, green is what the agent wrote.")
+                            .font(.caption).foregroundStyle(.secondary)
                         ForEach(original.files) { file in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(file.path).font(.caption.monospaced())
                                 if let text = file.text {
-                                    let diff = LineDiff(old: scrubbed(file.path) ?? "", new: text, context: 1)
-                                    if diff.isEmpty {
+                                    let lines = Self.changed(old: scrubbed(file.path) ?? "", new: text)
+                                    if lines.isEmpty {
                                         Text("Nothing hidden in this file.").font(.caption).foregroundStyle(.secondary)
                                     } else {
-                                        DiffView(diff: diff)
+                                        // Wrapped, not DiffView's one long row: the hidden value can sit far
+                                        // past the sheet's edge on a paragraph-long line.
+                                        ForEach(lines) { WrappedDiffLine(line: $0) }
                                     }
                                 } else {
                                     Text("\(file.size) bytes, not shown (binary or over 64 KB)").font(.caption).foregroundStyle(.secondary)
@@ -520,6 +537,11 @@ private struct OriginalAcceptSheet: View {
         .task { await load() }
     }
 
+    /// The lines that differ, without context.
+    private static func changed(old: String, new: String) -> [LineDiff.Line] {
+        LineDiff(old: old, new: new, context: 0).hunks.flatMap(\.lines).filter { $0.kind != .same }
+    }
+
     /// The scrubbed copy of a file, as the review showed it.
     private func scrubbed(_ path: String) -> String? {
         skill.files.first { $0.path == path }?.text
@@ -540,6 +562,25 @@ private struct OriginalAcceptSheet: View {
             accepting = false
             dismiss()
         }
+    }
+}
+
+/// One changed line, wrapped to the width it has.
+private struct WrappedDiffLine: View {
+    let line: LineDiff.Line
+
+    var body: some View {
+        let tint: Color = line.kind == .removed ? .red : .green
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(line.kind == .removed ? "−" : "+").foregroundStyle(tint)
+            Text(line.text.isEmpty ? " " : line.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .font(.caption.monospaced())
+        .padding(.vertical, 2).padding(.horizontal, 4)
+        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 3))
     }
 }
 

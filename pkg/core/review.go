@@ -468,6 +468,8 @@ type ReviewOriginal struct {
 	Nap     string   `json:"nap"`
 	NapHash string   `json:"napHash"`
 	PII     []string `json:"pii"`
+	// What the scrubber hid, each once: the values a person is about to let into the repo.
+	Hidden []learning.Hidden `json:"hidden"`
 	// Text when small and textual, as in the review.
 	Files []ReviewFile `json:"files"`
 }
@@ -487,8 +489,15 @@ func (l *Learner) original(agent, skill string) (*ReviewOriginal, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &ReviewOriginal{Agent: agent, Skill: p.Skill, Nap: p.Nap, NapHash: p.NapHash, PII: p.PII, Files: []ReviewFile{}}
+	out := &ReviewOriginal{Agent: agent, Skill: p.Skill, Nap: p.Nap, NapHash: p.NapHash, PII: p.PII, Hidden: []learning.Hidden{}, Files: []ReviewFile{}}
+	scrubber, seen := learning.NewScrubber(l.o.Inst), map[learning.Hidden]bool{}
 	for _, f := range files {
+		for _, h := range scrubber.Hidden(string(f.Body)) {
+			if !seen[h] {
+				seen[h] = true
+				out.Hidden = append(out.Hidden, h)
+			}
+		}
 		rf := ReviewFile{Path: f.Path, Size: int64(len(f.Body))}
 		if len(f.Body) <= maxReviewText && !bytes.ContainsRune(f.Body, 0) {
 			rf.Text = string(f.Body)
@@ -498,10 +507,16 @@ func (l *Learner) original(agent, skill string) (*ReviewOriginal, error) {
 	return out, nil
 }
 
-// handleReviewOriginal serves GET /api/review/original?agent=<id>&skill=<skill> for the owner.
+// handleReviewOriginal serves GET /api/review/original?agent=<id>&skill=<skill> to a person who
+// may decide it: operate, like the decision, since it is text the scrubber hid (a read token sees
+// only the scrubbed copy).
 func (c *Core) handleReviewOriginal(w http.ResponseWriter, r *http.Request) {
 	if !c.caller(r).Owner {
 		writeJSONBody(w, 401, errBody("unauthorized", "the owner token is required"))
+		return
+	}
+	if !c.caller(r).Can(ScopeOperate) {
+		writeJSONBody(w, 403, errBody("forbidden", "an operator credential is required: this is what the scrubber hid"))
 		return
 	}
 	if r.Method != http.MethodGet {

@@ -60,8 +60,38 @@ func NewScrubber(inst *instance.Instance) *Scrubber {
 
 // Scrub returns the redacted text and the sorted finding kinds.
 func (s *Scrubber) Scrub(input string) (string, []string) {
-	text := input
 	found := map[string]bool{}
+	text := s.scrub(input, func(kind, _ string) { found[kind] = true })
+	kinds := make([]string, 0, len(found))
+	for k := range found {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	return text, kinds
+}
+
+// Hidden is a text Scrub replaces, and the kind it was found as.
+type Hidden struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
+// Hidden lists what Scrub would replace in input, in the order the rules find it, each once: for a
+// person deciding whether the agent's own text may go where the scrubbed copy would.
+func (s *Scrubber) Hidden(input string) []Hidden {
+	out := []Hidden{}
+	seen := map[Hidden]bool{}
+	s.scrub(input, func(kind, m string) {
+		if h := (Hidden{Kind: kind, Text: m}); !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	})
+	return out
+}
+
+func (s *Scrubber) scrub(input string, found func(kind, match string)) string {
+	text := input
 	for _, r := range s.rules {
 		text = r.re.ReplaceAllStringFunc(text, func(m string) string {
 			for _, q := range r.require {
@@ -69,14 +99,9 @@ func (s *Scrubber) Scrub(input string) (string, []string) {
 					return m
 				}
 			}
-			found[r.kind] = true
+			found(r.kind, m)
 			return "[" + strings.ToUpper(r.kind) + "]"
 		})
 	}
-	kinds := make([]string, 0, len(found))
-	for k := range found {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	return text, kinds
+	return text
 }

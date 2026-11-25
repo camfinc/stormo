@@ -162,7 +162,16 @@ public struct ReviewOriginal: Codable, Sendable, Equatable {
     /// The version shown: the accept sends it back, and the core refuses one that changed since.
     public var napHash: String
     public var pii: [String]
+    /// What the scrubber hid, each once (absent from a core that predates it).
+    public var hidden: [ReviewHidden]?
     public var files: [ReviewFile]
+}
+
+/// A text the scrubber hid, and the kind it was found as.
+public struct ReviewHidden: Codable, Sendable, Equatable, Identifiable {
+    public var kind: String
+    public var text: String
+    public var id: String { kind + "\u{0}" + text }
 }
 
 /// A proposal's file, with its text when small and textual.

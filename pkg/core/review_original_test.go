@@ -116,6 +116,14 @@ func TestReviewAcceptsFlaggedSkillOriginal(t *testing.T) {
 			t.Errorf("original as %q: %d", who, code)
 		}
 	}
+	reader, _, _ := c.DB.AddToken("reader", ScopeRead, 0)
+	if code, out := do("GET", "/api/review/original?agent=atlas&skill=quote-mail", reader, nil); code != 403 || strings.Contains(fmt.Sprint(out), "quotes@example.com") {
+		t.Errorf("original for a read token: %d %v", code, out)
+	}
+	operator, _, _ := c.DB.AddToken("operator", ScopeOperate, 0)
+	if code, _ := do("GET", "/api/review/original?agent=atlas&skill=quote-mail", operator, nil); code != 200 {
+		t.Errorf("original for an operate token: %d", code)
+	}
 	if code, _ := do("GET", "/api/review/original?agent=atlas&skill=nope", owner, nil); code != 404 {
 		t.Errorf("unknown skill: %d", code)
 	}
@@ -125,6 +133,9 @@ func TestReviewAcceptsFlaggedSkillOriginal(t *testing.T) {
 	code, out := do("GET", "/api/review/original?agent=atlas&skill=quote-mail", owner, nil)
 	if code != 200 || out["napHash"] != hash || !strings.Contains(fmt.Sprint(out["files"]), "quotes@example.com") {
 		t.Fatalf("original %d %v", code, out)
+	}
+	if h := fmt.Sprint(out["hidden"]); h != "[map[kind:email text:quotes@example.com]]" {
+		t.Errorf("hidden %s", h)
 	}
 
 	// Accepting it takes the version that was shown, and only that one.

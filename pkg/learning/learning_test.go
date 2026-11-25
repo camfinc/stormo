@@ -58,6 +58,11 @@ func TestScrub(t *testing.T) {
 	if !slices.Equal(findings, []string{"email", "order-id", "phone", "secret"}) {
 		t.Errorf("findings = %v", findings)
 	}
+	hidden := s.Hidden("Call +1 415 555 0123, order AB12CD34, mail ann@example.com, token acme_testFAKEtoken0000; again ann@example.com")
+	want := []Hidden{{"secret", "acme_testFAKEtoken0000"}, {"email", "ann@example.com"}, {"phone", "+1 415 555 0123"}, {"order-id", "AB12CD34"}}
+	if !slices.Equal(hidden, want) {
+		t.Errorf("hidden = %v, want %v (in rule order, each once)", hidden, want)
+	}
 	plain := "Deals for the next 2 days, grouped by close date; bump after 2 hours."
 	if got, f := s.Scrub(plain); got != plain || len(f) != 0 {
 		t.Errorf("ordinary text changed: %q %v", got, f)

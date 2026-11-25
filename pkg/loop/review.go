@@ -219,7 +219,7 @@ func SkillOriginals(inst *instance.Instance, s Store, agentID string, p SkillPro
 	if ok, err := ReadJSON(s, NapKey(agentID, p.Nap), &nap); err != nil {
 		return nil, err
 	} else if !ok {
-		return nil, fmt.Errorf("%s: nap %s, which %s came from, is no longer in the store; reject it", agentID, p.Nap, p.Skill)
+		return nil, fmt.Errorf("%s: nap %s, which %s came from, is no longer in the store; the agent's next nap proposes it again (rejecting it would keep that version from coming back)", agentID, p.Nap, p.Skill)
 	}
 	hashes := map[string]string{}
 	learningPaths := []string{}
@@ -231,7 +231,7 @@ func SkillOriginals(inst *instance.Instance, s Store, agentID string, p SkillPro
 	}
 	paths := build.SkillDirs(learningPaths, L.SkillsDir)[p.Skill]
 	if len(paths) == 0 || build.SkillHash(hashes, paths) != p.NapHash {
-		return nil, fmt.Errorf("%s: nap %s does not hold the proposed version of %s; reject it", agentID, p.Nap, p.Skill)
+		return nil, fmt.Errorf("%s: nap %s does not hold the proposed version of %s; the agent's next nap proposes it again", agentID, p.Nap, p.Skill)
 	}
 	sort.Strings(paths)
 	prefix := L.SkillsDir + "/" + p.Skill + "/"
@@ -242,7 +242,7 @@ func SkillOriginals(inst *instance.Instance, s Store, agentID string, p SkillPro
 			return nil, err
 		}
 		if body == nil || build.Sha256([]byte(*body)) != hashes[path] {
-			return nil, fmt.Errorf("%s: the store does not hold %s as nap %s recorded it; reject it", agentID, path, p.Nap)
+			return nil, fmt.Errorf("%s: the store does not hold %s as nap %s recorded it; the agent's next nap proposes it again", agentID, path, p.Nap)
 		}
 		out = append(out, SkillOriginal{Path: strings.TrimPrefix(path, prefix), Body: []byte(*body)})
 	}
@@ -290,19 +290,22 @@ func decideSkill(root, agent, skill, decision string, who Decider, originals fun
 			}
 		}
 		dest := filepath.Join(manifest.AgentDir(root, agent), "skills", skill)
+		targets := make([]string, len(files))
+		for i, f := range files {
+			targets[i] = filepath.Join(dest, filepath.FromSlash(f.Path))
+			if !strings.HasPrefix(targets[i], dest+string(filepath.Separator)) {
+				return nil, fmt.Errorf("%s: %s: a file outside the skill (%s)", agent, skill, f.Path)
+			}
+		}
 		if err := os.RemoveAll(dest); err != nil {
 			return nil, err
 		}
 		if files != nil {
-			for _, f := range files {
-				target := filepath.Join(dest, filepath.FromSlash(f.Path))
-				if !strings.HasPrefix(target, dest+string(filepath.Separator)) {
-					return nil, fmt.Errorf("%s: %s: a file outside the skill (%s)", agent, skill, f.Path)
-				}
-				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			for i, f := range files {
+				if err := os.MkdirAll(filepath.Dir(targets[i]), 0o755); err != nil {
 					return nil, err
 				}
-				if err := os.WriteFile(target, f.Body, 0o644); err != nil {
+				if err := os.WriteFile(targets[i], f.Body, 0o644); err != nil {
 					return nil, err
 				}
 			}
